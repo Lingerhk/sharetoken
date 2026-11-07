@@ -1,0 +1,375 @@
+// Package protocol defines sharetoken's wire messages, their canonical signing
+// encodings, and the framing used on libp2p streams.
+//
+// Trust anchors: every party is a libp2p Ed25519 identity. Offers are signed by
+// the node, tickets by the coordinator, receipts by the node's receipt key,
+// acks by the buyer — and each signer's public key is recoverable from its peer
+// ID (see PubKeyFromPeerID).
+//
+// Control plane (buyer/node <-> coordinator): CtrlProtocol, one request and one
+// response per stream. Data plane (buyer <-> node, direct or via relay):
+// InferProtocol. The coordinator is never on the data plane.
+package protocol
+
+import (
+	"bytes"
+	"crypto/ed25519"
+	"errors"
+	"time"
+
+	"sharetoken/attest"
+	"sharetoken/box"
+	"sharetoken/internal/canon"
+	"sharetoken/receipt"
+)
+
+// libp2p protocol IDs and the GossipSub topic for offers.
+const (
+	InferProtocol = "/sharetoken/infer/1.0.0"
+	CtrlProtocol  = "/sharetoken/ctrl/1.0.0"
+	OffersTopic   = "sharetoken/offers/1"
+)
+
+// Versions double as signing domains.
+const (
+	OfferVersion  = "sharetoken/offer/v1"
+	TicketVersion = "sharetoken/ticket/v1"
+	ackDomain     = "sharetoken/ack/v1"
+	maxClockSkew  = time.Minute
+)
+
+// Frame types.
+const (
+	TypeError         = "error"
+	TypeTicketRequest = "ticket_request"
+	TypeTicket        = "ticket"
+	TypeSettle        = "settle"
+	TypeSettled       = "settled"
+	TypeModels        = "models"
+	TypeBalance       = "balance"
+	TypeDispute       = "dispute"
+	TypeOK            = "ok"
+	TypeInfer         = "infer"
+	TypeChunk         = "chunk"
+	TypeReceipt       = "receipt"
+	TypeAck           = "ack"
+	TypeReject        = "reject"
+	TypeEvidence      = "evidence"
+	TypeVerdict       = "verdict"
+)
+
+// ModelPrice is a node's price for one model. Amounts are micro-credits
+// (1e-6 credit) per one million tokens; all money math is integer.
+type ModelPrice struct {
+	Model          string `json:"model"`
+	PriceInMicros  uint64 `json:"price_in"`
+	PriceOutMicros uint64 `json:"price_out"`
+}
+
+// Offer is a node's signed advertisement, gossiped on OffersTopic.
+type Offer struct {
+	Version        string        `json:"v"`
+	Node           string        `json:"node"`        // libp2p peer ID; signs the offer
+	Addrs          []string      `json:"addrs"`       // dialable multiaddrs, may include /p2p-circuit
+	BoxPub         []byte        `json:"box_pub"`     // X25519 key requests are sealed to
+	ReceiptKey     []byte        `json:"receipt_key"` // Ed25519 key receipts are signed with
+	Models         []ModelPrice  `json:"models"`
+	MaxConcurrency uint32        `json:"max_concurrency"`
+	IssuedAt       int64         `json:"issued_at"` // unix nanos
+	ExpiresAt      int64         `json:"expires_at"`
+	Quote          *attest.Quote `json:"quote,omitempty"` // optional TEE quote binding ReceiptKey and BoxPub
+	Sig            []byte        `json:"sig"`
+}
+
+func (o *Offer) signingBytes() []byte {
+	e := canon.New(OfferVersion).
+		String(o.Node).
+		Strings(o.Addrs).
+		Bytes(o.BoxPub).
+		Bytes(o.ReceiptKey).
+		U64(uint64(len(o.Models)))
+	for _, m := range o.Models {
+		e.String(m.Model).U64(m.PriceInMicros).U64(m.PriceOutMicros)
+	}
+	e.U64(uint64(o.MaxConcurrency)).I64(o.IssuedAt).I64(o.ExpiresAt).Bool(o.Quote != nil)
+	if q := o.Quote; q != nil {
+		e.String(q.Backend).Bytes(q.Evidence)
+	}
+	return e.Sum()
+}
+
+// Sign signs the offer with the node's libp2p identity key.
+func (o *Offer) Sign(priv ed25519.PrivateKey) {
+	o.Version = OfferVersion
+	o.Sig = ed25519.Sign(priv, o.signingBytes())
+}
+
+// VerifySignature checks the offer is well formed and signed by o.Node. It does
+// not check the validity window (see Verify) or the hardware quote: that needs
+// vendor verifiers and a measurement allow-list (attest.Verify), which is the
+// verifying party's policy.
+func (o *Offer) VerifySignature() error {
+	if o.Version != OfferVersion {
+		return errors.New("offer: unknown version")
+	}
+	if len(o.BoxPub) != box.PublicKeySize {
+		return errors.New("offer: bad box key")
+	}
+	if len(o.ReceiptKey) != ed25519.PublicKeySize {
+		return errors.New("offer: bad receipt key")
+	}
+	if len(o.Models) == 0 {
+		return errors.New("offer: no models")
+	}
+	seen := make(map[string]bool, len(o.Models))
+	for _, m := range o.Models {
+		if m.Model == "" || seen[m.Model] {
+			return errors.New("offer: empty or duplicate model id")
+		}
+		seen[m.Model] = true
+	}
+	if o.Quote != nil && (o.Quote.Backend == "" || len(o.Quote.Evidence) == 0) {
+		return errors.New("offer: empty attestation quote")
+	}
+	return verifySig(o.Node, o.signingBytes(), o.Sig)
+}
+
+// Verify checks the signature and that the offer is currently valid.
+func (o *Offer) Verify(now time.Time, maxTTL time.Duration) error {
+	if err := o.VerifySignature(); err != nil {
+		return err
+	}
+	n := now.UnixNano()
+	switch {
+	case o.ExpiresAt <= n:
+		return errors.New("offer: expired")
+	case o.ExpiresAt-o.IssuedAt > int64(maxTTL):
+		return errors.New("offer: validity window too long")
+	case o.IssuedAt > n+int64(maxClockSkew):
+		return errors.New("offer: issued in the future")
+	}
+	return nil
+}
+
+// Price returns the node's price for model.
+func (o *Offer) Price(model string) (ModelPrice, bool) {
+	for _, m := range o.Models {
+		if m.Model == model {
+			return m, true
+		}
+	}
+	return ModelPrice{}, false
+}
+
+// Ticket is the coordinator's signed authorization for one job: which buyer may
+// ask which node to run which model, at what price, up to what reservation.
+// It copies the node's keys and addresses from the node-signed offer so the
+// node can check it is the intended server.
+type Ticket struct {
+	Version        string   `json:"v"`
+	JobID          string   `json:"job_id"`
+	Model          string   `json:"model"`
+	Node           string   `json:"node"`
+	NodeAddrs      []string `json:"node_addrs"`
+	NodeBoxPub     []byte   `json:"node_box_pub"`
+	NodeReceiptKey []byte   `json:"node_receipt_key"`
+	Buyer          string   `json:"buyer"`
+	PriceInMicros  uint64   `json:"price_in"`
+	PriceOutMicros uint64   `json:"price_out"`
+	ReservedMicros uint64   `json:"reserved"`   // held from the buyer; settlement never exceeds it
+	IssuedAt       int64    `json:"issued_at"`  // unix nanos
+	ExpiresAt      int64    `json:"expires_at"` // the node must accept the job before this
+	Coordinator    string   `json:"coordinator"`
+	Sig            []byte   `json:"sig"`
+}
+
+func (t *Ticket) signingBytes() []byte {
+	return canon.New(TicketVersion).
+		String(t.JobID).
+		String(t.Model).
+		String(t.Node).
+		Strings(t.NodeAddrs).
+		Bytes(t.NodeBoxPub).
+		Bytes(t.NodeReceiptKey).
+		String(t.Buyer).
+		U64(t.PriceInMicros).
+		U64(t.PriceOutMicros).
+		U64(t.ReservedMicros).
+		I64(t.IssuedAt).
+		I64(t.ExpiresAt).
+		String(t.Coordinator).
+		Sum()
+}
+
+// Sign signs the ticket with the coordinator's identity key.
+func (t *Ticket) Sign(priv ed25519.PrivateKey) {
+	t.Version = TicketVersion
+	t.Sig = ed25519.Sign(priv, t.signingBytes())
+}
+
+// Verify checks the ticket was signed by the expected coordinator.
+func (t *Ticket) Verify(coordinator string) error {
+	if t.Version != TicketVersion {
+		return errors.New("ticket: unknown version")
+	}
+	if t.Coordinator != coordinator {
+		return errors.New("ticket: not issued by the trusted coordinator")
+	}
+	return verifySig(t.Coordinator, t.signingBytes(), t.Sig)
+}
+
+// Equal reports whether two tickets are byte-identical, signature included.
+func (t *Ticket) Equal(o *Ticket) bool {
+	return bytes.Equal(t.signingBytes(), o.signingBytes()) && bytes.Equal(t.Sig, o.Sig)
+}
+
+// RequestAAD binds a sealed request to one job, buyer and node, so it cannot be
+// replayed into another job or to another node.
+func RequestAAD(t *Ticket) []byte {
+	return canon.New("sharetoken/aad/request/v1").
+		String(t.JobID).String(t.Model).String(t.Buyer).String(t.Node).Sum()
+}
+
+// ChunkAAD binds a sealed response chunk to its job and position, so chunks
+// cannot be dropped, reordered or spliced in from another job.
+func ChunkAAD(t *Ticket, seq uint64) []byte {
+	return canon.New("sharetoken/aad/chunk/v1").String(t.JobID).String(t.Model).U64(seq).Sum()
+}
+
+// AckBytes is what a buyer signs to acknowledge a receipt: "I checked this
+// transcript and accept these usage numbers."
+func AckBytes(r *receipt.Receipt) []byte {
+	return canon.New(ackDomain).Bytes(r.Digest()).Sum()
+}
+
+// TicketRequest asks the coordinator to match a node.
+type TicketRequest struct {
+	Model        string   `json:"model"`
+	BudgetMicros uint64   `json:"budget"`
+	MaxPriceIn   uint64   `json:"max_price_in,omitempty"` // 0 = no limit
+	MaxPriceOut  uint64   `json:"max_price_out,omitempty"`
+	Exclude      []string `json:"exclude,omitempty"`     // nodes to skip after a failover
+	Node         string   `json:"node,omitempty"`        // only this node (audits, pinned nodes)
+	RequireTEE   bool     `json:"require_tee,omitempty"` // only nodes whose quote the coordinator verified
+}
+
+// TicketResponse carries the ticket and the node-signed offer it came from, so
+// the buyer can check the node's keys, addresses and prices are the node's
+// own and not substituted by the coordinator.
+type TicketResponse struct {
+	Ticket Ticket `json:"ticket"`
+	Offer  Offer  `json:"offer"`
+}
+
+// InferRequest opens a job on the node.
+//
+// The buyer seals the request FROM a fresh per-job key (box.SealFrom), and the
+// response is sealed TO that same key, so Sealed begins with BuyerBoxPub. The
+// node refuses requests where they differ. Because the receipt signs
+// SHA-256(Sealed), it thereby commits to the response key, and disclosing
+// that one private key later opens exactly this job for a dispute judge.
+type InferRequest struct {
+	Ticket      Ticket `json:"ticket"`
+	BuyerBoxPub []byte `json:"buyer_box_pub"` // per-job X25519 key; equals Sealed[:32]
+	Sealed      []byte `json:"sealed"`        // box.SealFrom(jobKey, NodeBoxPub, chat-completions JSON, RequestAAD)
+}
+
+// Chunk is one sealed upstream SSE payload.
+type Chunk struct {
+	Seq    uint64 `json:"seq"`
+	Sealed []byte `json:"sealed"`
+}
+
+// Ack is the buyer's signature over AckBytes(receipt).
+type Ack struct {
+	Sig []byte `json:"sig"`
+}
+
+// Reject tells the node why the buyer refused its receipt.
+type Reject struct {
+	Reason string `json:"reason"`
+}
+
+// SettleRequest asks the coordinator to pay out a job.
+type SettleRequest struct {
+	Ticket  Ticket                `json:"ticket"`
+	Receipt receipt.SignedReceipt `json:"receipt"`
+	Ack     []byte                `json:"ack,omitempty"`
+}
+
+// SettleResponse reports the outcome of settlement.
+type SettleResponse struct {
+	Status     string `json:"status"` // "final" or "pending"
+	CostMicros uint64 `json:"cost"`
+	FeeMicros  uint64 `json:"fee"`
+}
+
+// ModelSummary aggregates current offers for one model.
+type ModelSummary struct {
+	Model         string `json:"model"`
+	Nodes         int    `json:"nodes"`
+	AttestedNodes int    `json:"attested_nodes,omitempty"` // nodes whose TEE quote the coordinator verified
+	MinPriceIn    uint64 `json:"min_price_in"`
+	MinPriceOut   uint64 `json:"min_price_out"`
+}
+
+// ModelsResponse lists models with live offers.
+type ModelsResponse struct {
+	Models []ModelSummary `json:"models"`
+}
+
+// BalanceResponse is the caller's account.
+type BalanceResponse struct {
+	AvailableMicros int64 `json:"available"`
+	HeldMicros      int64 `json:"held"`
+}
+
+// DisputeRequest contests an unacknowledged settlement.
+type DisputeRequest struct {
+	JobID  string `json:"job_id"`
+	Reason string `json:"reason"`
+}
+
+// Evidence opens a dispute that the coordinator can decide on the facts. It is
+// followed on the same stream by exactly Chunks frames of type TypeChunk (the
+// sealed response chunks as received, in order), then the coordinator answers
+// with a TypeVerdict frame.
+//
+// Disclosing JobSecret reveals this one job's prompt and response to the
+// coordinator, and nothing else: every job uses a fresh key.
+type Evidence struct {
+	JobID     string                 `json:"job_id"`
+	Reason    string                 `json:"reason"`
+	JobSecret []byte                 `json:"job_secret"`        // the per-job X25519 private key
+	Request   []byte                 `json:"request"`           // InferRequest.Sealed exactly as sent
+	Receipt   *receipt.SignedReceipt `json:"receipt,omitempty"` // as received from the node
+	Chunks    uint64                 `json:"chunks"`
+}
+
+// MaxEvidenceChunks bounds the chunk frames that may follow an Evidence frame.
+const MaxEvidenceChunks = 1 << 18
+
+// Verdict is the coordinator's decision on a dispute.
+type Verdict struct {
+	Outcome string `json:"outcome"` // upheld, dismissed, unverifiable, recorded
+	Status  string `json:"status"`  // the job's settlement status afterwards
+	Detail  string `json:"detail"`
+}
+
+// CheckReceipt verifies sr's signature and that it belongs to ticket t: signed
+// by the ticketed node's receipt key, for this job and this model.
+func CheckReceipt(t *Ticket, sr *receipt.SignedReceipt) error {
+	if err := receipt.Verify(sr); err != nil {
+		return Errorf(CodeBadRequest, "%v", err)
+	}
+	r := &sr.Receipt
+	switch {
+	case !bytes.Equal(r.NodeID, t.NodeReceiptKey):
+		return Errorf(CodeBadRequest, "receipt not signed by the ticketed node")
+	case r.JobID != t.JobID:
+		return Errorf(CodeBadRequest, "receipt is for another job")
+	case r.ModelID != t.Model:
+		return Errorf(CodeBadRequest, "receipt model differs from ticket")
+	}
+	return nil
+}
