@@ -1,88 +1,139 @@
 #!/bin/bash
-# Live localhost demo of the open-weight token-sharing network, with a real model.
+# Live localhost demo of the v2 architecture with a real model.
 #
-#   coordinator  SQLite ledger, reference copy of the model (audits + exact token counts)
-#   honest node  serves gemma4:e4b from Ollama
-#   cheat node   same model, cheaper, but bills 100x the completion tokens it used
-#   buyer        local OpenAI-compatible proxy
+#   relay-a, relay-b   forward encrypted traffic only
+#   portal             users, devices, credits (SQLite file shared with the coordinator)
+#   coordinator        accounting platform; listens nowhere, reachable only through the relays;
+#                      reference copy of the model (audits + exact token counts)
+#   alice              user: shares gemma4:e4b from Ollama (honest), and buys
+#   carol              user: shares the same model cheaper, but bills 100x the completion tokens
+#   bob                user: buys only
 #
-# It shows: the cheat is caught and refunded on evidence while the request fails
-# over to the honest node; the auditor checks both nodes against the reference;
-# the books survive a coordinator shutdown; no prompt appears in any log.
-# Everything binds 127.0.0.1, NAT traversal is off, every process is stopped on exit.
+# It shows: users register and bind their devices through the portal; each
+# client measures the relays and reaches the coordinator through the best one;
+# the cheat is caught and refunded on evidence while the request fails over;
+# the auditor checks both sellers; a relay dies and the client switches;
+# credits move between user accounts and the books balance; no prompt in any log.
+# Everything binds 127.0.0.1; every process is stopped on exit.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/bin"
 MODEL_UPSTREAM="${MODEL_UPSTREAM:-gemma4:e4b}"
 OLLAMA=http://127.0.0.1:11434/v1
+PORTAL=http://127.0.0.1:8092
 (cd "$ROOT" && go build -o bin/ ./cmd/...) || exit 1
 S="$(mktemp -d)"; echo "work dir: $S"
 cd "$S"
 PIDS=()
 cleanup() { for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null; done; wait 2>/dev/null; }
 trap cleanup EXIT
-strip() { sed -E 's/^[0-9\/: ]+//; s/12D3KooW[A-Za-z0-9]{44}/<peer>/g' | cut -c1-230; }
+strip() { sed -E 's/^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9:]+ //; s/12D3KooW[A-Za-z0-9]{44}/<peer>/g' | cut -c1-230; }
+waitlog() { for _ in $(seq 1 100); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 0.2; done; echo "timeout waiting for '$2' in $1"; exit 1; }
 
 if ! curl -s -m 1 http://127.0.0.1:11434/api/tags >/dev/null; then
   ollama serve > ollama.log 2>&1 & PIDS+=($!)
   for _ in $(seq 1 40); do curl -s -m 1 http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 0.5; done
   echo "started ollama serve (will be stopped on exit)"
 fi
-python3 "$ROOT/scripts/inflating_upstream.py" 11999 "$OLLAMA" & PIDS+=($!)
+python3 "$ROOT/scripts/inflating_upstream.py" 11999 "$OLLAMA" > cheat-upstream.log 2>&1 & PIDS+=($!)
+for _ in $(seq 1 50); do nc -z 127.0.0.1 11999 2>/dev/null && break; sleep 0.2; done
 
-COORD_FLAGS=(-key coord.key -db coord.db)
-"$BIN/coordinator" "${COORD_FLAGS[@]}" -listen /ip4/127.0.0.1/tcp/4101 -nat=false -fee-bps 800 -dev-credit 5000000 \
+echo; echo "== 0. Relays, portal, coordinator"
+COORD=(-key coord.key -db sharetoken.db)
+PASSKEY=$("$BIN/portal" -db sharetoken.db pass-key)   # relays trust passes signed with it
+COORD_ID=$("$BIN/coordinator" "${COORD[@]}" id)        # relays let the coordinator reserve without one
+echo "   portal pass key $PASSKEY"
+RELAY_FLAGS=(-portal-key "$PASSKEY" -allow-peer "$COORD_ID")
+"$BIN/relay" -key relay-a.key -listen /ip4/127.0.0.1/tcp/4201,/ip6/::1/tcp/4201 -status 127.0.0.1:4211 "${RELAY_FLAGS[@]}" > relay-a.log 2>&1 & RELAY_A=$!; PIDS+=($RELAY_A)
+"$BIN/relay" -key relay-b.key -listen /ip4/127.0.0.1/tcp/4202,/ip6/::1/tcp/4202 -status 127.0.0.1:4212 "${RELAY_FLAGS[@]}" > relay-b.log 2>&1 & RELAY_B=$!; PIDS+=($RELAY_B)
+waitlog relay-a.log "portal relay add"; waitlog relay-b.log "portal relay add"
+# Dual stack: each relay is registered with its IPv4 and IPv6 address, as it prints them.
+RA=$(sed -n "s/.*portal relay add '\([^']*\)'.*/\1/p" relay-a.log)
+RB=$(sed -n "s/.*portal relay add '\([^']*\)'.*/\1/p" relay-b.log)
+
+"$BIN/portal" -db sharetoken.db serve -listen 127.0.0.1:8092 -open-registration -signup-credit 5000000 > portal.log 2>&1 & PIDS+=($!)
+waitlog portal.log "listening"
+SHARETOKEN_PASSWORD=adminadmin "$BIN/portal" -db sharetoken.db useradd -admin root > /dev/null
+"$BIN/portal" -db sharetoken.db relay add "$RA" relay-a local > /dev/null
+"$BIN/portal" -db sharetoken.db relay add "$RB" relay-b local > /dev/null
+echo "   relays registered (IPv4 + IPv6): relay-a, relay-b"
+
+"$BIN/coordinator" "${COORD[@]}" -fee-bps 800 \
   -reference "id=gemma-4-e4b,upstream=$MODEL_UPSTREAM,url=$OLLAMA" -audit-interval 5s > coord.log 2>&1 & COORD_PID=$!; PIDS+=($COORD_PID)
-for _ in $(seq 1 50); do grep -q "/p2p/" coord.log && break; sleep 0.2; done
-COORD=$(grep -o '/ip4/127.0.0.1/tcp/4101/p2p/[A-Za-z0-9]*' coord.log | head -1)
-echo "coordinator: $COORD"
+waitlog coord.log "via relay"
+grep -E "^coordinator|listening|via relay" coord.log | strip | sed 's/^/   /'
+for _ in $(seq 1 50); do curl -s $PORTAL/api/v1/network | grep -q '"ok":true.*"ok":true' && break; sleep 0.2; done
+echo "   portal /api/v1/network:"; curl -s $PORTAL/api/v1/network | strip | sed 's/^/   /'
 
-"$BIN/node" -key honest.key -listen /ip4/127.0.0.1/tcp/4102 -nat=false -relay=false -coordinator "$COORD" \
-  -model id=gemma-4-e4b,upstream=$MODEL_UPSTREAM,in=100000,out=200000 > honest.log 2>&1 & PIDS+=($!)
-"$BIN/node" -key cheat.key -listen /ip4/127.0.0.1/tcp/4103 -nat=false -relay=false -coordinator "$COORD" \
-  -upstream http://127.0.0.1:11999/v1 -model id=gemma-4-e4b,upstream=$MODEL_UPSTREAM,in=50000,out=100000 > cheat.log 2>&1 & CHEAT_PID=$!; PIDS+=($CHEAT_PID)
-"$BIN/buyer" -key buyer.key -listen /ip4/127.0.0.1/tcp/0 -nat=false -coordinator "$COORD" -http 127.0.0.1:9787 > buyer.log 2>&1 & PIDS+=($!)
-for _ in $(seq 1 50); do grep -q '^node ' honest.log && grep -q '^node ' cheat.log && break; sleep 0.2; done
-HONEST=$(grep -o '^node [A-Za-z0-9]*' honest.log | cut -d' ' -f2)
-CHEAT=$(grep -o '^node [A-Za-z0-9]*' cheat.log | cut -d' ' -f2)
+echo; echo "== 1. Users register (password from SHARETOKEN_PASSWORD) and configure sharing"
+user() { # name http-port
+  export SHARETOKEN_HOME="$S/$1"
+  SHARETOKEN_PASSWORD="password-$1" "$BIN/sharetoken" register -portal $PORTAL -user "$1" -device "$1-box" | head -1 | strip | sed "s/^/   $1: /"
+}
+st() { SHARETOKEN_HOME="$S/$1" "$BIN/sharetoken" "${@:2}"; }
+stup() { SHARETOKEN_HOME="$S/$1" exec "$BIN/sharetoken" up "${@:2}"; } # exec: $! is then the client's PID
+user alice; user bob; user carol
+st alice share add "$MODEL_UPSTREAM" -id gemma-4-e4b -in 100000 -out 200000 | sed 's/^/   alice: /'
+st carol share upstream http://127.0.0.1:11999/v1 > /dev/null
+st carol share add "$MODEL_UPSTREAM" -id gemma-4-e4b -in 50000 -out 100000 | sed 's/^/   carol: /'
 
-for _ in $(seq 1 60); do curl -s -m 2 http://127.0.0.1:9787/v1/models | grep -q '"nodes":2' && break; sleep 0.5; done
-echo; echo "== GET /v1/models (two nodes offer gemma-4-e4b; the cheat is cheaper)"; curl -s http://127.0.0.1:9787/v1/models; echo
+UP=(-listen /ip4/127.0.0.1/tcp/0 -nat=false)   # alice listens on IPv6 only, the others on IPv4
+stup alice -http 127.0.0.1:9787 -listen /ip6/::1/tcp/0 -nat=false > alice.log 2>&1 & PIDS+=($!)
+stup carol -http 127.0.0.1:9789 "${UP[@]}" > carol.log 2>&1 & PIDS+=($!)
+stup bob -http 127.0.0.1:9788 "${UP[@]}" > bob.log 2>&1 & PIDS+=($!)
+waitlog alice.log "endpoint"; waitlog carol.log "endpoint"; waitlog bob.log "endpoint"
+for _ in $(seq 1 60); do curl -s -m 2 http://127.0.0.1:9788/v1/models | grep -q '"nodes":2' && break; sleep 0.5; done
+echo; echo "== 2. bob's client: relays measured, coordinator reached through the best one"
+SHARETOKEN_HOME="$S/bob" "$BIN/sharetoken" status | strip | sed 's/^/   /'
+echo; echo "   relay admission (sharers present a portal-signed pass before reserving):"
+curl -s 127.0.0.1:4211 | python3 -c 'import json,sys;s=json.load(sys.stdin)["stats"];print("   relay-a: reservations=%d passes accepted=%d rejected=%d denied=%d"%(s["reservations"],s["passes_accepted"],s["passes_rejected"],s["reservations_denied"]))'
+echo; echo "   models on the network (two sellers; carol is cheaper):"
+SHARETOKEN_HOME="$S/bob" "$BIN/sharetoken" models | sed 's/^/   /'
+
+ALICE=$(curl -s http://127.0.0.1:9787/api/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["peer"])')
+CAROL=$(curl -s http://127.0.0.1:9789/api/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["peer"])')
+names() { sed -E "s/$ALICE/<alice>/g; s/$CAROL/<carol>/g"; }
 
 PROMPT="In one short sentence: what is a sealed box in cryptography?"
-echo; echo "== 1. Non-stream request: the cheaper node is matched first"
-curl -s -m 600 -D headers.txt http://127.0.0.1:9787/v1/chat/completions -H 'Content-Type: application/json' \
-  -d "{\"model\":\"gemma-4-e4b\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT\"}],\"max_tokens\":1000}" | head -c 600; echo
-grep -i "^x-sharetoken" headers.txt | sed -E "s/$HONEST/<honest node>/; s/$CHEAT/<cheat node>/"
+echo; echo "== 3. bob asks; the cheaper node (carol) is matched first"
+curl -s -m 600 -D headers.txt http://127.0.0.1:9788/v1/chat/completions -H 'Content-Type: application/json' \
+  -d "{\"model\":\"gemma-4-e4b\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT\"}],\"max_tokens\":1000}" | head -c 500; echo
+grep -i "^x-sharetoken" headers.txt | names | sed 's/^/   /'
 sleep 2
-echo "-- what happened (buyer, coordinator):"
-grep -E "rejected|failing over|decided on evidence" buyer.log | strip | sed 's/^/   /'
-grep -E "judged on evidence" coord.log | strip | sed 's/^/   /'
+echo "   what happened:"
+grep -E "rejected|failing over|decided on evidence" bob.log | strip | sed 's/^/   bob: /'
+grep -E "judged on evidence" coord.log | strip | sed 's/^/   coordinator: /'
 
-echo; echo "== 2. The auditor checks random nodes against the reference model (waiting for the cheat's 2nd failed audit, up to 4 min)"
-mismatches() { grep 'component=auditor' coord.log | grep "$CHEAT" | grep -c 'verdict=mismatch'; }
+echo; echo "== 4. Auditor (waiting for carol's 2nd failed audit, up to 4 min)"
+mismatches() { grep 'component=auditor' coord.log | grep "$CAROL" | grep -c 'verdict=mismatch'; }
 for _ in $(seq 1 120); do [ "$(mismatches)" -ge 2 ] && break; sleep 2; done
-grep "component=auditor" coord.log | sed -E "s/$HONEST/<honest>/; s/$CHEAT/<cheat>/" | strip | sed 's/^/   /'
-if [ "$(mismatches)" -ge 2 ]; then echo "   -> two failed audits in a row: the cheat is suspended from matching"
-else kill $CHEAT_PID 2>/dev/null; echo "   -> cheat not audited twice yet; stopped it for the rest of the demo"; fi
+grep "component=auditor" coord.log | names | strip | sed 's/^/   /'
 
-echo; echo "== 3. Stream request (only the honest node is matched now), last lines"
-curl -s -N -m 600 http://127.0.0.1:9787/v1/chat/completions -H 'Content-Type: application/json' \
+echo; echo "== 5. alice buys too: her own node is never matched for her (carol suspended -> no seller)"
+curl -s -m 120 http://127.0.0.1:9787/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"gemma-4-e4b","messages":[{"role":"user","content":"Say hi."}],"max_tokens":50}' | head -c 300; echo
+
+echo; echo "== 6. Kill the relay bob uses for the coordinator; bob switches and keeps working"
+VIA=$(curl -s http://127.0.0.1:9788/api/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["coordinator"]["via"])')
+if [ "$VIA" = "$RA" ]; then kill $RELAY_A; echo "   killed relay-a"; else kill $RELAY_B; echo "   killed relay-b"; fi
+for _ in $(seq 1 60); do
+  NOW=$(curl -s http://127.0.0.1:9788/api/status | python3 -c 'import json,sys;s=json.load(sys.stdin)["coordinator"];print(s["via"] if s["connected"] else "")')
+  [ -n "$NOW" ] && [ "$NOW" != "$VIA" ] && break; sleep 0.5; done
+SHARETOKEN_HOME="$S/bob" "$BIN/sharetoken" status | grep -E "coordinator|link:|NAME|relay-" | strip | sed 's/^/   /'
+curl -s -m 600 -D headers2.txt http://127.0.0.1:9788/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"gemma-4-e4b","stream":true,"messages":[{"role":"user","content":"Count from 1 to 5, comma separated, nothing else."}],"max_tokens":200}' \
-  | grep -v '^$' | tail -3 | sed -E "s/$HONEST/<honest node>/"
+  | grep -v '^$' | tail -2 | names | sed 's/^/   /'
 
-sleep 2
-echo; echo "== 4. Buyer balance: 5,000,000 dev credit minus the two honest jobs; the cheated job was refunded"
-"$BIN/buyer" -key buyer.key -listen /ip4/127.0.0.1/tcp/0 -nat=false -coordinator "$COORD" balance | sed -E 's/12D3KooW[A-Za-z0-9]{44}/<buyer>/'
-grep -h "job settled" honest.log | strip | sed 's/^/   honest node: /'
-
+sleep 3
+echo; echo "== 7. Accounts (portal): credits moved between users"
+for u in alice bob carol; do SHARETOKEN_HOME="$S/$u" "$BIN/sharetoken" balance | sed "s/^/   /"; done
+"$BIN/portal" -db sharetoken.db overview | grep -E 'circulating|platform_fees|books' | sed 's/^/   /'
 
 kill $COORD_PID; wait $COORD_PID 2>/dev/null
-echo; echo "== 5. Coordinator stopped; its SQLite books are intact (admin commands read the database)"
-"$BIN/coordinator" "${COORD_FLAGS[@]}" check
-"$BIN/coordinator" "${COORD_FLAGS[@]}" nodes | sed -E "s/$HONEST/<honest>/; s/$CHEAT/<cheat>/"
-"$BIN/coordinator" "${COORD_FLAGS[@]}" disputes | sed -E "s/$HONEST/<honest>/; s/$CHEAT/<cheat>/; s/12D3KooW[A-Za-z0-9]{44}/<peer>/g" | grep -E '"(node|status|outcome|detail)"'
+echo; echo "== 8. Coordinator stopped; the shared books replay"
+"$BIN/coordinator" "${COORD[@]}" check
+"$BIN/coordinator" "${COORD[@]}" disputes | names | grep -E '"(node|status|outcome|detail)"' | strip
 
-echo; echo "== 6. Privacy: does either prompt appear in any marketplace log?"
-if grep -l -e "sealed box" -e "Count from 1 to 5" coord.log honest.log cheat.log buyer.log; then echo "LEAK"
-else echo "no - prompt text is in none of the coordinator/node/buyer logs (evidence was judged in memory)"; fi
+echo; echo "== 9. Privacy: does any prompt appear in a relay, portal, coordinator or client log?"
+if grep -l -e "sealed box" -e "Count from 1 to 5" -e "Say hi" relay-a.log relay-b.log portal.log coord.log alice.log bob.log carol.log; then echo "LEAK"
+else echo "   no - prompt text is in none of the logs (evidence was judged in memory)"; fi

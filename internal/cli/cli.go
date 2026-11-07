@@ -2,11 +2,16 @@
 package cli
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
+
+	"golang.org/x/term"
 
 	"sharetoken/attest"
 	"sharetoken/attest/sevsnp"
@@ -86,4 +91,51 @@ func Lines(text string) []string {
 		}
 	}
 	return out
+}
+
+// ReadPassword returns $SHARETOKEN_PASSWORD if set; otherwise it prompts on
+// the terminal without echo (asking twice when confirm is set), or reads one
+// line from stdin when stdin is not a terminal.
+func ReadPassword(prompt string, confirm bool) (string, error) {
+	if p := os.Getenv("SHARETOKEN_PASSWORD"); p != "" {
+		return p, nil
+	}
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && line == "" {
+			return "", err
+		}
+		return strings.TrimRight(line, "\r\n"), nil
+	}
+	read := func(p string) (string, error) {
+		fmt.Fprint(os.Stderr, p)
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr)
+		return string(b), err
+	}
+	pw, err := read(prompt)
+	if err != nil {
+		return "", err
+	}
+	if confirm {
+		again, err := read("Repeat password: ")
+		if err != nil {
+			return "", err
+		}
+		if again != pw {
+			return "", errors.New("passwords do not match")
+		}
+	}
+	return pw, nil
+}
+
+// Prompt asks for one line of input on the terminal.
+func Prompt(prompt string) (string, error) {
+	fmt.Fprint(os.Stderr, prompt)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
 }

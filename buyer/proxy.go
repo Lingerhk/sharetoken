@@ -45,14 +45,26 @@ func (p *Proxy) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var head struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+		Model    string            `json:"model"`
+		Stream   bool              `json:"stream"`
+		Messages []json.RawMessage `json:"messages"`
+		// Output caps (max_completion_tokens is the newer OpenAI name).
+		MaxTokens           uint64 `json:"max_tokens"`
+		MaxCompletionTokens uint64 `json:"max_completion_tokens"`
 	}
 	if err := json.Unmarshal(body, &head); err != nil || head.Model == "" {
 		writeError(w, http.StatusBadRequest, "body must be a JSON chat-completions request with a model", protocol.CodeBadRequest)
 		return
 	}
-	req := ChatRequest{Model: head.Model, Body: body, BudgetMicros: p.BudgetMicros, MaxPriceIn: p.MaxPriceIn, MaxPriceOut: p.MaxPriceOut, RequireTEE: p.RequireTEE}
+	if len(head.Messages) == 0 {
+		writeError(w, http.StatusBadRequest, "messages must be a non-empty array", protocol.CodeBadRequest)
+		return
+	}
+	maxTok := head.MaxTokens
+	if head.MaxCompletionTokens > 0 && (maxTok == 0 || head.MaxCompletionTokens < maxTok) {
+		maxTok = head.MaxCompletionTokens
+	}
+	req := ChatRequest{Model: head.Model, Body: body, BudgetMicros: p.BudgetMicros, MaxTokens: maxTok, MaxPriceIn: p.MaxPriceIn, MaxPriceOut: p.MaxPriceOut, RequireTEE: p.RequireTEE}
 	if head.Stream {
 		p.stream(w, r, req)
 		return
@@ -73,6 +85,12 @@ func (p *Proxy) chat(w http.ResponseWriter, r *http.Request) {
 	msg := map[string]any{"role": "assistant", "content": res.Content}
 	if res.Reasoning != "" {
 		msg["reasoning_content"] = res.Reasoning
+	}
+	if len(res.ToolCalls) > 0 {
+		msg["tool_calls"] = res.ToolCalls
+		if res.Content == "" {
+			msg["content"] = nil
+		}
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id":      "chatcmpl-" + res.Ticket.JobID,
@@ -169,7 +187,9 @@ func statusFor(err error) int {
 		return http.StatusBadRequest
 	case protocol.CodeInsufficientFunds:
 		return http.StatusPaymentRequired
-	case protocol.CodeNoOffers:
+	case protocol.CodeUnauthorized, protocol.CodeForbidden:
+		return http.StatusForbidden // e.g. the user account was disabled
+	case protocol.CodeNoOffers, protocol.CodeCapacity:
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusBadGateway
@@ -178,6 +198,9 @@ func statusFor(err error) int {
 
 func writeError(w http.ResponseWriter, status int, msg, code string) {
 	w.Header().Set("Content-Type", "application/json")
+	if code == protocol.CodeCapacity {
+		w.Header().Set("Retry-After", "2")
+	}
 	w.WriteHeader(status)
 	_, _ = w.Write(errorJSON(msg, code))
 }

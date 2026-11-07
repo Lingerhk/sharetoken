@@ -1,11 +1,20 @@
 # sharetoken
 
-> 当前版本：**v1**（2026-11-07）
+> 当前版本：**v2**（2026-11-07，分支 `arch-v2`）——四角色架构：用户 / 中继 / 协调器 / 门户。
 
 一个用 Go 写的**开源模型 token 共享网络**：把自己机器上开源权重模型的闲置算力共享出去赚 credit，需要时用 credit 调用别人的节点。同一个账户既能卖也能买。
 
 - 只共享自托管的开源模型（Ollama、vLLM、llama.cpp、SGLang 等），不转发 OpenAI 或 Anthropic，不设模型白名单。
 - 节点跑的是不是它声称的模型，由抽检和 TEE 证明来检验，而不是靠名单。
+
+## 架构
+
+| 角色 | 程序 | 职责 |
+|---|---|---|
+| 用户 | `sharetoken` | 既是买家也是卖家；本地 OpenAI 端点 + 管理 API（给 GUI）；自动按 RTT 选最优中继 |
+| 中继 | `relay` | 只转发加密流量，有多个；看不到明文、不记账；只给出示门户短期凭证的注册设备预约 |
+| 协调器 | `coordinator` | 算账平台：撮合、结算、争议、抽检；不监听端口，只经中继访问 |
+| 门户 | `portal` | 用户管理：注册登录、API token、设备绑定、credit、账单与用量、中继登记；自带用户网页 `/` 和管理控制台 `/admin/`（管理员强制 TOTP 两步验证）；与协调器共用数据库 |
 
 ## 买家能得到的保证
 
@@ -22,8 +31,11 @@
 
 | 文档 | 内容 |
 |---|---|
-| [docs/design-v1.md](docs/design-v1.md) | 完整设计、威胁对照表、已知边界、下一步 |
-| [docs/validation-v1.md](docs/validation-v1.md) | 跨公网三机实测、发现的问题、协调器压测数据 |
+| [docs/design-v2.md](docs/design-v2.md) | v2 架构：四个角色、用户账户、经中继访问协调器、中继选择、共用数据库与 MySQL 迁移 |
+| [docs/guide-v2.md](docs/guide-v2.md) | 用户命令、运维部署、本地管理 API（GUI）、门户 HTTP API |
+| [docs/validation-v2.md](docs/validation-v2.md) | 自动化测试、本机演示、三机跨公网实测 |
+| [docs/design-v1.md](docs/design-v1.md) | 收据、证据裁决、抽检、TEE 等机制（v2 沿用） |
+| [docs/validation-v1.md](docs/validation-v1.md) | v1 实测与协调器压测 |
 | [reports/](reports/) | 前期调研：AI token 共享平台 |
 
 ## 快速开始
@@ -31,60 +43,25 @@
 ```bash
 go build -o bin/ ./cmd/...
 
-# 1) 协调器（有公网 IP 的机器；-public 同时为 NAT 后的节点提供中继）
-#    不要加 -nat=false：它会关掉 AutoNAT，NAT 后的节点就拿不到中继地址
-#    -reference 为某个模型配置参考副本：开启对该模型的抽检，争议时精确数 token
-bin/coordinator -public -db coordinator.db \
-  -reference id=gemma-4-e4b,upstream=gemma4:e4b,url=http://127.0.0.1:11434/v1
-#    记下输出里以 /p2p/<id> 结尾的地址，下面记作 $COORD
+# 运维：门户 + 协调器（同机，共用 SQLite）、中继（公网机器）
+bin/portal -db sharetoken.db pass-key          # 门户签发中继凭证的公钥 ed25519:…
+bin/coordinator -db sharetoken.db id           # 协调器 peer ID
+bin/relay -listen /ip4/0.0.0.0/tcp/8091,/ip6/::/tcp/8091 -announce /ip4/<公网IPv4>/tcp/8091,/ip6/<公网IPv6>/tcp/8091 \
+          -portal-key ed25519:… -allow-peer <协调器ID>                      # 打印 portal relay add '…' 命令
+bin/portal -db sharetoken.db serve -listen :8092 -open-registration -signup-credit 5000000
+#   默认 HTTPS（自签名证书，打印指纹，用户登录时用 -portal-pin 确认）
+bin/portal -db sharetoken.db relay add '/ip4/<公网IPv4>/tcp/8091/p2p/<id>,/ip6/<公网IPv6>/tcp/8091/p2p/<id>' relay-1
+bin/coordinator -db sharetoken.db \
+  -reference id=gemma-4-e4b,upstream=gemma4:e4b,url=http://127.0.0.1:11434/v1   # 可选：抽检 + 精确计数
 
-# 2) 卖家节点（本机跑模型；不需要开放端口）
-ollama serve &
-bin/node -coordinator "$COORD" \
-  -model id=gemma-4-e4b,upstream=gemma4:e4b,in=100000,out=200000   # 价格：micro-credit / 百万 token
-
-# 3) 买家（本地 OpenAI 兼容端点）
-bin/buyer -coordinator "$COORD"            # http://127.0.0.1:9787/v1
-curl http://127.0.0.1:9787/v1/chat/completions \
-  -d '{"model":"gemma-4-e4b","messages":[{"role":"user","content":"hi"}]}'
-bin/buyer -coordinator "$COORD" models     # 在线模型、节点数、TEE 节点数、最低价
-bin/buyer -coordinator "$COORD" balance    # 余额
+# 用户
+bin/sharetoken register -portal https://<门户>:8092 -user alice -portal-pin sha256:…
+bin/sharetoken share add gemma4:e4b -id gemma-4-e4b      # 可选：共享本机 Ollama 模型赚 credit
+bin/sharetoken up                                        # http://127.0.0.1:9787/v1
+bin/sharetoken status | models | balance | jobs
 ```
 
-任何支持 OpenAI 协议的工具，把 base URL 改成 `http://127.0.0.1:9787/v1` 即可。非流式响应在收据验证通过后才返回（响应头 `X-Sharetoken-Verified: true`）；流式响应边到边转发，结尾附一行 `: sharetoken ... verified=true`。
-
-### 买家选项
-
-| 参数 | 作用 |
-|---|---|
-| `-evidence`（默认开） | 节点收据可证明有错时，向协调器披露**这一单**的密钥和密文以自动退款；关掉则只提交普通争议，等人工仲裁 |
-| `-require-tee -tee-policy policy.json` | 只用机密虚拟机里、镜像在白名单内的节点；买家自己验证 quote |
-| `-max-price-in` / `-max-price-out` | 价格上限 |
-
-### TEE 节点
-
-在 AMD SEV-SNP 或 Intel TDX 的 Linux 机密虚拟机中，模型服务也跑在同一台虚拟机里：
-
-```bash
-bin/node -tee auto -coordinator "$COORD" -upstream http://127.0.0.1:11434/v1 -model ...
-# 输出 tee: sev-snp measurement <hex>：把它（来自可复现构建的镜像）写进买家和协调器的策略文件
-```
-
-策略文件格式：`{"measurements": {"<hex>": "sharetoken-node v1 / gemma4"}}`。默认离线验证签名链；加 `-tee-online` 时还会检查吊销和 TCB 状态。
-
-### 协调器运维命令
-
-直接读写数据库，可以和运行中的协调器同时执行：
-
-```bash
-bin/coordinator deposit <peer-id> <micros>    # 充值
-bin/coordinator balance <peer-id>
-bin/coordinator disputes                      # 待仲裁和已裁决的争议
-bin/coordinator resolve <job-id> pay|refund   # 人工仲裁「无法验证」的争议
-bin/coordinator nodes                         # 节点信誉、抽检记录、暂停状态
-bin/coordinator audits
-bin/coordinator check                         # 回放日志对账
-```
+任何支持 OpenAI 协议的工具，把 base URL 改成 `http://127.0.0.1:9787/v1` 即可。非流式响应在收据验证通过后才返回（响应头 `X-Sharetoken-Verified: true`）；流式响应边到边转发，结尾附一行 `: sharetoken ... verified=true`。详细参数见 [guide-v2.md](docs/guide-v2.md)。
 
 ## 本机一键演示
 
@@ -92,13 +69,7 @@ bin/coordinator check                         # 回放日志对账
 scripts/demo-local.sh    # 需要 Ollama 和本地模型（默认 gemma4:e4b，可用 MODEL_UPSTREAM 指定）
 ```
 
-全部绑定 127.0.0.1，关闭 NAT 穿透，退出时关闭所有进程。演示内容：
-
-1. 两个节点提供同一模型，其中更便宜的那个会把补全 token 数虚报 100 倍（`scripts/inflating_upstream.py`，仅用于演示）。
-2. 买家拒签它的收据并提交证据，协调器用参考模型数清 token 后判节点败诉、全额退款；请求自动切换到诚实节点，返回已验证的回答。
-3. 抽检器拿诚实节点和作弊节点分别与参考模型比对，作弊节点连续两次不符后被暂停接单。
-4. 停掉协调器后，用运维命令读取 SQLite，账目回放一致。
-5. 检查所有日志里都没有 prompt 原文。
+两个中继、门户、协调器和三个用户全部跑在 127.0.0.1：注册并绑定设备、按 RTT 选中继、虚报用量的卖家被抓并按证据退款、请求自动切换到诚实卖家、抽检暂停作弊者、中继宕机后客户端自动切换、credit 在用户账户间流动且账本回放一致、所有日志里都没有 prompt。
 
 ## 测试
 
@@ -106,4 +77,4 @@ scripts/demo-local.sh    # 需要 Ollama 和本地模型（默认 gemma4:e4b，�
 go test -race ./...
 ```
 
-覆盖签名与防篡改、计费整数运算、SQLite 账本（重启、回滚、篡改检测）、结算与证据裁决的全部路径、抽检判定、SEV-SNP（测试用 AMD 证书链）和 TDX（Intel 真实生产 quote）验证，以及基于真实 libp2p 的端到端测试：故障切换、Ticket 重放与盗用、虚报用量按证据退款、抽检抓出换模型和虚报用量的节点、只用 TEE 节点。
+覆盖签名与防篡改、计费整数运算、SQLite 账本（重启、回滚、篡改检测）、结算与证据裁决的全部路径、抽检判定、SEV-SNP（测试用 AMD 证书链）和 TDX（Intel 真实生产 quote）验证，以及基于真实 libp2p 的端到端测试：故障切换、Ticket 重放与盗用、虚报用量按证据退款、抽检抓出换模型和虚报用量的节点、只用 TEE 节点；v2 的完整拓扑测试（多中继、只经中继可达的协调器、门户共用数据库、用户互为买卖、中继宕机切换）、门户 API、设备绑定防伪。

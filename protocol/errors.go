@@ -13,9 +13,11 @@ const (
 	CodeBusy              = "busy"
 	CodeBudget            = "budget"
 	CodeNoOffers          = "no_offers"
+	CodeCapacity          = "capacity" // every node offering the model is at its concurrency limit: retry shortly
 	CodeInsufficientFunds = "insufficient_funds"
 	CodeUpstream          = "upstream"
 	CodeForbidden         = "forbidden"
+	CodeUnauthorized      = "unauthorized" // the device is not bound to an active user account
 	CodeNotFound          = "not_found"
 	CodeConflict          = "conflict"
 	CodeInternal          = "internal"

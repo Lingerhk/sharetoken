@@ -24,6 +24,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
+	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -64,6 +67,15 @@ type Client struct {
 	// prompt and response to the coordinator; with it off, such disputes are
 	// filed as plain claims and wait for manual arbitration.
 	Evidence bool
+	// QueueWait is how long a request waits for a free node when every node
+	// offering the model is at capacity, retrying with backoff (default 30s;
+	// 0 fails at once with CodeCapacity).
+	QueueWait time.Duration
+	// FirstByteTimeout and IdleTimeout bound how long a job may wait for the
+	// node's first frame and between frames (defaults 120s and 60s). A node
+	// that stalls (a lossy path, a hung model server) is abandoned: a request
+	// that has delivered nothing to the caller yet fails over to another node.
+	FirstByteTimeout, IdleTimeout time.Duration
 	// Attestation verifies nodes' TEE quotes; required for RequireTEE.
 	Attestation *Attestation
 	log         *slog.Logger
@@ -79,7 +91,8 @@ type Attestation struct {
 // New returns a client using h and keys, trusting coordinator.
 func New(h host.Host, keys *p2p.Keys, coordinator peer.AddrInfo) *Client {
 	h.Peerstore().AddAddrs(coordinator.ID, coordinator.Addrs, peerstore.PermanentAddrTTL)
-	return &Client{h: h, keys: keys, coordinator: coordinator, Retries: 2, Evidence: true, log: slog.Default().With("component", "buyer")}
+	return &Client{h: h, keys: keys, coordinator: coordinator, Retries: 2, Evidence: true, QueueWait: DefaultQueueWait,
+		FirstByteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second, log: slog.Default().With("component", "buyer")}
 }
 
 // ChatRequest is one chat-completions call.
@@ -87,10 +100,13 @@ type ChatRequest struct {
 	Model        string // marketplace model ID
 	Body         []byte // OpenAI chat-completions JSON; the node overrides model/stream/max_tokens
 	BudgetMicros uint64 // reserved up front; settlement never exceeds it
-	MaxPriceIn   uint64 // optional per-million-token price ceilings
-	MaxPriceOut  uint64
-	RequireTEE   bool   // only nodes whose quote passes the client's attestation policy
-	Node         string // optional: only this node
+	// MaxTokens, when the request caps its output, lets the coordinator hold
+	// only the worst-case cost of this request instead of the whole budget.
+	MaxTokens   uint64
+	MaxPriceIn  uint64 // optional per-million-token price ceilings
+	MaxPriceOut uint64
+	RequireTEE  bool   // only nodes whose quote passes the client's attestation policy
+	Node        string // optional: only this node
 }
 
 // Result is a completed, verified job.
@@ -100,6 +116,7 @@ type Result struct {
 	Content      string
 	Reasoning    string // a thinking model's reasoning, billed as output
 	Text         string // everything billed as output: content, reasoning, tool arguments
+	ToolCalls    []protocol.ToolCall
 	FinishReason string
 	CostMicros   uint64
 	Verified     bool   // receipt passed every check and was acknowledged
@@ -120,14 +137,18 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 		return nil, errors.New("buyer: RequireTEE needs an attestation policy")
 	}
 	var (
-		exclude []string
-		lastErr error
-		lastRes *Result
+		exclude  []string
+		lastErr  error
+		lastRes  *Result
+		rejected int // nodes that refused the request as invalid
 	)
 	for attempt := 0; attempt <= c.Retries; attempt++ {
 		tr, err := c.requestTicket(ctx, req, exclude)
 		if err != nil {
 			if lastErr != nil && protocol.CodeOf(err) == protocol.CodeNoOffers {
+				if protocol.CodeOf(lastErr) == protocol.CodeBadRequest {
+					return nil, lastErr
+				}
 				return lastRes, fmt.Errorf("no healthy node left: %w", lastErr)
 			}
 			return nil, err
@@ -149,6 +170,17 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 		}
 		if err == nil || delivered || ctx.Err() != nil {
 			return res, err
+		}
+		if protocol.CodeOf(err) == protocol.CodeBadRequest {
+			// The node's model server refused the request. Ask one more node in
+			// case this one lies or is misconfigured; two refusals mean the
+			// request itself is bad, so stop instead of trying every node.
+			if rejected++; rejected >= 2 {
+				return nil, err
+			}
+			lastErr, exclude = err, append(exclude, tr.Ticket.Node)
+			c.log.Warn("node rejected the request as invalid; asking one more node", "node", tr.Ticket.Node, "err", err)
+			continue
 		}
 		// Nothing reached the caller, so trying another node is invisible to
 		// it. A job that failed without a receipt is pre-disputed, so the node
@@ -190,12 +222,39 @@ func (c *Client) WaitDisputes(ctx context.Context) error {
 	}
 }
 
+// DefaultQueueWait is the default Client.QueueWait.
+const DefaultQueueWait = 30 * time.Second
+
+// requestTicket asks the coordinator for a ticket. While every node is at
+// capacity it waits and retries, up to QueueWait: a short queue on the buyer's
+// side instead of failing requests whenever the network is momentarily full.
 func (c *Client) requestTicket(ctx context.Context, req ChatRequest, exclude []string) (*protocol.TicketResponse, error) {
+	deadline := time.Now().Add(c.QueueWait)
+	backoff := 200 * time.Millisecond
+	for {
+		tr, err := c.requestTicketOnce(ctx, req, exclude)
+		if protocol.CodeOf(err) != protocol.CodeCapacity || time.Now().Add(backoff).After(deadline) {
+			return tr, err
+		}
+		// Jitter spreads out buyers that were refused at the same moment.
+		wait := backoff/2 + time.Duration(rand.Int64N(int64(backoff)))
+		select {
+		case <-ctx.Done():
+			return tr, err
+		case <-time.After(wait):
+		}
+		backoff = min(backoff*3/2, 2*time.Second)
+	}
+}
+
+func (c *Client) requestTicketOnce(ctx context.Context, req ChatRequest, exclude []string) (*protocol.TicketResponse, error) {
 	var tr protocol.TicketResponse
 	err := p2p.Call(ctx, c.h, c.coordinator.ID, protocol.CtrlProtocol, protocol.TypeTicketRequest,
 		protocol.TicketRequest{
 			Model:        req.Model,
 			BudgetMicros: req.BudgetMicros,
+			MaxTokens:    req.MaxTokens,
+			PromptTokens: promptEst(req),
 			MaxPriceIn:   req.MaxPriceIn,
 			MaxPriceOut:  req.MaxPriceOut,
 			Exclude:      exclude,
@@ -310,15 +369,33 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, body []byte, on
 
 	var (
 		content, reasoning, all strings.Builder
+		tools                   protocol.ToolCallAccumulator
 		finish                  string
 		sr                      receipt.SignedReceipt
 	)
+	frames := 0
 recv:
 	for {
+		wait := c.IdleTimeout
+		if frames == 0 {
+			wait = c.FirstByteTimeout
+		}
+		if wait > 0 {
+			dl := time.Now().Add(wait)
+			if cd, ok := ctx.Deadline(); ok && cd.Before(dl) {
+				dl = cd
+			}
+			_ = st.SetReadDeadline(dl)
+		}
 		env, err := protocol.Recv(st)
 		if err != nil {
+			if wait > 0 && isTimeout(err) && ctx.Err() == nil {
+				_ = st.Reset()
+				err = fmt.Errorf("node stalled: nothing received for %v: %w", wait, err)
+			}
 			return nil, delivered, err
 		}
+		frames++
 		switch env.Type {
 		case protocol.TypeChunk:
 			var ch protocol.Chunk
@@ -343,6 +420,7 @@ recv:
 				content.WriteString(info.Content)
 				reasoning.WriteString(info.Reasoning)
 				all.WriteString(info.Text())
+				tools.Add(info.ToolCalls)
 				if info.FinishReason != "" {
 					finish = info.FinishReason
 				}
@@ -366,7 +444,7 @@ recv:
 		}
 	}
 
-	res = &Result{Ticket: *t, Receipt: sr, Content: content.String(), Reasoning: reasoning.String(), Text: all.String(), FinishReason: finish}
+	res = &Result{Ticket: *t, Receipt: sr, Content: content.String(), Reasoning: reasoning.String(), Text: all.String(), ToolCalls: tools.Calls(), FinishReason: finish}
 	if err := c.checkReceipt(t, &sr, tr, body, all.String()); err != nil {
 		_ = protocol.Send(st, protocol.TypeReject, protocol.Reject{Reason: err.Error()})
 		return res, delivered, fmt.Errorf("%w: %v", ErrReceiptRejected, err)
@@ -475,16 +553,26 @@ func (c *Client) SubmitEvidence(ctx context.Context, ev *protocol.Evidence, chun
 
 // fileDispute reports a job to the coordinator, retrying transient failures.
 func (c *Client) fileDispute(jobID, reason string) {
-	for attempt := 0; attempt < 3; attempt++ {
+	// Keep trying for as long as the job can still be held: a buyer whose own
+	// path to the coordinator just broke (its relay died) files once it is
+	// reconnected; otherwise the failed tickets would count as unused ones.
+	deadline := time.Now().Add(disputeRetryWindow)
+	backoff := time.Second
+	for {
 		ctx, cancel := context.WithTimeout(context.Background(), p2p.DefaultCallTimeout)
 		err := c.Dispute(ctx, jobID, reason)
 		cancel()
-		if err == nil || protocol.CodeOf(err) != "" {
+		if err == nil || protocol.CodeOf(err) != "" || time.Now().Add(backoff).After(deadline) {
 			return
 		}
-		time.Sleep(time.Second << attempt)
+		time.Sleep(backoff)
+		backoff = min(backoff*2, 15*time.Second)
 	}
 }
+
+// disputeRetryWindow covers the coordinator's default ticket lifetime plus
+// its start grace, after which an unstarted job is released anyway.
+const disputeRetryWindow = 3 * time.Minute
 
 // Dispute contests a job's settlement without evidence.
 func (c *Client) Dispute(ctx context.Context, jobID, reason string) error {
@@ -504,4 +592,23 @@ func (c *Client) Balance(ctx context.Context) (protocol.BalanceResponse, error) 
 	var resp protocol.BalanceResponse
 	err := p2p.Call(ctx, c.h, c.coordinator.ID, protocol.CtrlProtocol, protocol.TypeBalance, struct{}{}, protocol.TypeBalance, &resp)
 	return resp, err
+}
+
+// promptEst is the prompt estimate sent with a capped request (0 otherwise).
+func promptEst(req ChatRequest) uint64 {
+	if req.MaxTokens == 0 {
+		return 0
+	}
+	n, err := protocol.EstimatePromptTokens(req.Body)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// isTimeout reports a read deadline expiring, whichever transport (yamux,
+// QUIC) the stream runs on.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.Is(err, os.ErrDeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout())
 }

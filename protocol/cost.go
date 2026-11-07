@@ -147,3 +147,21 @@ func UsagePlausible(claimedPrompt, claimedCompletion, estPrompt, estCompletion u
 	}
 	return nil
 }
+
+// PaddedPrompt is the prompt allowance a node assumes when capping output
+// (chat templates add tokens the estimate does not see).
+func PaddedPrompt(est uint64) uint64 { return est + est/2 + 64 }
+
+// HoldFor is the reservation for a capped request: enough that a node at
+// these prices still allows maxTokens of output
+// (MaxOutputTokens(HoldFor(...), PaddedPrompt(promptEst), …) >= maxTokens),
+// with a more generous prompt allowance than PaddedPrompt so that a prompt
+// that tokenizes larger than estimated is still paid in full.
+func HoldFor(promptEst, maxTokens, priceIn, priceOut uint64) uint64 {
+	pin, err1 := mul(2*promptEst+128, priceIn)
+	pout, err2 := mul(maxTokens, priceOut)
+	if err1 != nil || err2 != nil || pin+pout < pin {
+		return math.MaxUint64
+	}
+	return (pin+pout+perMillion-1)/perMillion + 1
+}

@@ -9,26 +9,28 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	lproto "github.com/libp2p/go-libp2p/core/protocol"
-	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
+	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
+	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 
 	"sharetoken/protocol"
 )
 
 // HostConfig selects the networking features of a host.
 //
-// A seller node at home is typically behind NAT. It only makes outbound
-// connections; through AutoRelay it reserves a slot on a public relay (the
-// coordinator) and advertises a /p2p-circuit address in its offer. A buyer
-// dials that address, and DCUtR then tries to upgrade the relayed connection
-// to a direct one by hole punching. libp2p's Noise encryption runs end to end
-// between buyer and node across the relay, so the relay sees only ciphertext.
+// In sharetoken every user host reaches the coordinator through a relay, and
+// a user sharing a model holds a reservation on one or more relays (see
+// Reserver) so that buyers can reach it behind NAT. libp2p's Noise encryption
+// runs end to end across the relay, so a relay sees only ciphertext; DCUtR
+// then tries to upgrade a relayed connection to a direct one by hole punching.
 type HostConfig struct {
-	Listen       []string        // nil with DialOnly unset: libp2p's defaults
-	DialOnly     bool            // listen nowhere (short-lived outbound-only hosts, e.g. auditors)
-	NAT          bool            // UPnP/NAT-PMP port mapping, AutoNAT service, hole punching
-	RelayService bool            // serve circuit-relay v2 without data limits (coordinator)
-	ForcePublic  bool            // assume a public IP (lets the relay service start immediately)
-	StaticRelays []peer.AddrInfo // reserve relay slots on these peers (nodes behind NAT)
+	Listen   []string // nil with DialOnly unset: libp2p's defaults
+	DialOnly bool     // listen nowhere (short-lived outbound-only hosts, e.g. auditors)
+	NAT      bool     // UPnP/NAT-PMP port mapping and hole punching
+	// MaxConns raises the connection manager's watermarks and lifts the
+	// resource manager's limits, for hubs that serve many peers (the
+	// coordinator, relays). 0 keeps libp2p's defaults (trim above 192).
+	MaxConns int
+	Options  []libp2p.Option // extra libp2p options
 }
 
 // NewHost starts a libp2p host for k.
@@ -43,19 +45,20 @@ func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 		opts = append(opts, libp2p.ListenAddrStrings(cfg.Listen...))
 	}
 	if cfg.NAT {
-		opts = append(opts, libp2p.NATPortMap(), libp2p.EnableNATService(), libp2p.EnableHolePunching())
+		opts = append(opts, libp2p.NATPortMap(), libp2p.EnableHolePunching())
 	}
-	if cfg.ForcePublic {
-		opts = append(opts, libp2p.ForceReachabilityPublic())
+	if cfg.MaxConns > 0 {
+		cm, err := connmgr.NewConnManager(cfg.MaxConns*3/4, cfg.MaxConns)
+		if err != nil {
+			return nil, err
+		}
+		rm, err := rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(rcmgr.InfiniteLimits))
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, libp2p.ConnectionManager(cm), libp2p.ResourceManager(rm))
 	}
-	if cfg.RelayService {
-		// Default relay v2 limits (2 min, 128 KiB) only suit hole-punch
-		// signalling; streaming completions through the relay needs them off.
-		opts = append(opts, libp2p.EnableRelayService(relay.WithInfiniteLimits()))
-	}
-	if len(cfg.StaticRelays) > 0 {
-		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(cfg.StaticRelays))
-	}
+	opts = append(opts, cfg.Options...)
 	return libp2p.New(opts...)
 }
 

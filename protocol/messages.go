@@ -6,9 +6,9 @@
 // acks by the buyer — and each signer's public key is recoverable from its peer
 // ID (see PubKeyFromPeerID).
 //
-// Control plane (buyer/node <-> coordinator): CtrlProtocol, one request and one
-// response per stream. Data plane (buyer <-> node, direct or via relay):
-// InferProtocol. The coordinator is never on the data plane.
+// Control plane (user <-> coordinator, always through a relay): CtrlProtocol,
+// one request and one response per stream. Data plane (buyer <-> node, direct
+// or via relay): InferProtocol. The coordinator is never on the data plane.
 package protocol
 
 import (
@@ -23,11 +23,10 @@ import (
 	"sharetoken/receipt"
 )
 
-// libp2p protocol IDs and the GossipSub topic for offers.
+// libp2p protocol IDs.
 const (
 	InferProtocol = "/sharetoken/infer/1.0.0"
 	CtrlProtocol  = "/sharetoken/ctrl/1.0.0"
-	OffersTopic   = "sharetoken/offers/1"
 )
 
 // Versions double as signing domains.
@@ -41,6 +40,9 @@ const (
 // Frame types.
 const (
 	TypeError         = "error"
+	TypeAnnounce      = "announce" // a node's signed offer, sent to the coordinator
+	TypeAbandon       = "abandon"  // a node gives up a ticketed job it could not deliver
+	TypeStarted       = "started"  // a node reports that the buyer started a ticketed job
 	TypeTicketRequest = "ticket_request"
 	TypeTicket        = "ticket"
 	TypeSettle        = "settle"
@@ -66,7 +68,8 @@ type ModelPrice struct {
 	PriceOutMicros uint64 `json:"price_out"`
 }
 
-// Offer is a node's signed advertisement, gossiped on OffersTopic.
+// Offer is a node's signed advertisement, announced to the coordinator
+// (TypeAnnounce) every few seconds; it doubles as the node's heartbeat.
 type Offer struct {
 	Version        string        `json:"v"`
 	Node           string        `json:"node"`        // libp2p peer ID; signs the offer
@@ -251,6 +254,13 @@ type TicketRequest struct {
 	Exclude      []string `json:"exclude,omitempty"`     // nodes to skip after a failover
 	Node         string   `json:"node,omitempty"`        // only this node (audits, pinned nodes)
 	RequireTEE   bool     `json:"require_tee,omitempty"` // only nodes whose quote the coordinator verified
+	// Optional: the buyer's prompt estimate (EstimatePromptTokens) and the
+	// request's max_tokens. With both set, the hold is sized to the worst-case
+	// cost at the matched node's price instead of the whole budget, so a
+	// balance supports many more requests in flight. Understating them only
+	// truncates the buyer's own output.
+	PromptTokens uint64 `json:"prompt_tokens,omitempty"`
+	MaxTokens    uint64 `json:"max_tokens,omitempty"`
 }
 
 // TicketResponse carries the ticket and the node-signed offer it came from, so
@@ -322,6 +332,30 @@ type ModelsResponse struct {
 type BalanceResponse struct {
 	AvailableMicros int64 `json:"available"`
 	HeldMicros      int64 `json:"held"`
+}
+
+// AbandonRequest is a node giving up a ticketed job before delivering any
+// output (busy, model server down). The coordinator releases the buyer's hold
+// at once instead of at the ticket's deadline, which also frees the node's
+// concurrency slot. Only the ticketed node may abandon, and only before it
+// settled: abandoning forfeits payment, so a node gains nothing by lying.
+//
+// NoFault marks a job the buyer's request made impossible (the model server
+// rejected it as invalid): the node is not penalized for it. A node that
+// claims it falsely gains nothing (it is not paid), and buyers fail over to
+// another node once before treating the request itself as bad.
+type AbandonRequest struct {
+	Ticket  Ticket `json:"ticket"`
+	Reason  string `json:"reason"`
+	NoFault bool   `json:"no_fault,omitempty"`
+}
+
+// StartedRequest is a node reporting that the buyer connected and the job is
+// running. Held jobs never started by the time their ticket expires are
+// released, so a buyer that takes tickets and never connects cannot keep a
+// node's concurrency slots busy.
+type StartedRequest struct {
+	Ticket Ticket `json:"ticket"`
 }
 
 // DisputeRequest contests an unacknowledged settlement.

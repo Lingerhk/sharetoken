@@ -1,0 +1,375 @@
+package coordinator
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"sharetoken/ledger"
+	"sharetoken/protocol"
+)
+
+// Querier is satisfied by *sql.DB and *sql.Tx.
+type Querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// The portal reads job history straight from the shared database with these
+// functions; they never take the engine's lock.
+
+// JobInfo is one job as an account holder sees it.
+type JobInfo struct {
+	JobID            string `json:"job_id"`
+	Role             string `json:"role"` // "buy" or "sell"
+	Model            string `json:"model"`
+	Status           Status `json:"status"`
+	Buyer            string `json:"buyer"` // device peer IDs
+	Node             string `json:"node"`
+	PromptTokens     uint64 `json:"prompt_tokens"`
+	CompletionTokens uint64 `json:"completion_tokens"`
+	CostMicros       uint64 `json:"cost_micros"` // what the buyer pays (0 when refunded or released)
+	FeeMicros        uint64 `json:"fee_micros"`  // platform fee out of the cost
+	EarnedMicros     uint64 `json:"earned_micros,omitempty"`
+	DisputeOutcome   string `json:"dispute_outcome,omitempty"`
+	CreatedAt        int64  `json:"created_at"`
+	DoneAt           int64  `json:"done_at,omitempty"`
+}
+
+// Job roles.
+const (
+	RoleBuy  = "buy"
+	RoleSell = "sell"
+)
+
+// AccountJobs lists an account's jobs, newest first, created before
+// beforeNanos (0: now). role selects jobs it bought ("buy"), sold ("sell"),
+// or both ("").
+func AccountJobs(db *sql.DB, acct, role string, beforeNanos int64, limit int) ([]JobInfo, error) {
+	if beforeNanos <= 0 {
+		beforeNanos = 1<<63 - 1
+	}
+	var where string
+	args := []any{}
+	switch role {
+	case RoleBuy:
+		where, args = `buyer_acct = ?`, append(args, acct)
+	case RoleSell:
+		where, args = `node_acct = ?`, append(args, acct)
+	case "":
+		where, args = `(buyer_acct = ? OR node_acct = ?)`, append(args, acct, acct)
+	default:
+		return nil, fmt.Errorf("unknown role %q", role)
+	}
+	const cols = `job_id, buyer_acct, model, status, buyer, node, prompt_tokens, completion_tokens, cost, fee,
+		dispute_outcome, created_at, done_at`
+	query := `SELECT ` + cols + ` FROM jobs WHERE ` + where + ` AND created_at < ? ORDER BY created_at DESC LIMIT ?`
+	args = append(args, beforeNanos, limit)
+	if role == "" {
+		// Two index-ordered scans of at most limit rows each, merged: an OR of
+		// the two columns would sort the account's whole history.
+		query = `SELECT * FROM (SELECT ` + cols + ` FROM jobs WHERE buyer_acct = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?)
+			UNION ALL SELECT * FROM (SELECT ` + cols + ` FROM jobs WHERE node_acct = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?)
+			ORDER BY created_at DESC LIMIT ?`
+		args = []any{acct, beforeNanos, limit, acct, beforeNanos, limit, limit}
+	}
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []JobInfo{}
+	for rows.Next() {
+		var (
+			j             JobInfo
+			buyerAcct     string
+			pt, ct, c, fe int64
+		)
+		if err := rows.Scan(&j.JobID, &buyerAcct, &j.Model, &j.Status, &j.Buyer, &j.Node, &pt, &ct, &c, &fe,
+			&j.DisputeOutcome, &j.CreatedAt, &j.DoneAt); err != nil {
+			return nil, err
+		}
+		j.PromptTokens, j.CompletionTokens, j.CostMicros, j.FeeMicros = uint64(pt), uint64(ct), uint64(c), uint64(fe)
+		if j.Status == StatusRefunded || j.Status == StatusReleased {
+			j.CostMicros, j.FeeMicros = 0, 0 // nothing was charged
+		}
+		j.Role = RoleSell
+		if buyerAcct == acct {
+			j.Role = RoleBuy
+		}
+		if j.Role == RoleSell && j.Status == StatusFinal {
+			j.EarnedMicros = j.CostMicros - j.FeeMicros
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// UsageSide totals one side of an account's trading.
+type UsageSide struct {
+	Jobs             uint64 `json:"jobs"`
+	PromptTokens     uint64 `json:"prompt_tokens"`
+	CompletionTokens uint64 `json:"completion_tokens"`
+	Micros           uint64 `json:"micros"` // spent (buy) or earned net of fees (sell), final jobs only
+	Pending          uint64 `json:"pending_jobs"`
+}
+
+// Usage totals an account's token trading over the retained jobs.
+type Usage struct {
+	Bought UsageSide `json:"bought"`
+	Sold   UsageSide `json:"sold"`
+}
+
+// AccountUsage totals the tokens an account bought and sold. Jobs older than
+// the coordinator's retention window (30 days by default) are not counted;
+// the ledger keeps the money history forever.
+func AccountUsage(db *sql.DB, acct string) (Usage, error) {
+	var u Usage
+	for _, side := range []struct {
+		col  string
+		out  *UsageSide
+		earn bool
+	}{{"buyer_acct", &u.Bought, false}, {"node_acct", &u.Sold, true}} {
+		var jobs, pt, ct, money, pending sql.NullInt64
+		err := db.QueryRow(`SELECT
+			SUM(CASE WHEN status = 'final' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN status = 'final' THEN prompt_tokens ELSE 0 END),
+			SUM(CASE WHEN status = 'final' THEN completion_tokens ELSE 0 END),
+			SUM(CASE WHEN status = 'final' THEN cost - `+feeTerm(side.earn)+` ELSE 0 END),
+			SUM(CASE WHEN status IN ('held', 'pending', 'disputed') THEN 1 ELSE 0 END)
+			FROM jobs WHERE `+side.col+` = ?`, acct).Scan(&jobs, &pt, &ct, &money, &pending)
+		if err != nil {
+			return u, err
+		}
+		*side.out = UsageSide{Jobs: uint64(jobs.Int64), PromptTokens: uint64(pt.Int64), CompletionTokens: uint64(ct.Int64),
+			Micros: uint64(money.Int64), Pending: uint64(pending.Int64)}
+	}
+	return u, nil
+}
+
+func feeTerm(earn bool) string {
+	if earn {
+		return "fee"
+	}
+	return "0"
+}
+
+// CoordinatorID returns the peer ID of the coordinator that owns the
+// database, or "" before it first started.
+func CoordinatorID(db *sql.DB) (string, error) {
+	var id string
+	err := db.QueryRow(`SELECT value FROM meta WHERE key = 'coordinator'`).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return id, err
+}
+
+// ---- operator views, shared by the coordinator's commands and the portal ----
+
+// AdminJob is one job as operators see it: both parties and their accounts.
+type AdminJob struct {
+	JobID            string `json:"job_id"`
+	Model            string `json:"model"`
+	Status           Status `json:"status"`
+	Buyer            string `json:"buyer"`
+	Node             string `json:"node"`
+	BuyerAcct        string `json:"buyer_acct"`
+	NodeAcct         string `json:"node_acct"`
+	PromptTokens     uint64 `json:"prompt_tokens"`
+	CompletionTokens uint64 `json:"completion_tokens"`
+	CostMicros       uint64 `json:"cost_micros"`
+	FeeMicros        uint64 `json:"fee_micros"`
+	DisputeReason    string `json:"dispute_reason,omitempty"`
+	DisputeOutcome   string `json:"dispute_outcome,omitempty"`
+	DisputeDetail    string `json:"dispute_detail,omitempty"`
+	CreatedAt        int64  `json:"created_at"`
+	StartedAt        int64  `json:"started_at,omitempty"`
+	DoneAt           int64  `json:"done_at,omitempty"`
+}
+
+// QueryJobs lists jobs newest first, created before beforeNanos (0: now).
+// status ("" for any) and acct ("" for any; matches either party) filter.
+func QueryJobs(q Querier, status, acct string, beforeNanos int64, limit int) ([]AdminJob, error) {
+	query, args := queryJobsSQL(status, acct, beforeNanos, limit)
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AdminJob{}
+	for rows.Next() {
+		var j AdminJob
+		var pt, ct, c, fe int64
+		if err := rows.Scan(&j.JobID, &j.Model, &j.Status, &j.Buyer, &j.Node, &j.BuyerAcct, &j.NodeAcct, &pt, &ct, &c, &fe,
+			&j.DisputeReason, &j.DisputeOutcome, &j.DisputeDetail, &j.CreatedAt, &j.StartedAt, &j.DoneAt); err != nil {
+			return nil, err
+		}
+		j.PromptTokens, j.CompletionTokens, j.CostMicros, j.FeeMicros = uint64(pt), uint64(ct), uint64(c), uint64(fe)
+		if j.Status == StatusRefunded || j.Status == StatusReleased {
+			j.CostMicros, j.FeeMicros = 0, 0
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// queryJobsSQL builds the admin listing. Every branch walks one index in
+// created_at order and stops after limit rows; none of them may sort the
+// table (TestQueryJobsUsesIndexes checks the plans).
+func queryJobsSQL(status, acct string, beforeNanos int64, limit int) (string, []any) {
+	if beforeNanos <= 0 {
+		beforeNanos = 1<<63 - 1
+	}
+	const cols = `job_id, model, status, buyer, node, buyer_acct, node_acct, prompt_tokens, completion_tokens,
+		cost, fee, dispute_reason, dispute_outcome, dispute_detail, created_at, started_at, done_at`
+	var statusWhere string
+	var statusArgs []any
+	if status != "" {
+		statusWhere, statusArgs = ` AND status = ?`, []any{status}
+	}
+	if acct == "" {
+		return `SELECT ` + cols + ` FROM jobs WHERE created_at < ?` + statusWhere + ` ORDER BY created_at DESC LIMIT ?`,
+			append(append([]any{beforeNanos}, statusArgs...), limit)
+	}
+	// Two index-ordered scans of at most limit rows each, merged: an OR of
+	// the two account columns would sort the account's whole history.
+	// "+status" keeps the planner off the (status, created_at) index, which
+	// would walk every job of that status instead of this account's.
+	accountStatus := strings.Replace(statusWhere, "status =", "+status =", 1)
+	side := func(col string) (string, []any) {
+		return `SELECT ` + cols + ` FROM jobs WHERE ` + col + ` = ? AND created_at < ?` + accountStatus + ` ORDER BY created_at DESC LIMIT ?`,
+			append(append([]any{acct, beforeNanos}, statusArgs...), limit)
+	}
+	buy, buyArgs := side("buyer_acct")
+	sell, sellArgs := side("node_acct")
+	// UNION ALL is exact: IssueTicket never lets an account buy from itself,
+	// so no job matches both sides.
+	return `SELECT * FROM (` + buy + `) UNION ALL SELECT * FROM (` + sell + `) ORDER BY created_at DESC LIMIT ?`,
+		append(append(buyArgs, sellArgs...), limit)
+}
+
+// JobCounts counts jobs by status.
+func JobCounts(q Querier) (map[Status]int64, error) {
+	rows, err := q.Query(`SELECT status, COUNT(*) FROM jobs GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[Status]int64{}
+	for rows.Next() {
+		var st Status
+		var n int64
+		if err := rows.Scan(&st, &n); err != nil {
+			return nil, err
+		}
+		out[st] = n
+	}
+	return out, rows.Err()
+}
+
+// QueryNodes lists every node with a record, best reputation first.
+func QueryNodes(q Querier) ([]NodeStats, error) {
+	rows, err := q.Query(`SELECT ` + statsColumns + ` FROM nodes ORDER BY reputation DESC, node`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []NodeStats{}
+	for rows.Next() {
+		s, err := scanStats(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *s)
+	}
+	return out, rows.Err()
+}
+
+// QueryAudits lists the most recent audit results.
+func QueryAudits(q Querier, limit int) ([]AuditRecord, error) {
+	rows, err := q.Query(`SELECT job_id, node, model, verdict, similarity, detail, at FROM audits ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AuditRecord{}
+	for rows.Next() {
+		var r AuditRecord
+		if err := rows.Scan(&r.JobID, &r.Node, &r.Model, &r.Verdict, &r.Similarity, &r.Detail, &r.At); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// QueryDisputes lists jobs awaiting arbitration first, then judged ones, newest first.
+func QueryDisputes(q Querier, limit int) ([]DisputeInfo, error) {
+	// Open disputes come off the (status, created_at) index, judged ones off
+	// the partial index jobs_judged; an OR of the two would scan the table.
+	const cols = `job_id, buyer, node, buyer_acct, node_acct, model, status, cost, dispute_reason, dispute_outcome, dispute_detail,
+		created_at, done_at`
+	rows, err := q.Query(`SELECT `+cols+` FROM (
+			SELECT * FROM (SELECT `+cols+` FROM jobs WHERE status = 'disputed' ORDER BY created_at DESC LIMIT ?)
+			UNION SELECT * FROM (SELECT `+cols+` FROM jobs WHERE dispute_outcome != '' ORDER BY created_at DESC LIMIT ?))
+		ORDER BY status = 'disputed' DESC, created_at DESC LIMIT ?`, limit, limit, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DisputeInfo{}
+	for rows.Next() {
+		var d DisputeInfo
+		var cost int64
+		if err := rows.Scan(&d.JobID, &d.Buyer, &d.Node, &d.BuyerAcct, &d.NodeAcct, &d.Model, &d.Status, &cost, &d.Reason, &d.Outcome, &d.Detail,
+			&d.CreatedAt, &d.DoneAt); err != nil {
+			return nil, err
+		}
+		d.Cost = uint64(cost)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// ErrNotDisputed is returned when a job awaiting no arbitration is resolved.
+var ErrNotDisputed = errors.New("coordinator: job is not disputed")
+
+// ResolveDispute settles a disputed job from another process (the portal):
+// payNode captures the hold for the node, otherwise the buyer is refunded and
+// the node charged a lost dispute. It uses the fee rate the coordinator
+// recorded in the database and is atomic with the coordinator's own writes.
+func ResolveDispute(db *sql.DB, jobID string, payNode bool, now time.Time) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	j, err := loadJob(tx, jobID)
+	if err != nil {
+		return err
+	}
+	if j == nil {
+		return protocol.Errorf(protocol.CodeNotFound, "unknown job")
+	}
+	if j.status != StatusDisputed {
+		return fmt.Errorf("%w: job is %s", ErrNotDisputed, j.status)
+	}
+	led := ledger.On(tx, now)
+	if payNode {
+		var raw string
+		if err := tx.QueryRow(`SELECT value FROM meta WHERE key = 'fee_bps'`).Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		feeBps, _ := strconv.ParseInt(raw, 10, 64)
+		if err := finalizeJob(tx, led, j, now, feeBps); err != nil {
+			return err
+		}
+	} else if err := refundJob(tx, led, j, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

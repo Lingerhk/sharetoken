@@ -4,3 +4,13 @@ bin/
 *.db-wal
 *.db-shm
 .DS_Store
+
+# local test-environment secrets (API keys, test passwords): never commit
+docs/test_env.txt
+docs/*.secrets.md
+
+# local test outputs
+*.log
+__pycache__/
+reports/
+/real-qwen.json

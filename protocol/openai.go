@@ -15,9 +15,67 @@ type ChunkInfo struct {
 	Content      string
 	Reasoning    string
 	ToolArgs     string
+	ToolCalls    []ToolCallDelta
 	FinishReason string
 	Usage        *Usage
 }
+
+// ToolCallDelta is one streamed fragment of a tool call. Fragments with the
+// same Index belong to the same call: ID, Type and Name usually arrive once,
+// Arguments in pieces.
+type ToolCallDelta struct {
+	Index     int
+	ID        string
+	Type      string
+	Name      string
+	Arguments string
+}
+
+// ToolCall is an assembled tool call in the OpenAI chat-completions shape.
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolCallFunction is the function a ToolCall invokes.
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ToolCallAccumulator assembles streamed tool-call fragments in index order.
+type ToolCallAccumulator struct {
+	calls []ToolCall
+	index map[int]int
+}
+
+// Add merges the fragments of one chunk.
+func (a *ToolCallAccumulator) Add(ds []ToolCallDelta) {
+	for _, d := range ds {
+		if a.index == nil {
+			a.index = map[int]int{}
+		}
+		i, ok := a.index[d.Index]
+		if !ok {
+			i = len(a.calls)
+			a.index[d.Index] = i
+			a.calls = append(a.calls, ToolCall{Type: "function"})
+		}
+		c := &a.calls[i]
+		if d.ID != "" {
+			c.ID = d.ID
+		}
+		if d.Type != "" {
+			c.Type = d.Type
+		}
+		c.Function.Name += d.Name
+		c.Function.Arguments += d.Arguments
+	}
+}
+
+// Calls returns the assembled calls (nil when there were none).
+func (a *ToolCallAccumulator) Calls() []ToolCall { return a.calls }
 
 // Text is everything in the chunk that consumed completion tokens.
 func (c ChunkInfo) Text() string { return c.Content + c.Reasoning + c.ToolArgs }
@@ -32,7 +90,11 @@ func ParseChunk(payload []byte) (ChunkInfo, error) {
 				ReasoningContent string `json:"reasoning_content"`
 				Reasoning        string `json:"reasoning"`
 				ToolCalls        []struct {
+					Index    int    `json:"index"`
+					ID       string `json:"id"`
+					Type     string `json:"type"`
 					Function struct {
+						Name      string `json:"name"`
 						Arguments string `json:"arguments"`
 					} `json:"function"`
 				} `json:"tool_calls"`
@@ -50,6 +112,7 @@ func ParseChunk(payload []byte) (ChunkInfo, error) {
 		info.Reasoning += ch.Delta.ReasoningContent + ch.Delta.Reasoning
 		for _, tc := range ch.Delta.ToolCalls {
 			info.ToolArgs += tc.Function.Arguments
+			info.ToolCalls = append(info.ToolCalls, ToolCallDelta{Index: tc.Index, ID: tc.ID, Type: tc.Type, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 		}
 		if ch.FinishReason != nil && *ch.FinishReason != "" {
 			info.FinishReason = *ch.FinishReason

@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,14 @@ type fixture struct {
 	eng *Engine
 }
 
+// newFixture runs the engine with open accounts: most tests use bare peers;
+// accounts_test.go covers devices bound to users.
 func newFixture(t *testing.T, cfg Config) *fixture {
+	cfg.OpenAccounts = true
+	return newStrictFixture(t, cfg)
+}
+
+func newStrictFixture(t *testing.T, cfg Config) *fixture {
 	f := &fixture{t: t, now: time.Unix(1_800_000_000, 0)}
 	coord := mustKeys(t)
 	cfg.Now = func() time.Time { return f.now }
@@ -52,6 +60,12 @@ func mustKeys(t *testing.T) *p2p.Keys {
 
 func (f *fixture) offer(k *p2p.Keys, model string, pin, pout uint64, maxConc uint32) {
 	f.t.Helper()
+	if err := f.eng.UpsertOffer(f.signedOffer(k, model, pin, pout, maxConc)); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *fixture) signedOffer(k *p2p.Keys, model string, pin, pout uint64, maxConc uint32) *protocol.Offer {
 	o := &protocol.Offer{
 		Node:           k.ID(),
 		Addrs:          []string{"/ip4/127.0.0.1/tcp/1"},
@@ -63,9 +77,7 @@ func (f *fixture) offer(k *p2p.Keys, model string, pin, pout uint64, maxConc uin
 		ExpiresAt:      f.now.Add(time.Minute).UnixNano(),
 	}
 	o.Sign(k.Signer)
-	if err := f.eng.UpsertOffer(o); err != nil {
-		f.t.Fatal(err)
-	}
+	return o
 }
 
 func (f *fixture) deposit(k *p2p.Keys, micros uint64) {
@@ -276,12 +288,22 @@ func TestUnsettledHoldIsReleased(t *testing.T) {
 	f.offer(node, "m", priceIn, priceOut, 4)
 	f.deposit(buyer, 1_000_000)
 	tk := f.ticket(buyer, 100_000)
+	if err := f.eng.MarkStarted(node.ID(), *tk); err != nil { // started, then never settled
+		t.Fatal(err)
+	}
+	f.eng.Tick(f.now.Add(90 * time.Second)) // ticket expired, but the job is running
+	if st, _ := f.eng.JobStatus(tk.JobID); st != StatusHeld {
+		t.Fatalf("a started job must stay held until its settle deadline, got %s", st)
+	}
 	f.eng.Tick(f.now.Add(3 * time.Minute))
 	if st, _ := f.eng.JobStatus(tk.JobID); st != StatusReleased {
 		t.Fatalf("want released, got %s", st)
 	}
 	if got := f.balance(buyer); got != 1_000_000 {
 		t.Fatalf("hold not returned: %d", got)
+	}
+	if f.stats(node).Failures != 1 {
+		t.Fatal("a started job left unsettled counts against the node")
 	}
 	if _, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: signReceipt(t, node, tk, 1, 1)}); protocol.CodeOf(err) != protocol.CodeConflict {
 		t.Fatalf("settling an expired ticket: want conflict, got %v", err)
@@ -381,7 +403,7 @@ func TestConcurrencyLimit(t *testing.T) {
 	f.offer(node, "m", priceIn, priceOut, 1)
 	f.deposit(buyer, 1_000_000)
 	f.ticket(buyer, 100)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 100}); protocol.CodeOf(err) != protocol.CodeNoOffers {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 100}); protocol.CodeOf(err) != protocol.CodeCapacity {
 		t.Fatalf("node at capacity must not be matched: %v", err)
 	}
 }
@@ -438,7 +460,7 @@ func TestStateSurvivesRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = db.Close() })
-		eng, err := NewEngine(coord.ID(), coord.Signer, Config{DB: db, Now: func() time.Time { return now }})
+		eng, err := NewEngine(coord.ID(), coord.Signer, Config{DB: db, OpenAccounts: true, Now: func() time.Time { return now }})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -649,4 +671,337 @@ func TestRequireTEEAndPinnedNodes(t *testing.T) {
 			t.Fatal("a node reusing another node's quote was treated as attested")
 		}
 	}
+}
+
+func TestAbandonReleasesTheHoldAtOnce(t *testing.T) {
+	f := newFixture(t, Config{})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 1)
+	f.deposit(buyer, 1_000_000)
+	tk := f.ticket(buyer, 100_000)
+
+	// Concurrency 1: the held job blocks the node until it is abandoned.
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeCapacity {
+		t.Fatalf("busy node matched: %v", err)
+	}
+	if err := f.eng.Abandon(buyer.ID(), protocol.AbandonRequest{Ticket: *tk}); protocol.CodeOf(err) != protocol.CodeForbidden {
+		t.Fatalf("buyer abandoning: want forbidden, got %v", err)
+	}
+	if err := f.eng.Abandon(node.ID(), protocol.AbandonRequest{Ticket: *tk, Reason: "model server error"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.eng.Abandon(node.ID(), protocol.AbandonRequest{Ticket: *tk}); err != nil {
+		t.Fatalf("abandon must be idempotent: %v", err)
+	}
+	if f.held(buyer) != 0 || f.balance(buyer) != 1_000_000 || f.stats(node).Failures != 1 {
+		t.Fatalf("after abandon: held %d balance %d failures %d", f.held(buyer), f.balance(buyer), f.stats(node).Failures)
+	}
+	// The slot is free again; a settled job cannot be abandoned.
+	tk2 := f.ticket(buyer, 100_000)
+	sr := signReceipt(t, node, tk2, 10, 10)
+	if _, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk2, Receipt: sr}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.eng.Abandon(node.ID(), protocol.AbandonRequest{Ticket: *tk2}); protocol.CodeOf(err) != protocol.CodeConflict {
+		t.Fatalf("abandoning a settled job: want conflict, got %v", err)
+	}
+	f.booksBalance()
+}
+
+// A job the buyer's own request made impossible (the model server rejected it
+// as invalid) is released without counting against the node: otherwise any
+// buyer could drain honest nodes' reputation with malformed requests.
+func TestNoFaultAbandonKeepsReputation(t *testing.T) {
+	f := newFixture(t, Config{})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 1)
+	f.deposit(buyer, 1_000_000)
+	before := f.stats(node)
+	for i := 0; i < 5; i++ {
+		tk := f.ticket(buyer, 100_000)
+		if err := f.eng.Abandon(node.ID(), protocol.AbandonRequest{Ticket: *tk, Reason: "request rejected", NoFault: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after := f.stats(node)
+	if after.Failures != before.Failures || after.Reputation != before.Reputation {
+		t.Fatalf("no-fault abandons penalized the node: %+v -> %+v", before, after)
+	}
+	if f.held(buyer) != 0 || f.balance(buyer) != 1_000_000 {
+		t.Fatalf("held %d balance %d", f.held(buyer), f.balance(buyer))
+	}
+	f.booksBalance()
+}
+
+// A request that caps its output holds only its worst-case cost, so a balance
+// supports many requests in flight; uncapped requests hold the whole budget.
+func TestCappedRequestsHoldOnlyTheirWorstCase(t *testing.T) {
+	f := newFixture(t, Config{})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	f.deposit(buyer, 1_000_000)
+	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 200_000, PromptTokens: 20, MaxTokens: 32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := protocol.HoldFor(20, 32, priceIn, priceOut)
+	if tr.Ticket.ReservedMicros != want || f.held(buyer) != int64(want) || want >= 200_000 {
+		t.Fatalf("capped request reserved %d (held %d), want %d", tr.Ticket.ReservedMicros, f.held(buyer), want)
+	}
+	tr2, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 200_000})
+	if err != nil || tr2.Ticket.ReservedMicros != 200_000 {
+		t.Fatalf("uncapped request reserved %d: %v", tr2.Ticket.ReservedMicros, err)
+	}
+	// The budget stays the ceiling.
+	tr3, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 5, PromptTokens: 20, MaxTokens: 1 << 30})
+	if err != nil || tr3.Ticket.ReservedMicros != 5 {
+		t.Fatalf("hold above the budget: %d %v", tr3.Ticket.ReservedMicros, err)
+	}
+}
+
+// A buyer that takes tickets and never connects cannot keep a node busy: the
+// hold is released soon after the ticket expires, without penalizing the node,
+// and the buyer cannot pile up unused tickets.
+func TestTicketsNeverStartedAreReleasedEarly(t *testing.T) {
+	f := newFixture(t, Config{TicketTTL: time.Minute, StartGrace: 30 * time.Second, MaxStaleTickets: 2, StaleAfter: 10 * time.Second})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 2)
+	f.deposit(buyer, 1_000_000)
+	a := f.ticket(buyer, 1000)
+	b := f.ticket(buyer, 1000)
+	// Concurrency 2: both slots are taken.
+	if _, err := f.eng.IssueTicket(mustKeys(t).ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1}); protocol.CodeOf(err) != protocol.CodeCapacity {
+		t.Fatalf("full node matched: %v", err)
+	}
+	// Two stale unused tickets: the buyer gets no third one.
+	f.now = f.now.Add(20 * time.Second)
+	f.offer(node, "m", priceIn, priceOut, 10)
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1000}); protocol.CodeOf(err) != protocol.CodeBusy {
+		t.Fatalf("third ticket with two unused: want busy, got %v", err)
+	}
+	if err := f.eng.MarkStarted(buyer.ID(), *a); protocol.CodeOf(err) != protocol.CodeForbidden {
+		t.Fatalf("buyer reporting a start: want forbidden, got %v", err)
+	}
+	if err := f.eng.MarkStarted(node.ID(), *a); err != nil {
+		t.Fatal(err)
+	}
+	// Ticket TTL (1m) + grace (30s): the unstarted one is released, the started one is not.
+	f.now = f.now.Add(71 * time.Second)
+	f.eng.Tick(f.now)
+	if st, _ := f.eng.JobStatus(b.JobID); st != StatusReleased {
+		t.Fatalf("unstarted ticket: %s", st)
+	}
+	if st, _ := f.eng.JobStatus(a.JobID); st != StatusHeld {
+		t.Fatalf("started ticket: %s", st)
+	}
+	if f.held(buyer) != 1000 || f.stats(node).Failures != 0 {
+		t.Fatalf("held %d, node failures %d", f.held(buyer), f.stats(node).Failures)
+	}
+	// A late start report for the released job tells the node to stop.
+	if err := f.eng.MarkStarted(node.ID(), *b); protocol.CodeOf(err) != protocol.CodeConflict {
+		t.Fatalf("late start: want conflict, got %v", err)
+	}
+	f.booksBalance()
+}
+
+// The per-request queries must use an index that does not grow with an
+// account's job history (they run under the engine's write lock).
+func TestHotQueriesAreIndexed(t *testing.T) {
+	f := newFixture(t, Config{})
+	for q, want := range map[string]string{
+		`SELECT node, dispute_reason != '' FROM jobs WHERE buyer_acct = 'a' AND status = 'held' AND started_at = 0 AND created_at < 1`: "jobs_buyer_unstarted (buyer_acct=? AND status=? AND started_at=? AND created_at<?)",
+		`SELECT node, COUNT(*) FROM jobs WHERE status = 'held' GROUP BY node`:                                                          "jobs_status_node (status=?)",
+		`SELECT SUM(prompt_tokens), SUM(cost) FROM jobs WHERE buyer_acct = 'a' AND status = 'final'`:                                   "COVERING INDEX jobs_buy_usage",
+		`SELECT SUM(completion_tokens), SUM(cost - fee) FROM jobs WHERE node_acct = 'a' AND status = 'final'`:                          "COVERING INDEX jobs_sell_usage",
+		`DELETE FROM jobs WHERE status IN ('final', 'released', 'refunded') AND done_at < 1`:                                           "jobs_status_done (status=? AND done_at<?)",
+	} {
+		var plan strings.Builder
+		rows, err := f.eng.db.Query("EXPLAIN QUERY PLAN " + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan.WriteString(detail + "\n")
+		}
+		rows.Close()
+		if !strings.Contains(plan.String(), want) {
+			t.Errorf("%s\nplan: %s\nwant index %s", q, plan.String(), want)
+		}
+	}
+}
+
+// A node that is not connected to the coordinator (crashed, or its relay just
+// died) is not matched: buyers could not reach it, and it could not settle.
+func TestOfflineNodesAreNotMatched(t *testing.T) {
+	online := map[string]bool{}
+	f := newFixture(t, Config{NodeOnline: func(n string) bool { return online[n] }})
+	a, b, buyer := mustKeys(t), mustKeys(t), mustKeys(t)
+	f.offer(a, "m", priceIn, priceOut, 4)
+	f.offer(b, "m", priceIn/2, priceOut/2, 4) // cheaper, but offline
+	f.deposit(buyer, 1_000_000)
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 100}); protocol.CodeOf(err) != protocol.CodeNoOffers {
+		t.Fatalf("all nodes offline: want no_offers, got %v", err)
+	}
+	online[a.ID()] = true
+	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 100})
+	if err != nil || tr.Ticket.Node != a.ID() {
+		t.Fatalf("want the online node, got %v %v", tr, err)
+	}
+}
+
+// Tickets a buyer disputed because it could not reach the node do not lock it
+// out like unused (hoarded) tickets do, but they are still capped.
+func TestFailedTicketsDoNotLockOutTheBuyer(t *testing.T) {
+	f := newFixture(t, Config{MaxStaleTickets: 2, StaleAfter: 10 * time.Second})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	f.deposit(buyer, 1_000_000)
+	issue := func() error {
+		_, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10})
+		return err
+	}
+	for i := 0; i < 8; i++ { // 4x the limit, each reported as failed
+		tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10})
+		if err != nil {
+			t.Fatalf("ticket %d: %v", i, err)
+		}
+		if err := f.eng.Dispute(buyer.ID(), protocol.DisputeRequest{JobID: tr.Ticket.JobID, Reason: "dial failed"}); err != nil {
+			t.Fatal(err)
+		}
+		f.now = f.now.Add(11 * time.Second)
+		f.offer(node, "m", priceIn, priceOut, 100) // keep the offer fresh
+	}
+	if err := issue(); protocol.CodeOf(err) != protocol.CodeBusy {
+		t.Fatalf("after 8 failed tickets (limit 4x2): want busy, got %v", err)
+	}
+}
+
+// Tickets whose node is offline (it cannot report starts while its relay is
+// down) do not count as unused against the buyer.
+func TestTicketsOfOfflineNodesAreNotStale(t *testing.T) {
+	online := map[string]bool{}
+	f := newFixture(t, Config{MaxStaleTickets: 2, StaleAfter: 10 * time.Second, NodeOnline: func(n string) bool { return online[n] }})
+	node, buyer := mustKeys(t), mustKeys(t)
+	online[node.ID()] = true
+	f.offer(node, "m", priceIn, priceOut, 100)
+	f.deposit(buyer, 1_000_000)
+	for i := 0; i < 2; i++ {
+		f.ticket(buyer, 10)
+	}
+	f.now = f.now.Add(11 * time.Second)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
+		t.Fatalf("two unused tickets of an online node: want busy, got %v", err)
+	}
+	// The node drops off (its relay died): its tickets prove nothing about the buyer.
+	online[node.ID()] = false
+	other := mustKeys(t)
+	online[other.ID()] = true
+	f.offer(other, "m", priceIn, priceOut, 100)
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); err != nil {
+		t.Fatalf("tickets of an offline node locked the buyer out: %v", err)
+	}
+}
+
+// Right after a (re)start offers are still being re-announced: a first ask
+// for a model nobody offers yet is told to retry (capacity), not no_offers.
+func TestWarmUpAsksBuyersToRetry(t *testing.T) {
+	f := newFixture(t, Config{WarmUp: 30 * time.Second})
+	buyer := mustKeys(t)
+	f.deposit(buyer, 1_000_000)
+	req := protocol.TicketRequest{Model: "m", BudgetMicros: 10}
+	if _, err := f.eng.IssueTicket(buyer.ID(), req); protocol.CodeOf(err) != protocol.CodeCapacity {
+		t.Fatalf("during warm-up: want capacity, got %v", err)
+	}
+	req.Exclude = []string{"some-node"}
+	if _, err := f.eng.IssueTicket(buyer.ID(), req); protocol.CodeOf(err) != protocol.CodeNoOffers {
+		t.Fatalf("after failovers: want no_offers, got %v", err)
+	}
+	f.now = f.now.Add(31 * time.Second)
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeNoOffers {
+		t.Fatalf("after warm-up: want no_offers, got %v", err)
+	}
+}
+
+// A ticket whose reply may have been lost (the buyer's device reconnected
+// after it was issued) does not count as unused against the buyer.
+func TestTicketsBeforeAReconnectAreNotStale(t *testing.T) {
+	since := map[string]time.Time{}
+	f := newFixture(t, Config{MaxStaleTickets: 2, StaleAfter: 10 * time.Second,
+		ConnectedSince: func(p string) time.Time { return since[p] }})
+	node, buyer := mustKeys(t), mustKeys(t)
+	since[buyer.ID()] = f.now.Add(-time.Hour)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	f.deposit(buyer, 1_000_000)
+	f.ticket(buyer, 10)
+	f.ticket(buyer, 10)
+	f.now = f.now.Add(11 * time.Second)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
+		t.Fatalf("connected throughout: want busy, got %v", err)
+	}
+	since[buyer.ID()] = f.now.Add(-time.Second) // the device just reconnected
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); err != nil {
+		t.Fatalf("tickets issued before the reconnect locked the buyer out: %v", err)
+	}
+}
+
+// A ticket whose reply could not be sent is released at once: the buyer's
+// hold comes back and the node's slot is free. A started job is left alone.
+func TestUndeliveredTicketIsReleased(t *testing.T) {
+	f := newFixture(t, Config{})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 1)
+	f.deposit(buyer, 1_000_000)
+	tk := f.ticket(buyer, 100_000)
+	if err := f.eng.ReleaseUndelivered(tk.JobID); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := f.eng.JobStatus(tk.JobID); st != StatusReleased || f.held(buyer) != 0 || f.balance(buyer) != 1_000_000 {
+		t.Fatalf("status %s held %d balance %d", st, f.held(buyer), f.balance(buyer))
+	}
+	if s := f.stats(node); s.Failures != 0 {
+		t.Fatalf("node penalized: %+v", s)
+	}
+	tk2 := f.ticket(buyer, 100_000) // the slot is free again
+	if err := f.eng.MarkStarted(node.ID(), *tk2); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.eng.ReleaseUndelivered(tk2.JobID); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := f.eng.JobStatus(tk2.JobID); st != StatusHeld {
+		t.Fatalf("a started job must not be released, got %s", st)
+	}
+	f.booksBalance()
+}
+
+// Finished jobs are purged after JobRetention, at most once a minute.
+func TestFinishedJobsArePurgedAfterRetention(t *testing.T) {
+	f := newFixture(t, Config{JobRetention: time.Hour})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 4)
+	f.deposit(buyer, 1_000_000)
+	a := f.ticket(buyer, 1000)
+	if err := f.eng.Abandon(node.ID(), protocol.AbandonRequest{Ticket: *a, NoFault: true}); err != nil {
+		t.Fatal(err)
+	}
+	f.eng.Tick(f.now) // first tick purges (nothing old yet)
+	b := f.ticket(buyer, 1000)
+	if err := f.eng.Abandon(node.ID(), protocol.AbandonRequest{Ticket: *b, NoFault: true}); err != nil {
+		t.Fatal(err)
+	}
+	later := f.now.Add(2 * time.Hour)
+	f.eng.Tick(later)
+	for _, id := range []string{a.JobID, b.JobID} {
+		if _, ok := f.eng.JobStatus(id); ok {
+			t.Fatalf("job %s not purged after retention", id)
+		}
+	}
+	f.booksBalance() // the journal is kept
 }

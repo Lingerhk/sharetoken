@@ -1,18 +1,24 @@
 // Package e2e runs the whole marketplace in-process over real libp2p hosts on
 // localhost: a coordinator, seller nodes backed by a mock OpenAI-compatible
-// model server, and buyers. Offers travel over GossipSub, jobs over direct
-// buyer->node streams, settlement over the control protocol.
+// model server, and buyers. Nodes announce offers over the control protocol,
+// jobs run on buyer->node streams, settlement over the control protocol.
+//
+// These tests connect peers to the coordinator directly and use open accounts
+// (one account per peer); arch_test.go runs the full topology: relays,
+// portal-managed user accounts, and coordinator reachable only via relays.
 package e2e
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,6 +111,7 @@ func newMarketWith(t *testing.T, cfg coordinator.Config) *market {
 	t.Cleanup(cancel)
 	h, k := newHost(t)
 	cfg.FeeBps = feeBps
+	cfg.OpenAccounts = true
 	svc, err := coordinator.NewService(ctx, h, k, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +164,7 @@ func (m *market) addBuyer(credit uint64) (*buyer.Client, host.Host, *p2p.Keys) {
 
 func (m *market) waitOffers(n int) {
 	m.t.Helper()
-	waitFor(m.t, 10*time.Second, fmt.Sprintf("%d offers over gossip", n), func() bool { return len(m.coord.Engine.Offers()) >= n })
+	waitFor(m.t, 10*time.Second, fmt.Sprintf("%d offers announced", n), func() bool { return len(m.coord.Engine.Offers()) >= n })
 }
 
 func (m *market) waitStatus(jobID string, want coordinator.Status) {
@@ -251,17 +258,138 @@ func TestFailoverBeforeFirstByte(t *testing.T) {
 	}
 	m.waitStatus(res.Ticket.JobID, coordinator.StatusFinal)
 
-	// The broken node's ticket was never settled; once its deadline passes the
-	// hold returns to the buyer and the node is marked as failed.
-	if held := m.held(buyerKeys); held != 1_000_000 {
-		t.Fatalf("held %d, want the failed job's reservation", held)
-	}
-	m.coord.Engine.Tick(time.Now().Add(20 * time.Minute))
+	// The broken node abandoned its ticket: the buyer's hold came back at
+	// once (not at the deadline) and the node is marked as failed, unpaid.
+	waitFor(t, 10*time.Second, "the abandoned hold to be released", func() bool { return m.held(buyerKeys) == 0 })
 	if got := m.balance(buyerKeys); got != 5_000_000-20 {
 		t.Fatalf("buyer balance %d after release, want %d", got, 5_000_000-20)
 	}
 	if got := m.balance(broken); got != 0 {
 		t.Fatalf("the broken node must not be paid, got %d", got)
+	}
+	if st, _ := m.coord.Engine.NodeStats(broken.ID()); st.Failures != 1 {
+		t.Fatalf("broken node failures = %d, want 1", st.Failures)
+	}
+}
+
+// An invalid request that the model servers reject (HTTP 400) is returned to
+// the caller as bad_request after at most two nodes, and costs the nodes no
+// reputation: a buyer cannot drain honest nodes by sending garbage.
+func TestRejectedRequestIsNotANodeFailure(t *testing.T) {
+	m := newMarket(t)
+	var calls atomic.Int32
+	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"[] is too short - 'messages'"}}`)
+	}))
+	t.Cleanup(rejecting.Close)
+	var nodes []*p2p.Keys
+	for i := 0; i < 3; i++ {
+		_, k := m.addNode(rejecting.URL, priceIn, priceOut)
+		nodes = append(nodes, k)
+	}
+	m.waitOffers(3)
+	cl, _, buyerKeys := m.addBuyer(5_000_000)
+
+	_, err := cl.Chat(m.ctx, buyer.ChatRequest{Model: model, Body: []byte(body), BudgetMicros: 1_000_000}, nil)
+	if protocol.CodeOf(err) != protocol.CodeBadRequest || !strings.Contains(err.Error(), "too short") {
+		t.Fatalf("want bad_request carrying the model server's reason, got %v", err)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("request tried on %d nodes, want 2 (one confirmation, then stop)", n)
+	}
+	waitFor(t, 10*time.Second, "the holds to be released", func() bool { return m.held(buyerKeys) == 0 })
+	if got := m.balance(buyerKeys); got != 5_000_000 {
+		t.Fatalf("buyer charged for rejected requests: balance %d", got)
+	}
+	for _, k := range nodes {
+		if st, _ := m.coord.Engine.NodeStats(k.ID()); st.Failures != 0 {
+			t.Fatalf("node %s penalized for the buyer's bad request: %+v", k.ID(), st)
+		}
+	}
+}
+
+// A buyer that stops reading mid-stream (a user pressing "stop") pays for
+// the chunks it was sent, settled without an ack (pending through the dispute
+// window), and the node is not penalized. Leaving before the first chunk
+// costs nothing.
+func TestBuyerCancelMidStreamBillsDeliveredPart(t *testing.T) {
+	m := newMarketWith(t, coordinator.Config{DisputeWindow: time.Second})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		for i := 0; i < 200; i++ {
+			if _, err := fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"word%03d \"}}]}\n\n", i); err != nil {
+				return
+			}
+			fl.Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(slow.Close)
+	_, nodeKeys := m.addNode(slow.URL, priceIn, priceOut)
+	m.waitOffers(1)
+	cl, _, buyerKeys := m.addBuyer(5_000_000)
+
+	got := 0
+	stop := errors.New("user pressed stop")
+	res, err := cl.Chat(m.ctx, buyer.ChatRequest{Model: model, Body: []byte(body), BudgetMicros: 1_000_000}, func([]byte) error {
+		if got++; got == 5 {
+			return stop
+		}
+		return nil
+	})
+	if !errors.Is(err, stop) || res != nil {
+		t.Fatalf("want the caller's error and no result, got %v / %v", res, err)
+	}
+	// Charged for the delivered part only: a few of the 200 chunks.
+	full := int64(protocol.TicketCost(&protocol.Ticket{PriceInMicros: priceIn, PriceOutMicros: priceOut, ReservedMicros: 1 << 40}, 20, 400))
+	waitFor(t, 15*time.Second, "the cancelled job to be settled (pending, then final after the dispute window)", func() bool {
+		return m.held(buyerKeys) == 0 && m.balance(buyerKeys) < 5_000_000
+	})
+	if paid := 5_000_000 - m.balance(buyerKeys); paid <= 0 || paid >= full/4 {
+		t.Fatalf("paid %d for ~5 of 200 chunks (full answer would cost %d)", paid, full)
+	}
+	if st, _ := m.coord.Engine.NodeStats(nodeKeys.ID()); st.Failures != 0 {
+		t.Fatalf("node penalized for the buyer's cancel: %+v", st)
+	}
+}
+
+// A node that stalls mid-answer (lossy path, hung model server) is abandoned
+// after the idle timeout; a non-streaming request, which has delivered
+// nothing to the caller yet, fails over to another node instead of hanging.
+func TestStalledNodeIsAbandonedAfterIdleTimeout(t *testing.T) {
+	m := newMarket(t)
+	release := make(chan struct{})
+	stalling := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		select { // then nothing
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() { close(release); stalling.Close() })
+	_, stalled := m.addNode(stalling.URL, priceIn/2, priceOut/2) // cheaper: matched first
+	_, healthy := m.addNode(mockUpstream(t, "mock-7b", false).URL, priceIn, priceOut)
+	m.waitOffers(2)
+	cl, _, _ := m.addBuyer(5_000_000)
+	cl.IdleTimeout = time.Second
+
+	start := time.Now()
+	res, err := cl.Chat(m.ctx, buyer.ChatRequest{Model: model, Body: []byte(body), BudgetMicros: 1_000_000}, nil)
+	if err != nil {
+		t.Fatalf("want failover to the healthy node, got %v", err)
+	}
+	if res.Ticket.Node != healthy.ID() || res.Content != "Hello, world!" {
+		t.Fatalf("served by %s (stalled node is %s)", res.Ticket.Node, stalled.ID())
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("failover took %v", d)
 	}
 }
 
@@ -382,5 +510,43 @@ func TestLocalProxyIsOpenAICompatible(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(listing), `"id":"test-model"`) {
 		t.Fatalf("model missing from listing: %s", listing)
+	}
+}
+
+// A buyer that takes a ticket and never connects blocks the node only until
+// the ticket expires (plus a grace), not until the settlement deadline.
+func TestNoShowTicketFreesTheNodeSoon(t *testing.T) {
+	m := newMarketWith(t, coordinator.Config{TicketTTL: 2 * time.Second, StartGrace: 500 * time.Millisecond})
+	_, nodeKeys := m.addNode(mockUpstream(t, "mock-7b", false).URL, priceIn, priceOut)
+	m.waitOffers(1)
+	// The node serves 2 at once (default); take both slots without connecting.
+	_, _, noShow := m.addBuyer(5_000_000)
+	for i := 0; i < 2; i++ {
+		if _, err := m.coord.Engine.IssueTicket(noShow.ID(), protocol.TicketRequest{Model: model, BudgetMicros: 1000}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cl, _, buyerKeys := m.addBuyer(5_000_000)
+	cl.QueueWait = 0
+	if _, err := cl.Chat(m.ctx, buyer.ChatRequest{Model: model, Body: []byte(body), BudgetMicros: 1_000_000}, nil); protocol.CodeOf(err) != protocol.CodeCapacity {
+		t.Fatalf("node with both slots taken: want capacity, got %v", err)
+	}
+	// With a queue the request waits for the no-show holds to be released
+	// and then succeeds, instead of failing.
+	cl.QueueWait = 10 * time.Second
+	start := time.Now()
+	res, err := cl.Chat(m.ctx, buyer.ChatRequest{Model: model, Body: []byte(body), BudgetMicros: 1_000_000}, nil)
+	if err != nil || !res.Verified {
+		t.Fatalf("queued request: %v", err)
+	}
+	if m.held(noShow) != 0 || time.Since(start) < time.Second {
+		t.Fatalf("served after %v while the no-show still held %d", time.Since(start), m.held(noShow))
+	}
+	m.waitStatus(res.Ticket.JobID, coordinator.StatusFinal)
+	if got := m.balance(buyerKeys); got != 5_000_000-20 {
+		t.Fatalf("buyer balance %d", got)
+	}
+	if st, _ := m.coord.Engine.NodeStats(nodeKeys.ID()); st.Failures != 0 {
+		t.Fatalf("no-shows must not count against the node: %+v", st)
 	}
 }

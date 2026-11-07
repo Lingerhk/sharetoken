@@ -1,16 +1,18 @@
-// Command coordinator runs the sharetoken matching, settlement, dispute and
-// audit service for an open-weight model network.
+// Command coordinator runs the sharetoken accounting platform: matching,
+// tickets, settlement, disputes and audits for an open-weight model network.
 //
-//	coordinator -public                                  # serve (on a host with a public IP)
+// It needs no public address. It holds a reservation on every relay (the
+// enabled relays registered in the database through the portal, plus any
+// -relay), and users reach it only through those relays. It shares its
+// database with the portal, which manages users, devices and credits.
+//
+//	coordinator -db sharetoken.db                        # serve
 //	coordinator -reference id=qwen2.5-7b,upstream=qwen2.5:7b,url=http://127.0.0.1:11434/v1
 //	                                                     # + audit nodes serving qwen2.5-7b
-//	coordinator deposit <peer-id> <micros>               # operator commands, run beside
-//	coordinator balance <peer-id>                        # the live service on its database
-//	coordinator disputes | nodes | audits | check
+//	coordinator balance <peer-id>                        # operator commands, run beside
+//	coordinator disputes | nodes | audits | relays | check   # the live service on its database
 //	coordinator resolve <job-id> pay|refund
-//
-// It prints its peer ID and addresses; give the /p2p/ address to nodes and
-// buyers as -coordinator.
+//	coordinator id                                       # peer ID, for relays' -allow-peer
 package main
 
 import (
@@ -21,14 +23,17 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof" // served only with -debug
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 
+	"sharetoken/accounts"
 	"sharetoken/attest"
 	"sharetoken/audit"
 	"sharetoken/coordinator"
@@ -41,11 +46,13 @@ import (
 
 func main() {
 	keyPath := flag.String("key", "coordinator.key", "identity seed file (created with mode 0600 if missing)")
-	dbPath := flag.String("db", "coordinator.db", `SQLite database for the ledger, jobs and node records (":memory:" keeps nothing)`)
-	listen := flag.String("listen", "/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/udp/4001/quic-v1", "comma-separated listen multiaddrs")
+	dbPath := flag.String("db", "sharetoken.db", `SQLite database shared with the portal: ledger, accounts, jobs, node records`)
+	listen := flag.String("listen", "", "comma-separated listen multiaddrs (default: none; the coordinator is reachable only through its relays)")
 	feeBps := flag.Int64("fee-bps", 500, "platform fee, in basis points of each settled job")
-	public := flag.Bool("public", false, "this host has a public IP: also act as a circuit relay for nodes behind NAT")
-	nat := flag.Bool("nat", true, "UPnP/NAT-PMP port mapping, AutoNAT and hole punching (disable for local testing)")
+	var relays cli.Repeated
+	flag.Var(&relays, "relay", "relay to reserve on, as a full multiaddr ending in /p2p/<id> (repeatable), besides those registered in the database")
+	maxConns := flag.Int("max-conns", 8192, "connection-manager high watermark (every online user holds a relayed connection)")
+	openAccounts := flag.Bool("open-accounts", false, "DEV ONLY: let peers that are not bound to a user trade from their own account")
 	devCredit := flag.Uint64("dev-credit", 0, "DEV ONLY: credit each new peer this many micro-credits on first use")
 	var refs cli.Repeated
 	flag.Var(&refs, "reference", "reference copy of a model (repeatable): id=<marketplace id>,upstream=<server model name>,url=<OpenAI-compatible base URL>[,key-env=<VAR>]; enables audits and exact token counts for disputes")
@@ -54,11 +61,19 @@ func main() {
 	auditPrompts := flag.String("audit-prompts", "", "file of challenge prompts, one per line (default: randomized built-ins)")
 	teePolicy := flag.String("tee-policy", "", "JSON allow-list of TEE images; enables require_tee matching (see attest.LoadPolicy)")
 	teeOnline := flag.Bool("tee-online", false, "also check TEE revocations / TCB status with AMD and Intel (network)")
+	debugAddr := flag.String("debug", "", "serve Go pprof profiles at http://<addr>/debug/pprof/ (keep it on loopback), e.g. 127.0.0.1:6060")
 	flag.Parse()
+	if *debugAddr != "" {
+		go func() { log.Printf("pprof: %v", http.ListenAndServe(*debugAddr, nil)) }()
+	}
 
 	keys, err := p2p.LoadOrCreateKeys(*keyPath)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if flag.Arg(0) == "id" { // relays need it for -allow-peer before the coordinator first starts
+		fmt.Println(keys.ID())
+		return
 	}
 	db, err := sqlite.Open(*dbPath)
 	if err != nil {
@@ -73,7 +88,7 @@ func main() {
 		return
 	}
 
-	cfg := coordinator.Config{DB: db, FeeBps: *feeBps, DevCreditMicros: *devCredit}
+	cfg := coordinator.Config{DB: db, FeeBps: *feeBps, DevCreditMicros: *devCredit, OpenAccounts: *openAccounts, Relays: relays}
 	references, servers, err := parseReferences(refs)
 	if err != nil {
 		log.Fatalf("-reference: %v", err)
@@ -89,14 +104,25 @@ func main() {
 		cfg.Attestation = &coordinator.Attestation{Verifier: cli.TEEVerifier(*teeOnline), Policy: p}
 	}
 
-	h, err := p2p.NewHost(keys, p2p.HostConfig{Listen: cli.List(*listen), NAT: *nat, RelayService: *public, ForcePublic: *public})
+	h, err := p2p.NewHost(keys, p2p.HostConfig{Listen: cli.List(*listen), DialOnly: *listen == "", MaxConns: *maxConns})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer h.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	svc, err := coordinator.NewService(ctx, h, keys, cfg)
+	// Startup migrates the shared database under a write lock; if the portal
+	// (or an admin command) holds it longer than the busy timeout, retry for
+	// a while instead of exiting.
+	var svc *coordinator.Service
+	for deadline := time.Now().Add(2 * time.Minute); ; {
+		svc, err = coordinator.NewService(ctx, h, keys, cfg)
+		if err == nil || !sqlite.IsBusy(err) || time.Now().After(deadline) {
+			break
+		}
+		log.Printf("database busy at startup (%v); retrying", err)
+		time.Sleep(2 * time.Second)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -104,10 +130,11 @@ func main() {
 
 	if len(references) > 0 && *auditEvery > 0 {
 		acfg := audit.Config{
-			References:   references,
-			Coordinator:  peer.AddrInfo{ID: h.ID(), Addrs: h.Addrs()},
-			Interval:     *auditEvery,
-			BudgetMicros: *auditBudget,
+			References:       references,
+			Coordinator:      peer.AddrInfo{ID: h.ID(), Addrs: h.Addrs()},
+			CoordinatorAddrs: func() []ma.Multiaddr { return append(h.Addrs(), svc.RelayAddrs()...) },
+			Interval:         *auditEvery,
+			BudgetMicros:     *auditBudget,
 		}
 		if *auditPrompts != "" {
 			data, err := os.ReadFile(*auditPrompts)
@@ -123,13 +150,26 @@ func main() {
 		go aud.Run(ctx)
 	}
 
-	if *devCredit > 0 {
-		log.Print("WARNING: -dev-credit hands free credits to any new peer ID; never use it on a public network")
+	if *devCredit > 0 || *openAccounts {
+		log.Print("WARNING: -dev-credit / -open-accounts let any new peer ID trade; never use them on a public network")
 	}
 	fmt.Println("coordinator", keys.ID())
 	for _, a := range p2p.FullAddrs(h) {
-		fmt.Println("  ", a)
+		fmt.Println("   listening (private)", a)
 	}
+	// Report the relay addresses once the first reservations are in.
+	go func() {
+		for i := 0; i < 30 && ctx.Err() == nil; i++ {
+			if addrs := svc.CircuitAddrs(); len(addrs) > 0 {
+				for _, a := range addrs {
+					fmt.Println("   via relay", a)
+				}
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		log.Print("WARNING: no relay reservation yet: register relays with `portal relay add` or pass -relay; users cannot reach this coordinator until one succeeds")
+	}()
 	for _, r := range references {
 		fmt.Printf("   reference %s -> %s (audits every ~%s, exact token counts for disputes)\n", r.Model, r.UpstreamModel, *auditEvery)
 	}
@@ -175,30 +215,28 @@ func admin(keys *p2p.Keys, db *sql.DB, cmd string, args []string) error {
 		return nil
 	}
 	switch cmd {
-	case "deposit":
-		if err := need(2, "<peer-id> <micros>"); err != nil {
-			return err
-		}
-		micros, err := strconv.ParseUint(args[1], 10, 64)
-		if err != nil {
+	case "balance":
+		if err := need(1, "<peer-id>"); err != nil {
 			return err
 		}
 		if _, err := peer.Decode(args[0]); err != nil {
 			return fmt.Errorf("bad peer id: %w", err)
 		}
-		if err := eng.Deposit(args[0], micros); err != nil {
+		acct, err := eng.AccountOf(args[0])
+		if err != nil {
 			return err
-		}
-		fallthrough
-	case "balance":
-		if len(args) < 1 {
-			return errors.New("usage: coordinator balance <peer-id>")
 		}
 		b, err := eng.Balance(args[0])
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s available %d held %d\n", args[0], b.AvailableMicros, b.HeldMicros)
+		fmt.Printf("%s (%s) available %d held %d\n", args[0], acct, b.AvailableMicros, b.HeldMicros)
+	case "relays":
+		rs, err := accounts.Relays(db, false)
+		if err != nil {
+			return err
+		}
+		return printJSON(rs)
 	case "resolve":
 		if err := need(2, "<job-id> pay|refund"); err != nil {
 			return err
@@ -235,7 +273,7 @@ func admin(keys *p2p.Keys, db *sql.DB, cmd string, args []string) error {
 		}
 		fmt.Println("books balance: every account replays from the journal and the total is 0")
 	default:
-		return fmt.Errorf("unknown command %q (want serve, deposit, balance, resolve, disputes, nodes, audits, check)", cmd)
+		return fmt.Errorf("unknown command %q (want serve, balance, resolve, disputes, nodes, audits, relays, check); credit users with the portal", cmd)
 	}
 	return nil
 }

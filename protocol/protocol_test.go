@@ -225,3 +225,54 @@ func TestParseChunk(t *testing.T) {
 		t.Errorf("Text() = %q", info.Text())
 	}
 }
+
+func TestToolCallsAreAssembledFromStreamedFragments(t *testing.T) {
+	chunks := []string{
+		`{"choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"get_time","arguments":"{}"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Paris\"}"}}]}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	var acc protocol.ToolCallAccumulator
+	var args string
+	for _, c := range chunks {
+		info, err := protocol.ParseChunk([]byte(c))
+		if err != nil {
+			t.Fatal(err)
+		}
+		acc.Add(info.ToolCalls)
+		args += info.ToolArgs
+	}
+	got := acc.Calls()
+	if len(got) != 2 || got[0].ID != "call_a" || got[0].Function.Name != "get_weather" || got[0].Function.Arguments != `{"city":"Paris"}` ||
+		got[1].ID != "call_b" || got[1].Function.Name != "get_time" || got[1].Function.Arguments != "{}" {
+		t.Fatalf("assembled %+v", got)
+	}
+	if args != `{"city":{}"Paris"}` { // arrival order; only its length is billed
+		t.Fatalf("billed tool text %q", args)
+	}
+	var none protocol.ToolCallAccumulator
+	if none.Calls() != nil {
+		t.Fatal("no tool calls must be nil (omitted from the response)")
+	}
+}
+
+func TestHoldForCoversMaxTokens(t *testing.T) {
+	for _, c := range []struct{ prompt, maxTok, pin, pout uint64 }{
+		{10, 32, 10_000, 10_000}, {1645, 16, 20_000, 40_000}, {0, 1, 1, 1}, {5000, 4096, 100_000, 200_000}, {7, 3, 3_000_000, 7_000_000},
+	} {
+		h := protocol.HoldFor(c.prompt, c.maxTok, c.pin, c.pout)
+		if got := protocol.MaxOutputTokens(h, protocol.PaddedPrompt(c.prompt), c.pin, c.pout); got < c.maxTok {
+			t.Errorf("%+v: hold %d allows %d output tokens", c, h, got)
+		}
+		// A prompt up to twice the estimate is still covered in full.
+		full := protocol.TicketCost(&protocol.Ticket{PriceInMicros: c.pin, PriceOutMicros: c.pout, ReservedMicros: 1 << 62}, 2*c.prompt, c.maxTok)
+		if full > h {
+			t.Errorf("%+v: hold %d < cost %d", c, h, full)
+		}
+	}
+	if protocol.HoldFor(1<<62, 1<<62, 1<<20, 1<<20) != math.MaxUint64 {
+		t.Error("overflow must saturate")
+	}
+}

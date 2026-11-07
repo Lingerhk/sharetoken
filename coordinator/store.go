@@ -4,14 +4,75 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 
+	"sharetoken/accounts"
+	"sharetoken/internal/sqlite"
+	"sharetoken/ledger"
 	"sharetoken/protocol"
 	"sharetoken/receipt"
 )
 
-// schema holds the coordinator's durable state next to the ledger tables.
-// Offers are deliberately not stored: nodes re-gossip them every few seconds.
-const schema = `
+// Migrate creates or upgrades every table of the shared database: ledger,
+// accounts and coordinator state. The portal and the coordinator both call it,
+// so either may start first.
+func Migrate(db *sql.DB) error {
+	if err := sqlite.Migrate(db, ledger.Schema, accounts.Schema, Schema); err != nil {
+		return err
+	}
+	// v1 databases predate the account and token columns of jobs.
+	for _, col := range []struct{ name, def string }{
+		{"buyer_acct", "TEXT NOT NULL DEFAULT ''"},
+		{"node_acct", "TEXT NOT NULL DEFAULT ''"},
+		{"prompt_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"completion_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"started_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"ticket_expires", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := sqlite.AddColumn(db, "jobs", col.name, col.def); err != nil {
+			return fmt.Errorf("coordinator: migrate jobs.%s: %w", col.name, err)
+		}
+	}
+	// Columns added after the first v2 databases were created.
+	for _, c := range []struct{ table, name, def string }{
+		{"relays", "rtt_ms", "INTEGER NOT NULL DEFAULT 0"}, // the coordinator's measured round trip
+		{"users", "mfa_secret", "BLOB NOT NULL DEFAULT x''"},
+		{"users", "mfa_enrolled_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"users", "mfa_last_step", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_tokens", "mfa", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := sqlite.AddColumn(db, c.table, c.name, c.def); err != nil {
+			return fmt.Errorf("coordinator: migrate %s.%s: %w", c.table, c.name, err)
+		}
+	}
+	return sqlite.Migrate(db, jobIndexes)
+}
+
+const jobIndexes = `
+CREATE INDEX IF NOT EXISTS jobs_by_buyer_acct ON jobs(buyer_acct, created_at);
+CREATE INDEX IF NOT EXISTS jobs_by_node_acct  ON jobs(node_acct, created_at);
+CREATE INDEX IF NOT EXISTS jobs_unstarted     ON jobs(status, started_at, ticket_expires);
+-- IssueTicket counts a buyer's unused tickets on every request: without this
+-- the query walks the account's whole job history under the write lock.
+CREATE INDEX IF NOT EXISTS jobs_buyer_unstarted ON jobs(buyer_acct, status, started_at, created_at);
+-- Covering indexes for the portal's per-account usage totals: without them the
+-- totals read every (multi-kilobyte) job row of the account.
+CREATE INDEX IF NOT EXISTS jobs_buy_usage  ON jobs(buyer_acct, status, prompt_tokens, completion_tokens, cost);
+CREATE INDEX IF NOT EXISTS jobs_sell_usage ON jobs(node_acct, status, prompt_tokens, completion_tokens, cost, fee);
+-- The history purge (DELETE … WHERE status IN (…) AND done_at < ?) must seek,
+-- not read every finished job: it runs under the write lock.
+CREATE INDEX IF NOT EXISTS jobs_status_done ON jobs(status, done_at);
+-- The admin console lists all jobs (optionally one status) newest first:
+-- without these the listing sorts the whole table on every page.
+CREATE INDEX IF NOT EXISTS jobs_by_created        ON jobs(created_at);
+CREATE INDEX IF NOT EXISTS jobs_by_status_created ON jobs(status, created_at);
+-- Judged disputes are rare; the admin console lists them newest first.
+CREATE INDEX IF NOT EXISTS jobs_judged ON jobs(created_at) WHERE dispute_outcome != '';
+`
+
+// Schema holds the coordinator's durable state next to the ledger tables.
+// Offers are deliberately not stored: nodes re-announce them every few seconds.
+const Schema = `
 CREATE TABLE IF NOT EXISTS meta (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -20,6 +81,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 	job_id          TEXT PRIMARY KEY,
 	buyer           TEXT NOT NULL,
 	node            TEXT NOT NULL,
+	buyer_acct      TEXT NOT NULL DEFAULT '',
+	node_acct       TEXT NOT NULL DEFAULT '',
 	model           TEXT NOT NULL,
 	status          TEXT NOT NULL,
 	ticket          BLOB NOT NULL,
@@ -32,7 +95,11 @@ CREATE TABLE IF NOT EXISTS jobs (
 	created_at      INTEGER NOT NULL,
 	release_at      INTEGER NOT NULL,
 	finalize_at     INTEGER NOT NULL DEFAULT 0,
-	done_at         INTEGER NOT NULL DEFAULT 0
+	done_at         INTEGER NOT NULL DEFAULT 0,
+	prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+	completion_tokens INTEGER NOT NULL DEFAULT 0,
+	started_at        INTEGER NOT NULL DEFAULT 0,
+	ticket_expires    INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE INDEX IF NOT EXISTS jobs_status_release  ON jobs(status, release_at);
 CREATE INDEX IF NOT EXISTS jobs_status_finalize ON jobs(status, finalize_at);
@@ -71,6 +138,9 @@ CREATE INDEX IF NOT EXISTS audits_by_node ON audits(node, at);
 // job is one row of the jobs table.
 type job struct {
 	ticket         protocol.Ticket
+	buyerAcct      string // ledger account the buyer pays from
+	nodeAcct       string // ledger account the node earns into
+	startedAt      int64  // when the node reported the buyer connected; 0: not yet
 	status         Status
 	receipt        *receipt.SignedReceipt // the node's (or, after evidence, the judged) receipt
 	cost           uint64
@@ -92,9 +162,9 @@ func loadJob(tx *sql.Tx, id string) (*job, error) {
 		status       string
 	)
 	err := tx.QueryRow(`SELECT status, ticket, receipt, cost, fee, dispute_reason, dispute_outcome, dispute_detail,
-		created_at, release_at, finalize_at, done_at FROM jobs WHERE job_id = ?`, id).Scan(
+		created_at, release_at, finalize_at, done_at, buyer_acct, node_acct, started_at FROM jobs WHERE job_id = ?`, id).Scan(
 		&status, &ticket, &rcpt, &cost, &j.fee, &j.disputeReason, &j.disputeOutcome, &j.disputeDetail,
-		&j.createdAt, &j.releaseAt, &j.finalizeAt, &j.doneAt)
+		&j.createdAt, &j.releaseAt, &j.finalizeAt, &j.doneAt, &j.buyerAcct, &j.nodeAcct, &j.startedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -104,6 +174,12 @@ func loadJob(tx *sql.Tx, id string) (*job, error) {
 	j.status, j.cost = Status(status), uint64(cost)
 	if err := json.Unmarshal(ticket, &j.ticket); err != nil {
 		return nil, err
+	}
+	if j.buyerAcct == "" { // a job written by v1
+		j.buyerAcct = ledger.Account(j.ticket.Buyer)
+	}
+	if j.nodeAcct == "" {
+		j.nodeAcct = ledger.Account(j.ticket.Node)
 	}
 	if len(rcpt) > 0 {
 		j.receipt = new(receipt.SignedReceipt)
@@ -119,25 +195,30 @@ func insertJob(tx *sql.Tx, j *job) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO jobs (job_id, buyer, node, model, status, ticket, dispute_reason, created_at, release_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		j.ticket.JobID, j.ticket.Buyer, j.ticket.Node, j.ticket.Model, string(j.status), ticket, j.disputeReason, j.createdAt, j.releaseAt)
+	_, err = tx.Exec(`INSERT INTO jobs (job_id, buyer, node, buyer_acct, node_acct, model, status, ticket, dispute_reason, created_at, release_at, ticket_expires)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		j.ticket.JobID, j.ticket.Buyer, j.ticket.Node, j.buyerAcct, j.nodeAcct, j.ticket.Model, string(j.status), ticket,
+		j.disputeReason, j.createdAt, j.releaseAt, j.ticket.ExpiresAt)
 	return err
 }
 
 // saveJob writes a job's mutable fields; the ticket never changes.
 func saveJob(tx *sql.Tx, j *job) error {
-	var rcpt []byte
+	var (
+		rcpt   []byte
+		pt, ct uint64
+	)
 	if j.receipt != nil {
 		var err error
 		if rcpt, err = json.Marshal(j.receipt); err != nil {
 			return err
 		}
+		pt, ct = j.receipt.Receipt.PromptTokens, j.receipt.Receipt.CompletionTokens
 	}
 	_, err := tx.Exec(`UPDATE jobs SET status = ?, receipt = ?, cost = ?, fee = ?, dispute_reason = ?, dispute_outcome = ?,
-		dispute_detail = ?, finalize_at = ?, done_at = ? WHERE job_id = ?`,
+		dispute_detail = ?, finalize_at = ?, done_at = ?, prompt_tokens = ?, completion_tokens = ?, started_at = ? WHERE job_id = ?`,
 		string(j.status), rcpt, int64(j.cost), j.fee, j.disputeReason, j.disputeOutcome, j.disputeDetail,
-		j.finalizeAt, j.doneAt, j.ticket.JobID)
+		j.finalizeAt, j.doneAt, int64(min(pt, 1<<62)), int64(min(ct, 1<<62)), j.startedAt, j.ticket.JobID)
 	return err
 }
 

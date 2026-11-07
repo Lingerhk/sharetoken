@@ -8,9 +8,18 @@
 // request or response content, with one deliberate exception: a buyer may
 // disclose ONE job's key as dispute evidence (package evidence).
 //
-// All durable state (ledger, jobs, node records, audits) lives in SQLite and
-// every state change is one transaction, so a crash or restart never loses a
-// hold or pays twice. Offers are the only in-memory state; nodes re-gossip them.
+// Users reach the coordinator only through relays (package relay); it may sit
+// on a private network and never accepts direct connections from users.
+//
+// Money belongs to user accounts, not to peers: the portal binds each device's
+// peer ID to a user (package accounts, in the same database), and the engine
+// resolves the peer on every authenticated request to the account that pays
+// (buyer) or earns (node).
+//
+// All durable state (ledger, jobs, node records, audits, accounts) lives in
+// one database and every state change is one transaction, so a crash or
+// restart never loses a hold or pays twice. Offers are the only in-memory
+// state; nodes re-announce them every few seconds.
 package coordinator
 
 import (
@@ -26,9 +35,11 @@ import (
 	"math"
 	mrand "math/rand/v2"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
+	"sharetoken/accounts"
 	"sharetoken/attest"
 	"sharetoken/evidence"
 	"sharetoken/internal/canon"
@@ -67,9 +78,15 @@ type Attestation struct {
 
 // Config tunes the engine. Zero values get sensible defaults.
 type Config struct {
-	DB              *sql.DB       // nil: a private in-memory database (tests, demos)
-	FeeBps          int64         // platform fee in basis points of each settled job
-	TicketTTL       time.Duration // time a node has to start a ticketed job
+	DB         *sql.DB       // nil: a private in-memory database (tests, demos)
+	FeeBps     int64         // platform fee in basis points of each settled job
+	TicketTTL  time.Duration // time a node has to start a ticketed job
+	StartGrace time.Duration // after the ticket expires, an unstarted job is released this late (default 30s)
+	// MaxStaleTickets is how many held tickets a buyer account may have that
+	// were issued over StaleAfter ago and never started; beyond it the buyer
+	// gets no new tickets until they are released (default 4).
+	MaxStaleTickets int
+	StaleAfter      time.Duration // default 10s
 	SettleGrace     time.Duration // extra time for settlement to arrive before the hold is released
 	DisputeWindow   time.Duration // unacknowledged settlements become final after this
 	MaxOfferTTL     time.Duration // offers claiming a longer validity are rejected
@@ -79,16 +96,50 @@ type Config struct {
 	// DevCreditMicros credits each new peer once on its first ticket request.
 	// For demos and testnets only: anyone can mint peer IDs.
 	DevCreditMicros uint64
-	Counter         tokens.Counter // judges dispute evidence; nil = heuristic
-	Attestation     *Attestation   // optional
-	Latency         func(node string) time.Duration
-	Now             func() time.Time
-	Log             *slog.Logger
+	// OpenAccounts gives every peer that is not bound to a user its own
+	// account (ledger.Account(peer)) instead of refusing it. For tests and
+	// local demos without a portal; never on a public network.
+	OpenAccounts bool
+	Counter      tokens.Counter // judges dispute evidence; nil = heuristic
+	Attestation  *Attestation   // optional
+	Relays       []string       // relays to reserve on besides those registered in the database
+	RelaySync    time.Duration  // how often the relay list and status are synced (default 15s)
+	Latency      func(node string) time.Duration
+	// NodeOnline reports whether a node is currently connected to the
+	// coordinator. Nodes that are not are skipped when matching: a crashed
+	// node, or one whose relay just died, cannot be reached by buyers either,
+	// and could not report starts or settle (nil: every offer counts as online).
+	NodeOnline func(node string) bool
+	// WarmUp is how long after start the coordinator answers "no node offers
+	// this model" with CodeCapacity instead of CodeNoOffers: offers live in
+	// memory, so right after a restart they are still being re-announced and
+	// buyers should queue rather than fail (0: off; NewService uses 30s,
+	// twice the nodes' announce interval).
+	WarmUp time.Duration
+	// ConnectedSince reports since when a peer has been continuously
+	// connected (zero if it is not). A buyer's unused ticket only counts
+	// against it if the buyer stayed connected since the ticket was issued:
+	// otherwise the ticket reply may never have reached it (nil: always).
+	ConnectedSince func(peer string) time.Time
+	Now            func() time.Time
+	Log            *slog.Logger
 }
 
 func (c *Config) setDefaults() {
 	if c.TicketTTL == 0 {
-		c.TicketTTL = 2 * time.Minute
+		// Buyers start a job within seconds of getting its ticket; a short
+		// lifetime bounds how long a ticket whose reply was lost (a dropped
+		// connection, a coordinator crash) keeps a node slot and a hold.
+		c.TicketTTL = time.Minute
+	}
+	if c.StartGrace == 0 {
+		c.StartGrace = 30 * time.Second
+	}
+	if c.MaxStaleTickets == 0 {
+		c.MaxStaleTickets = 4
+	}
+	if c.StaleAfter == 0 {
+		c.StaleAfter = 10 * time.Second
 	}
 	if c.SettleGrace == 0 {
 		c.SettleGrace = 15 * time.Minute
@@ -135,6 +186,7 @@ const (
 
 type offerEntry struct {
 	offer protocol.Offer
+	acct  string // ledger account the node earns into
 	tee   string // allow-list label of the verified TEE image; "" if not attested
 }
 
@@ -152,6 +204,9 @@ type Engine struct {
 
 	teeMu    sync.Mutex
 	teeCache map[[32]byte]string
+
+	started   time.Time // for WarmUp
+	lastPurge time.Time // last purge of expired job history (under mu)
 }
 
 // NewEngine opens the engine's state in cfg.DB, checks that the books replay
@@ -168,9 +223,9 @@ func NewEngine(self string, priv ed25519.PrivateKey, cfg Config) (*Engine, error
 	}
 	e := &Engine{
 		self: self, priv: priv, cfg: cfg, db: db, ownDB: own, log: cfg.Log,
-		offers: make(map[string]*offerEntry), teeCache: make(map[[32]byte]string),
+		offers: make(map[string]*offerEntry), teeCache: make(map[[32]byte]string), started: cfg.Now(),
 	}
-	if err := sqlite.Migrate(db, ledger.Schema, schema); err != nil {
+	if err := Migrate(db); err != nil {
 		e.Close()
 		return nil, err
 	}
@@ -195,6 +250,18 @@ func NewEngine(self string, priv ed25519.PrivateKey, cfg Config) (*Engine, error
 		return nil, err
 	}
 	return e, nil
+}
+
+// RecordFeeRate publishes the engine's fee rate in the database for the
+// portal, which resolves disputes in its own process. Only the serving
+// coordinator calls it: admin commands open the engine with a zero fee and
+// must not overwrite the live value.
+func (e *Engine) RecordFeeRate() error {
+	return e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
+		_, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('fee_bps', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+			strconv.FormatInt(e.cfg.FeeBps, 10))
+		return err
+	})
 }
 
 // Close releases the database if the engine opened it.
@@ -232,21 +299,56 @@ func (e *Engine) updateLocked(fn func(tx *sql.Tx, led *ledger.Tx) error) error {
 	return nil
 }
 
-// UpsertOffer records a node's offer if it is valid and newer than the one
-// already held (old offers cannot be replayed). Any model ID is accepted: what
-// a node serves is checked by audits and attestation, not by a list.
+// accountOf returns the ledger account that pays and earns for peer: its
+// user's account, an audit identity's own account, or (OpenAccounts) the
+// peer's own account. Unbound and disabled devices get CodeUnauthorized.
+func (e *Engine) accountOf(tx *sql.Tx, peer string) (string, error) {
+	acct, _, err := accounts.DeviceAccount(tx, peer)
+	switch {
+	case err == nil:
+		return acct, nil
+	case errors.Is(err, accounts.ErrDisabled):
+		return "", protocol.Errorf(protocol.CodeUnauthorized, "this device's user account is disabled")
+	case !errors.Is(err, accounts.ErrUnknownDevice):
+		return "", err
+	}
+	var auditor int
+	switch err := tx.QueryRow(`SELECT auditor FROM peers WHERE peer = ?`, peer).Scan(&auditor); {
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return "", err
+	case auditor == 1, e.cfg.OpenAccounts:
+		return ledger.Account(peer), nil
+	}
+	return "", protocol.Errorf(protocol.CodeUnauthorized, "device %s is not bound to a user; log in with the sharetoken client first", peer)
+}
+
+// AccountOf resolves peer to its ledger account (operators, portal, tests).
+func (e *Engine) AccountOf(peer string) (acct string, err error) {
+	err = e.update(func(tx *sql.Tx, _ *ledger.Tx) error { acct, err = e.accountOf(tx, peer); return err })
+	return acct, err
+}
+
+// UpsertOffer records a node's offer if it is valid, the node is a device of
+// an active user, and the offer is newer than the one already held (old
+// offers cannot be replayed). Any model ID is accepted: what a node serves is
+// checked by audits and attestation, not by a list.
 func (e *Engine) UpsertOffer(o *protocol.Offer) error {
-	if err := o.Verify(e.cfg.Now(), e.cfg.MaxOfferTTL); err != nil {
+	now := e.cfg.Now()
+	if err := o.Verify(now, e.cfg.MaxOfferTTL); err != nil {
 		return protocol.Errorf(protocol.CodeBadRequest, "%v", err)
 	}
 	tee := e.verifyQuote(o)
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if cur, ok := e.offers[o.Node]; ok && cur.offer.IssuedAt >= o.IssuedAt {
-		return nil
-	}
-	e.offers[o.Node] = &offerEntry{offer: *o, tee: tee}
-	return nil
+	return e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
+		acct, err := e.accountOf(tx, o.Node)
+		if err != nil {
+			return err
+		}
+		if cur, ok := e.offers[o.Node]; ok && cur.offer.IssuedAt >= o.IssuedAt {
+			return nil
+		}
+		e.offers[o.Node] = &offerEntry{offer: *o, acct: acct, tee: tee}
+		return accounts.TouchDevice(tx, o.Node, now, 5*time.Minute)
+	})
 }
 
 // verifyQuote returns the allow-list label of the offer's attested image, or
@@ -326,21 +428,29 @@ func (e *Engine) Models() []protocol.ModelSummary {
 	return out
 }
 
-// Deposit credits a peer's account (operators; payment rails are out of scope).
+// Deposit credits the account of a peer (tests, open-account demos; users
+// are credited through the portal).
 func (e *Engine) Deposit(peerID string, micros uint64) error {
 	if micros == 0 || micros > math.MaxInt64 {
 		return ledger.ErrInvalidAmount
 	}
-	return e.update(func(_ *sql.Tx, led *ledger.Tx) error {
-		return led.Deposit(ledger.Account(peerID), int64(micros), "deposit")
+	return e.update(func(tx *sql.Tx, led *ledger.Tx) error {
+		acct, err := e.accountOf(tx, peerID)
+		if err != nil {
+			return err
+		}
+		return led.Deposit(acct, int64(micros), "deposit")
 	})
 }
 
-// Balance reports a peer's account.
+// Balance reports the account of a peer.
 func (e *Engine) Balance(peerID string) (protocol.BalanceResponse, error) {
 	var out protocol.BalanceResponse
-	acct := ledger.Account(peerID)
-	err := e.update(func(_ *sql.Tx, led *ledger.Tx) (err error) {
+	err := e.update(func(tx *sql.Tx, led *ledger.Tx) error {
+		acct, err := e.accountOf(tx, peerID)
+		if err != nil {
+			return err
+		}
 		if out.AvailableMicros, err = led.Balance(acct); err != nil {
 			return err
 		}
@@ -376,6 +486,7 @@ func (e *Engine) JobStatus(jobID string) (Status, bool) {
 
 type candidate struct {
 	offer *protocol.Offer
+	acct  string
 	price protocol.ModelPrice
 	stats *NodeStats
 }
@@ -392,8 +503,27 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 	now := e.cfg.Now()
 	var resp *protocol.TicketResponse
 	err := e.update(func(tx *sql.Tx, led *ledger.Tx) error {
-		if err := e.grantDevCredit(tx, led, buyer, now); err != nil {
+		buyerAcct, err := e.accountOf(tx, buyer)
+		if err != nil {
 			return err
+		}
+		if err := e.grantDevCredit(tx, led, buyer, buyerAcct, now); err != nil {
+			return err
+		}
+		// A buyer that keeps taking tickets and never connects would block
+		// nodes' slots; cap the tickets it leaves unused.
+		// Tickets the buyer disputed as failed (it could not reach the node: a
+		// node that crashed or lost its relay) are its bad luck, not hoarding:
+		// they count against a 4x higher limit, so an honest buyer is not locked
+		// out by a few dead nodes while a hoarder stays capped.
+		// A node that is offline (its relay just died, it is reconnecting)
+		// cannot report starts, so its tickets say nothing about the buyer.
+		stale, failed, err := e.unusedTickets(tx, buyerAcct, now)
+		if err != nil {
+			return err
+		}
+		if stale >= e.cfg.MaxStaleTickets || failed >= 4*e.cfg.MaxStaleTickets {
+			return protocol.Errorf(protocol.CodeBusy, "%d earlier tickets were never used (%d more reported failed); they are released when they expire", stale, failed)
 		}
 		busy, err := busyNodes(tx)
 		if err != nil {
@@ -404,19 +534,20 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			excluded[n] = true
 		}
 		var cands []candidate
+		full := 0 // eligible nodes skipped only because they are at capacity
 		for node, oe := range e.offers {
 			o := &oe.offer
-			// A peer may not buy from itself: it would only churn fees and
-			// farm reputation.
-			if o.ExpiresAt <= now.UnixNano() || node == buyer || excluded[node] ||
+			// A user may not buy from itself (from any of its devices): it
+			// would only churn fees and farm reputation.
+			if o.ExpiresAt <= now.UnixNano() || node == buyer || oe.acct == buyerAcct || excluded[node] ||
 				(req.Node != "" && node != req.Node) || (req.RequireTEE && oe.tee == "") {
+				continue
+			}
+			if e.cfg.NodeOnline != nil && !e.cfg.NodeOnline(node) {
 				continue
 			}
 			p, ok := o.Price(req.Model)
 			if !ok || (req.MaxPriceIn > 0 && p.PriceInMicros > req.MaxPriceIn) || (req.MaxPriceOut > 0 && p.PriceOutMicros > req.MaxPriceOut) {
-				continue
-			}
-			if o.MaxConcurrency > 0 && busy[node] >= o.MaxConcurrency {
 				continue
 			}
 			st, err := loadStats(tx, node)
@@ -426,7 +557,19 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			if st.SuspendedUntil > now.UnixNano() {
 				continue
 			}
-			cands = append(cands, candidate{offer: o, price: p, stats: st})
+			if o.MaxConcurrency > 0 && busy[node] >= o.MaxConcurrency {
+				full++
+				continue
+			}
+			cands = append(cands, candidate{offer: o, acct: oe.acct, price: p, stats: st})
+		}
+		if len(cands) == 0 && full > 0 {
+			return protocol.Errorf(protocol.CodeCapacity, "all %d nodes offering %q are at capacity", full, req.Model)
+		}
+		// (Only for a first ask: a buyer that already excluded nodes after
+		// failures has seen offers, and should hear there are no more.)
+		if len(cands) == 0 && len(req.Exclude) == 0 && e.cfg.WarmUp > 0 && now.Before(e.started.Add(e.cfg.WarmUp)) {
+			return protocol.Errorf(protocol.CodeCapacity, "the coordinator just started and nodes are re-announcing; retry shortly")
 		}
 		if len(cands) == 0 {
 			what := "no node"
@@ -441,9 +584,13 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		if err != nil {
 			return err
 		}
-		if err := led.Hold(jobID, ledger.Account(buyer), int64(req.BudgetMicros)); err != nil {
+		hold := req.BudgetMicros
+		if req.MaxTokens > 0 && req.PromptTokens > 0 {
+			hold = min(hold, max(e.cfg.MinBudgetMicros, protocol.HoldFor(req.PromptTokens, req.MaxTokens, best.price.PriceInMicros, best.price.PriceOutMicros)))
+		}
+		if err := led.Hold(jobID, buyerAcct, int64(hold)); err != nil {
 			if errors.Is(err, ledger.ErrInsufficientFunds) {
-				return protocol.Errorf(protocol.CodeInsufficientFunds, "balance does not cover the %d micro budget", req.BudgetMicros)
+				return protocol.Errorf(protocol.CodeInsufficientFunds, "balance does not cover the %d micro reservation", hold)
 			}
 			return err
 		}
@@ -457,13 +604,14 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			Buyer:          buyer,
 			PriceInMicros:  best.price.PriceInMicros,
 			PriceOutMicros: best.price.PriceOutMicros,
-			ReservedMicros: req.BudgetMicros,
+			ReservedMicros: hold,
 			IssuedAt:       now.UnixNano(),
 			ExpiresAt:      now.Add(e.cfg.TicketTTL).UnixNano(),
 			Coordinator:    e.self,
 		}
 		t.Sign(e.priv)
-		j := &job{ticket: t, status: StatusHeld, createdAt: now.UnixNano(), releaseAt: now.Add(e.cfg.TicketTTL + e.cfg.SettleGrace).UnixNano()}
+		j := &job{ticket: t, buyerAcct: buyerAcct, nodeAcct: best.acct, status: StatusHeld,
+			createdAt: now.UnixNano(), releaseAt: now.Add(e.cfg.TicketTTL + e.cfg.SettleGrace).UnixNano()}
 		if err := insertJob(tx, j); err != nil {
 			return err
 		}
@@ -473,7 +621,46 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 	return resp, err
 }
 
-func (e *Engine) grantDevCredit(tx *sql.Tx, led *ledger.Tx, peer string, now time.Time) error {
+// unusedTickets counts a buyer's held tickets issued over StaleAfter ago that
+// never started, split into plain (possibly hoarded) ones and ones the buyer
+// reported failed. Tickets of nodes that are not connected right now are
+// skipped (their start reports cannot arrive), and so are tickets issued to a
+// device before its current connection (the reply may never have reached it).
+func (e *Engine) unusedTickets(tx *sql.Tx, buyerAcct string, now time.Time) (stale, failed int, err error) {
+	rows, err := tx.Query(`SELECT buyer, node, created_at, dispute_reason != '' FROM jobs
+		WHERE buyer_acct = ? AND status = 'held' AND started_at = 0 AND created_at < ?`,
+		buyerAcct, now.Add(-e.cfg.StaleAfter).UnixNano())
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var device, node string
+		var created int64
+		var disputed bool
+		if err := rows.Scan(&device, &node, &created, &disputed); err != nil {
+			return 0, 0, err
+		}
+		if e.cfg.NodeOnline != nil && !e.cfg.NodeOnline(node) {
+			continue
+		}
+		if e.cfg.ConnectedSince != nil {
+			// The device reconnected after the ticket was issued (or is gone):
+			// the ticket reply may have been lost with the old connection.
+			if since := e.cfg.ConnectedSince(device); since.IsZero() || since.UnixNano() > created {
+				continue
+			}
+		}
+		if disputed {
+			failed++
+		} else {
+			stale++
+		}
+	}
+	return stale, failed, rows.Err()
+}
+
+func (e *Engine) grantDevCredit(tx *sql.Tx, led *ledger.Tx, peer, acct string, now time.Time) error {
 	if e.cfg.DevCreditMicros == 0 || e.cfg.DevCreditMicros > math.MaxInt64 {
 		return nil
 	}
@@ -486,7 +673,7 @@ func (e *Engine) grantDevCredit(tx *sql.Tx, led *ledger.Tx, peer string, now tim
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil
 	}
-	return led.Deposit(ledger.Account(peer), int64(e.cfg.DevCreditMicros), "dev credit")
+	return led.Deposit(acct, int64(e.cfg.DevCreditMicros), "dev credit")
 }
 
 // pick scores candidates: 0.45 price + 0.25 reputation + 0.15 latency +
@@ -597,9 +784,112 @@ func (e *Engine) Settle(submitter string, req protocol.SettleRequest) (*protocol
 	return resp, err
 }
 
+// Abandon releases a held job its node gave up before delivering anything:
+// the buyer gets the whole hold back now, and the node's slot is free again.
+// It counts as a failure for the node, like a ticket left to expire.
+func (e *Engine) Abandon(submitter string, req protocol.AbandonRequest) error {
+	now := e.cfg.Now()
+	return e.update(func(tx *sql.Tx, led *ledger.Tx) error {
+		j, err := loadJob(tx, req.Ticket.JobID)
+		if err != nil {
+			return err
+		}
+		if j == nil {
+			return protocol.Errorf(protocol.CodeNotFound, "unknown job")
+		}
+		if !j.ticket.Equal(&req.Ticket) {
+			return protocol.Errorf(protocol.CodeBadTicket, "ticket does not match the one issued")
+		}
+		if submitter != j.ticket.Node {
+			return protocol.Errorf(protocol.CodeForbidden, "only the ticketed node may abandon a job")
+		}
+		switch {
+		case j.status == StatusReleased:
+			return nil
+		case j.status != StatusHeld || j.receipt != nil:
+			return protocol.Errorf(protocol.CodeConflict, "job is %s and can no longer be abandoned", j.status)
+		}
+		if err := led.Release(j.ticket.JobID, "release (node abandoned the job)"); err != nil {
+			return err
+		}
+		j.status, j.doneAt = StatusReleased, now.UnixNano()
+		j.disputeDetail = clampReason("abandoned by the node: "+req.Reason, "")
+		if req.NoFault {
+			// The buyer's request was invalid: releasing it is not a node failure,
+			// otherwise any buyer could drain honest nodes' reputation for free.
+			return saveJob(tx, j)
+		}
+		if _, err := updateStats(tx, j.ticket.Node, func(s *NodeStats) {
+			s.Failures++
+			s.Reputation = max(0, s.Reputation-repPerFailure)
+		}); err != nil {
+			return err
+		}
+		return saveJob(tx, j)
+	})
+}
+
+// ReleaseUndelivered releases a held job whose ticket could not be sent to
+// the buyer. It is a no-op if the job already started or moved on (the reply
+// may have got through after all). Nobody is penalized.
+func (e *Engine) ReleaseUndelivered(jobID string) error {
+	now := e.cfg.Now()
+	return e.update(func(tx *sql.Tx, led *ledger.Tx) error {
+		j, err := loadJob(tx, jobID)
+		if err != nil || j == nil {
+			return err
+		}
+		if j.status != StatusHeld || j.startedAt != 0 || j.receipt != nil {
+			return nil
+		}
+		if err := led.Release(jobID, "release (ticket reply undelivered)"); err != nil {
+			return err
+		}
+		j.status, j.doneAt = StatusReleased, now.UnixNano()
+		j.disputeDetail = "released: the ticket reply could not be delivered"
+		return saveJob(tx, j)
+	})
+}
+
+// MarkStarted records that the buyer started a held job (reported by its
+// node). It fails with CodeConflict when the job was already released for
+// never starting: the node should then stop serving it, as it will not be paid.
+func (e *Engine) MarkStarted(submitter string, t protocol.Ticket) error {
+	now := e.cfg.Now()
+	return e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
+		j, err := loadJob(tx, t.JobID)
+		if err != nil {
+			return err
+		}
+		if j == nil {
+			return protocol.Errorf(protocol.CodeNotFound, "unknown job")
+		}
+		if !j.ticket.Equal(&t) {
+			return protocol.Errorf(protocol.CodeBadTicket, "ticket does not match the one issued")
+		}
+		if submitter != j.ticket.Node {
+			return protocol.Errorf(protocol.CodeForbidden, "only the ticketed node may report a start")
+		}
+		switch {
+		case j.status == StatusReleased && j.startedAt == 0:
+			return protocol.Errorf(protocol.CodeConflict, "the job was released because it did not start in time")
+		case j.status != StatusHeld || j.startedAt != 0:
+			return nil
+		}
+		j.startedAt = now.UnixNano()
+		return saveJob(tx, j)
+	})
+}
+
 // finalize pays the node for j and records the success.
 func (e *Engine) finalize(tx *sql.Tx, led *ledger.Tx, j *job, now time.Time) error {
-	fee, err := led.Capture(j.ticket.JobID, ledger.Account(j.ticket.Node), int64(j.cost), e.cfg.FeeBps)
+	return finalizeJob(tx, led, j, now, e.cfg.FeeBps)
+}
+
+// finalizeJob captures j's hold for the node (minus the platform fee) and
+// credits the node's record. It is shared with the portal's dispute resolution.
+func finalizeJob(tx *sql.Tx, led *ledger.Tx, j *job, now time.Time, feeBps int64) error {
+	fee, err := led.Capture(j.ticket.JobID, j.nodeAcct, int64(j.cost), feeBps)
 	if err != nil {
 		return fmt.Errorf("coordinator: capture %s: %w", j.ticket.JobID, err)
 	}
@@ -615,6 +905,11 @@ func (e *Engine) finalize(tx *sql.Tx, led *ledger.Tx, j *job, now time.Time) err
 
 // refund returns j's hold to the buyer and charges the node a lost dispute.
 func (e *Engine) refund(tx *sql.Tx, led *ledger.Tx, j *job, now time.Time) error {
+	return refundJob(tx, led, j, now)
+}
+
+// refundJob returns j's hold to the buyer and charges the node a lost dispute.
+func refundJob(tx *sql.Tx, led *ledger.Tx, j *job, now time.Time) error {
 	if err := led.Release(j.ticket.JobID, "refund (dispute upheld)"); err != nil {
 		return fmt.Errorf("coordinator: refund %s: %w", j.ticket.JobID, err)
 	}
@@ -793,17 +1088,27 @@ func (e *Engine) Tick(now time.Time) {
 	}
 	e.mu.Unlock()
 
-	var held, pending, idleAuditors []string
+	var held, unstarted, pending, idleAuditors []string
 	err := e.update(func(tx *sql.Tx, _ *ledger.Tx) (err error) {
 		if held, err = queryStrings(tx, `SELECT job_id FROM jobs WHERE status = 'held' AND release_at <= ?`, now.UnixNano()); err != nil {
+			return err
+		}
+		if unstarted, err = queryStrings(tx, `SELECT job_id FROM jobs WHERE status = 'held' AND started_at = 0
+			AND ticket_expires > 0 AND ticket_expires <= ?`, now.Add(-e.cfg.StartGrace).UnixNano()); err != nil {
 			return err
 		}
 		if pending, err = queryStrings(tx, `SELECT job_id FROM jobs WHERE status = 'pending' AND finalize_at <= ?`, now.UnixNano()); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`DELETE FROM jobs WHERE status IN ('final', 'released', 'refunded') AND done_at < ?`,
-			now.Add(-e.cfg.JobRetention).UnixNano()); err != nil {
-			return err
+		// Purge expired history once a minute, not every tick: it runs under the
+		// write lock, and (with the (status, done_at) index) only touches the
+		// rows it deletes.
+		if now.Sub(e.lastPurge) >= time.Minute {
+			e.lastPurge = now
+			if _, err = tx.Exec(`DELETE FROM jobs WHERE status IN ('final', 'released', 'refunded') AND done_at < ?`,
+				now.Add(-e.cfg.JobRetention).UnixNano()); err != nil {
+				return err
+			}
 		}
 		idleAuditors, err = queryStrings(tx, `SELECT peer FROM peers p WHERE auditor = 1 AND created_at < ? AND NOT EXISTS (
 			SELECT 1 FROM jobs j WHERE j.buyer = p.peer AND j.status IN ('held', 'pending', 'disputed'))`, now.Add(-time.Minute).UnixNano())
@@ -828,6 +1133,21 @@ func (e *Engine) Tick(now time.Time) {
 			}); err != nil {
 				return err
 			}
+			return saveJob(tx, j)
+		})
+	}
+	for _, id := range unstarted {
+		// The ticket expired and the node never reported a start: the buyer
+		// never connected (or gave up). Not the node's fault: no penalty.
+		e.tickJob(id, now, func(tx *sql.Tx, led *ledger.Tx, j *job) error {
+			if j.status != StatusHeld || j.startedAt != 0 || j.receipt != nil {
+				return nil
+			}
+			if err := led.Release(id, "release (job never started)"); err != nil {
+				return err
+			}
+			j.status, j.doneAt = StatusReleased, now.UnixNano()
+			j.disputeDetail = "never started: the buyer did not connect before the ticket expired"
 			return saveJob(tx, j)
 		})
 	}

@@ -42,6 +42,7 @@ import (
 	"unicode"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 
 	"sharetoken/buyer"
 	"sharetoken/coordinator"
@@ -59,14 +60,17 @@ type Reference struct {
 
 // Config configures the auditor. Zero values get defaults.
 type Config struct {
-	References    []Reference
-	Coordinator   peer.AddrInfo // where audit identities buy: this coordinator
-	Interval      time.Duration // mean time between audits in Run (default 10m)
-	BudgetMicros  uint64        // reserved per audit job (default 200,000)
-	MaxTokens     int           // output cap of a challenge (default 96)
-	MatchAt       float64       // similarity at or above which outputs match (default 0.8)
-	MismatchBelow float64       // similarity below which they do not (default 0.4)
-	Prompts       []string      // challenge prompts; default: randomized built-ins
+	References  []Reference
+	Coordinator peer.AddrInfo // where audit identities buy: this coordinator
+	// CoordinatorAddrs, if set, supplies the coordinator's current addresses
+	// for each audit (its relay circuit addresses, which change over time).
+	CoordinatorAddrs func() []ma.Multiaddr
+	Interval         time.Duration // mean time between audits in Run (default 10m)
+	BudgetMicros     uint64        // reserved per audit job (default 200,000)
+	MaxTokens        int           // output cap of a challenge (default 96)
+	MatchAt          float64       // similarity at or above which outputs match (default 0.8)
+	MismatchBelow    float64       // similarity below which they do not (default 0.4)
+	Prompts          []string      // challenge prompts; default: randomized built-ins
 }
 
 // Auditor runs audits against the engine's live offers.
@@ -170,7 +174,11 @@ func (a *Auditor) Audit(ctx context.Context, nodeID, model string) (*coordinator
 	if err := a.eng.RegisterAuditor(keys.ID(), a.cfg.BudgetMicros); err != nil {
 		return nil, err
 	}
-	cl := buyer.New(h, keys, a.cfg.Coordinator)
+	coord := a.cfg.Coordinator
+	if a.cfg.CoordinatorAddrs != nil {
+		coord.Addrs = a.cfg.CoordinatorAddrs()
+	}
+	cl := buyer.New(h, keys, coord)
 	cl.Retries = 0 // audit this node, never another
 	defer func() {
 		// A rejected receipt is disputed in the background; deliver it before

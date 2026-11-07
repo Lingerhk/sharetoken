@@ -36,8 +36,14 @@ const (
 	PlatformFees = "platform:fees"
 )
 
-// Account is a peer's single spend/earn account.
+// Account is the spend/earn account of a peer that is not bound to a user:
+// audit identities, and every peer when the coordinator runs with open
+// accounts (tests, local demos).
 func Account(peerID string) string { return "acct:" + peerID }
+
+// UserAccount is a registered user's single spend/earn account. All of the
+// user's devices buy from and sell into it.
+func UserAccount(userID int64) string { return fmt.Sprintf("user:%d", userID) }
 
 func holdAccount(jobID string) string { return "hold:" + jobID }
 
@@ -73,6 +79,8 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
 	amount  INTEGER NOT NULL CHECK (amount > 0),
 	memo    TEXT NOT NULL
 ) STRICT;
+CREATE INDEX IF NOT EXISTS ledger_entries_by_debit  ON ledger_entries(debit, seq);
+CREATE INDEX IF NOT EXISTS ledger_entries_by_credit ON ledger_entries(credit, seq);
 `
 
 // Entry is one journal line: Amount moved from Debit to Credit.
@@ -289,6 +297,35 @@ func (l *Tx) closeHold(jobID string) error {
 func (l *Tx) Journal(afterSeq int64, limit int) ([]Entry, error) {
 	rows, err := l.tx.Query(`SELECT seq, at, job_id, debit, credit, amount, memo FROM ledger_entries
 		WHERE seq > ? ORDER BY seq LIMIT ?`, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Entry
+	for rows.Next() {
+		var e Entry
+		if err := rows.Scan(&e.Seq, &e.At, &e.JobID, &e.Debit, &e.Credit, &e.Amount, &e.Memo); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// AccountEntries returns up to limit journal entries that move money into or
+// out of account, or of its job holds (owner = account), newest first,
+// starting below beforeSeq (0: from the newest).
+func (l *Tx) AccountEntries(account string, beforeSeq int64, limit int) ([]Entry, error) {
+	if beforeSeq <= 0 {
+		beforeSeq = math.MaxInt64
+	}
+	// Two index-ordered scans of at most limit rows each, merged: an OR of
+	// the two columns would sort the account's whole history. UNION ALL is
+	// exact because transfer refuses debit = credit.
+	const side = `SELECT seq, at, job_id, debit, credit, amount, memo FROM ledger_entries
+		WHERE %s = ? AND seq < ? ORDER BY seq DESC LIMIT ?`
+	rows, err := l.tx.Query(`SELECT * FROM (`+fmt.Sprintf(side, "debit")+`) UNION ALL SELECT * FROM (`+fmt.Sprintf(side, "credit")+`)
+		ORDER BY seq DESC LIMIT ?`, account, beforeSeq, limit, account, beforeSeq, limit, limit)
 	if err != nil {
 		return nil, err
 	}

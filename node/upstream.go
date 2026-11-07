@@ -36,6 +36,26 @@ type OpenAICompat struct {
 
 const maxSSELine = 1 << 20
 
+// StatusError is a non-200 answer from the model server.
+type StatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("upstream status %d: %s", e.Status, e.Body) }
+
+// RequestRejected reports whether the model server refused the request itself
+// as invalid (400, 413, 422) rather than failing to serve it: such a job is
+// the buyer's fault, not the node's. 401/403/404 (wrong key or model name)
+// and 429/5xx remain node failures.
+func (e *StatusError) RequestRejected() bool {
+	switch e.Status {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
+}
+
 // Stream implements Upstream.
 func (u *OpenAICompat) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(u.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
@@ -58,7 +78,7 @@ func (u *OpenAICompat) Stream(ctx context.Context, body []byte, emit func([]byte
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("upstream status %d: %s", resp.StatusCode, bytes.TrimSpace(msg))
+		return &StatusError{Status: resp.StatusCode, Body: string(bytes.TrimSpace(msg))}
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), maxSSELine)

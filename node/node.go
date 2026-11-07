@@ -1,5 +1,6 @@
-// Package node is the seller side: it advertises signed offers over GossipSub
-// and serves ticketed jobs on a direct libp2p stream.
+// Package node is the seller side of a user's client: it announces signed
+// offers to the coordinator (through a relay) and serves ticketed jobs on a
+// libp2p stream from the buyer, direct or relayed.
 //
 // Per job: verify the coordinator's ticket, open the sealed request, call the
 // model server, seal each streamed chunk to the buyer's per-job key, sign a
@@ -16,15 +17,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -40,7 +40,12 @@ import (
 
 const (
 	requestTimeout = 30 * time.Second
-	ackTimeout     = 30 * time.Second
+	// How long after a ticket expires the node keeps retrying its start report
+	// and its settlement (the coordinator releases unstarted jobs 30s after
+	// expiry, and holds started ones for a 15 minute settlement grace).
+	startReportGrace  = 30 * time.Second
+	settleRetryWindow = 14 * time.Minute
+	ackTimeout        = 30 * time.Second
 )
 
 // ModelConfig maps a marketplace model ID to the upstream server's name for it
@@ -62,7 +67,10 @@ type Config struct {
 	OfferTTL       time.Duration
 	JobTimeout     time.Duration
 	Quote          *attest.Quote // optional TEE quote binding the receipt and box keys
-	Now            func() time.Time
+	// Addrs returns the addresses to advertise (default: the host's own).
+	// A node behind NAT adds its relay circuit addresses here.
+	Addrs func() []string
+	Now   func() time.Time
 }
 
 func (c *Config) setDefaults() {
@@ -83,6 +91,17 @@ func (c *Config) setDefaults() {
 	}
 }
 
+// Stats is what a node has done since it started.
+type Stats struct {
+	JobsServed     uint64    `json:"jobs_served"`
+	JobsFailed     uint64    `json:"jobs_failed"`
+	EarnedMicros   uint64    `json:"earned_micros"` // settled and acked; unacked jobs pay out after the dispute window
+	Active         int       `json:"active_jobs"`
+	LastAnnounce   time.Time `json:"last_announce,omitzero"`
+	AnnounceError  string    `json:"announce_error,omitempty"`
+	AdvertisedAddr []string  `json:"advertised_addrs,omitempty"`
+}
+
 // Service is a running node.
 type Service struct {
 	h      host.Host
@@ -90,14 +109,20 @@ type Service struct {
 	cfg    Config
 	id     identity
 	models map[string]ModelConfig
-	topic  *pubsub.Topic
 	sem    chan struct{}
+	kick   chan struct{}
 	ctx    context.Context
 	cancel context.CancelFunc
 	log    *slog.Logger
 
 	mu   sync.Mutex
 	seen map[string]int64 // job ID -> ticket expiry; rejects ticket replay
+
+	served, failed, earned atomic.Uint64
+	statMu                 sync.Mutex
+	lastAnnounce           time.Time
+	announceErr            string
+	advertised             []string
 }
 
 // NewService starts a node on h.
@@ -136,22 +161,16 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 		},
 		models: models,
 		sem:    make(chan struct{}, cfg.MaxConcurrency),
+		kick:   make(chan struct{}, 1),
 		ctx:    ctx,
 		cancel: cancel,
 		log:    slog.Default().With("component", "node"),
 		seen:   make(map[string]int64),
 	}
+	if s.cfg.Addrs == nil {
+		s.cfg.Addrs = func() []string { return p2p.AddrStrings(h) }
+	}
 	h.Peerstore().AddAddrs(cfg.Coordinator.ID, cfg.Coordinator.Addrs, peerstore.PermanentAddrTTL)
-
-	ps, err := pubsub.NewGossipSub(ctx, h)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	if s.topic, err = ps.Join(protocol.OffersTopic); err != nil {
-		cancel()
-		return nil, err
-	}
 	h.SetStreamHandler(lproto.ID(protocol.InferProtocol), s.handleInfer)
 	go s.offerLoop()
 	return s, nil
@@ -161,39 +180,61 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 func (s *Service) Close() {
 	s.h.RemoveStreamHandler(lproto.ID(protocol.InferProtocol))
 	s.cancel()
-	_ = s.topic.Close()
 }
 
+// Announce sends a fresh offer now (e.g. after the node's addresses changed).
+func (s *Service) Announce() {
+	select {
+	case s.kick <- struct{}{}:
+	default:
+	}
+}
+
+// Stats reports what the node has done.
+func (s *Service) Stats() Stats {
+	s.statMu.Lock()
+	defer s.statMu.Unlock()
+	return Stats{
+		JobsServed: s.served.Load(), JobsFailed: s.failed.Load(), EarnedMicros: s.earned.Load(),
+		Active: len(s.sem), LastAnnounce: s.lastAnnounce, AnnounceError: s.announceErr, AdvertisedAddr: s.advertised,
+	}
+}
+
+// offerLoop announces the offer every OfferInterval; the announcement is also
+// the node's heartbeat, and the offer expires at the coordinator when it stops.
 func (s *Service) offerLoop() {
 	for i := 0; ; i++ {
-		if s.h.Network().Connectedness(s.cfg.Coordinator.ID) != network.Connected {
-			cctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
-			if err := s.h.Connect(cctx, s.cfg.Coordinator); err != nil && s.ctx.Err() == nil {
-				s.log.Warn("cannot reach coordinator", "err", err)
+		err := s.announce()
+		s.statMu.Lock()
+		if err == nil {
+			s.lastAnnounce, s.announceErr = s.cfg.Now(), ""
+		} else if s.ctx.Err() == nil {
+			if s.announceErr != err.Error() {
+				s.log.Warn("announcing offer failed", "err", err)
 			}
-			cancel()
+			s.announceErr = err.Error()
 		}
-		if err := s.publishOffer(); err != nil && s.ctx.Err() == nil {
-			s.log.Warn("publishing offer failed", "err", err)
-		}
+		s.statMu.Unlock()
 		s.pruneSeen()
 		wait := s.cfg.OfferInterval
-		if i < 3 && wait > time.Second {
-			wait = time.Second // announce quickly while gossip meshes form
+		if err != nil && wait > 2*time.Second {
+			wait = 2 * time.Second // retry soon after a failure
 		}
 		select {
 		case <-s.ctx.Done():
 			return
+		case <-s.kick:
 		case <-time.After(wait):
 		}
 	}
 }
 
-func (s *Service) publishOffer() error {
+func (s *Service) announce() error {
 	now := s.cfg.Now()
+	addrs := s.cfg.Addrs()
 	o := &protocol.Offer{
 		Node:           s.id.self,
-		Addrs:          p2p.AddrStrings(s.h),
+		Addrs:          addrs,
 		BoxPub:         s.id.boxPub,
 		ReceiptKey:     s.id.receiptKey,
 		MaxConcurrency: uint32(s.cfg.MaxConcurrency),
@@ -205,11 +246,12 @@ func (s *Service) publishOffer() error {
 		o.Models = append(o.Models, protocol.ModelPrice{Model: m.ID, PriceInMicros: m.PriceInMicros, PriceOutMicros: m.PriceOutMicros})
 	}
 	o.Sign(s.keys.Signer)
-	data, err := json.Marshal(o)
-	if err != nil {
-		return err
-	}
-	return s.topic.Publish(s.ctx, data)
+	s.statMu.Lock()
+	s.advertised = addrs
+	s.statMu.Unlock()
+	ctx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
+	defer cancel()
+	return p2p.Call(ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, protocol.TypeAnnounce, o, protocol.TypeOK, nil)
 }
 
 func (s *Service) handleInfer(st network.Stream) {
@@ -250,6 +292,7 @@ func (s *Service) handleInfer(st network.Stream) {
 		defer func() { <-s.sem }()
 	default:
 		fail(st, protocol.Errorf(protocol.CodeBusy, "node is at capacity"))
+		go s.abandon(*t, "at capacity")
 		return
 	}
 
@@ -258,17 +301,23 @@ func (s *Service) handleInfer(st network.Stream) {
 	plain, err := s.keys.Box.Open(req.Sealed, protocol.RequestAAD(t))
 	if err != nil {
 		fail(st, protocol.Errorf(protocol.CodeBadRequest, "cannot open sealed request"))
+		go s.abandonNoFault(*t, "unreadable request")
 		return
 	}
 	body, estPrompt, err := UpstreamRequest(t, plain, mc.UpstreamModel)
 	if err != nil {
 		fail(st, err)
+		go s.abandonNoFault(*t, "bad request")
 		return
 	}
 
 	_ = st.SetDeadline(time.Now().Add(s.cfg.JobTimeout))
 	ctx, cancel := context.WithTimeout(s.ctx, s.cfg.JobTimeout)
 	defer cancel()
+	// Tell the coordinator the buyer showed up (in the background: it must
+	// not delay the first byte). If the job was already released for not
+	// starting in time, nobody will pay for it: stop.
+	go s.reportStarted(*t, cancel)
 
 	hasher := receipt.NewStreamHasher()
 	var (
@@ -277,19 +326,21 @@ func (s *Service) handleInfer(st network.Stream) {
 		text  strings.Builder
 	)
 	err = s.cfg.Upstream.Stream(ctx, body, func(payload []byte) error {
-		if info, perr := protocol.ParseChunk(payload); perr == nil {
-			text.WriteString(info.Text())
-			if info.Usage != nil {
-				usage = info.Usage
-			}
-		}
+		info, perr := protocol.ParseChunk(payload)
 		sealed, err := box.Seal(req.BuyerBoxPub, payload, protocol.ChunkAAD(t, seq))
 		if err != nil {
 			return err
 		}
-		hasher.WriteChunk(sealed)
 		if err := protocol.Send(st, protocol.TypeChunk, protocol.Chunk{Seq: seq, Sealed: sealed}); err != nil {
-			return err
+			return fmt.Errorf("%w: %v", errBuyerGone, err)
+		}
+		// Only what reached the buyer's stream counts.
+		hasher.WriteChunk(sealed)
+		if perr == nil {
+			text.WriteString(info.Text())
+			if info.Usage != nil {
+				usage = info.Usage
+			}
 		}
 		seq++
 		return nil
@@ -297,10 +348,41 @@ func (s *Service) handleInfer(st network.Stream) {
 	if err == nil && seq == 0 {
 		err = errors.New("upstream returned an empty stream")
 	}
+	if errors.Is(err, errBuyerGone) {
+		if seq == 0 {
+			// Gone before any output: nothing to bill, and not this node's fault.
+			s.log.Info("buyer left before the first chunk", "job", t.JobID)
+			go s.abandonNoFault(*t, "buyer left before any output")
+			return
+		}
+		// The buyer stopped reading mid-stream (a user pressing "stop"). The
+		// output it received was produced and delivered: bill exactly the
+		// chunks sent, settled without an ack, so the payout waits out the
+		// dispute window like any unacknowledged job. Not a node failure.
+		s.log.Info("buyer cancelled mid-stream; billing the delivered part", "job", t.JobID, "chunks", seq)
+		cancel()
+		sr, serr := s.signReceipt(t, req.Sealed, hasher.Sum(), estPrompt, protocol.EstimateTokens(text.String()))
+		if serr == nil {
+			go s.settle(*t, *sr, nil)
+		}
+		return
+	}
 	if err != nil {
 		// No receipt, no settlement: a failed job is never billed.
+		var se *StatusError
+		if seq == 0 && errors.As(err, &se) && se.RequestRejected() {
+			// The buyer's request is invalid: tell it why (the message goes to
+			// the buyer only, over the end-to-end encrypted stream) and release
+			// the job without counting it against this node.
+			s.log.Info("model server rejected the request", "job", t.JobID, "status", se.Status)
+			fail(st, protocol.Errorf(protocol.CodeBadRequest, "model server rejected the request (HTTP %d): %s", se.Status, clip(se.Body, 300)))
+			go s.abandonNoFault(*t, "request rejected by the model server")
+			return
+		}
+		s.failed.Add(1)
 		s.log.Warn("job failed", "job", t.JobID, "err", err)
 		fail(st, protocol.Errorf(protocol.CodeUpstream, "model server error"))
+		go s.abandon(*t, "model server error")
 		return
 	}
 
@@ -308,19 +390,7 @@ func (s *Service) handleInfer(st network.Stream) {
 	if usage != nil {
 		pt, ct = usage.PromptTokens, usage.CompletionTokens
 	}
-	nonce := make([]byte, 16)
-	_, _ = rand.Read(nonce)
-	sr, err := receipt.Sign(s.keys.Signer, receipt.Receipt{
-		JobID:            t.JobID,
-		ModelID:          t.Model,
-		NodeID:           s.id.receiptKey,
-		RequestHash:      receipt.Hash(req.Sealed),
-		ResponseHash:     hasher.Sum(),
-		PromptTokens:     pt,
-		CompletionTokens: ct,
-		UnixNano:         s.cfg.Now().UnixNano(),
-		Nonce:            nonce,
-	})
+	sr, err := s.signReceipt(t, req.Sealed, hasher.Sum(), pt, ct)
 	if err != nil {
 		fail(st, err)
 		return
@@ -349,30 +419,125 @@ func (s *Service) handleInfer(st network.Stream) {
 	go s.settle(*t, *sr, ack)
 }
 
+// errBuyerGone marks a failure to write to the buyer's stream.
+var errBuyerGone = errors.New("buyer stream closed")
+
+func (s *Service) signReceipt(t *protocol.Ticket, sealedReq, respHash []byte, pt, ct uint64) (*receipt.SignedReceipt, error) {
+	nonce := make([]byte, 16)
+	_, _ = rand.Read(nonce)
+	return receipt.Sign(s.keys.Signer, receipt.Receipt{
+		JobID:            t.JobID,
+		ModelID:          t.Model,
+		NodeID:           s.id.receiptKey,
+		RequestHash:      receipt.Hash(sealedReq),
+		ResponseHash:     respHash,
+		PromptTokens:     pt,
+		CompletionTokens: ct,
+		UnixNano:         s.cfg.Now().UnixNano(),
+		Nonce:            nonce,
+	})
+}
+
 // settle submits the receipt, retrying transient failures. A coded refusal
 // from the coordinator is final.
 func (s *Service) settle(t protocol.Ticket, sr receipt.SignedReceipt, ack []byte) {
 	req := protocol.SettleRequest{Ticket: t, Receipt: sr, Ack: ack}
-	backoff := time.Second
-	for attempt := 0; attempt < 4; attempt++ {
+	// The buyer's hold stays until the coordinator's settlement deadline (the
+	// ticket's lifetime plus a long grace), so a node whose path to the
+	// coordinator is down for a while (relay failover, coordinator restart)
+	// must keep trying rather than give up on work it already delivered.
+	deadline := time.Unix(0, t.ExpiresAt).Add(settleRetryWindow)
+	err := s.retryUntil(deadline, func(ctx context.Context) (bool, error) {
 		var resp protocol.SettleResponse
-		err := p2p.Call(s.ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, protocol.TypeSettle, req, protocol.TypeSettled, &resp)
+		err := p2p.Call(ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, protocol.TypeSettle, req, protocol.TypeSettled, &resp)
 		if err == nil {
+			s.served.Add(1)
+			if resp.Status == "final" {
+				s.earned.Add(resp.CostMicros - resp.FeeMicros)
+			}
 			s.log.Info("job settled", "job", t.JobID, "status", resp.Status, "earned", resp.CostMicros-resp.FeeMicros)
-			return
+			return true, nil
 		}
 		if code := protocol.CodeOf(err); code != "" && code != protocol.CodeInternal {
 			s.log.Warn("settlement refused", "job", t.JobID, "err", err)
-			return
+			return true, nil
+		}
+		return false, err
+	})
+	if err != nil && s.ctx.Err() == nil {
+		s.log.Error("settlement abandoned after retries", "job", t.JobID, "err", err)
+	}
+}
+
+// abandon tells the coordinator that a ticketed job will never be delivered,
+// so the buyer's hold and this node's slot are released now rather than at
+// the ticket's deadline.
+func (s *Service) abandon(t protocol.Ticket, reason string) {
+	s.sendAbandon(protocol.AbandonRequest{Ticket: t, Reason: reason})
+}
+
+// abandonNoFault releases a job the buyer's own request made impossible.
+func (s *Service) abandonNoFault(t protocol.Ticket, reason string) {
+	s.sendAbandon(protocol.AbandonRequest{Ticket: t, Reason: reason, NoFault: true})
+}
+
+func (s *Service) sendAbandon(req protocol.AbandonRequest) {
+	t := req.Ticket
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	defer cancel()
+	err := p2p.Call(ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, protocol.TypeAbandon,
+		req, protocol.TypeOK, nil)
+	if err != nil && s.ctx.Err() == nil {
+		s.log.Warn("could not abandon job; its hold is released at the ticket's deadline", "job", t.JobID, "err", err)
+	}
+}
+
+// reportStarted reports a started job, retrying transient failures; cancel
+// aborts the job when the coordinator says it was already released.
+func (s *Service) reportStarted(t protocol.Ticket, cancel context.CancelFunc) {
+	// The coordinator accepts a start until the ticket expires plus a grace;
+	// keep trying that long, so a coordinator path that is failing over (relay
+	// down, coordinator restarting) does not make a running job look unused.
+	deadline := time.Unix(0, t.ExpiresAt).Add(startReportGrace)
+	s.retryUntil(deadline, func(ctx context.Context) (bool, error) {
+		err := p2p.Call(ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, protocol.TypeStarted,
+			protocol.StartedRequest{Ticket: t}, protocol.TypeOK, nil)
+		switch code := protocol.CodeOf(err); {
+		case err == nil:
+			return true, nil
+		case code == protocol.CodeConflict:
+			s.log.Warn("job was released before it started; aborting it", "job", t.JobID)
+			cancel()
+			return true, nil
+		case code != "" && code != protocol.CodeInternal:
+			s.log.Warn("start report refused", "job", t.JobID, "err", err)
+			return true, nil
+		}
+		return false, err
+	})
+}
+
+// retryUntil calls fn with exponential backoff (1s doubling, capped at 30s)
+// until it reports done or deadline passes.
+func (s *Service) retryUntil(deadline time.Time, fn func(ctx context.Context) (done bool, err error)) error {
+	backoff := time.Second
+	for {
+		ctx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
+		done, err := fn(ctx)
+		cancel()
+		if done {
+			return nil
+		}
+		if time.Now().Add(backoff).After(deadline) {
+			return err
 		}
 		select {
 		case <-s.ctx.Done():
-			return
+			return s.ctx.Err()
 		case <-time.After(backoff):
 		}
-		backoff *= 2
+		backoff = min(backoff*2, 30*time.Second)
 	}
-	s.log.Error("settlement abandoned after retries", "job", t.JobID)
 }
 
 func (s *Service) markSeen(jobID string, expires int64) bool {
@@ -398,3 +563,11 @@ func (s *Service) pruneSeen() {
 }
 
 func fail(st network.Stream, err error) { _ = protocol.SendError(st, err) }
+
+// clip shortens s to at most n bytes for error messages.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}

@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"math"
 
+	"sharetoken/accounts"
 	"sharetoken/ledger"
+	"sharetoken/p2p"
 	"sharetoken/protocol"
 )
 
@@ -81,82 +83,37 @@ func (e *Engine) NodeStats(node string) (st *NodeStats, err error) {
 }
 
 // Nodes lists every node with a record, best reputation first.
-func (e *Engine) Nodes() ([]NodeStats, error) {
-	var out []NodeStats
-	err := e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
-		rows, err := tx.Query(`SELECT ` + statsColumns + ` FROM nodes ORDER BY reputation DESC, node`)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			s, err := scanStats(rows)
-			if err != nil {
-				return err
-			}
-			out = append(out, *s)
-		}
-		return rows.Err()
-	})
+func (e *Engine) Nodes() (out []NodeStats, err error) {
+	err = e.update(func(tx *sql.Tx, _ *ledger.Tx) error { out, err = QueryNodes(tx); return err })
 	return out, err
 }
 
 // Audits lists the most recent audit results.
-func (e *Engine) Audits(limit int) ([]AuditRecord, error) {
-	var out []AuditRecord
-	err := e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
-		rows, err := tx.Query(`SELECT job_id, node, model, verdict, similarity, detail, at FROM audits ORDER BY id DESC LIMIT ?`, limit)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var r AuditRecord
-			if err := rows.Scan(&r.JobID, &r.Node, &r.Model, &r.Verdict, &r.Similarity, &r.Detail, &r.At); err != nil {
-				return err
-			}
-			out = append(out, r)
-		}
-		return rows.Err()
-	})
+func (e *Engine) Audits(limit int) (out []AuditRecord, err error) {
+	err = e.update(func(tx *sql.Tx, _ *ledger.Tx) error { out, err = QueryAudits(tx, limit); return err })
 	return out, err
 }
 
 // DisputeInfo describes a disputed or judged job for operators.
 type DisputeInfo struct {
-	JobID   string `json:"job_id"`
-	Buyer   string `json:"buyer"`
-	Node    string `json:"node"`
-	Model   string `json:"model"`
-	Status  Status `json:"status"`
-	Cost    uint64 `json:"cost"`
-	Reason  string `json:"reason"`
-	Outcome string `json:"outcome,omitempty"`
-	Detail  string `json:"detail,omitempty"`
+	JobID     string `json:"job_id"`
+	Buyer     string `json:"buyer"`
+	Node      string `json:"node"`
+	BuyerAcct string `json:"buyer_acct,omitempty"`
+	NodeAcct  string `json:"node_acct,omitempty"`
+	Model     string `json:"model"`
+	Status    Status `json:"status"`
+	Cost      uint64 `json:"cost"`
+	Reason    string `json:"reason"`
+	Outcome   string `json:"outcome,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	CreatedAt int64  `json:"created_at"`
+	DoneAt    int64  `json:"done_at,omitempty"`
 }
 
 // Disputes lists jobs awaiting arbitration first, then judged ones, newest first.
-func (e *Engine) Disputes(limit int) ([]DisputeInfo, error) {
-	var out []DisputeInfo
-	err := e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
-		rows, err := tx.Query(`SELECT job_id, buyer, node, model, status, cost, dispute_reason, dispute_outcome, dispute_detail
-			FROM jobs WHERE status = 'disputed' OR dispute_outcome != ''
-			ORDER BY status = 'disputed' DESC, created_at DESC LIMIT ?`, limit)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var d DisputeInfo
-			var cost int64
-			if err := rows.Scan(&d.JobID, &d.Buyer, &d.Node, &d.Model, &d.Status, &cost, &d.Reason, &d.Outcome, &d.Detail); err != nil {
-				return err
-			}
-			d.Cost = uint64(cost)
-			out = append(out, d)
-		}
-		return rows.Err()
-	})
+func (e *Engine) Disputes(limit int) (out []DisputeInfo, err error) {
+	err = e.update(func(tx *sql.Tx, _ *ledger.Tx) error { out, err = QueryDisputes(tx, limit); return err })
 	return out, err
 }
 
@@ -178,4 +135,28 @@ func (e *Engine) LiveOffers() []LiveOffer {
 		}
 	}
 	return out
+}
+
+// registeredRelays lists the enabled relays in the database.
+func (e *Engine) registeredRelays() ([]accounts.Relay, error) {
+	var out []accounts.Relay
+	err := e.update(func(tx *sql.Tx, _ *ledger.Tx) (err error) {
+		out, err = accounts.Relays(tx, true)
+		return err
+	})
+	return out, err
+}
+
+// recordRelayStatus writes whether the coordinator is reachable through each
+// registered relay; the portal hands users only relays that work.
+func (e *Engine) recordRelayStatus(st []p2p.RelayStatus) error {
+	now := e.cfg.Now()
+	return e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
+		for _, r := range st {
+			if err := accounts.SetRelayStatus(tx, r.Addr, r.Reserved, r.Err, r.RTT.Milliseconds(), now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

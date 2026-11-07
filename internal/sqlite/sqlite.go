@@ -9,10 +9,12 @@ package sqlite
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
-	_ "modernc.org/sqlite" // registers the "sqlite" driver
+	sqlite3 "modernc.org/sqlite"
+	sqlitelib "modernc.org/sqlite/lib"
 )
 
 // Memory is the path of a private in-memory database (tests, demos).
@@ -61,4 +63,36 @@ func Migrate(db *sql.DB, scripts ...string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// AddColumn adds a column to table unless it already exists (SQLite has no
+// ADD COLUMN IF NOT EXISTS).
+func AddColumn(db *sql.DB, table, column, def string) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	_, err = db.Exec(fmt.Sprintf(`ALTER TABLE %q ADD COLUMN %q %s`, table, column, def))
+	return err
+}
+
+// IsBusy reports whether err is SQLITE_BUSY: another process held the write
+// lock for the whole busy timeout. The database is fine; the caller may retry.
+func IsBusy(err error) bool {
+	var se *sqlite3.Error
+	return errors.As(err, &se) && se.Code()&0xff == sqlitelib.SQLITE_BUSY
 }

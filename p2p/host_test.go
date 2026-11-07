@@ -5,9 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
+	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -25,13 +27,20 @@ func newTestHost(t *testing.T, cfg HostConfig) host.Host {
 	return h
 }
 
+// newRelayHost starts a relay like package relay does (which imports p2p).
+func newRelayHost(t *testing.T) host.Host {
+	return newTestHost(t, HostConfig{Listen: []string{"/ip4/127.0.0.1/tcp/0"}, Options: []libp2p.Option{
+		libp2p.ForceReachabilityPublic(), libp2p.EnableRelayService(relayv2.WithInfiniteLimits()),
+	}})
+}
+
 // A dial-only host (the auditor's) must reach a node that is known only by
 // a /p2p-circuit address, as every node behind NAT is.
 func TestDialOnlyHostDialsRelayedNode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	local := []string{"/ip4/127.0.0.1/tcp/0"}
-	relay := newTestHost(t, HostConfig{Listen: local, RelayService: true, ForcePublic: true})
+	relay := newRelayHost(t)
 	node := newTestHost(t, HostConfig{Listen: local})
 	relayInfo := peer.AddrInfo{ID: relay.ID(), Addrs: relay.Addrs()}
 	if err := node.Connect(ctx, relayInfo); err != nil {

@@ -40,7 +40,7 @@ func UpstreamRequest(t *protocol.Ticket, plain []byte, upstreamModel string) (bo
 	if err != nil {
 		return nil, 0, protocol.Errorf(protocol.CodeBadRequest, "request is not a chat-completions body")
 	}
-	budgetCap := protocol.MaxOutputTokens(t.ReservedMicros, estPrompt+estPrompt/2+64, t.PriceInMicros, t.PriceOutMicros)
+	budgetCap := protocol.MaxOutputTokens(t.ReservedMicros, protocol.PaddedPrompt(estPrompt), t.PriceInMicros, t.PriceOutMicros)
 	body, err = prepareUpstreamBody(plain, upstreamModel, budgetCap)
 	return body, estPrompt, err
 }
