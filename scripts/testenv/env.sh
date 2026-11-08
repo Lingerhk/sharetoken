@@ -38,6 +38,6 @@ portal_start() { stdbsh "cd ~/st-test && $DBENV setsid nohup $PORTAL_CMD >> port
 iboxsh() { printf '%s\n' "$1" | orb run -m $ORB bash -c "timeout ${T:-120} instabox ssh $IBOX -- bash -s"; }  # script on stdin: any quoting works
 # Lab relays only: they trust the dev network alone and production never lists them.
 # Production's relays are not operated from here (scripts/relay/deploy.sh).
-lab_relay_kill()  { rsh "$CN2" 'pkill -x relay'; }
-lab_relay_start() { rsh "$CN2" "cd ~/st-test && setsid nohup ./relay -config relay.yaml >> relay.log 2>&1 < /dev/null & sleep 1"; }
+lab_relay_kill()  { rsh "$CN2" 'sudo -n systemctl stop sharetoken-relay'; }  # 不能用 kill：systemd 会马上拉起
+lab_relay_start() { rsh "$CN2" 'sudo -n systemctl start sharetoken-relay; sleep 1'; }
 push_stdb_conf() { stdbsh "cp $CONF/coordinator.yaml $CONF/portal.yaml ~/st-test/"; }

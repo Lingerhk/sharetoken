@@ -54,6 +54,8 @@ scripts/relay/deploy.sh --prod sg           # 生产在用的中继，必须带 
 
 dev 门户登记了 relay-sg、relay-us、relay-eu、relay-cn 和 lab-cn2。压测和 chaos 前，先在 dev 门户 `relay disable` 四个共用中继，让 dev 流量只走实验中继，结束后再 `enable`。
 
+us、sg、eu、cn、lab-cn2 由 systemd 管理（`sharetoken-relay` 服务，崩溃和开机后自动拉起，日志在 journal），由 `scripts/relay/install-service.sh` 安装；lab-stdb 仍是手动启动。上线新中继：先 `deploy.sh`，再 `install-service.sh`，最后 `deploy-monitor.sh`。回滚：把 `relay.prev`、`relay.yaml.prev` 复制回去，再 `sudo systemctl restart sharetoken-relay`。
+
 共用时的隔离：
 - **账号：** 设备配额按“网络 + 账号”计算，两个网络的 `user:3` 互不影响。
 - **容量：** dev 有预约总量上限。

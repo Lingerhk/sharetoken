@@ -88,7 +88,7 @@
 1. `jobs.*` 全部暴露，校验约束：`ticket_ttl ≥ 10s`、`start_grace < settle_grace < dispute_window ≤ job_retention`；`audit` 要求 `0 < mismatch_below < match_at ≤ 1`；`fee_bps` 0–10000。
 2. `dev.*` 保留启动告警，未做 build tag 禁用。
 3. `tls.mode` 枚举已实现；`-insecure-http` → `insecure`，`-behind-tls-proxy` → `proxy`（纯 HTTP + Secure Cookie）。
-4. `scripts/testenv` 已切到 yaml（`env.sh` 的 `coord_start`/`portal_start`/`relay_start` 都用 `-config`，`deploy.sh` 先下发配置并 check 再重启）。systemd unit 未做。
+4. `scripts/testenv` 已切到 yaml（`env.sh` 的 `coord_start`/`portal_start`/`relay_start` 都用 `-config`，`deploy.sh` 先下发配置并 check 再重启）。中继的 systemd unit 见 `scripts/relay/sharetoken-relay.service`。
 5. 中继 `announce` 支持 `/dns4`、`/dns6`；有域名时 relay 打印的 `portal relay add` 提示只用域名地址。
 6. coordinator 的 `-reference` flag 仍可用，给了就整体替换 `references[]`；`references[].api_key_env` 对应旧的 `key-env=`。
 7. `audit.interval: 0` 关闭抽检但保留参考模型的精确计数（商业 API 模型输出不确定，抽检会误判，而且每次都要花钱）。

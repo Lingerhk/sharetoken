@@ -3,6 +3,7 @@
 #   scripts/relay/deploy.sh lab-cn2 lab-stdb          # 实验中继：只有 dev 用
 #   scripts/relay/deploy.sh --prod sg                 # 生产在用的中继（us sg eu cn）：必须带 --prod，逐台来
 # 每台先用新二进制校验新配置，通过才替换并重启；旧版留在 relay.prev、relay.yaml.prev。
+# 装了 systemd 服务（install-service.sh）的用 systemctl 重启，lab-stdb 和还没装的新中继用 nohup。
 # 重启会断开该中继上的连接，在途请求会失败；中继的改动先在实验中继上验证。
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd)
@@ -10,7 +11,7 @@ W=${ST_TESTENV_WORK:-$HOME/st-test}; B=$W/build/amd64; mkdir -p "$B"
 Q="-o LogLevel=ERROR -o ConnectTimeout=10"
 CN=119.29.250.173; CN2=101.43.2.87; SERVE_PORT=8095
 PROD=0; [ "${1:-}" = "--prod" ] && { PROD=1; shift; }
-[ $# -gt 0 ] || { sed -n 2,6p "$0"; exit 2; }
+[ $# -gt 0 ] || { sed -n 2,7p "$0"; exit 2; }
 for r in "$@"; do
   case $r in
     us|sg|eu|cn) [ $PROD = 1 ] || { echo "$r carries production: pass --prod" >&2; exit 2; };;
@@ -38,7 +39,7 @@ copy_cn_to_cn2() {
   ssh $Q -n "s0nnet@$CN" "rm -rf ~/st-test/serve; pkill -f 'http[.]server $SERVE_PORT'" || true
 }
 
-SWAP='cd "$RDIR" && ./relay.new -config relay.yaml.new -check-config >/dev/null && { [ -f relay.yaml ] && cp relay.yaml relay.yaml.prev || true; [ -f relay ] && cp relay relay.prev || true; for p in $(pgrep -x relay); do [ "$(readlink /proc/$p/cwd)" = "$RDIR" ] && kill $p; done; sleep 2; mv relay.new relay; mv relay.yaml.new relay.yaml; setsid nohup ./relay -config relay.yaml >> relay.log 2>&1 < /dev/null & } ; sleep 4; curl -s -m 3 "127.0.0.1:$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(\"  up: peers=%s networks=%s\" % (d[\"peers\"], [(n[\"name\"], n[\"reservations\"]) for n in d[\"stats\"][\"networks\"]]))"'
+SWAP='cd "$RDIR" && ./relay.new -config relay.yaml.new -check-config >/dev/null && { [ -f relay.yaml ] && cp relay.yaml relay.yaml.prev || true; [ -f relay ] && cp relay relay.prev || true; if [ -f /etc/systemd/system/sharetoken-relay.service ]; then mv relay.new relay; mv relay.yaml.new relay.yaml; sudo -n systemctl restart sharetoken-relay; else for p in $(pgrep -x relay); do [ "$(readlink /proc/$p/cwd)" = "$RDIR" ] && kill $p; done; sleep 2; mv relay.new relay; mv relay.yaml.new relay.yaml; setsid nohup ./relay -config relay.yaml >> relay.log 2>&1 < /dev/null & fi; } ; sleep 4; curl -s -m 3 "127.0.0.1:$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(\"  up: peers=%s networks=%s\" % (d[\"peers\"], [(n[\"name\"], n[\"reservations\"]) for n in d[\"stats\"][\"networks\"]]))"'
 
 for r in "$@"; do
   echo "== $r"

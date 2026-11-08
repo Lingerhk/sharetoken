@@ -1,0 +1,20 @@
+# scripts/relay/install-service.sh 替换 @USER@、@DIR@ 后装到 /etc/systemd/system/。CN 是 CentOS 7 的 systemd 219，不要用新指令。
+[Unit]
+Description=sharetoken relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/relay -config relay.yaml
+Restart=always
+RestartSec=5
+# 一直重试，不因为连续失败就放弃
+StartLimitInterval=0
+TimeoutStopSec=15
+LimitNOFILE=65536
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

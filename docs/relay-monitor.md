@@ -44,7 +44,7 @@ curl -s 127.0.0.1:8093/metrics | grep ^sharetoken_relay
 
 相互守望：机器彻底宕机时它发不出告警，所以 US→SG→EU→US 环形互盯，CN 和 lab-cn2 互盯（跨境丢包太重，不和境外互盯）。
 
-监控只通知，不重启中继。中继由 nohup 启动，没有 systemd，崩溃或机器重启后需要手动拉起（`scripts/relay/deploy.sh`，或在 `~/st-test` 下启动 `./relay -config relay.yaml`）。
+监控只通知，不重启中继。进程崩溃和机器重启由 systemd 负责（`sharetoken-relay` 服务，5 秒后拉起，一直重试），所以短暂崩溃可能只收到一条静音的重启通知；一直起不来才会告警。
 
 ## 部署
 
@@ -79,6 +79,8 @@ scripts/relay/deploy-monitor.sh --test-push --prod us sg eu cn
 cd ~/st-test
 python3 monitor.py -c monitor.ini --check   # 打印各项当前结果，不发通知、不写状态
 tail monitor.log                            # 发过什么、发送失败的原因
+systemctl status sharetoken-relay           # 中继服务状态
+journalctl -u sharetoken-relay -n 50        # 中继日志（需要 sudo 或 systemd-journal 组）
 ```
 
 测试：`python3 scripts/relay/monitor_test.py`。脚本只用标准库，要兼容 CN 上的 Python 3.6 和 cron 的 `LANG=C`。
