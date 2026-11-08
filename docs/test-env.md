@@ -114,7 +114,3 @@ MOCK_WORDS=48 MOCK_DELAY_MS=5 python3 mock_upstream.py 18080 mock-fast
 7. （armbian 时期）armbian 的 Python sqlite3 太旧，读不了带 STRICT 的库。现在直接在 st-db 上 `sudo mysql sharetoken`。
 8. 协调器在 armbian（纯 Go SQLite + ARM）上的上限约 40 作业/秒。迁到 st-db + MySQL 后，2 个买家 c=32 时约 73 作业/秒，瓶颈变成卖家名额和网络延迟；协调器每个写事务的提交约 2.6 ms（VM 磁盘 fsync），见 validation-v2-mysql.md。
 9. **orb VM 的资源限额**用 `orb create --cpus 4 --memory 8G` 设置，`orb restart` 后才生效；VM 里的 `nproc`、`free` 仍显示宿主机的 14 核 / 16 GB，以 cgroup 为准。Go 1.25+ 按 cgroup 限额设置 GOMAXPROCS。
-
-## 8. Token 生产方
-
-本网络只共享**自托管的开源权重模型**：测试用 Ollama（gemma4:e4b、qwen2.5:0.5b）和 mock 上游。`docs/test_env.txt` 里列出的 DeepSeek / Anthropic / OpenAI 官方 API key **不接入网络**：把商业 API 的 key 转卖或共享给他人违反这些服务的条款，也不在本项目的范围内（见 `node/upstream.go` 的注释）。这些 key 以明文存在仓库目录里，建议轮换，并只存放在仓库之外。
