@@ -4,6 +4,7 @@ bin/
 *.db-wal
 *.db-shm
 .DS_Store
+*.env
 
 # local test-environment secrets (API keys, test passwords): never commit
 docs/test_env.txt

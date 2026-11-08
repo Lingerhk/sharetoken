@@ -25,9 +25,7 @@ type Upstream interface {
 //	llama.cpp  http://127.0.0.1:8080/v1
 //	SGLang     http://127.0.0.1:30000/v1
 //
-// Point it at a model you are entitled to serve to others. Third-party
-// commercial APIs generally forbid sharing or reselling access to their keys
-// unless you have their express permission.
+// Point it at a model you are entitled to serve to others.
 type OpenAICompat struct {
 	BaseURL string       // up to and including /v1
 	APIKey  string       // optional bearer token for the local server
