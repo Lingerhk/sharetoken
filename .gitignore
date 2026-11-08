@@ -15,3 +15,6 @@ docs/*.secrets.md
 __pycache__/
 reports/
 /real-qwen.json
+
+# upstream_proxy.py config: holds API keys
+scripts/upstream_proxy.json

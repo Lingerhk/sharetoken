@@ -1,0 +1,59 @@
+# sharetoken portal 配置样板
+# 用法: portal -config /etc/sharetoken/portal.yaml serve
+#       portal -config /etc/sharetoken/portal.yaml useradd -admin alice   # 运维子命令同读本文件
+# 优先级: 内置默认 < 本文件 < 命令行 flag。相对路径相对于本文件目录。未知字段报错。
+# 机密不写明文：一律用 *_env 或 *_file。
+
+version: 1
+
+# 与 coordinator 共用同一个库
+database:
+  dsn: mysql://sharetoken@127.0.0.1:3306/sharetoken
+  password_env: SHARETOKEN_DB_PASSWORD   # 或 password_file
+  max_open_conns: 32             # [新增] 同 coordinator
+  max_idle_conns: 8
+  conn_max_lifetime: 30m
+  connect_timeout: 10s
+  lock_wait_timeout: 10s
+
+keys:
+  # 签发 relay pass 的密钥；relay 配置里的 portal_keys 是它的公钥
+  pass_key_file: portal-pass.key
+  # [新增] 加密管理员 TOTP 密钥的 32 字节密钥；空 = 从 pass key 派生（现行为）
+  # 单独配置后，轮换 pass key 不会让管理员 MFA 失效
+  mfa_key_file: ""
+
+http:
+  listen: ":8092"
+  # [新增，原硬编码] 服务端超时
+  read_header_timeout: 10s
+  read_timeout: 30s
+  write_timeout: 60s
+  shutdown_timeout: 5s
+
+tls:
+  # mode:
+  #   auto        有 cert_file 用证书；否则回环地址走 HTTP，其它地址用自签（默认）
+  #   files       使用 cert_file / key_file（如 Let's Encrypt）
+  #   self-signed 自签证书，客户端 pin 指纹
+  #   proxy       前面有反代终止 TLS：本身走 HTTP，但 Cookie 标 Secure
+  #   insecure    非回环明文 HTTP —— 仅测试网
+  mode: auto
+  cert_file: ""
+  key_file: ""
+  self_signed_dir: portal-tls    # 自签证书保存处（保留它：客户端 pin 了指纹）
+  self_signed_hosts: []          # 自签证书的 SAN（域名/IP）
+
+accounts:
+  open_registration: false       # 允许自助注册（否则仅管理员建号）
+  signup_credit_micros: 0        # 新用户赠送额度
+
+sessions:
+  login_ttl: 720h                # 客户端登录 token 有效期
+  web_session_ttl: 24h           # 浏览器会话有效期
+  pass_ttl: 1h                   # relay pass 有效期（禁用用户在中继侧最迟这么久生效）
+
+log:
+  level: info
+  format: text
+  file: ""

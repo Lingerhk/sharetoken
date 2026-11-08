@@ -1,0 +1,52 @@
+# sharetoken relay 配置样板
+# 用法: relay -config /etc/sharetoken/relay.yaml
+# 优先级: 内置默认 < 本文件 < 命令行 flag（显式传入的 flag 覆盖本文件，便于临时调试）
+# 相对路径相对于本文件所在目录解析。时长用 Go 写法: 30s / 10m / 1h / 720h。
+# 未知字段直接报错（防拼写错误）。
+
+version: 1
+
+# 节点身份。地址里含 peer ID，换 key = 换地址，所有用户/portal 登记都要改。
+identity:
+  key_file: relay.key            # 不存在则以 0600 创建
+
+network:
+  # 监听地址；主机没有 IPv6 时 IPv6 监听自动跳过
+  listen:
+    - /ip4/0.0.0.0/tcp/4001
+    - /ip4/0.0.0.0/udp/4001/quic-v1
+    - /ip6/::/tcp/4001
+    - /ip6/::/udp/4001/quic-v1
+  # 对外宣告的公网地址（云主机 1:1 NAT 时必填，IPv6 也列上）；空 = 用网卡地址
+  announce: []
+  #  - /ip4/203.0.113.7/tcp/4001
+  #  - /ip4/203.0.113.7/udp/4001/quic-v1
+  max_conns: 8192                # 连接管理器高水位
+
+# 准入控制：谁可以在本中继上占 reservation
+access:
+  # portal 的 relay-pass 公钥（`portal pass-key` 输出）；可多个，用于轮换。
+  # 为空 = 开放中继，任何人可占位（启动时告警）
+  portal_keys:
+    - ed25519:<portal pass-key hex>
+  # 无需 pass 即可占位的 peer：协调器（`coordinator id` 输出）
+  allow_peers:
+    - <coordinator peer id>
+  max_devices_per_user: 4        # 同一用户同时持有 reservation 的设备数
+
+limits:
+  max_reservations: 4096         # 全局同时持有的 reservation
+  max_reservations_per_ip: 64    # 单 IP（运营商 NAT 后可能很多用户）
+  max_circuits: 4096             # 到同一目的 peer 的并发 circuit（协调器每在线用户一条）
+  reservation_ttl: 1h            # [新增，原硬编码] reservation 有效期
+  circuit_buffer: 16KiB          # [新增，原硬编码] 每条 circuit 的缓冲区
+
+# 运维
+status:
+  listen: ""                     # JSON 统计，如 127.0.0.1:8093；务必只在内网/回环
+  stats_interval: 5m             # [新增，原硬编码] 周期性统计日志间隔，0 关闭
+
+log:                             # [新增] 三个服务端统一
+  level: info                    # debug | info | warn | error
+  format: text                   # text | json
+  file: ""                       # 空 = stderr（交给 systemd/journald）

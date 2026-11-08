@@ -1,0 +1,33 @@
+# relay-sg（docs/test-env.md）。部署到 ~/st-test/relay.yaml，启动：./relay -config relay.yaml
+version: 1
+identity:
+  key_file: relay.key
+network:
+  listen:
+    - /ip4/0.0.0.0/tcp/4001
+    - /ip4/0.0.0.0/udp/4001/quic-v1
+    - /ip6/::/tcp/4001
+    - /ip6/::/udp/4001/quic-v1
+  announce:            # 域名（docs/prod-env.md），A + AAAA 都有
+    - /dns4/relay-sg.sharetoken.app/tcp/4001
+    - /dns4/relay-sg.sharetoken.app/udp/4001/quic-v1
+    - /dns6/relay-sg.sharetoken.app/tcp/4001
+    - /dns6/relay-sg.sharetoken.app/udp/4001/quic-v1
+  max_conns: 8192
+access:
+  portal_keys: [ed25519:0c8928fec72a6b1502eb83e8104cfdc56d740c54d040e18a7eed05edaaeb8dc3]
+  allow_peers: [12D3KooWFAqCYkUS2Kt2KRWQ1mWF82Em4mRbB5nD4V7Fr5PmWfUh]
+  max_devices_per_user: 4
+limits:
+  max_reservations: 4096
+  max_reservations_per_ip: 64
+  max_circuits: 4096
+  reservation_ttl: 1h
+  circuit_buffer: 16KiB
+status:
+  listen: 127.0.0.1:8093
+  stats_interval: 5m
+log:
+  level: info
+  format: text
+  file: ""

@@ -63,6 +63,12 @@ dig +short AAAA relay-us.sharetoken.app @ns51.domaincontrol.com
 ## 待办
 
 - 腾讯云 CN、CN 2 开通公网 IPv6，然后补 AAAA 记录。
-- 中继公布地址从 `/ip4/<ip>/...` 改为 `/dns4/relay-xx.sharetoken.app/...`（及 `/dns6/`），
-  并同步 `scripts/testenv/env.sh`、`docs/test-env.md`。
+- ~~中继公布地址改为域名~~：2026-11-08 已完成。US、SG 宣告 `/dns4` + `/dns6`，CN 宣告 `/dns4/relay-cn.sharetoken.app/tcp/8091`，
+  portal 中登记的地址也已改为域名（配置见 `scripts/testenv/conf/relay-*.yaml`）。
+- relay-cn2（101.43.2.87）：DNS 已配，**中继尚未上线**。2026-11-08 实测：
+  - SSH 用户是 `orcatermuser`（不是 s0nnet），有 sudo；Ubuntu 22.04，2 核 3.4 GB，4 GB swap。
+  - 共用机器：nginx 占 80/443，**QQ 占 127.0.0.1:4001**，所以中继用 **4002**（配置 `scripts/testenv/conf/relay-cn2.yaml`）。
+  - 和 CN 一样**没有公网 IPv6**，网卡上只有 fe80::。
+  - 腾讯云安全组只放行了 22、80、443/tcp。需要放行 **4002/tcp 和 4002/udp**（QUIC），中继才能对外服务。
+  - 从 Mac 上传很慢（约 6 KB/s），二进制要在机器上从源码编译（Go 用阿里云镜像，GOPROXY=goproxy.cn）。
 - 稳定后把 TTL 从 600 调大。

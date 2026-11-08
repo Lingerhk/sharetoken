@@ -470,7 +470,9 @@ func relaySummary(addr string) (nets, short string) {
 	}
 	var v4, v6 bool
 	for _, a := range ai.Addrs {
-		if _, err := a.ValueForProtocol(ma.P_IP6); err == nil {
+		_, ip6 := a.ValueForProtocol(ma.P_IP6)
+		_, dns6 := a.ValueForProtocol(ma.P_DNS6)
+		if ip6 == nil || dns6 == nil {
 			v6 = true
 		} else {
 			v4 = true

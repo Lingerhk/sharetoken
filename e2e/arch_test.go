@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -51,7 +52,7 @@ type network struct {
 	healthEvery time.Duration
 }
 
-func newNetwork(t *testing.T, relays int) *network {
+func newNetwork(t *testing.T, relays int, relayOpts ...func(*relay.Config)) *network {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -83,8 +84,12 @@ func newNetwork(t *testing.T, relays int) *network {
 	ck, _ := p2p.NewKeys()
 	for i := 0; i < relays; i++ {
 		k, _ := p2p.NewKeys()
-		r, err := relay.New(k, relay.Config{Listen: []string{"/ip4/127.0.0.1/tcp/0", "/ip6/::1/tcp/0"}, // dual stack
-			PortalKeys: []ed25519.PublicKey{passPub}, AllowPeers: []peer.ID{ck.PeerID}})
+		rc := relay.Config{Listen: []string{"/ip4/127.0.0.1/tcp/0", "/ip6/::1/tcp/0"}, // dual stack
+			PortalKeys: []ed25519.PublicKey{passPub}, AllowPeers: []peer.ID{ck.PeerID}}
+		for _, o := range relayOpts {
+			o(&rc)
+		}
+		r, err := relay.New(k, rc)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -240,6 +245,39 @@ func getJSON(t *testing.T, url string, out any) {
 // Two users each share a model and buy from each other through relays; the
 // coordinator is only ever reached through a relay; money moves between the
 // users' accounts as the portal reports it; a dead relay is routed around.
+// Relays known by host name (/dns4/..., as registered in production) work
+// like IP addresses: the coordinator reserves on them and users trade.
+func TestRelaysAnnouncedByHostName(t *testing.T) {
+	n := newNetwork(t, 2, func(c *relay.Config) {
+		l, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		_ = l.Close()
+		c.Listen = []string{fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port)}
+		c.Announce = []string{fmt.Sprintf("/dns4/localhost/tcp/%d", port)}
+	})
+	for _, r := range n.relays {
+		if a := r.Host.Addrs(); len(a) != 1 || !strings.HasPrefix(a[0].String(), "/dns4/localhost/") {
+			t.Fatalf("relay addresses %v", a)
+		}
+	}
+	alice := n.user("alice", shareMock(mockUpstream(t, "mock-7b", false).URL, priceIn, priceOut))
+	bob := n.user("bob", nil)
+	if !waitUntil(20*time.Second, func() bool { return len(n.coord.Engine.Offers()) == 1 }) {
+		st, _ := json.MarshalIndent(alice.Status(), "", " ")
+		t.Fatalf("no offer from alice; status %s", st)
+	}
+	content, hdr := chat(t, bob)
+	if content != "Hello, world!" || hdr.Get("X-Sharetoken-Node") != alice.PeerID() {
+		t.Fatalf("bob got %q from %s", content, hdr.Get("X-Sharetoken-Node"))
+	}
+	if st := bob.Status(); !st.Coordinator.Connected || !strings.Contains(st.Coordinator.Via, "/dns4/localhost/") {
+		t.Fatalf("bob reaches the coordinator via %q", st.Coordinator.Via)
+	}
+}
+
 func TestUsersTradeThroughRelays(t *testing.T) {
 	n := newNetwork(t, 2)
 	alice := n.user("alice", shareMock(mockUpstream(t, "mock-7b", false).URL, priceIn, priceOut))
@@ -431,8 +469,15 @@ type onlyFamily struct{ proto int }
 
 func (g onlyFamily) InterceptPeerDial(peer.ID) bool { return true }
 func (g onlyFamily) InterceptAddrDial(_ peer.ID, a ma.Multiaddr) bool {
-	_, err := a.ValueForProtocol(g.proto)
-	return err == nil
+	// A host name of the same family (a relay inside a circuit address is
+	// not resolved before the gater sees it) counts as that family.
+	dns := map[int]int{ma.P_IP4: ma.P_DNS4, ma.P_IP6: ma.P_DNS6}[g.proto]
+	for _, p := range []int{g.proto, dns, ma.P_DNS} {
+		if _, err := a.ValueForProtocol(p); err == nil {
+			return true
+		}
+	}
+	return false
 }
 func (g onlyFamily) InterceptAccept(lnet.ConnMultiaddrs) bool { return true }
 func (g onlyFamily) InterceptSecured(lnet.Direction, peer.ID, lnet.ConnMultiaddrs) bool {

@@ -1,0 +1,36 @@
+# st-db 上的门户。部署到 ~/st-test/portal.yaml，启动：./portal -config portal.yaml serve
+version: 1
+database:
+  dsn: mysql://sharetoken@127.0.0.1:3306/sharetoken
+  password_file: db.pass
+  max_open_conns: 32
+  max_idle_conns: 8
+  conn_max_lifetime: 30m
+  connect_timeout: 10s
+  lock_wait_timeout: 10s
+keys:
+  pass_key_file: portal-pass.key
+  mfa_key_file: ""                # 继续从 pass key 派生（已登记的管理员 TOTP 依赖它）
+http:
+  listen: ":8092"
+  read_header_timeout: 10s
+  read_timeout: 30s
+  write_timeout: 60s
+  shutdown_timeout: 5s
+tls:
+  mode: self-signed               # 客户端 pin 指纹 sha256:0e7c55a9…
+  cert_file: ""
+  key_file: ""
+  self_signed_dir: portal-tls
+  self_signed_hosts: []
+accounts:
+  open_registration: false        # 公司内部：只由管理员建号
+  signup_credit_micros: 5000000
+sessions:
+  login_ttl: 720h
+  web_session_ttl: 24h
+  pass_ttl: 1h
+log:
+  level: info
+  format: text
+  file: ""

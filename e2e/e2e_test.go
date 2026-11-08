@@ -553,3 +553,12 @@ func TestNoShowTicketFreesTheNodeSoon(t *testing.T) {
 		t.Fatalf("no-shows must not count against the node: %+v", st)
 	}
 }
+
+func waitUntil(timeout time.Duration, cond func() bool) bool {
+	for deadline := time.Now().Add(timeout); !cond(); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			return false
+		}
+	}
+	return true
+}

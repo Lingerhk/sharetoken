@@ -62,16 +62,17 @@ MySQL 只监听 st-db 的 127.0.0.1:3306（OrbStack 转发到 Mac 的 127.0.0.1:
 
 所有远程常驻进程用 `setsid nohup … < /dev/null &` 启动，本地 ssh 加 `timeout`。**杀进程只用 `pkill -x <进程名>` 或按 PID**：`pkill -f` 会匹配到 ssh 自身的命令行，而 `pkill -x python3` 会误杀同用户的其他 python 服务（CN 是共用机器）。
 
+2026-11-08 起三个服务端都用 YAML 配置（docs/config-v2.md）。仓库里的 `scripts/testenv/conf/` 是各主机实际使用的配置（不含机密），`deploy.sh` 会把它们拷到各主机的 `~/st-test/`，先 check-config 再重启。
+
 ```bash
 # st-db（orb run -m st-db bash；env.sh 里的 coord_start / portal_start 做的就是这些）
-cd ~/st-test && set -a && . ./db.env && set +a      # SHARETOKEN_DB_PASSWORD
-./portal -db mysql://sharetoken@127.0.0.1:3306/sharetoken serve -listen :8092 -open-registration -signup-credit 5000000
-./coordinator -db mysql://sharetoken@127.0.0.1:3306/sharetoken -key coordinator.key -fee-bps 500 -debug 127.0.0.1:6060 \
-  -reference id=gemma4:e4b,upstream=gemma4:e4b,url=http://host.orb.internal:11434/v1
-# 中继（US / SG；CN 用 -listen /ip4/0.0.0.0/tcp/8091 -announce /ip4/119.29.250.173/tcp/8091）
-./relay -key relay.key -announce /ip4/<v4>/tcp/4001,/ip4/<v4>/udp/4001/quic-v1,/ip6/<v6>/tcp/4001,/ip6/<v6>/udp/4001/quic-v1 \
-  -status 127.0.0.1:8093 -portal-key ed25519:0c89…8dc3 -allow-peer 12D3KooWFAqC…PmWfUh
-# 用户客户端（每台用户机器；Mac 上的 home 见 secrets 文件）
+cd ~/st-test                                         # DB 密码在 db.pass（0600，database.password_file）
+./portal -config portal.yaml serve                   # open_registration: false（公司内部，只由管理员建号）
+./coordinator -config coordinator.yaml               # 参考模型 deepseek-flash、gpt-4o-mini，audit.interval 0
+# 运维命令照旧用 -db（先 set -a; . ./db.env; set +a），或者 -config coordinator.yaml / portal.yaml
+# 中继（US / SG / CN；~/st-test/relay.yaml = conf/relay-<us|sg|cn>.yaml，宣告 /dns4、/dns6 域名）
+./relay -config relay.yaml
+# 用户客户端（每台用户机器；Mac 上的 home 见 secrets 文件）。配置备份：<home>/config.json.bak-ollama
 SHARETOKEN_HOME=~/st-test/<user> ./sharetoken up
 # mock 上游（CN、SG；见 §6）
 MOCK_WORDS=48 MOCK_DELAY_MS=5 python3 mock_upstream.py 18080 mock-fast

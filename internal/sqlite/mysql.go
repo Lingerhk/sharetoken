@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -74,7 +75,9 @@ func MySQLConfig(dsn string) (*mysql.Config, error) {
 }
 
 // OpenMySQL opens a mysql:// DSN. The database must exist.
-func OpenMySQL(dsn string) (*sql.DB, error) {
+func OpenMySQL(dsn string) (*sql.DB, error) { return openMySQLWith(dsn, Options{}) }
+
+func openMySQLWith(dsn string, o Options) (*sql.DB, error) {
 	cfg, err := MySQLConfig(dsn)
 	if err != nil {
 		return nil, err
@@ -82,7 +85,21 @@ func OpenMySQL(dsn string) (*sql.DB, error) {
 	if cfg.DBName == "" {
 		return nil, errors.New("sqlite: MySQL DSN names no database")
 	}
-	return openMySQLConfig(cfg)
+	u, _ := url.Parse(dsn)
+	if _, inURL := u.User.Password(); !inURL && o.Password != "" {
+		cfg.Passwd = o.Password
+	}
+	if o.ConnectTimeout > 0 {
+		cfg.Timeout = o.ConnectTimeout
+	}
+	if o.LockWaitTimeout > 0 && u.Query().Get("innodb_lock_wait_timeout") == "" {
+		cfg.Params["innodb_lock_wait_timeout"] = strconv.Itoa(max(1, int(o.LockWaitTimeout/time.Second)))
+	}
+	conn, err := mysql.NewConnector(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return openMySQLConnector(conn, cfg, o)
 }
 
 func openMySQLConfig(cfg *mysql.Config) (*sql.DB, error) {
@@ -90,10 +107,15 @@ func openMySQLConfig(cfg *mysql.Config) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	return openMySQLConnector(conn, cfg, Options{})
+}
+
+func openMySQLConnector(conn driver.Connector, cfg *mysql.Config, o Options) (*sql.DB, error) {
+	o.fill()
 	db := sql.OpenDB(conn)
-	db.SetMaxOpenConns(32)
-	db.SetMaxIdleConns(8)
-	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetMaxOpenConns(o.MaxOpenConns)
+	db.SetMaxIdleConns(o.MaxIdleConns)
+	db.SetConnMaxLifetime(o.ConnMaxLifetime)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {

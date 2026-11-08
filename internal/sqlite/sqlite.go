@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	sqlite3 "modernc.org/sqlite"
 	sqlitelib "modernc.org/sqlite/lib"
@@ -32,9 +33,35 @@ const Memory = ":memory:"
 // A path starting with "mysql://" opens MySQL instead (see OpenMySQL). For
 // tests, SHARETOKEN_TEST_MYSQL=mysql://… makes Open(Memory) return a fresh,
 // private MySQL database, so the whole suite can run against MySQL.
-func Open(path string) (*sql.DB, error) {
+func Open(path string) (*sql.DB, error) { return OpenWith(path, Options{}) }
+
+// Options tunes a MySQL connection pool (SQLite always uses one connection).
+// Zero values take the defaults.
+type Options struct {
+	Password        string        // used when the DSN has none (before $SHARETOKEN_DB_PASSWORD)
+	MaxOpenConns    int           // default 32
+	MaxIdleConns    int           // default 8
+	ConnMaxLifetime time.Duration // default 30m
+	ConnectTimeout  time.Duration // default 10s
+	LockWaitTimeout time.Duration // innodb_lock_wait_timeout, default 10s
+}
+
+func (o *Options) fill() {
+	if o.MaxOpenConns <= 0 {
+		o.MaxOpenConns = 32
+	}
+	if o.MaxIdleConns <= 0 {
+		o.MaxIdleConns = 8
+	}
+	if o.ConnMaxLifetime <= 0 {
+		o.ConnMaxLifetime = 30 * time.Minute
+	}
+}
+
+// OpenWith is Open with connection options.
+func OpenWith(path string, o Options) (*sql.DB, error) {
 	if strings.HasPrefix(path, mysqlScheme) {
-		return OpenMySQL(path)
+		return openMySQLWith(path, o)
 	}
 	if path == Memory {
 		if dsn := os.Getenv("SHARETOKEN_TEST_MYSQL"); dsn != "" {

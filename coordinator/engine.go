@@ -133,6 +133,15 @@ type Config struct {
 	Log            *slog.Logger
 }
 
+// Defaults returns a Config with every tunable at its default (no database,
+// counter or hooks), for configuration files to start from.
+func Defaults() Config {
+	var c Config
+	c.setDefaults()
+	c.Counter, c.Now = nil, nil
+	return c
+}
+
 func (c *Config) setDefaults() {
 	if c.TicketTTL == 0 {
 		// Buyers start a job within seconds of getting its ticket; a short

@@ -1,0 +1,81 @@
+# sharetoken coordinator 配置样板
+# 用法: coordinator -config /etc/sharetoken/coordinator.yaml [serve|balance|nodes|check|...]
+#   运维子命令也读同一份文件（拿 database / identity），不用再重复传 -db -key。
+# 优先级: 内置默认 < 本文件 < 命令行 flag。相对路径相对于本文件目录。未知字段报错。
+# 机密不写明文：一律用 *_env（环境变量名）或 *_file（文件路径，建议 0600）。
+
+version: 1
+
+identity:
+  key_file: coordinator.key      # peer ID 来源；relay 的 allow_peers 依赖它，务必备份
+
+# 与 portal 共用同一个库（两边配置必须指向同一 DSN）
+database:
+  # SQLite 文件路径，或 mysql://user@host:port/db
+  dsn: mysql://sharetoken@127.0.0.1:3306/sharetoken
+  password_env: SHARETOKEN_DB_PASSWORD   # 或 password_file: /etc/sharetoken/db.pass
+  # 以下为 [新增，原硬编码]，仅 MySQL 生效；SQLite 固定单连接
+  max_open_conns: 32
+  max_idle_conns: 8
+  conn_max_lifetime: 30m
+  connect_timeout: 10s
+  lock_wait_timeout: 10s         # innodb_lock_wait_timeout
+  startup_busy_retry: 2m         # [新增] 启动迁移遇库锁时重试多久
+
+network:
+  listen: []                     # 默认空：只拨出，经中继可达，不需要公网地址
+  max_conns: 8192                # 每个在线用户占一条中继连接
+  # 除数据库中登记的中继外，额外占位的中继（完整 multiaddr，以 /p2p/<id> 结尾）
+  relays: []
+  relay_sync: 15s                # [新增] 中继列表/状态同步间隔
+
+# 计费与撮合
+market:
+  fee_bps: 500                   # 平台抽成，基点（500 = 5%）
+  min_budget_micros: 1           # [新增] 单票最小冻结额
+  warm_up: 30s                   # [新增] 重启后此时间内无报价返回 capacity（让买家排队）
+
+# 工单/结算时序 —— 全部为 [新增，原硬编码]，默认值即当前行为；非必要不要改
+jobs:
+  ticket_ttl: 1m                 # 节点开始执行的时限
+  start_grace: 30s               # 票过期后再等多久释放未开始的单
+  reconnect_grace: 2m            # 节点重连后推迟释放
+  max_stale_tickets: 5           # 买家可持有的“陈旧未开始”票上限
+  stale_after: 15s               # 签出多久未开始算“陈旧”
+  settle_grace: 15m              # 结算到达的额外宽限
+  dispute_window: 24h            # 未确认结算自动终结
+  max_offer_ttl: 5m              # 报价声称的有效期上限
+  job_retention: 720h            # 已完成工单保留（流水账永久保留）
+  suspend_for: 24h               # 抽检多次失败后停止撮合该节点的时长
+
+# 参考模型：开启抽检 + 争议时精确计 token
+references:
+  - id: qwen2.5-7b               # 市场模型 ID
+    upstream: qwen2.5:7b         # 上游服务里的模型名
+    url: http://127.0.0.1:11434/v1
+    api_key_env: ""              # 上游 API key 所在环境变量
+
+audit:
+  interval: 10m                  # 平均抽检间隔，0 关闭
+  budget_micros: 200000          # 每次抽检冻结额，由平台手续费支付
+  prompts_file: ""               # 挑战 prompt，每行一个；空 = 内置随机
+  max_tokens: 96                 # [新增] 挑战输出上限
+  match_at: 0.8                  # [新增] 相似度 ≥ 视为一致
+  mismatch_below: 0.4            # [新增] 相似度 < 视为不一致
+
+tee:
+  policy_file: ""                # TEE 镜像白名单 JSON；设置后启用 require_tee 撮合
+  online_check: false            # 联网向 AMD/Intel 查吊销/TCB
+
+debug:
+  pprof_listen: ""               # 如 127.0.0.1:6060，仅回环
+
+log:
+  level: info
+  format: text
+  file: ""
+
+# 仅开发/测试网！启动时会大声告警；建议生产构建直接拒绝
+dev:
+  open_accounts: false           # 未绑定用户的 peer 用自身账户交易
+  credit_micros: 0               # 每个新 peer 首次使用赠送额度

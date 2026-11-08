@@ -15,11 +15,12 @@ done
 for c in sharetoken relay; do gzip -kf $W/build/amd64/$c; done
 go build -o $W/sharetoken ./cmd/sharetoken || exit 1
 # CN builds from source (uploads to it are very slow); never ship docs/test_env.txt or secrets
-git ls-files -co --exclude-standard | grep -v -e '^docs/test_env.txt' -e 'secrets' -e '^reports/' > $W/files.txt
+git ls-files -co --exclude-standard | grep -v -e '^docs/test_env.txt' -e 'secrets' -e '^reports/' -e 'upstream_proxy.json' -e '\.env$' -e '\.key$' > $W/files.txt
 COPYFILE_DISABLE=1 tar czf $W/src.tgz -T $W/files.txt
 
 # st-db (orb VM: the Mac's files are mounted, so copy straight from $W)
-stdbsh "cd ~/st-test && pkill -x coordinator; sleep 1; cp $W/build/amd64/coordinator . && echo coordinator copied" || exit 1
+push_stdb_conf || exit 1
+stdbsh "cd ~/st-test && pkill -x coordinator; sleep 1; cp $W/build/amd64/coordinator . && ./coordinator -config coordinator.yaml check-config > /dev/null && echo coordinator copied" || exit 1
 coord_start; echo coordinator restarted
 if [ $DO_PORTAL = 1 ]; then
   stdbsh "cd ~/st-test && cp portal portal.prev; pkill -x portal; sleep 1; cp $W/build/amd64/portal ." && portal_start && echo portal restarted
@@ -34,7 +35,9 @@ done
 client_restart $US uma; client_restart $SG sam
 scp $Q $W/src.tgz s0nnet@$CN:sharetoken-v2/src-new.tgz && T=600 rsh $CN 'cd ~/sharetoken-v2 && rm -rf src2 && mkdir src2 && tar xzf src-new.tgz -C src2 2>/dev/null && cd src2 && export PATH=$HOME/sharetoken-sim/go/bin:$PATH GOPROXY=https://goproxy.cn GOFLAGS=-mod=mod && CGO_ENABLED=0 go build -trimpath -o ~/st-test/sharetoken.new ./cmd/sharetoken && CGO_ENABLED=0 go build -trimpath -o ~/st-test/relay.new ./cmd/relay' && client_restart $CN carol
 if [ $DO_RELAYS = 1 ]; then
-  for h in "$US $US6" "$SG $SG6" "$CN"; do set -- $h; rsh $1 'cd ~/st-test && pkill -x relay; sleep 1; mv relay.new relay'; relay_start "$@"; echo "relay $1 restarted"; done
+  for h in $US $SG $CN; do
+    push_relay_conf $h && rsh $h 'cd ~/st-test && ./relay.new -config relay.yaml -check-config > /dev/null && pkill -x relay; sleep 1; mv relay.new relay' && relay_start $h && echo "relay $h restarted"
+  done
 fi
 orbsh "cd ~/st-test && pkill -x sharetoken; sleep 1; cp $W/build/amd64/sharetoken . && SHARETOKEN_HOME=\$HOME/st-test/bob setsid nohup ./sharetoken up >> bob.log 2>&1 < /dev/null & sleep 1; echo bob restarted"
 orb run -m $ORB bash -c "cat $W/build/amd64/sharetoken.gz | timeout 180 instabox ssh $IBOX -- 'gunzip -c > ~/st-test/sharetoken.new && chmod +x ~/st-test/sharetoken.new'"
