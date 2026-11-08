@@ -20,8 +20,12 @@ http:
 tls:
   mode: proxy                     # 纯 HTTP + Secure Cookie；nginx 加 X-Forwarded-Proto / X-Real-IP
 accounts:
-  open_registration: false        # 公司内部：只由管理员建号
+  open_registration: true         # 自助注册，必须有邮箱验证码（docs/mail.md）
   signup_credit_micros: 5000000
+  email_verification: true
+mail:
+  from: "ShareToken <team@sharetoken.app>"
+  support: "ShareToken Support <support@sharetoken.app>"
 sessions:
   login_ttl: 720h
   web_session_ttl: 24h

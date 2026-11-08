@@ -170,10 +170,34 @@ func DeviceAccount(q Querier, peer string) (account string, userID int64, err er
 
 var usernameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{2,31}$`)
 
-// CheckUsername validates a username: 3-32 of [a-z0-9_.-], starting alphanumeric.
+// CheckUsername validates an account name: an email address (what sign-ups
+// use), or a plain username of 3-32 of [a-z0-9_.-], starting alphanumeric
+// (accounts an administrator creates, and older ones).
 func CheckUsername(u string) error {
+	if strings.Contains(u, "@") {
+		return CheckEmail(u)
+	}
 	if !usernameRE.MatchString(u) {
 		return fmt.Errorf("%w: username must be 3-32 lowercase letters, digits, '_', '.' or '-'", ErrInvalid)
+	}
+	return nil
+}
+
+var emailRE = regexp.MustCompile(`^[a-z0-9_%+-]+(\.[a-z0-9_%+-]+)*@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
+
+// MaxEmailLen is the longest accepted email address: what fits the username
+// column on MySQL (VARCHAR(191)).
+const MaxEmailLen = 191
+
+// NormalizeEmail is the form an email address is stored and compared in.
+func NormalizeEmail(e string) string { return strings.ToLower(strings.TrimSpace(e)) }
+
+// CheckEmail validates a normalized email address. It covers the addresses
+// people have, not all of RFC 5321: internationalized domains must be in
+// punycode. Whether the mailbox exists is a question for email verification.
+func CheckEmail(e string) error {
+	if len(e) > MaxEmailLen || !emailRE.MatchString(e) {
+		return fmt.Errorf("%w: not a valid email address", ErrInvalid)
 	}
 	return nil
 }

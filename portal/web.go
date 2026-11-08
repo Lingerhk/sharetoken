@@ -72,11 +72,15 @@ type Info struct {
 	SignupCredit     uint64 `json:"signup_credit_micros"`
 	SessionHours     int64  `json:"session_hours"`
 	PassesEnabled    bool   `json:"passes_enabled"`
+	// EmailVerification: sign-ups first ask POST /api/v1/register/code.
+	EmailVerification bool   `json:"email_verification"`
+	SupportEmail      string `json:"support_email,omitempty"`
 }
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Info{RegistrationOpen: s.cfg.OpenRegistration, SignupCredit: s.cfg.SignupCreditMicros,
-		SessionHours: int64(s.cfg.WebSessionTTL / time.Hour), PassesEnabled: s.cfg.PassKey != nil})
+		SessionHours: int64(s.cfg.WebSessionTTL / time.Hour), PassesEnabled: s.cfg.PassKey != nil,
+		EmailVerification: s.cfg.EmailVerification, SupportEmail: s.supportAddress()})
 }
 
 // ---- static pages ----
@@ -92,7 +96,13 @@ func (s *Server) servePages(mux *http.ServeMux) {
 			http.ServeFileFS(w, r, sub, name)
 		}
 	}
-	mux.HandleFunc("GET /{$}", page("index.html"))
+	mux.HandleFunc("GET /{$}", page("index.html")) // the public landing page
+	mux.HandleFunc("GET /app/{$}", page("app.html"))
+	for _, from := range []string{"GET /app", "GET /login"} {
+		mux.HandleFunc(from, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/app/", http.StatusFound)
+		})
+	}
 	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin/", http.StatusMovedPermanently)
 	})

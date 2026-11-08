@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -240,7 +242,12 @@ func TestPagesAndSecurityHeaders(t *testing.T) {
 		path, ctype, contains string
 		status                int
 	}{
-		{"/", "text/html", "user.js", 200},
+		{"/", "text/html", "site.js", 200},
+		{"/app/", "text/html", "user.js", 200},
+		{"/login", "text/html", "user.js", 200}, // the client follows the redirect to /app/
+		{"/static/site.css", "text/css", ":root", 200},
+		{"/static/site.js", "javascript", "/api/v1/info", 200},
+		{"/static/favicon.svg", "image/svg", "<svg", 200},
 		{"/admin/", "text/html", "admin.js", 200},
 		{"/static/app.css", "text/css", ":root", 200},
 		{"/static/common.js", "javascript", "X-Sharetoken-Web", 200},
@@ -280,6 +287,13 @@ func TestPagesAndSecurityHeaders(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 301 || resp.Header.Get("Location") != "/admin/" {
 		t.Fatalf("/admin: %d %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	for _, path := range []string{"/app", "/login"} {
+		resp, _ := cl.Get(a.url + path)
+		resp.Body.Close()
+		if resp.StatusCode != 302 || resp.Header.Get("Location") != "/app/" {
+			t.Fatalf("%s: %d %s", path, resp.StatusCode, resp.Header.Get("Location"))
+		}
 	}
 	// The pages never embed data: the HTML is static and the API is JSON only.
 	resp, body := get("/api/v1/info")
@@ -659,6 +673,69 @@ func mustRelays(t *testing.T, s *Server) []accounts.Relay {
 	return rs
 }
 
+// Sign-ups by email: the address becomes the account name, on the API and on
+// the web pages; the email field never accepts a plain name, and accounts with
+// such names still work in the admin console's URLs.
+func TestRegisterWithEmail(t *testing.T) {
+	db, err := openSharedDB(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	s, err := New(Config{DB: db, OpenRegistration: true, SignupCreditMicros: 7, MFAKey: []byte(strings.Repeat("k", 32))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	api := &web{t: t, url: srv.URL, noWeb: true}
+	var res AuthResponse
+	api.call("POST", "/api/v1/register", map[string]string{"email": " Alice+x@Example.com ", "password": "correct horse"}, 201, &res)
+	if res.User == nil || res.User.Username != "alice+x@example.com" || res.Token == "" {
+		t.Fatalf("register: %+v", res)
+	}
+	api.call("POST", "/api/v1/register", map[string]string{"email": "alice+x@example.com", "password": "correct horse"}, 409, nil)
+	api.call("POST", "/api/v1/register", map[string]string{"email": "plainname", "password": "correct horse"}, 400, nil)
+	api.call("POST", "/api/v1/register", map[string]string{"email": "a@example.com", "password": "short"}, 400, nil)
+	// The longest accepted address fits the column on MySQL too.
+	longest := strings.Repeat("l", accounts.MaxEmailLen-len("@example.com")) + "@example.com"
+	api.call("POST", "/api/v1/register", map[string]string{"email": longest, "password": "correct horse"}, 201, nil)
+	api.call("POST", "/api/v1/login", map[string]string{"username": longest, "password": "correct horse"}, 200, nil)
+	api.call("POST", "/api/v1/register", map[string]string{"email": "l" + longest, "password": "correct horse"}, 400, nil)
+	api.call("POST", "/api/v1/login", map[string]string{"username": "ALICE+x@example.com", "password": "correct horse"}, 200, &res)
+
+	// As a user of the API with the token.
+	me := &web{t: t, url: srv.URL, noWeb: true, hdr: map[string]string{"Authorization": "Bearer " + res.Token}}
+	var m Me
+	me.call("GET", "/api/v1/me", nil, 200, &m)
+	if m.User.Username != "alice+x@example.com" || m.Balance.AvailableMicros != 7 {
+		t.Fatalf("me: %+v", m)
+	}
+
+	// The web form posts username; an email address works there too.
+	c := &web{t: t, url: srv.URL, hdr: map[string]string{"Origin": srv.URL}}
+	resp := c.call("POST", "/api/v1/web/register", map[string]string{"username": "Web@Example.com", "password": "correct horse"}, 201, nil)
+	if sessionCookie(t, resp) == nil {
+		t.Fatal("no session")
+	}
+
+	// Admin console URLs carry the address, '@' and '+' included.
+	root, err := s.CreateUser("root", "rootrootroot", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _, err := s.Store().IssueSessionToken(root.ID, "t", 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := &web{t: t, url: srv.URL, noWeb: true, hdr: map[string]string{"Authorization": "Bearer " + tok}}
+	admin.call("GET", "/api/v1/admin/users/"+url.PathEscape("alice+x@example.com"), nil, 200, nil)
+	admin.call("POST", "/api/v1/admin/users/"+url.PathEscape("alice+x@example.com")+"/disable", nil, 200, nil)
+	api.call("POST", "/api/v1/login", map[string]string{"username": "alice+x@example.com", "password": "correct horse"}, 401, nil)
+	admin.call("POST", "/api/v1/admin/users", map[string]any{"username": "Made@Example.com", "password": "correct horse"}, 201, nil)
+	admin.call("GET", "/api/v1/admin/users/"+url.PathEscape("made@example.com"), nil, 200, nil)
+}
+
 func TestClientIPTrustsRealIPOnlyFromLoopback(t *testing.T) {
 	mk := func(remote, real string) *http.Request {
 		r := httptest.NewRequest("GET", "/", nil)
@@ -668,16 +745,23 @@ func TestClientIPTrustsRealIPOnlyFromLoopback(t *testing.T) {
 		}
 		return r
 	}
-	if got := clientIP(mk("127.0.0.1:5555", "203.0.113.9")); got != "203.0.113.9" {
+	if got := clientIP(mk("127.0.0.1:5555", "203.0.113.9"), nil); got != "203.0.113.9" {
 		t.Errorf("via local proxy: %q", got)
 	}
-	if got := clientIP(mk("[::1]:5555", "203.0.113.9")); got != "203.0.113.9" {
+	if got := clientIP(mk("[::1]:5555", "203.0.113.9"), nil); got != "203.0.113.9" {
 		t.Errorf("via local proxy v6: %q", got)
 	}
-	if got := clientIP(mk("198.51.100.7:5555", "203.0.113.9")); got != "198.51.100.7" {
+	if got := clientIP(mk("198.51.100.7:5555", "203.0.113.9"), nil); got != "198.51.100.7" {
 		t.Errorf("remote peer must not spoof: %q", got)
 	}
-	if got := clientIP(mk("127.0.0.1:5555", "not-an-ip")); got != "127.0.0.1" {
+	proxy := []net.IP{net.ParseIP("192.168.6.91")}
+	if got := clientIP(mk("192.168.6.91:5555", "203.0.113.9"), proxy); got != "203.0.113.9" {
+		t.Fatalf("trusted proxy: %s", got)
+	}
+	if got := clientIP(mk("192.168.6.92:5555", "203.0.113.9"), proxy); got != "192.168.6.92" {
+		t.Fatalf("another machine on the LAN was believed: %s", got)
+	}
+	if got := clientIP(mk("127.0.0.1:5555", "not-an-ip"), nil); got != "127.0.0.1" {
 		t.Errorf("garbage header: %q", got)
 	}
 }

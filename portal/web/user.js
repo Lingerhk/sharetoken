@@ -169,6 +169,7 @@
     const u = me().user;
     const mfa = u.mfa_enrolled_at ? [badge('已启用', 'ok'), ' 绑定于 ' + time(u.mfa_enrolled_at)] : (u.is_admin ? badge('未启用', 'warn') : h('span', { class: 'muted' }, '未启用（仅管理员需要）'));
     add(m, h('h1', null, '账户'), h('div', { class: 'card' }, kv([['用户名', u.username], ['用户 ID', String(u.id)], ['注册时间', time(u.created_at)], ['角色', u.is_admin ? '管理员' : '普通用户'], ['两步验证', h('span', null, mfa)]]),
+      state.info && state.info.support_email ? h('p', { class: 'muted', id: 'support-email' }, '有问题或建议？发邮件到 ', h('a', { href: 'mailto:' + state.info.support_email }, state.info.support_email), '。') : null,
       u.is_admin ? h('p', { class: 'muted' }, '管理员登录必须通过验证器 App 的两步验证。更换手机时请让其他管理员在控制台重置，或在服务器上执行 portal mfa-reset。') : null));
     const oldP = input({ type: 'password', autocomplete: 'current-password', required: true });
     const newP = input({ type: 'password', autocomplete: 'new-password', minlength: 8, maxlength: 256, required: true, placeholder: '8-256 位' });

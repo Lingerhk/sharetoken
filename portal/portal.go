@@ -23,6 +23,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ import (
 	"sharetoken/coordinator"
 	"sharetoken/internal/sqlite"
 	"sharetoken/ledger"
+	"sharetoken/mailer"
 	"sharetoken/relaypass"
 )
 
@@ -51,12 +53,19 @@ type Config struct {
 	// SecureCookies marks session cookies Secure even on plain-HTTP
 	// requests (the portal sits behind a TLS-terminating proxy).
 	SecureCookies bool
+	// TrustedProxies are reverse proxies on other machines whose X-Real-IP is
+	// believed, as a proxy on loopback's always is.
+	TrustedProxies []net.IP
 	// MFAKey (32 bytes) seals administrators' TOTP secrets in the database.
 	// nil: derived from PassKey. Without either, admins cannot log in, since
 	// two-factor authentication is mandatory for them.
 	MFAKey []byte
-	Now    func() time.Time
-	Log    *slog.Logger
+	// EmailVerification requires sign-ups to prove their email address with a
+	// mailed code, and closes sign-up by plain username. It needs Mail.From.
+	EmailVerification bool
+	Mail              MailConfig
+	Now               func() time.Time
+	Log               *slog.Logger
 }
 
 // Server is the portal.
@@ -64,6 +73,7 @@ type Server struct {
 	cfg   Config
 	db    *sql.DB
 	store *accounts.Store
+	mail  *mailer.Store
 	log   *slog.Logger
 
 	failMu sync.Mutex
@@ -101,6 +111,9 @@ func New(cfg Config) (*Server, error) {
 	for {
 		err := coordinator.Migrate(cfg.DB)
 		if err == nil {
+			err = mailer.Migrate(cfg.DB)
+		}
+		if err == nil {
 			break
 		}
 		if !sqlite.IsBusy(err) || time.Now().After(deadline) {
@@ -108,6 +121,9 @@ func New(cfg Config) (*Server, error) {
 		}
 		cfg.Log.Warn("database busy, retrying migration", "err", err)
 		time.Sleep(migrateRetryEvery)
+	}
+	if cfg.EmailVerification && cfg.Mail.From == "" {
+		return nil, errors.New("portal: email verification needs a mail sender (mail.from)")
 	}
 	key := cfg.MFAKey
 	if key == nil && cfg.PassKey != nil {
@@ -119,6 +135,7 @@ func New(cfg Config) (*Server, error) {
 	return &Server{
 		cfg: cfg, db: cfg.DB, log: cfg.Log,
 		store:      &accounts.Store{DB: cfg.DB, Now: cfg.Now},
+		mail:       &mailer.Store{DB: cfg.DB, Now: cfg.Now},
 		fails:      make(map[string][]time.Time),
 		mfaKey:     key,
 		challenges: make(map[string]*mfaChallenge),
@@ -328,6 +345,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/info", s.handleInfo)
 	mux.HandleFunc("GET /api/v1/network", s.handleNetwork)
 	mux.HandleFunc("POST /api/v1/register", s.handleRegister)
+	mux.HandleFunc("POST /api/v1/register/code", s.handleRegisterCode)
 	mux.HandleFunc("POST /api/v1/login", s.handleLogin)
 
 	// Browser sessions (cookie): only for the portal's own pages.
@@ -384,6 +402,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/disputes/{job}/resolve", s.admin(s.handleResolveDispute))
 	mux.Handle("GET /api/v1/admin/ledger", s.admin(s.handleJournal))
 	mux.Handle("GET /api/v1/admin/accounts", s.admin(s.handleAccounts))
+	s.mailRoutes(mux)
 	return withLimits(mux)
 }
 
@@ -462,10 +481,12 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 }
 
 type credentials struct {
+	Email     string `json:"email"` // sign-up with an email address: it becomes the account name
 	Username  string `json:"username"`
 	Password  string `json:"password"`
 	TokenName string `json:"token_name"`
 	TOTP      string `json:"totp"` // admins: the current two-factor code (API login in one step)
+	Code      string `json:"code"` // sign-up: the emailed verification code
 }
 
 type AuthResponse struct {
@@ -492,12 +513,36 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request, c credentials)
 		writeErr(w, http.StatusForbidden, "registration_closed", "registration is closed; ask an administrator for an account")
 		return nil, false
 	}
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.throttled("reg:" + ip) {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many sign-ups from this address; try again in a few minutes")
 		return nil, false
 	}
-	u, err := s.CreateUser(c.Username, c.Password, false)
+	name := c.Username
+	if c.Email != "" {
+		// Unlike username, this field never falls back to a plain name.
+		name = accounts.NormalizeEmail(c.Email)
+		if err := accounts.CheckEmail(name); err != nil {
+			s.accountErr(w, err)
+			return nil, false
+		}
+	}
+	if s.cfg.EmailVerification {
+		// With verification on, a plain username would be a way around it.
+		name = accounts.NormalizeEmail(name)
+		if err := accounts.CheckEmail(name); err != nil {
+			writeErr(w, http.StatusBadRequest, "email_required", "sign-up needs an email address")
+			return nil, false
+		}
+		if err := accounts.CheckPassword(c.Password); err != nil {
+			s.accountErr(w, err) // before the code: a short password must not use it up
+			return nil, false
+		}
+		if !s.checkRegisterCode(w, ip, name, c.Code) {
+			return nil, false
+		}
+	}
+	u, err := s.CreateUser(name, c.Password, false)
 	if err != nil {
 		s.accountErr(w, err)
 		return nil, false
@@ -524,7 +569,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // administrator it also runs the second factor (see mfa.go); mfa reports
 // whether one was verified, which the issued token remembers.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request, c credentials) (u *accounts.User, mfa, ok bool) {
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	name := strings.ToLower(strings.TrimSpace(c.Username))
 	if s.throttled("u:"+name) || s.throttled("ip:"+ip) {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many failed logins; try again in a few minutes")
@@ -594,12 +639,15 @@ func (s *Server) recordFailure(keys ...string) {
 // clientIP is the address failures and rate limits are keyed on. Behind a
 // local reverse proxy every connection comes from loopback, so there (and only
 // there) the proxy's X-Real-IP is believed; a remote peer cannot set it.
-func clientIP(r *http.Request) string {
+func (s *Server) clientIP(r *http.Request) string { return clientIP(r, s.cfg.TrustedProxies) }
+
+func clientIP(r *http.Request, trusted []net.IP) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+	ip := net.ParseIP(host)
+	if ip != nil && (ip.IsLoopback() || slices.ContainsFunc(trusted, ip.Equal)) {
 		if real := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); real != nil {
 			return real.String()
 		}
@@ -672,6 +720,7 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, cu ctxUs
 		s.accountErr(w, err)
 		return
 	}
+	s.notify(cu.user.Username, "ShareToken：你的密码已修改", "你的 ShareToken 账户密码刚刚被修改。\r\n如果不是你本人操作，请立即联系 "+s.supportAddress()+"。\r\n")
 	var revoked int64
 	if req.RevokeOthers {
 		ts, err := s.store.Tokens(cu.user.ID)

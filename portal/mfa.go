@@ -200,8 +200,8 @@ func (s *Server) secondFactor(w http.ResponseWriter, r *http.Request, u *account
 		return false, false
 	}
 	if !ok {
-		s.recordFailure("u:"+u.Username, "ip:"+clientIP(r))
-		s.log.Warn("two-factor code rejected", "user", u.Username, "ip", clientIP(r))
+		s.recordFailure("u:"+u.Username, "ip:"+s.clientIP(r))
+		s.log.Warn("two-factor code rejected", "user", u.Username, "ip", s.clientIP(r))
 		writeErr(w, http.StatusUnauthorized, "bad_code", "wrong two-factor code")
 		return false, false
 	}
@@ -255,7 +255,7 @@ func (s *Server) completeChallenge(w http.ResponseWriter, r *http.Request, req m
 		writeErr(w, http.StatusUnauthorized, "challenge_expired", "start the login again")
 		return nil
 	}
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.throttled("u:"+u.Username) || s.throttled("ip:"+ip) {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many failed logins; try again in a few minutes")
 		return nil
@@ -361,7 +361,7 @@ func (s *Server) handleWebMFAConfirm(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "challenge_expired", "start the login again")
 		return
 	}
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.throttled("u:"+u.Username) || s.throttled("ip:"+ip) {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many failed logins; try again in a few minutes")
 		return

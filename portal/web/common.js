@@ -158,17 +158,50 @@ const ST = (() => {
     return new Promise(resolve => {
       let mode = 'login';
       const err = h('div', { class: 'error' });
-      const user = input({ type: 'text', id: 'login-user', autocomplete: 'username', placeholder: '3-32 位小写字母、数字、_ . -', required: true });
+      const user = input({ type: 'text', id: 'login-user', autocomplete: 'username', placeholder: '邮箱，或 3-32 位小写字母、数字、_ . -', required: true });
       const pass = input({ type: 'password', id: 'login-pass', autocomplete: 'current-password', placeholder: '至少 8 位', required: true });
       const submit = h('button', { class: 'primary', type: 'submit' }, '登录');
+      const verify = () => state.info && state.info.email_verification;
+      const mailCode = input({ type: 'text', id: 'login-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 7, placeholder: '6 位验证码' });
+      const sendCode = h('button', { type: 'button', id: 'send-code', class: 'small', onclick: requestCode }, '发送验证码');
+      const codeField = h('div', { class: 'field code-field', hidden: true }, h('label', null, '邮箱验证码'), h('div', { class: 'row' }, mailCode, sendCode));
+      let cooldown = null;
+      async function requestCode() {
+        err.textContent = '';
+        const email = user.value.trim();
+        if (!email.includes('@')) { err.textContent = '请先填写邮箱'; user.focus(); return; }
+        sendCode.disabled = true;
+        try {
+          const r = await api('POST', '/api/v1/register/code', { email });
+          toast('验证码已发送，请查收邮件（也看看垃圾邮件）');
+          startCooldown(r.cooldown_seconds || 60);
+          mailCode.focus();
+        } catch (ex) {
+          sendCode.disabled = false;
+          err.textContent = ex.code === 'code_cooldown' ? '刚发送过，请稍后再试' : ex.code === 'throttled' ? '请求太频繁，请稍后再试' : ex.code === 'bad_request' ? '邮箱地址格式不正确' : ex.message;
+        }
+      }
+      function startCooldown(seconds) {
+        clearInterval(cooldown);
+        let left = seconds;
+        const show = () => { sendCode.textContent = left + ' 秒后可重发'; };
+        show();
+        cooldown = setInterval(() => {
+          if (--left > 0) { show(); return; }
+          clearInterval(cooldown); sendCode.disabled = false; sendCode.textContent = '重新发送';
+        }, 1000);
+      }
       const tabLogin = h('button', { type: 'button', class: 'active', onclick: () => setMode('login') }, '登录');
       const tabReg = h('button', { type: 'button', onclick: () => setMode('register') }, '注册');
       const tabs = h('div', { class: 'tabs' }, tabLogin, opts.allowRegister ? tabReg : null);
       const hint = h('p', { class: 'muted' });
+      const userLabel = h('label', null, '用户名');
       function setMode(m) {
         mode = m; err.textContent = '';
         tabLogin.classList.toggle('active', m === 'login'); tabReg.classList.toggle('active', m === 'register');
         submit.textContent = m === 'login' ? '登录' : '注册';
+        codeField.hidden = !(m === 'register' && verify());
+        userLabel.textContent = m === 'register' && verify() ? '邮箱' : '用户名';
         pass.autocomplete = m === 'login' ? 'current-password' : 'new-password';
         hint.textContent = m === 'register' && state.info && state.info.signup_credit_micros > 0
           ? '注册即赠送 ' + credit(state.info.signup_credit_micros) + ' credit' : '';
@@ -215,18 +248,26 @@ const ST = (() => {
         class: 'form', onsubmit: async e => {
           e.preventDefault(); err.textContent = ''; submit.disabled = true;
           try {
-            await api('POST', mode === 'login' ? '/api/v1/web/login' : '/api/v1/web/register', { username: user.value.trim(), password: pass.value });
+            const body = { username: user.value.trim(), password: pass.value };
+            if (mode === 'register' && verify()) {
+              if (!mailCode.value.trim()) { err.textContent = '请填写邮箱收到的验证码'; mailCode.focus(); return; }
+              body.code = mailCode.value.trim();
+            }
+            await api('POST', mode === 'login' ? '/api/v1/web/login' : '/api/v1/web/register', body);
             pass.value = '';
             resolve();
           } catch (ex) {
             if (ex.code === 'mfa_required' && ex.data.challenge) { pass.value = ''; showCode(ex.data.challenge); return; }
             if (ex.code === 'mfa_setup_required' && ex.data.challenge) { pass.value = ''; showSetup(ex.data.challenge); return; }
             err.textContent = ex.code === 'bad_credentials' ? '用户名或密码错误' : ex.code === 'throttled' ? '尝试次数过多，请几分钟后再试'
+              : ex.code === 'bad_code' ? '验证码错误或已过期' : ex.code === 'email_required' ? '请用邮箱注册'
               : ex.code === 'exists' ? '用户名已被使用' : ex.code === 'cross_site' ? '请求被拒绝（跨站）' : ex.message;
           } finally { submit.disabled = false; }
         }
-      }, field('用户名', user), field('密码', pass), err, submit);
-      clear(root).appendChild(h('div', { class: 'card login' }, h('h1', null, opts.title || 'sharetoken'), tabs, form, hint));
+      }, h('div', { class: 'field' }, userLabel, user), codeField, field('密码', pass), err, submit);
+      clear(root).appendChild(h('div', { class: 'card login' }, h('h1', null, opts.title || 'sharetoken'), tabs, form, hint,
+        h('p', { class: 'muted' }, h('a', { href: '/' }, '← 返回官网'))));
+      if (opts.allowRegister && location.hash === '#register') setMode('register');
       user.focus();
     });
   }

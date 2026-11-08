@@ -3,14 +3,93 @@
 # 在 Mac 上运行；可重复运行（已有的密钥、密码、证书、数据库都不会被覆盖）。详见 docs/prod-env.md。
 #   scripts/prod/deploy.sh            # 全部
 #   scripts/prod/deploy.sh --bins     # 只更新二进制和配置并重启（日常发版）
+#   scripts/prod/deploy.sh --mail     # 只更新门户和邮件服务，不动协调器
+#   scripts/prod/deploy.sh --mail-server  # 只更新邮件服务：门户、协调器都不动（门户还没带邮件代码时也能收发）
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd)
 HOST=${ARMBIAN:-192.168.6.91}; RUSER=s0nnet; DIR=/home/$RUSER/sharetoken-prod
 EMAIL=${LE_EMAIL:-lingerhk@gmail.com}
 BINS_ONLY=0; [ "${1:-}" = "--bins" ] && BINS_ONLY=1
+MAIL_ONLY=0; [ "${1:-}" = "--mail" ] && MAIL_ONLY=1
+MAIL_SERVER_ONLY=0; [ "${1:-}" = "--mail-server" ] && MAIL_SERVER_ONLY=1
 Q="-o LogLevel=ERROR -o ConnectTimeout=10"
 rsh() { ssh $Q "$RUSER@$HOST" "$@"; }
 W=${ST_TESTENV_WORK:-$HOME/st-test}; B=$W/build/arm64; mkdir -p "$B"
+
+# Portal and mail server only. The coordinator is left running: trades do not depend on either.
+deploy_mail() {
+  local keys=$W/prod-keys
+  (umask 077; mkdir -p "$keys")
+  [ -s "$keys/dkim.key" ] || (umask 077; openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$keys/dkim.key" 2>/dev/null)
+  scp $Q "$keys/dkim.key" "$RUSER@$HOST:$DIR/dkim.key" >/dev/null; rsh "chmod 600 $DIR/dkim.key"
+  # This account can touch nothing but the mail tables. The portal creates them, so it goes first.
+  [ -s "$keys/mail-db.pass" ] || (umask 077; head -c 24 /dev/urandom | base64 | tr -d '/+=' > "$keys/mail-db.pass")
+  local mp; mp=$(cat "$keys/mail-db.pass")
+  printf "CREATE USER IF NOT EXISTS 'sharetoken_mail'@'%%' IDENTIFIED BY '%s';\nALTER USER 'sharetoken_mail'@'%%' IDENTIFIED BY '%s';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken.mail_outbox TO 'sharetoken_mail'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken.mail_inbox TO 'sharetoken_mail'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken.mail_status TO 'sharetoken_mail'@'%%';\n" "$mp" "$mp" \
+    | rsh 'cd ~/sharetoken-prod && docker exec -i st-mysql mysql -h127.0.0.1 -uroot -p"$(cat mysql-root.pass)" 2>/dev/null'
+  scp $Q "$keys/mail-db.pass" "$RUSER@$HOST:$DIR/mail-db.pass" >/dev/null; rsh "chmod 600 $DIR/mail-db.pass"
+
+  # Certificate for STARTTLS. nginx only answers the ACME challenge for this name.
+  rsh "sudo tee /etc/nginx/conf.d/sharetoken-mail.conf >/dev/null" <<'N'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name mail.sharetoken.app;
+    location /.well-known/acme-challenge/ { root /var/www/html; }
+    location / { return 404; }
+}
+N
+  rsh "sudo nginx -t 2>/dev/null && sudo systemctl reload nginx"
+  rsh "sudo test -s /etc/letsencrypt/live/mail.sharetoken.app/fullchain.pem || sudo certbot certonly --webroot -w /var/www/html -d mail.sharetoken.app --email $EMAIL --agree-tos --no-eff-email --non-interactive"
+  # The mail server does not run as root: certbot hands it a copy on every renewal.
+  rsh "sudo tee /etc/letsencrypt/renewal-hooks/deploy/sharetoken-mail.sh >/dev/null" <<'H'
+#!/bin/sh
+d=/home/s0nnet/sharetoken-prod/mail-tls
+install -d -o s0nnet -g s0nnet -m 700 "$d"
+install -o s0nnet -g s0nnet -m 644 /etc/letsencrypt/live/mail.sharetoken.app/fullchain.pem "$d/fullchain.pem"
+install -o s0nnet -g s0nnet -m 600 /etc/letsencrypt/live/mail.sharetoken.app/privkey.pem "$d/privkey.pem"
+H
+  rsh "sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/sharetoken-mail.sh && sudo /etc/letsencrypt/renewal-hooks/deploy/sharetoken-mail.sh"
+
+  scp $Q "$HERE/sharetoken-mail.service" "$HERE/mail.yaml" "$RUSER@$HOST:$DIR/" >/dev/null
+  rsh "cd $DIR && ./mailserver.new -config mail.yaml check-config >/dev/null && sudo cp sharetoken-mail.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable sharetoken-mail >/dev/null 2>&1; sudo systemctl stop sharetoken-mail 2>/dev/null; mv mailserver.new mailserver; sudo systemctl start sharetoken-mail; sleep 3; systemctl is-active sharetoken-mail"
+}
+
+if [ $MAIL_SERVER_ONLY = 1 ]; then
+  echo "== build (linux/arm64)"
+  cd "$REPO"
+  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$B/mailserver" ./cmd/mailserver
+  echo "== upload"
+  scp $Q "$B/mailserver" "$RUSER@$HOST:$DIR/mailserver.new" >/dev/null
+  scp $Q "$HERE/mail.yaml" "$RUSER@$HOST:$DIR/" >/dev/null
+  scp $Q "$REPO/scripts/godaddy_ddns.sh" "$RUSER@$HOST:$DIR/ddns.sh"
+  rsh "cd $DIR && chmod +x mailserver.new ddns.sh && $DIR/ddns.sh"
+  echo "== mail tables (the portal normally creates them; the mail account may not, so this uses the portal's account once)"
+  rsh "cd $DIR && sed -e 's#sharetoken_mail@#sharetoken@#' -e 's#mail-db.pass#db.pass#' mail.yaml > mail-migrate.yaml && ./mailserver.new -config mail-migrate.yaml migrate; rc=\$?; rm -f mail-migrate.yaml; exit \$rc"
+  echo "== mail server"
+  deploy_mail
+  exit 0
+fi
+
+if [ $MAIL_ONLY = 1 ]; then
+  echo "== build (linux/arm64)"
+  cd "$REPO"
+  for c in portal mailserver; do
+    GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$B/$c" ./cmd/$c
+  done
+  echo "== upload"
+  scp $Q "$B/portal" "$RUSER@$HOST:$DIR/portal.new" >/dev/null
+  scp $Q "$B/mailserver" "$RUSER@$HOST:$DIR/mailserver.new" >/dev/null
+  scp $Q "$HERE/portal.yaml" "$RUSER@$HOST:$DIR/portal.yaml.new" >/dev/null
+  scp $Q "$REPO/scripts/godaddy_ddns.sh" "$RUSER@$HOST:$DIR/ddns.sh"
+  rsh "cd $DIR && chmod +x portal.new mailserver.new ddns.sh && ./portal.new -config portal.yaml.new check-config >/dev/null && echo portal config ok"
+  rsh "cd $DIR && $DIR/ddns.sh"
+  echo "== restart portal (keeps portal.prev)"
+  rsh "cd $DIR && cp portal portal.prev && cp portal.yaml portal.yaml.prev && sudo systemctl stop sharetoken-portal && mv portal.new portal && mv portal.yaml.new portal.yaml && sudo systemctl start sharetoken-portal; sleep 3; systemctl is-active sharetoken-portal"
+  echo "== mail server"
+  deploy_mail
+  exit 0
+fi
 
 echo "== build (linux/arm64)"
 cd "$REPO"
@@ -102,3 +181,9 @@ fi
 
 echo "== restart services"
 rsh "sudo systemctl restart sharetoken-coordinator sharetoken-portal; sleep 3; systemctl is-active sharetoken-coordinator sharetoken-portal"
+
+echo "== mail server"
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$B/mailserver" ./cmd/mailserver
+scp $Q "$B/mailserver" "$RUSER@$HOST:$DIR/mailserver.new" >/dev/null
+rsh "chmod +x $DIR/mailserver.new"
+deploy_mail

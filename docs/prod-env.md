@@ -37,8 +37,11 @@
 | A | relay-cn2 | 101.43.2.87 | 600 | 本次新增 |
 | A | @ | armbian 的公网 IPv4（动态，当前 27.125.141.245） | 600 | **DDNS 维护**（`scripts/godaddy_ddns.sh`） |
 | A | www | 同上 | 600 | **DDNS 维护**；原来的 CNAME→@ 已被脚本删除（A 与 CNAME 不能并存） |
+| A | mail | 同上 | 600 | **DDNS 维护**；邮件服务，其他邮件记录见 [mail.md](mail.md) |
 | CNAME | _domainconnect | _domainconnect.gd.domaincontrol.com | 3600 | GoDaddy 默认，未改动 |
 | TXT | _dmarc | GoDaddy 默认 DMARC | 3600 | GoDaddy 默认，未改动 |
+
+中继由 prod 和 dev 共用（2026-11-08 起），只用 `scripts/relay/deploy.sh --prod <us|sg|cn>` 逐台发布，见 [dev-env.md](dev-env.md)。
 
 ## 门户与协调器（armbian）
 
@@ -62,12 +65,12 @@
 | 参考模型 | 协调器的争议裁决要 Mac 上的 `upstream_proxy`（公司采购的 API）：`scripts/testenv/tunnels.sh` 建反向隧道到 armbian 的 127.0.0.1:11434/11436。隧道不在时只影响争议裁决，交易照常 |
 | 管理员 | `root`（初始密码在 `docs/test-env.secrets.md`，首次登录后绑 MFA 并改密）。运维命令：`cd ~/sharetoken-prod; ./portal -config portal.yaml users|overview|relay ls|grant …`，`./coordinator -config coordinator.yaml nodes|relays|disputes|check` |
 
-路由器：WAN :80、:443 → 192.168.6.91:80、:443（已配置）。**入站只需要这两个端口**；中继和协调器之间是协调器主动出站，不需要映射 4001。
+路由器：WAN :80、:443、:25 → 192.168.6.91 同端口（已配置；25 给邮件服务，见 [mail.md](mail.md)）。中继和协调器之间是协调器主动出站，不需要映射 4001。
 
 ### DDNS 脚本
 
 ```bash
-scripts/godaddy_ddns.sh        # 探测公网 IPv4，写 sharetoken.app 和 www.sharetoken.app 的 A 记录（TTL 600）
+scripts/godaddy_ddns.sh        # 探测公网 IPv4，写 sharetoken.app、www、mail 的 A 记录（TTL 600）
 scripts/godaddy_ddns.sh -n     # 只看会改什么
 scripts/godaddy_ddns.sh -f     # IP 没变也强制写
 ```
@@ -86,8 +89,8 @@ scripts/prod/deploy.sh --bins   # 日常发版：只更新二进制与 yaml 并�
 ```
 
 脚本可重复运行（不会覆盖已有的 key、密码、证书、数据库）。需要先把 `coordinator.key`、`portal-pass.key` 放在 Mac 的 `~/st-test/prod-keys/`（首次从原协调器机器复制）。
-**生产和 st-db 共用同一个协调器 key，不能同时运行**；st-db 压测前先停生产的两个服务（见 test-env.md 开头）。
-全新库的初始化（只做一次）：`SHARETOKEN_PASSWORD=… ./portal -config portal.yaml useradd -admin root`，再 `relay add` 登记各中继（地址见 `portal relay ls` 于 st-db 的旧库，或 `scripts/testenv/conf/relay-*.yaml`）。
+st-db 上目前还是生产的协调器 key，`scripts/testenv` 会拒绝在这种状态下启动它；压测要先换成 dev 身份（见 [dev-env.md](dev-env.md)），不再需要停生产。
+全新库的初始化（只做一次）：`SHARETOKEN_PASSWORD=… ./portal -config portal.yaml useradd -admin root`，再 `relay add` 登记各中继（地址见 `portal relay ls` 于 st-db 的旧库，或 `scripts/relay/conf/*.yaml`）。
 
 ## 变更方法（GoDaddy API）
 
@@ -113,10 +116,10 @@ dig +short AAAA relay-us.sharetoken.app @ns51.domaincontrol.com
 
 - 腾讯云 CN、CN 2 开通公网 IPv6，然后补 AAAA 记录。
 - ~~中继公布地址改为域名~~：2026-11-08 已完成。US、SG 宣告 `/dns4` + `/dns6`，CN 宣告 `/dns4/relay-cn.sharetoken.app/tcp/8091`，
-  portal 中登记的地址也已改为域名（配置见 `scripts/testenv/conf/relay-*.yaml`）。
+  portal 中登记的地址也已改为域名（配置见 `scripts/relay/conf/*.yaml`）。
 - relay-cn2（101.43.2.87）：DNS 已配，**中继尚未上线**。2026-11-08 实测：
   - SSH 用户是 `orcatermuser`（不是 s0nnet），有 sudo；Ubuntu 22.04，2 核 3.4 GB，4 GB swap。
-  - 共用机器：nginx 占 80/443，**QQ 占 127.0.0.1:4001**，所以中继用 **4002**（配置 `scripts/testenv/conf/relay-cn2.yaml`）。
+  - 共用机器：nginx 占 80/443，**QQ 占 127.0.0.1:4001**，所以中继用 **4002**（现作实验中继，配置 `scripts/relay/conf/lab-cn2.yaml`，见 [dev-env.md](dev-env.md)）。
   - 和 CN 一样**没有公网 IPv6**，网卡上只有 fe80::。
   - 腾讯云安全组只放行了 22、80、443/tcp。需要放行 **4002/tcp 和 4002/udp**（QUIC），中继才能对外服务。
   - 从 Mac 上传很慢（约 6 KB/s），二进制要在机器上从源码编译（Go 用阿里云镜像，GOPROXY=goproxy.cn）。

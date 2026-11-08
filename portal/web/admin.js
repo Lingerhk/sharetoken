@@ -9,17 +9,18 @@
   const me = () => state.me;
   if (!me().user.is_admin) {
     add(clear(app), h('div', { class: 'card login' }, h('h1', null, '管理控制台'), h('p', null, '账户 ', h('b', null, me().user.username), ' 不是管理员。'),
-      h('div', { class: 'row' }, h('a', { href: '/' }, '返回用户门户'), h('button', { class: 'small', onclick: ST.logout }, '退出'))));
+      h('div', { class: 'row' }, h('a', { href: '/app/' }, '返回用户门户'), h('button', { class: 'small', onclick: ST.logout }, '退出'))));
     return;
   }
 
+  const mailBadge = h('span', { class: 'nav-count', id: 'mail-unread', hidden: true });
   const nav = h('nav', { class: 'sidenav' },
     h('a', { href: '#/overview' }, '总览'), h('a', { href: '#/users' }, '用户'), h('a', { href: '#/relays' }, '中继'), h('a', { href: '#/jobs' }, '作业'),
-    h('a', { href: '#/nodes' }, '节点'), h('a', { href: '#/audits' }, '审计'), h('a', { href: '#/disputes' }, '争议'), h('a', { href: '#/ledger' }, '账本'));
+    h('a', { href: '#/nodes' }, '节点'), h('a', { href: '#/audits' }, '审计'), h('a', { href: '#/disputes' }, '争议'), h('a', { href: '#/ledger' }, '账本'), h('a', { href: '#/mail' }, '邮件', mailBadge));
   const main = h('main');
   add(clear(app), 
     h('header', { class: 'topbar' }, h('span', { class: 'brand' }, 'sharetoken', h('small', null, '管理控制台')), h('span', { class: 'spacer' }),
-      h('a', { href: '/' }, '用户门户'), h('span', { class: 'who' }, me().user.username), h('button', { class: 'small', onclick: ST.logout }, '退出')),
+      h('a', { href: '/app/' }, '用户门户'), h('span', { class: 'who' }, me().user.username), h('button', { class: 'small', onclick: ST.logout }, '退出')),
     h('div', { class: 'layout' }, nav, main));
 
   const tile = (label, value, sub, cls) => h('div', { class: 'tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value ' + (cls || '') }, value), sub ? h('div', { class: 'sub' }, sub) : null);
@@ -323,6 +324,200 @@
     await load(false);
   }
 
-  const go = ST.router({ overview, users, relays, jobs, nodes, audits, disputes, ledger }, nav, main, 'overview');
+  // ---- mail ----
+  // Mail tables keep Unix seconds; ST.time and ST.ago take nanoseconds.
+  const secTime = s => time(s * 1e9), secAgo = s => ago(s * 1e9);
+  const OUT_STATUS = { queued: ['排队中', 'accent'], sending: ['发送中', 'accent'], sent: ['对方已接受', 'ok'], failed: ['失败', 'bad'], cancelled: ['已取消', ''] };
+  const OUT_KIND = { verify: '验证码', notice: '通知', reply: '回复', compose: '手写', test: '测试' };
+  const size = n => n < 1024 ? n + ' B' : n < 1 << 20 ? (n / 1024).toFixed(1) + ' KB' : n < 1 << 30 ? (n / (1 << 20)).toFixed(1) + ' MB' : (n / (1 << 30)).toFixed(2) + ' GB';
+  function setUnread(n) { mailBadge.hidden = !n; mailBadge.textContent = n ? String(n) : ''; }
+  async function refreshUnread() { try { setUnread((await api('GET', '/api/v1/admin/mail/status')).overview.unread); } catch (e) { /* the page itself reports errors */ } }
+
+  // Mail is written by strangers: bytes from it are only ever saved to a file,
+  // and its text only goes through textContent (ST.h).
+  async function saveFile(path, name) {
+    try {
+      const r = await fetch(path, { headers: { 'X-Sharetoken-Web': '1' } });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const url = URL.createObjectURL(await r.blob());
+      const a = h('a', { href: url, download: name });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (ex) { fail(ex); }
+  }
+
+  async function mail(m, rest) {
+    const sub = rest[0] || 'inbox';
+    const tab = (key, label) => h('a', { href: '#/mail/' + key, class: 'tab-link' + (sub === key ? ' active' : '') }, label);
+    add(m, h('h1', null, '邮件'),
+      h('div', { class: 'toolbar' }, h('div', { class: 'tab-links' }, tab('inbox', '收件箱'), tab('archived', '已归档'), tab('bounces', '退信'), tab('outbox', '发件箱'), tab('status', '服务状态')),
+        h('span', { class: 'spacer' }), h('button', { class: 'primary', id: 'mail-compose', onclick: () => composeMail() }, '写邮件')));
+    const body = h('div'); add(m, body);
+    if (sub === 'outbox') { await (rest[1] ? outMessage(body, rest[1]) : outbox(body)); return; }
+    if (sub === 'status') { await mailStatus(body); return; }
+    await (rest[1] ? inMessage(body, rest[1], sub) : inbox(body, sub));
+    refreshUnread();
+  }
+
+  async function composeMail(to, subject) {
+    const toI = input({ type: 'email', id: 'mail-to', value: to || '', placeholder: 'user@example.com' });
+    const subj = input({ type: 'text', id: 'mail-subject', value: subject || '', maxlength: 200 });
+    const text = h('textarea', { id: 'mail-text', rows: 12, class: 'wide' });
+    const from = h('select', { id: 'mail-from' }, h('option', { value: 'support' }, '客服地址（可回复）'), h('option', { value: 'team' }, '团队地址'));
+    if (!await modal({ title: '写邮件', okText: '发送', body: h('div', { class: 'form' }, field('收件人', toI), field('发件人', from), field('主题', subj), field('正文', text)) })) return;
+    try {
+      const r = await api('POST', '/api/v1/admin/mail/send', { to: toI.value.trim(), subject: subj.value, text: text.value, from: from.value });
+      toast('已加入发送队列');
+      location.hash = '#/mail/outbox/' + r.outbox_id;
+    } catch (ex) { fail(ex); }
+  }
+
+  async function inbox(root, sub) {
+    const q = input({ type: 'search', id: 'mail-search', placeholder: '搜索发件人、主题' });
+    const unread = h('input', { type: 'checkbox', id: 'mail-unread-only' });
+    const list = h('div', { class: 'card' });
+    add(root, h('div', { class: 'toolbar' }, q, sub === 'inbox' ? h('label', { class: 'check' }, unread, '只看未读') : null), list);
+    let rows = [];
+    async function load(more) {
+      if (!more) rows = [];
+      const before = rows.length ? rows[rows.length - 1].id : 0;
+      const qs = 'limit=50&q=' + encodeURIComponent(q.value.trim()) + (before ? '&before=' + before : '') + (unread.checked ? '&unread=1' : '')
+        + (sub === 'archived' ? '&status=archived' : sub === 'bounces' ? '&status=all&bounces=only' : '');
+      const r = await api('GET', '/api/v1/admin/mail/inbox?' + qs);
+      rows = rows.concat(r.messages);
+      add(clear(list), table([
+        { title: '发件人', cell: x => h('span', { class: x.read_at ? '' : 'strong' }, x.from || x.mail_from || '（未知）') },
+        { title: '主题', cell: x => h('a', { href: '#/mail/' + sub + '/' + x.id, class: x.read_at ? '' : 'strong' }, x.subject || '（无主题）') },
+        { title: '收件地址', cell: x => h('span', { class: 'muted' }, x.mailbox) },
+        { title: '发件人验证', cell: x => authBadge(x) },
+        { title: '状态', cell: x => x.replied_at ? badge('已回复', 'ok') : x.read_at ? '' : badge('未读', 'accent') },
+        { title: '大小', num: true, cell: x => size(x.size) },
+        { title: '收到', cell: x => secTime(x.received_at) },
+      ], rows, sub === 'bounces' ? '没有退信' : '没有邮件'), r.messages.length === 50 ? moreButton(() => load(true)) : null);
+    }
+    let timer; q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => load(false), 250); });
+    unread.addEventListener('change', () => load(false));
+    await load(false);
+  }
+
+  const authBadge = x => x.is_bounce ? badge('退信', 'warn') : x.verified ? badge('已验证', 'ok') : badge('未验证', 'warn');
+
+  async function inMessage(root, id, sub) {
+    const base = '/api/v1/admin/mail/inbox/' + encodeURIComponent(id);
+    const d = await api('GET', base);
+    const x = d.message, p = d.parsed;
+    if (!x.read_at) await api('POST', base + '/read', { read: true }).catch(() => {});
+    const back = () => { location.hash = '#/mail/' + sub; };
+    const archived = x.status === 'archived';
+    const actions = h('div', { class: 'row' },
+      h('button', { class: 'primary', id: 'mail-reply', disabled: !d.reply_to || x.is_bounce, onclick: reply }, '回复'),
+      h('button', { id: 'mail-archive', onclick: async () => {
+        try { await api('POST', base + '/status', { status: archived ? 'inbox' : 'archived' }); toast(archived ? '已移回收件箱' : '已归档'); back(); } catch (ex) { fail(ex); }
+      } }, archived ? '移回收件箱' : '归档'),
+      h('button', { onclick: async () => { try { await api('POST', base + '/read', { read: false }); toast('已标为未读'); back(); } catch (ex) { fail(ex); } } }, '标为未读'),
+      h('button', { onclick: () => saveFile(base + '/raw', 'message-' + x.id + '.eml') }, '下载原文'),
+      h('button', { class: 'danger', onclick: async () => {
+        if (!await confirm('删除邮件', '永久删除这封邮件，无法恢复。', '删除')) return;
+        try { await api('DELETE', base); toast('已删除'); back(); } catch (ex) { fail(ex); }
+      } }, '删除'));
+    add(root, h('p', null, h('a', { href: '#/mail/' + sub }, '← 返回')),
+      x.verified || x.is_bounce ? null : h('div', { class: 'card warn-card', id: 'mail-unverified' }, '这封邮件的发件人没有通过 SPF / DKIM 验证，发件人地址可能是伪造的。不要轻信其中的身份声明，也不要按邮件内容直接操作账户或打开附件。'),
+      h('div', { class: 'card' }, h('h2', { class: 'mail-subject' }, p.subject || x.subject || '（无主题）'),
+        kv([['发件人', [p.from || x.from || '（未知）', ' ', authBadge(x)]], ['回复到', d.reply_to || '（无可用地址）'], ['收件地址', x.mailbox], ['收到', secTime(x.received_at)],
+          ['来源', x.remote_ip + '（' + x.helo + '），' + (x.tls ? 'TLS' : '明文') + '，SPF ' + x.spf + '，DKIM ' + x.dkim], ['信封发件人', x.mail_from || '（空）']]),
+        actions),
+      h('div', { class: 'card' }, p.from_html ? h('p', { class: 'muted' }, '这封邮件只有 HTML 版本，这里显示其中的文字；HTML 不会被加载。') : null,
+        p.malformed ? h('p', { class: 'warn' }, '邮件结构有问题，内容可能不完整，可以下载原文查看。') : null,
+        h('div', { class: 'mail-body', id: 'mail-body' }, p.text || '（没有文字内容）')),
+      p.attachments.length ? h('div', { class: 'card' }, h('h3', null, '附件', h('small', null, '来自外部，打开前请确认来源')), table([
+        { title: '文件', cell: a => a.filename || '（无文件名）' }, { title: '声明的类型', cell: a => h('span', { class: 'muted' }, a.type) }, { title: '大小', num: true, cell: a => size(a.size) },
+        { title: '', cell: a => h('button', { class: 'small', onclick: () => saveFile(base + '/attachments/' + a.index, a.filename || 'attachment-' + a.index) }, '下载') },
+      ], p.attachments)) : null);
+    async function reply() {
+      const quoted = '\n\n在 ' + secTime(x.received_at) + '，' + (p.from || x.from) + ' 写道：\n' + (p.text || '').split('\n').slice(0, 40).map(l => '> ' + l).join('\n');
+      const text = h('textarea', { id: 'reply-text', rows: 14, class: 'wide' });
+      text.value = quoted;
+      const body = h('div', { class: 'form' }, h('p', { class: 'muted' }, '发给 ', h('b', null, d.reply_to), '，从客服地址发出'), field('正文', text));
+      if (!await modal({ title: '回复', okText: '发送', body })) return;
+      try {
+        const r = await api('POST', base + '/reply', { text: text.value });
+        toast('回复已加入发送队列'); location.hash = '#/mail/outbox/' + r.outbox_id;
+      } catch (ex) { fail(ex); }
+    }
+    refreshUnread();
+  }
+
+  async function outbox(root) {
+    const q = input({ type: 'search', id: 'out-search', placeholder: '搜索收件人、主题' });
+    const st = h('select', { id: 'out-status' }, h('option', { value: '' }, '全部状态'), Object.entries(OUT_STATUS).map(([k, v]) => h('option', { value: k }, v[0])));
+    const kind = h('select', { id: 'out-kind' }, h('option', { value: '' }, '全部类型'), Object.entries(OUT_KIND).map(([k, v]) => h('option', { value: k }, v)));
+    const list = h('div', { class: 'card' });
+    add(root, h('div', { class: 'toolbar' }, q, st, kind), list);
+    let rows = [];
+    async function load(more) {
+      if (!more) rows = [];
+      const before = rows.length ? rows[rows.length - 1].id : 0;
+      const r = await api('GET', '/api/v1/admin/mail/outbox?limit=50&q=' + encodeURIComponent(q.value.trim()) + '&status=' + st.value + '&kind=' + kind.value + (before ? '&before=' + before : ''));
+      rows = rows.concat(r.messages);
+      add(clear(list), table([
+        { title: '收件人', cell: x => x.to },
+        { title: '主题', cell: x => h('a', { href: '#/mail/outbox/' + x.id }, x.sensitive ? '（含验证码，不显示）' : x.subject || '（无主题）') },
+        { title: '类型', cell: x => OUT_KIND[x.kind] || x.kind },
+        { title: '状态', cell: x => outBadge(x) },
+        { title: '尝试', num: true, cell: x => String(x.attempts) },
+        { title: '创建', cell: x => secTime(x.created_at) },
+      ], rows, '没有发出的邮件'), r.messages.length === 50 ? moreButton(() => load(true)) : null);
+    }
+    let timer; q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => load(false), 250); });
+    st.addEventListener('change', () => load(false)); kind.addEventListener('change', () => load(false));
+    await load(false);
+  }
+
+  const outBadge = x => { const s = OUT_STATUS[x.status] || [x.status, '']; return badge(s[0], s[1]); };
+
+  async function outMessage(root, id) {
+    const base = '/api/v1/admin/mail/outbox/' + encodeURIComponent(id);
+    const box = h('div'); add(root, h('p', null, h('a', { href: '#/mail/outbox' }, '← 返回')), box);
+    async function load() {
+      const x = (await api('GET', base)).message;
+      add(clear(box), h('div', { class: 'card' }, h('h2', { class: 'mail-subject' }, x.subject || '（无主题）'),
+        kv([['状态', outBadge(x)], ['收件人', x.to], ['发件人', x.from], ['类型', OUT_KIND[x.kind] || x.kind], ['创建', secTime(x.created_at)],
+          ['完成', x.finished_at ? secTime(x.finished_at) : '—'], ['尝试次数', String(x.attempts)],
+          ['下次尝试', x.status === 'queued' && x.next_attempt_at ? secTime(x.next_attempt_at) : '—'], ['接收服务器', x.remote || '—'], ['Message-ID', x.message_id || '—'],
+          ['操作人', x.created_by || '系统'], ['最后错误', x.last_error ? h('span', { class: 'bad', id: 'out-error' }, x.last_error) : '—']]),
+        h('div', { class: 'row' },
+          h('button', { id: 'out-retry', disabled: x.sensitive || !['failed', 'cancelled'].includes(x.status), onclick: act(base + '/retry', undefined, '已重新排队', load) }, '重新发送'),
+          h('button', { id: 'out-cancel', disabled: x.status !== 'queued', onclick: act(base + '/cancel', undefined, '已取消', load) }, '取消发送'))),
+        h('div', { class: 'card' }, h('div', { class: 'mail-body' }, x.text || '（无内容）')));
+    }
+    await load();
+  }
+
+  async function mailStatus(root) {
+    const d = await api('GET', '/api/v1/admin/mail/status');
+    const o = d.overview, srv = o.server, out = o.outbox || {};
+    setUnread(o.unread);
+    add(root, h('div', { class: 'tiles' },
+      tile('邮件服务', o.online ? '运行中' : '离线', o.last_seen ? '上次报告 ' + secAgo(o.last_seen) : '从未报告', o.online ? 'ok' : 'bad'),
+      tile('未读', num(o.unread), '收件箱 ' + num(o.inbox) + '，已归档 ' + num(o.archived)),
+      tile('待发送', num((out.queued || 0) + (out.sending || 0)), '', (out.queued || 0) > 20 ? 'warn' : ''),
+      tile('对方已接受', num(out.sent || 0), '不代表已进入收件箱；失败 ' + num(out.failed || 0), out.failed ? 'warn' : ''),
+      tile('退信', num(o.bounces), '', o.bounces ? 'warn' : ''),
+      tile('24 小时验证码', num(o.codes_last_day)),
+      tile('邮件占用', size(o.inbox_bytes))),
+      h('div', { class: 'card' }, kv([
+        ['发件地址', d.from || h('span', { class: 'bad' }, '门户未配置 mail.from')], ['客服地址', d.support || h('span', { class: 'warn' }, '未配置')],
+        ['注册', !d.registration_open ? '关闭，仅管理员创建用户' : d.email_verification ? '开放，需要邮箱验证码' : h('span', { class: 'warn' }, '开放，不验证邮箱')],
+        ['发信方式', srv ? srv.delivery : '—'], ['主机名', srv ? srv.hostname : '—'], ['DKIM 选择器', srv ? srv.dkim_selector : '—'],
+        ['收信', srv && srv.smtp_listen ? srv.smtp_listen + '：' + (srv.mailboxes || []).join('、') : '未启用'],
+        ['SMTP 计数', srv ? '连接 ' + srv.counters.connections + '，接收 ' + srv.counters.accepted + '，拒绝 ' + srv.counters.rejected : '—'],
+        ['启动于', srv ? secTime(srv.started_at) : '—']])),
+      srv && srv.dns ? [h('h2', null, 'DNS 检查', h('small', null, srv.dns_checked_at ? secAgo(srv.dns_checked_at) + '检查' : '')), h('div', { class: 'card' }, table([
+        { title: '记录', cell: c => c.name }, { title: '结果', cell: c => c.ok ? badge('正常', 'ok') : badge('异常', 'bad') }, { title: '详情', cell: c => h('span', { class: 'mono wrap' }, c.detail) },
+      ], srv.dns))] : null);
+  }
+
+  const go = ST.router({ overview, users, relays, jobs, nodes, audits, disputes, ledger, mail }, nav, main, 'overview');
+  refreshUnread();
   await go();
 })();

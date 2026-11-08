@@ -1,0 +1,22 @@
+[Unit]
+Description=sharetoken dev portal
+After=network-online.target sharetoken-dev-dbtunnel.service sharetoken-dev-coordinator.service
+Wants=network-online.target sharetoken-dev-dbtunnel.service
+
+[Service]
+User=s0nnet
+WorkingDirectory=/home/s0nnet/sharetoken-dev
+Environment=GOMEMLIMIT=100MiB
+ExecStartPre=/bin/bash -c 'for i in $(seq 60); do (echo > /dev/tcp/127.0.0.1/3306) 2>/dev/null && exit 0; sleep 2; done; exit 1'
+ExecStart=/home/s0nnet/sharetoken-dev/portal -config portal.yaml serve
+Restart=always
+RestartSec=5
+LimitNOFILE=8192
+# Plain HTTP on the LAN: only armbian (nginx) and this machine (MySQL tunnel, CLI) may talk to it.
+IPAddressDeny=any
+IPAddressAllow=localhost 192.168.6.91
+MemoryHigh=150M
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

@@ -122,7 +122,7 @@ try {
 
   // ---- user portal ----
   console.log('user portal');
-  await goto(base + '/');
+  await goto(base + '/app/');
   await waitFor('document.querySelector("#login-user")');
   await shot('01-login');
   check((await text()).includes('注册'), 'registration tab shown because registration is open');
@@ -137,7 +137,7 @@ try {
   check(!(await text()).includes('管理控制台'), 'ordinary user sees no admin link');
 
   // XSS: a token named with HTML must render as text, not markup.
-  await goto(base + '/#/tokens'); await waitFor('document.querySelector("input[placeholder]")');
+  await goto(base + '/app/#/tokens'); await waitFor('document.querySelector("input[placeholder]")');
   const xss = '<img src=x onerror="document.title=\'pwned\'"><b>bold</b>';
   await type('main form input[type=text]', xss);
   await click('main form button[type=submit]');
@@ -168,10 +168,10 @@ try {
   check(!cookieVisible.includes('st_session'), 'session cookie is HttpOnly (invisible to scripts)');
 
   // network, account pages
-  await goto(base + '/#/network'); await sleep(600);
+  await goto(base + '/app/#/network'); await sleep(600);
   await assertText('203.0.113.7', 'relay listed on the network page');
   await assertText('延迟', 'latency column on the network page');
-  await goto(base + '/#/account'); await sleep(600);
+  await goto(base + '/app/#/account'); await sleep(600);
   await shot('04-account');
   await type('main form input[autocomplete=current-password]', 'alicealice');
   const newInputs = await evaluate('document.querySelectorAll("main form input[autocomplete=new-password]").length');

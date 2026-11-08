@@ -1,0 +1,50 @@
+# mailserver 配置样板（docs/mail.md）。mailserver -config mail.yaml check-config 校验。
+version: 1
+
+database:
+  # 和门户同一个库。用只能访问 mail_outbox、mail_inbox、mail_status 的账号：这是唯一直接面对陌生人的进程。
+  dsn: mysql://sharetoken_mail@127.0.0.1:3306/sharetoken
+  password_file: mail-db.pass
+  max_open_conns: 8
+  max_idle_conns: 2
+  conn_max_lifetime: 30m
+  connect_timeout: 10s
+  lock_wait_timeout: 10s
+
+hostname: mail.sharetoken.app   # EHLO 名；MX 指向它
+domain: sharetoken.app          # 发信和收信的域
+from: "ShareToken <team@sharetoken.app>"  # send-test 的发件人；门户发的邮件用门户的 mail.from
+
+dkim:
+  selector: st1           # 发布在 st1._domainkey.sharetoken.app
+  key_file: dkim.key      # mailserver dkim-keygen 生成；没有它不发信（未签名的邮件过不了 DMARC）
+
+delivery:
+  mode: direct            # direct：直投收件方 MX（需要出站 25 端口）；smarthost：交给中继
+  smarthost:
+    addr: ""              # smtp.example.com:587（STARTTLS）或 :465（TLS），都校验证书
+    username: ""
+    password_file: ""
+  workers: 4
+  retry_for: 48h          # 暂时失败时重试多久（验证码邮件 10 分钟后就过期）
+  keep_for: 2160h         # 发完的邮件保留多久
+
+smtp:
+  enabled: true           # false：只发不收
+  listen: ":25"
+  mailboxes:              # 只收这些地址，其他在 SMTP 对话中直接拒绝（550）；从不转发
+    - support@sharetoken.app
+    - team@sharetoken.app
+  max_message_size: 10MiB
+  max_inbox_size: 2GiB    # 超过后暂时拒收（452），对方稍后重试
+  max_conns: 20
+  max_conns_per_ip: 4
+  max_per_ip_hour: 60
+  tls:
+    cert_file: ""         # 续期后自动加载；留空用自签证书（发信方一般不校验，同样加密）
+    key_file: ""
+
+log:
+  level: info
+  format: text
+  file: ""

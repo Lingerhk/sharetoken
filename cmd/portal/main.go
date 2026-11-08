@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	netmail "net/mail"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -60,6 +61,7 @@ type File struct {
 	} `yaml:"keys"`
 	HTTP struct {
 		Listen            string          `yaml:"listen"`
+		TrustedProxies    []string        `yaml:"trusted_proxies"` // reverse proxies on other machines whose X-Real-IP is believed
 		ReadHeaderTimeout config.Duration `yaml:"read_header_timeout"`
 		ReadTimeout       config.Duration `yaml:"read_timeout"`
 		WriteTimeout      config.Duration `yaml:"write_timeout"`
@@ -75,7 +77,13 @@ type File struct {
 	Accounts struct {
 		OpenRegistration   bool   `yaml:"open_registration"`
 		SignupCreditMicros uint64 `yaml:"signup_credit_micros"`
+		EmailVerification  bool   `yaml:"email_verification"` // sign-up needs an emailed code (mail.from must be set, mailserver running)
 	} `yaml:"accounts"`
+	// Mail is who the portal's mail comes from; cmd/mailserver delivers it (docs/mail.md).
+	Mail struct {
+		From    string `yaml:"from"`    // ShareToken <team@sharetoken.app>
+		Support string `yaml:"support"` // ShareToken Support <support@sharetoken.app>
+	} `yaml:"mail"`
 	Sessions struct {
 		LoginTTL      config.Duration `yaml:"login_ttl"`
 		WebSessionTTL config.Duration `yaml:"web_session_ttl"`
@@ -123,6 +131,17 @@ func (f *File) validate() error {
 		"sessions.web_session_ttl": f.Sessions.WebSessionTTL, "sessions.pass_ttl": f.Sessions.PassTTL} {
 		if d <= 0 {
 			bad("%s must be positive", name)
+		}
+	}
+	if f.Accounts.EmailVerification && f.Mail.From == "" {
+		bad("accounts.email_verification needs mail.from")
+	}
+	for name, a := range map[string]string{"mail.from": f.Mail.From, "mail.support": f.Mail.Support} {
+		if a == "" {
+			continue
+		}
+		if _, err := netmail.ParseAddress(a); err != nil {
+			bad("%s: %v", name, err)
 		}
 	}
 	if f.Sessions.PassTTL > 0 && f.Sessions.PassTTL < config.D("5m") {
@@ -264,7 +283,8 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 	}
 	p, err := portal.New(portal.Config{DB: db, OpenRegistration: f.Accounts.OpenRegistration, SignupCreditMicros: f.Accounts.SignupCreditMicros,
 		LoginTTL: f.Sessions.LoginTTL.T(), PassKey: passKey, PassTTL: f.Sessions.PassTTL.T(), WebSessionTTL: f.Sessions.WebSessionTTL.T(),
-		SecureCookies: mode == "proxy", MFAKey: mfaKey, Log: lg})
+		SecureCookies: mode == "proxy", TrustedProxies: trustedProxies(f.HTTP.TrustedProxies), MFAKey: mfaKey, Log: lg,
+		EmailVerification: f.Accounts.EmailVerification, Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -309,7 +329,7 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 			filepath.Join(f.TLS.SelfSignedDir, portal.SelfSignedCertFile), portal.CertFingerprint(c.Certificate[0]), portPart(listen), portal.CertFingerprint(c.Certificate[0]))
 	}
 	fmt.Printf("relay pass key %s\n   relays: access.portal_keys: [%s]\n", passPub, passPub)
-	fmt.Printf("portal listening on %s://%s (tls mode %s, registration open: %v, sign-up credit: %d)\n   web: %s://<host>%s/  admin: %s://<host>%s/admin/\n",
+	fmt.Printf("portal listening on %s://%s (tls mode %s, registration open: %v, sign-up credit: %d)\n   web: %s://<host>%s/app/  admin: %s://<host>%s/admin/\n",
 		scheme, listen, mode, f.Accounts.OpenRegistration, f.Accounts.SignupCreditMicros, scheme, portPart(listen), scheme, portPart(listen))
 	if scheme == "https" {
 		err = hs.ListenAndServeTLS("", "")
@@ -506,4 +526,13 @@ func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// trustedProxies parses http.trusted_proxies, which validation has checked.
+func trustedProxies(addrs []string) []net.IP {
+	out := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		out = append(out, net.ParseIP(a))
+	}
+	return out
 }

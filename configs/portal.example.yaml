@@ -25,6 +25,8 @@ keys:
 
 http:
   listen: ":8092"
+  # 其他机器上的反向代理，门户采信它传来的 X-Real-IP（登录失败限流用）。回环上的代理始终采信。
+  trusted_proxies: []
   # [新增，原硬编码] 服务端超时
   read_header_timeout: 10s
   read_timeout: 30s
@@ -47,6 +49,13 @@ tls:
 accounts:
   open_registration: false       # 允许自助注册（否则仅管理员建号）
   signup_credit_micros: 0        # 新用户赠送额度
+  # 注册必须用邮箱验证码，同时关闭用户名注册；需要 mail.from 和运行中的 mailserver
+  email_verification: false
+
+# 门户发的邮件（注册验证码、通知、回复）的发件人。门户只写发件箱，由 mailserver 投递（docs/mail.md）。
+mail:
+  from: ""     # ShareToken <team@sharetoken.app>；留空：不发邮件
+  support: ""  # ShareToken Support <support@sharetoken.app>；用户反馈地址，管理员回复也从这里发
 
 sessions:
   login_ttl: 720h                # 客户端登录 token 有效期

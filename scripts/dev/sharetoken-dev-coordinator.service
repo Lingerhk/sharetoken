@@ -1,0 +1,19 @@
+[Unit]
+Description=sharetoken dev coordinator
+After=network-online.target sharetoken-dev-dbtunnel.service
+Wants=network-online.target sharetoken-dev-dbtunnel.service
+
+[Service]
+User=s0nnet
+WorkingDirectory=/home/s0nnet/sharetoken-dev
+Environment=GOMEMLIMIT=150MiB
+ExecStartPre=/bin/bash -c 'for i in $(seq 60); do (echo > /dev/tcp/127.0.0.1/3306) 2>/dev/null && exit 0; sleep 2; done; exit 1'
+ExecStart=/home/s0nnet/sharetoken-dev/coordinator -config coordinator.yaml
+Restart=always
+RestartSec=5
+LimitNOFILE=8192
+MemoryHigh=200M
+MemoryMax=280M
+
+[Install]
+WantedBy=multi-user.target

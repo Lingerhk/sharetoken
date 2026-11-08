@@ -18,6 +18,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"sharetoken/box"
+	"sharetoken/internal/secfile"
 )
 
 // Keys is one party's key material, all derived from a single 32-byte seed:
@@ -74,13 +75,13 @@ func NewKeys() (*Keys, error) {
 // LoadOrCreateKeys reads a hex seed from path, creating it (mode 0600) if it
 // does not exist. It refuses a key file that other users can read.
 func LoadOrCreateKeys(path string) (*Keys, error) {
-	info, err := os.Stat(path)
+	err := secfile.CheckPrivate(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		seed := make([]byte, seedSize)
 		if _, err := rand.Read(seed); err != nil {
 			return nil, err
 		}
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		f, err := secfile.Create(path)
 		if err != nil {
 			return nil, err
 		}
@@ -94,10 +95,7 @@ func LoadOrCreateKeys(path string) (*Keys, error) {
 		return KeysFromSeed(seed)
 	}
 	if err != nil {
-		return nil, err
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("p2p: key file %s is accessible by other users; run: chmod 600 %s", path, path)
+		return nil, fmt.Errorf("p2p: key file %w", err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

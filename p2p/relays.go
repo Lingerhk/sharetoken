@@ -147,7 +147,7 @@ func measureWithin(ctx context.Context, h host.Host, ai peer.AddrInfo, samples i
 		if res.Error != nil {
 			return 0, res.Error
 		}
-		rtts = append(rtts, res.RTT)
+		rtts = append(rtts, max(res.RTT, time.Microsecond)) // Windows can read 0 over loopback; 0 means "no answer" to callers
 		if len(rtts) == samples {
 			break
 		}

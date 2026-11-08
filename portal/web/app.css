@@ -126,3 +126,17 @@ button:disabled { opacity: .5; cursor: default; }
   main { padding: 16px; }
   .topbar { padding: 0 14px; }
 }
+
+/* mail */
+.mail-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.6; max-height: 70vh; overflow-y: auto; }
+.mail-subject { margin: 0 0 12px; overflow-wrap: anywhere; }
+.strong { font-weight: 600; }
+.wide { width: 100%; box-sizing: border-box; }
+.wrap { overflow-wrap: anywhere; white-space: normal; }
+.warn-card { border-color: var(--warn); color: var(--warn); }
+.nav-count { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; text-align: center; }
+.nav-count[hidden], .code-field[hidden] { display: none; }
+.tab-links { display: flex; gap: 4px; flex-wrap: wrap; }
+.tab-link { padding: 6px 12px; border-radius: 6px; text-decoration: none; color: var(--muted); }
+.tab-link.active { color: var(--accent); background: var(--panel); border: 1px solid var(--line); }
+.code-field .row input { flex: 1; }

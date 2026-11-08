@@ -3,6 +3,7 @@ package portal
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -21,7 +22,7 @@ func TestSelfSignedCertIsStable(t *testing.T) {
 	if CertFingerprint(a.Certificate[0]) != CertFingerprint(b.Certificate[0]) {
 		t.Fatal("certificate changed across restarts")
 	}
-	if fi, err := os.Stat(filepath.Join(dir, SelfSignedKeyFile)); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(filepath.Join(dir, SelfSignedKeyFile)); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("key file mode: %v %v", fi.Mode(), err)
 	}
 }
