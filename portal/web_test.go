@@ -658,3 +658,26 @@ func mustRelays(t *testing.T, s *Server) []accounts.Relay {
 	}
 	return rs
 }
+
+func TestClientIPTrustsRealIPOnlyFromLoopback(t *testing.T) {
+	mk := func(remote, real string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		if real != "" {
+			r.Header.Set("X-Real-IP", real)
+		}
+		return r
+	}
+	if got := clientIP(mk("127.0.0.1:5555", "203.0.113.9")); got != "203.0.113.9" {
+		t.Errorf("via local proxy: %q", got)
+	}
+	if got := clientIP(mk("[::1]:5555", "203.0.113.9")); got != "203.0.113.9" {
+		t.Errorf("via local proxy v6: %q", got)
+	}
+	if got := clientIP(mk("198.51.100.7:5555", "203.0.113.9")); got != "198.51.100.7" {
+		t.Errorf("remote peer must not spoof: %q", got)
+	}
+	if got := clientIP(mk("127.0.0.1:5555", "not-an-ip")); got != "127.0.0.1" {
+		t.Errorf("garbage header: %q", got)
+	}
+}

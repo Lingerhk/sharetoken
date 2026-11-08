@@ -8,6 +8,7 @@
 # 首次：注册（或 login），本机设备自动绑定到账户
 sharetoken register -portal https://portal.example.com -user alice
 #   门户用自签名证书时，加上运维公布的指纹：-portal-pin sha256:…（或按提示核对后输入 y）
+#   正式环境门户是 https://sharetoken.app（Let's Encrypt 公共证书），不需要 -portal-pin；部署见 docs/prod-env.md
 
 # 只想用：直接启动
 sharetoken up

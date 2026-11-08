@@ -3,7 +3,7 @@
 维护说明：本文只记录公开信息（域名、IP、端口、记录）。登录凭据、API token、密钥不要写入本文，
 统一放在被 `.gitignore` 忽略的文件中（`config.env`、`docs/test-env.secrets.md`）。
 
-最后更新：2026-11-08
+最后更新：2026-11-08（晚：门户 + 协调器上线 armbian）
 
 ## 域名
 
@@ -35,10 +35,59 @@
 | AAAA | relay-sg | 2400:6180:0:d2:0:3:50d5:3000 | 600 | 本次新增 |
 | A | relay-cn | 119.29.250.173 | 600 | 本次新增 |
 | A | relay-cn2 | 101.43.2.87 | 600 | 本次新增 |
-| A | @ | Parked | 600 | GoDaddy 默认，未改动 |
-| CNAME | www | @ | 3600 | GoDaddy 默认，未改动 |
+| A | @ | armbian 的公网 IPv4（动态，当前 27.125.141.245） | 600 | **DDNS 维护**（`scripts/godaddy_ddns.sh`） |
+| A | www | 同上 | 600 | **DDNS 维护**；原来的 CNAME→@ 已被脚本删除（A 与 CNAME 不能并存） |
 | CNAME | _domainconnect | _domainconnect.gd.domaincontrol.com | 3600 | GoDaddy 默认，未改动 |
 | TXT | _dmarc | GoDaddy 默认 DMARC | 3600 | GoDaddy 默认，未改动 |
+
+## 门户与协调器（armbian）
+
+```
+ 用户 / 浏览器 ──https://sharetoken.app──> 家庭路由器 WAN :80/:443 ──> armbian 192.168.6.91
+                                                nginx（Let's Encrypt，终结 TLS）──> 门户 127.0.0.1:8092
+ 协调器：无监听端口，只在 3 个中继上预约（出站连接）；MySQL：Docker 容器 st-mysql，127.0.0.1:3306
+```
+
+| 项 | 说明 |
+|---|---|
+| 主机 | armbian（192.168.6.91，aarch64 2 GB）。`ssh s0nnet@192.168.6.91`；目录 `~/sharetoken-prod` |
+| 域名 | `https://sharetoken.app`（`www` 301 到主域）。客户端 `-portal https://sharetoken.app`，**不需要 `-portal-pin`**（公共 CA 证书） |
+| 门户 | systemd `sharetoken-portal`，`tls.mode: proxy`，只听 127.0.0.1:8092，配置 `scripts/prod/portal.yaml`；`open_registration: false` |
+| 协调器 | systemd `sharetoken-coordinator`，配置 `scripts/prod/coordinator.yaml`；peer ID `12D3KooWFAqCYkUS2Kt2KRWQ1mWF82Em4mRbB5nD4V7Fr5PmWfUh`（key 沿用测试期的，中继无需改动）；门户凭证公钥也沿用 |
+| MySQL | `docker run mysql:8.0`，容器名 `st-mysql`，卷 `st-mysql-data`，**只绑 127.0.0.1:3306**，`--memory 600m`、buffer pool 256M、`READ-COMMITTED`、`utf8mb4_bin`；`restart unless-stopped`。密码在 `~/sharetoken-prod/db.pass`、`mysql-root.pass`（0600） |
+| nginx | 与原有 `sgvpn.ddnsfree.com` 站点共存，配置 `/etc/nginx/conf.d/sharetoken.conf`（源：`scripts/prod/nginx-sharetoken.conf`）；80 只做 ACME 与跳转。nginx 设置 `X-Real-IP`，门户**仅在对端是回环时**采信它做登录失败限流（`portal/portal.go clientIP`） |
+| 证书 | Let's Encrypt，`sharetoken.app` + `www.sharetoken.app`，webroot（`/var/www/html`），续期用系统已有的 `certbot.timer`，部署钩子 `reload-nginx.sh` 重载 nginx。首次签发 2026-11-08，到期 2027-02-06，约 60 天后自动续。检查：`sudo certbot certificates`、`sudo certbot renew --dry-run` |
+| DDNS | armbian 的 cron 每 10 分钟跑 `~/sharetoken-prod/ddns.sh`（即 `scripts/godaddy_ddns.sh`），日志 `ddns.log`。token 在 `~/.config/sharetoken/ddns.env`（0600）。IP 变了才写 GoDaddy |
+| 备份 | cron 每天 03:17 `backup.sh`：`mysqldump` 到 `~/sharetoken-prod/backup/`，保留 7 份 |
+| 参考模型 | 协调器的争议裁决要 Mac 上的 `upstream_proxy`（公司采购的 API）：`scripts/testenv/tunnels.sh` 建反向隧道到 armbian 的 127.0.0.1:11434/11436。隧道不在时只影响争议裁决，交易照常 |
+| 管理员 | `root`（初始密码在 `docs/test-env.secrets.md`，首次登录后绑 MFA 并改密）。运维命令：`cd ~/sharetoken-prod; ./portal -config portal.yaml users|overview|relay ls|grant …`，`./coordinator -config coordinator.yaml nodes|relays|disputes|check` |
+
+路由器：WAN :80、:443 → 192.168.6.91:80、:443（已配置）。**入站只需要这两个端口**；中继和协调器之间是协调器主动出站，不需要映射 4001。
+
+### DDNS 脚本
+
+```bash
+scripts/godaddy_ddns.sh        # 探测公网 IPv4，写 sharetoken.app 和 www.sharetoken.app 的 A 记录（TTL 600）
+scripts/godaddy_ddns.sh -n     # 只看会改什么
+scripts/godaddy_ddns.sh -f     # IP 没变也强制写
+```
+
+要点：token 从 `config.env`（或 `~/.config/sharetoken/ddns.env`）的 `GODADDY_ACCESS_TOKEN` 读，输出里不含 token；
+IP 探测依次试 ipify / ifconfig.me / icanhazip / checkip.amazonaws.com，并拒绝私网地址；IP 未变不调用写接口；
+只管 IPv4（家宽没有可用的公网 IPv6 入站，所以没有 AAAA）。可选变量 `DDNS_DOMAIN`、`DDNS_NAMES`、`DDNS_TTL`、`DDNS_IP`。
+IP 变化后最长约 10 分钟（cron）+ 10 分钟（TTL）生效，期间 https://sharetoken.app 暂不可达；已在线客户端不受影响（交易走中继），
+只是 1 小时后续领中继凭证会失败，所以这个窗口很短就行。
+
+### 部署 / 更新
+
+```bash
+scripts/prod/deploy.sh          # 首次或全量：编译 arm64、Docker MySQL、systemd、DDNS、nginx + 证书、cron，最后重启服务
+scripts/prod/deploy.sh --bins   # 日常发版：只更新二进制与 yaml 并重启
+```
+
+脚本可重复运行（不会覆盖已有的 key、密码、证书、数据库）。需要先把 `coordinator.key`、`portal-pass.key` 放在 Mac 的 `~/st-test/prod-keys/`（首次从原协调器机器复制）。
+**生产和 st-db 共用同一个协调器 key，不能同时运行**；st-db 压测前先停生产的两个服务（见 test-env.md 开头）。
+全新库的初始化（只做一次）：`SHARETOKEN_PASSWORD=… ./portal -config portal.yaml useradd -admin root`，再 `relay add` 登记各中继（地址见 `portal relay ls` 于 st-db 的旧库，或 `scripts/testenv/conf/relay-*.yaml`）。
 
 ## 变更方法（GoDaddy API）
 
@@ -71,4 +120,5 @@ dig +short AAAA relay-us.sharetoken.app @ns51.domaincontrol.com
   - 和 CN 一样**没有公网 IPv6**，网卡上只有 fe80::。
   - 腾讯云安全组只放行了 22、80、443/tcp。需要放行 **4002/tcp 和 4002/udp**（QUIC），中继才能对外服务。
   - 从 Mac 上传很慢（约 6 KB/s），二进制要在机器上从源码编译（Go 用阿里云镜像，GOPROXY=goproxy.cn）。
-- 稳定后把 TTL 从 600 调大。
+- 稳定后把中继记录的 TTL 从 600 调大（`@`/`www` 因为 DDNS 要保持 600）。
+- 生产库目前是**全新的**（只迁了 key、管理员和 3 个中继）：测试期的用户、余额和压测流水都留在 st-db 的 MySQL 里，没有带过来。

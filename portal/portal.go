@@ -591,10 +591,18 @@ func (s *Server) recordFailure(keys ...string) {
 	}
 }
 
+// clientIP is the address failures and rate limits are keyed on. Behind a
+// local reverse proxy every connection comes from loopback, so there (and only
+// there) the proxy's X-Real-IP is believed; a remote peer cannot set it.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if real := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); real != nil {
+			return real.String()
+		}
 	}
 	return host
 }
