@@ -44,6 +44,10 @@ type Agent struct {
 	// HostOptions are extra libp2p options for the agent's host (embedding,
 	// tests); set before Start.
 	HostOptions []libp2p.Option
+	// ExternalAPI, when set, is the address of a local API server the embedder
+	// runs and mounts Handler on (see Daemon): the agent opens no listener of
+	// its own and leaves the run file to the embedder.
+	ExternalAPI string
 
 	home string
 	log  *slog.Logger
@@ -143,18 +147,23 @@ func (a *Agent) Start(ctx context.Context) error {
 	}
 	a.mu.Unlock()
 
-	ln, err := net.Listen("tcp", a.cfg.HTTP)
-	if err != nil {
-		a.Close()
-		return fmt.Errorf("local API on %s: %w", a.cfg.HTTP, err)
-	}
-	a.addr = ln.Addr().String()
-	a.srv = &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		if err := a.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			a.log.Error("local API stopped", "err", err)
+	if a.ExternalAPI != "" {
+		a.addr = a.ExternalAPI
+	} else {
+		ln, err := net.Listen("tcp", a.cfg.HTTP)
+		if err != nil {
+			a.Close()
+			return fmt.Errorf("local API on %s: %w", a.cfg.HTTP, err)
 		}
-	}()
+		a.addr = ln.Addr().String()
+		a.srv = &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			if err := a.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				a.log.Error("local API stopped", "err", err)
+			}
+		}()
+		a.writeRunFile()
+	}
 	// Losing the last connection to the coordinator (its relay died) is
 	// checked at once, not at the next health check.
 	a.mu.Lock()
@@ -166,7 +175,6 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}})
 	go a.maintain()
-	a.writeRunFile()
 	return nil
 }
 
@@ -324,6 +332,9 @@ func (a *Agent) refreshNetwork(ctx context.Context) error {
 	return nil
 }
 
+// ErrLoginRejected means the portal no longer accepts the saved token.
+var ErrLoginRejected = errors.New("the portal rejected the saved login (expired or revoked): run `sharetoken login` again")
+
 // bind (re)binds this device's key to the logged-in user. Binding is
 // idempotent; an expired login stops the agent.
 func (a *Agent) bind(ctx context.Context) error {
@@ -338,7 +349,7 @@ func (a *Agent) bind(ctx context.Context) error {
 	case err == nil:
 		a.warn("device", "")
 	case IsUnauthorized(err):
-		return errors.New("the portal rejected the saved login (expired or revoked): run `sharetoken login` again")
+		return ErrLoginRejected
 	default:
 		a.warn("device", "could not confirm the device binding: "+err.Error())
 	}

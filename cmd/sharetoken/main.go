@@ -1,12 +1,13 @@
 // Command sharetoken is the user client: one program to buy and to share
 // open-weight model inference on the sharetoken network.
 //
-//	sharetoken register -portal https://portal.example.com     # or: login
+//	sharetoken register -user alice     # or: login
 //	sharetoken share add qwen2.5:7b                            # optional: share a local model
 //	sharetoken up                                              # run; OpenAI endpoint at http://127.0.0.1:9787/v1
 //	sharetoken status | balance | models | relays | jobs
 //
-// Settings live in ~/.sharetoken/config.json ($SHARETOKEN_HOME overrides).
+// Settings live in config.json in the state directory: ~/.sharetoken for a prod
+// build, ~/.sharetoken-dev for a dev build ($SHARETOKEN_HOME overrides).
 package main
 
 import (
@@ -38,9 +39,13 @@ import (
 const usage = `usage: sharetoken [-home DIR] <command> [flags]
 
 Getting started:
-  register [-portal URL] [-user NAME] [-portal-pin FP]   create an account and bind this device
-  login    [-portal URL] [-user NAME] [-portal-pin FP]   log in and bind this device
+  register [-email ADDR | -user NAME] [-code CODE] [-portal-pin FP]
+                                           create an account and bind this device; portals that verify
+                                           addresses mail a code (asked for here, or give it with -code)
+  login    [-user NAME] [-portal-pin FP]   log in and bind this device
   up [-http ADDR] [-listen MADDRS]      run the client (buy, and share if enabled)
+  daemon [-http ADDR] [-listen MADDRS]  run the service behind the desktop app: like up, but it
+                                        also runs logged out; sign-up and login go through its API
 
 While running:
   status                                connection, relays, sharing
@@ -60,7 +65,8 @@ Sharing a local model:
   share on | off
   share upstream <url>                  local model server (default Ollama: http://127.0.0.1:11434/v1)
 
-  config                                show the configuration file`
+  config                                show the configuration file
+  version                               show what this client was built for`
 
 func main() {
 	home := flag.String("home", client.Home(), "client state directory")
@@ -71,6 +77,10 @@ func main() {
 		os.Exit(2)
 	}
 	cmd, args := flag.Arg(0), flag.Args()[1:]
+	if cmd == "version" { // before LoadConfig: it must not touch the state directory
+		fmt.Printf("sharetoken %s\nenv %s\nportal %s\nhome %s\nlocal api %s\n", client.Version, client.Env, client.PortalAddr(), *home, client.DefaultHTTP())
+		return
+	}
 	cfg, err := client.LoadConfig(*home)
 	if err != nil {
 		log.Fatal(err)
@@ -86,6 +96,8 @@ func main() {
 		run = c.logout
 	case "up", "run":
 		run = c.up
+	case "daemon":
+		run = c.runDaemon
 	case "status":
 		run = c.status
 	case "models":
@@ -137,19 +149,23 @@ func (c *cmdCtx) auth(args []string, register bool) error {
 		name = "register"
 	}
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	portalURL := fs.String("portal", c.cfg.Portal, "portal URL")
+	portalURL := new(string) // not a flag: the portal is built in (SHARETOKEN_PORTAL points a test network elsewhere)
+	*portalURL = client.PortalAddr()
 	user := fs.String("user", c.cfg.User, "username")
+	var email, code *string
+	if register {
+		email = fs.String("email", "", "email address to sign up with")
+		code = fs.String("code", "", "verification code already received by email")
+	}
 	device := fs.String("device", c.cfg.DeviceName, "name of this device (default: host name)")
 	pin := fs.String("portal-pin", "", "fingerprint of the portal's self-signed certificate (sha256:…), as its operator published it")
 	allowHTTP := fs.Bool("allow-http", false, "allow a plain-HTTP portal on another machine (test networks only)")
 	_ = fs.Parse(args)
 	var err error
-	if *portalURL == "" {
-		if *portalURL, err = cli.Prompt("Portal URL: "); err != nil {
-			return err
-		}
+	if register && *email != "" {
+		*user = ""
 	}
-	if *user == "" {
+	if *user == "" && !(register && *email != "") {
 		if *user, err = cli.Prompt("Username: "); err != nil {
 			return err
 		}
@@ -172,7 +188,30 @@ func (c *cmdCtx) auth(args []string, register bool) error {
 	}
 	pc := client.NewPortalClient(*portalURL, "", *pin)
 	var res *client.AuthResult
-	if register {
+	if register && *email == "" {
+		if info, ierr := pc.Info(cx); ierr == nil && info.EmailVerification {
+			// This portal only takes email sign-ups: what was typed must be one.
+			*email, *user = *user, ""
+		}
+	}
+	if register && *email != "" {
+		if *code == "" {
+			if info, ierr := pc.Info(cx); ierr == nil && info.EmailVerification {
+				if _, err := pc.RequestRegisterCode(cx, *email); err != nil {
+					return err
+				}
+				fmt.Printf("a verification code was sent to %s\n", *email)
+				if *code, err = cli.Prompt("Verification code: "); err != nil {
+					return err
+				}
+				// The time the user took to read the mail counts against ctx().
+				cancel()
+				cx, cancel = ctx()
+				defer cancel()
+			}
+		}
+		res, err = pc.RegisterEmail(cx, *email, pw, strings.TrimSpace(*code), "client on "+*device)
+	} else if register {
 		res, err = pc.Register(cx, *user, pw, "client on "+*device)
 	} else {
 		res, err = pc.Login(cx, *user, pw, "client on "+*device)
@@ -341,6 +380,36 @@ func (c *cmdCtx) up(args []string) error {
 	<-sctx.Done()
 	fmt.Println("stopping…")
 	a.Close()
+	return nil
+}
+
+// runDaemon serves the desktop app: the local API, its pages, and the agent
+// whenever a user is logged in.
+func (c *cmdCtx) runDaemon(args []string) error {
+	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
+	httpAddr := fs.String("http", c.cfg.HTTP, "local API address, on loopback (not saved)")
+	listen := fs.String("listen", strings.Join(c.cfg.Listen, ","), "libp2p listen addresses (not saved)")
+	nat := fs.Bool("nat", c.cfg.NAT, "UPnP/NAT-PMP and hole punching (not saved)")
+	allowHTTP := fs.Bool("allow-http", false, "allow a plain-HTTP portal on another machine (test networks only)")
+	stopOnEOF := fs.Bool("stop-on-stdin-eof", false, "stop in order when standard input closes (the desktop app holds it open; Windows has no SIGTERM to send)")
+	_ = fs.Parse(args)
+	sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if *stopOnEOF {
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			stop()
+		}()
+	}
+	d := client.NewDaemon(c.home)
+	d.HTTP, d.Listen, d.NAT, d.AllowHTTP = *httpAddr, cli.List(*listen), nat, *allowHTTP
+	if err := d.Start(); err != nil {
+		return err
+	}
+	fmt.Printf("sharetoken daemon: app and API at http://%s/\n", d.Addr())
+	<-sctx.Done()
+	fmt.Println("stopping…")
+	d.Close()
 	return nil
 }
 

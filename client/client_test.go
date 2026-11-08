@@ -71,7 +71,7 @@ func TestLocalOrigin(t *testing.T) {
 func TestConfigRoundTripAndValidation(t *testing.T) {
 	home := t.TempDir()
 	c, err := LoadConfig(home)
-	if err != nil || c.HTTP != DefaultHTTP || !c.NAT || !c.Buy.Evidence || c.Share.Relays != 2 {
+	if err != nil || c.HTTP != DefaultHTTP() || !c.NAT || !c.Buy.Evidence || c.Share.Relays != 2 {
 		t.Fatalf("defaults: %+v %v", c, err)
 	}
 	c.Portal, c.Token = "http://portal/", "st_x"
@@ -94,13 +94,12 @@ func TestConfigRoundTripAndValidation(t *testing.T) {
 	}
 }
 
-// Configs saved with the old IPv4-only default listen on IPv6 too; an
-// explicit choice is kept.
+// No listen setting means IPv6 too; an explicit choice is kept.
 func TestConfigListensOnIPv6ByDefault(t *testing.T) {
-	c := Config{Listen: []string{"/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1"}}
+	c := Config{}
 	c.fill()
 	if !slices.Equal(c.Listen, DefaultListen()) || !slices.Contains(c.Listen, "/ip6/::/tcp/0") {
-		t.Fatalf("old default not upgraded: %v", c.Listen)
+		t.Fatalf("default: %v", c.Listen)
 	}
 	c = Config{Listen: []string{"/ip4/0.0.0.0/tcp/4001"}}
 	c.fill()

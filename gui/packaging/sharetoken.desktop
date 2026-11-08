@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=@NAME@
+Comment=Share and use model inference
+Exec=sharetoken-gui-@ENV@
+Icon=sharetoken-@ENV@
+Terminal=false
+Categories=Network;Utility;

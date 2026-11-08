@@ -6,9 +6,9 @@
 
 ```bash
 # 首次：注册（或 login），本机设备自动绑定到账户
-sharetoken register -portal https://portal.example.com -user alice
-#   门户用自签名证书时，加上运维公布的指纹：-portal-pin sha256:…（或按提示核对后输入 y）
-#   正式环境门户是 https://sharetoken.app（Let's Encrypt 公共证书），不需要 -portal-pin；部署见 docs/prod-env.md
+sharetoken register -user alice
+#   门户地址内置为正式环境 https://sharetoken.app（Let's Encrypt 公共证书，不需要 -portal-pin；部署见 docs/prod-env.md），不用再填
+#   测试网才需要：环境变量 SHARETOKEN_PORTAL=https://<测试门户>（没有 -portal 参数）；自签名证书再加运维公布的指纹 -portal-pin sha256:…
 
 # 只想用：直接启动
 sharetoken up
@@ -31,10 +31,10 @@ sharetoken up                               # 已在运行时 share 命令会立
 | `jobs [-role buy\|sell] [-n 20]` | 最近的作业 |
 | `share` / `share on\|off\|rm <id>\|upstream <url>` | 共享设置 |
 | `logout` | 吊销本机 token |
-| `login/register -portal-pin sha256:…` | 信任门户的自签名证书（指纹存入配置）；`-allow-http` 允许明文门户（仅测试网） |
+| `login/register -portal-pin sha256:…` | 门户地址内置（测试网用 `SHARETOKEN_PORTAL`），没有 `-portal` 参数；`-portal-pin` 信任门户的自签名证书（指纹存入配置）；`-allow-http` 允许明文门户（仅测试网） |
 | `config` | 查看配置（token 打码） |
 
-- 状态目录：`~/.sharetoken`（`$SHARETOKEN_HOME` 或 `-home` 覆盖）：`config.json`（0600，含 token）、`device.key`（设备私钥，0600，换机器就是新设备）、`network.json`（中继列表缓存）、`run.json`（运行中客户端的 API 地址）。
+- 状态目录：prod 构建 `~/.sharetoken`，dev 构建 `~/.sharetoken-dev`（`$SHARETOKEN_HOME` 或 `-home` 覆盖；构建类型见 [gui.md](gui.md)）：`config.json`（0600，含 token）、`device.key`（设备私钥，0600，换机器就是新设备）、`network.json`（中继列表缓存）、`run.json`（运行中客户端的 API 地址）。
 - 密码可从 `$SHARETOKEN_PASSWORD` 读取（脚本用）。
 - `up -http 127.0.0.1:9800 -listen /ip4/192.168.1.5/tcp/0 -nat=false`：临时覆盖，不写入配置。
 - 默认同时监听 IPv4 和 IPv6（`/ip4/0.0.0.0`、`/ip6/::`，TCP + QUIC）；没有 IPv6 的机器自动跳过。
@@ -67,13 +67,13 @@ portal -db sharetoken.db pass-key             # ed25519:…
 coordinator -db sharetoken.db id              # 12D3Koo…
 
 # 中继（每台公网机器一个；云主机用 -announce 声明公网地址，IPv4 和 IPv6 都写）
-relay -key relay.key -listen /ip4/0.0.0.0/tcp/8091,/ip6/::/tcp/8091,/ip4/0.0.0.0/udp/8091/quic-v1,/ip6/::/udp/8091/quic-v1 \
-      -announce /ip4/203.0.113.7/tcp/8091,/ip6/2001:db8::7/tcp/8091 -status 127.0.0.1:8093 \
-      -portal-key ed25519:… -allow-peer 12D3Koo…<协调器>
+# 准入写在配置文件的 access.networks：门户公钥 + 协调器 peer ID，一个中继可服务多个网络（configs/relay.example.yaml）
+relay -config relay.yaml -key relay.key -listen /ip4/0.0.0.0/tcp/8091,/ip6/::/tcp/8091,/ip4/0.0.0.0/udp/8091/quic-v1,/ip6/::/udp/8091/quic-v1 \
+      -announce /ip4/203.0.113.7/tcp/8091,/ip6/2001:db8::7/tcp/8091 -status 127.0.0.1:8093
 #   不写 -listen 时默认就是 4001 端口的 v4+v6 TCP/QUIC
 #   输出 portal relay add '/ip4/203.0.113.7/tcp/8091/p2p/12D3Koo…,/ip6/2001:db8::7/tcp/8091/p2p/12D3Koo…'
 #   ← 原样复制到门户；-status 提供 JSON 统计。机器没有 IPv6 时会提示「IPv6-only users cannot reach this relay」
-#   只有出示门户凭证的注册用户设备（以及协调器）才能预约；不加 -portal-key 则为开放中继
+#   只有出示门户凭证的注册用户设备（以及协调器）才能预约；不配 access.networks 则为开放中继
 
 # 门户（与协调器同机，同一个数据库文件）；默认 HTTPS
 portal -db sharetoken.db serve -listen :8092 -open-registration -signup-credit 5000000
@@ -100,9 +100,9 @@ coordinator -db sharetoken.db -fee-bps 500 \
 
 所有运维命令直接读写数据库，可以和运行中的服务同时执行。
 
-`portal-pass.key`（门户签凭证的私钥，也用来派生管理员两步验证密钥的加密密钥）和 `portal-tls/` 都要备份；换 pass key 时，先给所有中继加上新公钥（`-portal-key` 可重复），再换门户的密钥，一小时后去掉旧公钥。
+`portal-pass.key`（门户签凭证的私钥，也用来派生管理员两步验证密钥的加密密钥）和 `portal-tls/` 都要备份；换 pass key 时，先在所有中继该网络的 `portal_keys` 里加上新公钥，再换门户的密钥，一小时后去掉旧公钥。
 
-中继准入参数：`-portal-key`（可重复）、`-allow-peer`（可重复）、`-max-devices-per-user 4`；门户：`-pass-key portal-pass.key`、`serve -pass-ttl 1h`。
+中继准入：配置文件的 `access.networks`（`portal_keys`、`allow_peers`、`max_devices_per_user`、`max_reservations`）；门户：`-pass-key portal-pass.key`、`serve -pass-ttl 1h`。
 
 中继容量参数（默认值已远高于 libp2p 默认）：`-max-reservations 4096`、`-max-reservations-per-ip 64`、`-max-circuits 4096`（单个目标的并发线路数，协调器每个在线用户占一条）、`-max-conns 8192`。
 
@@ -134,7 +134,8 @@ coordinator -db mysql://sharetoken@10.0.0.5:3306/sharetoken -fee-bps 500 …
 
 | 地址 | 面向 | 功能 |
 |---|---|---|
-| `https://<host>:8092/` | 用户 | 注册/登录；总览（余额、冻结、买卖汇总）；账单；作业（按买/卖筛选）；API token 的创建（明文只显示一次）与吊销；设备改名/解绑；网络（协调器、中继可达性）；改密码（可同时吊销其他会话） |
+| `https://<host>:8092/` | 所有人 | 官网：项目介绍、安全设计、下载（`portal/web/index.html`，下载链接目前是占位） |
+| `https://<host>:8092/app/`（`/login` 跳转到这里） | 用户 | 注册/登录；总览（余额、冻结、买卖汇总）；账单；作业（按买/卖筛选）；API token 的创建（明文只显示一次）与吊销；设备改名/解绑；网络（协调器、中继可达性）；改密码（可同时吊销其他会话） |
 | `https://<host>:8092/admin/` | 管理员 | 平台总览（账本回放、流通额、手续费、中继、作业统计、各账户余额）；用户的搜索、新建、发放/扣减 credit、禁用/启用、设/撤管理员、重置密码、吊销 token、解绑设备、账单与作业；中继登记/编辑/启停/删除；全部作业（按状态、用户筛选）；节点信誉；审计记录；争议的人工裁决（付款给节点 / 退款给买家）；全局账本流水 |
 
 - 浏览器会话默认 24 小时（`serve -session-ttl`），存放在 HttpOnly cookie 里，页面脚本读不到；在「API Token」页显示为「web session」并标记「当前会话」，可随时吊销。
@@ -145,6 +146,8 @@ coordinator -db mysql://sharetoken@10.0.0.5:3306/sharetoken -fee-bps 500 …
 - 自动化 UI 测试：`node scripts/portal_ui_test.mjs http://127.0.0.1:8099 ./shots`（需要本机 Chrome；见 validation-v2.md §10）。
 
 ## 3. 本地管理 API（给 GUI）
+
+桌面客户端用的 `sharetoken daemon` 还提供未登录时可用的注册、登录接口，见 [gui.md](gui.md)。
 
 `sharetoken up` 监听 `127.0.0.1:9787`。带非本地 `Origin` 的请求返回 403。
 
@@ -183,7 +186,7 @@ coordinator -db mysql://sharetoken@10.0.0.5:3306/sharetoken -fee-bps 500 …
 | `POST /api/v1/web/mfa`、`…/mfa/setup`、`…/mfa/confirm` | 页面头 | 浏览器登录的第二步：验码 / 开始绑定（返回 base32 密钥、otpauth 链接、二维码 data URI）/ 用首个验证码确认绑定并建立会话 |
 | `POST /api/v1/admin/users/{name}/mfa/reset` | 管理员 | 清除两步验证并吊销其全部 token（丢失验证器时的恢复手段；服务器上也可 `portal mfa-reset <user>`） |
 | `GET /api/v1/network` | 无 | `{coordinator, relays:[{addr,name,region,ok,rtt_ms}], pass_key}`，可用中继在前、其中延迟低的在前；`rtt_ms` 是协调器到该中继的往返时间（每 30 秒 ping 一次，未测得时省略） |
-| `POST /api/v1/register` | 无 | `{username,password,token_name?}` → `{user, token}`；需 `-open-registration` |
+| `POST /api/v1/register` | 无 | `{email,password,token_name?}`（或老方式 `{username,…}`）→ `{user, token}`；邮箱规范化后就是账户名；需 `-open-registration` |
 | `POST /api/v1/login` | 无 | 同上；连续失败限流（429） |
 | `POST /api/v1/logout` | 是 | 吊销当前 token |
 | `GET /api/v1/me` | 是 | `{user, balance{account,available_micros,held_micros}, usage{bought,sold}, devices}` |

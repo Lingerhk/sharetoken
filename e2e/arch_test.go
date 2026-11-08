@@ -85,7 +85,7 @@ func newNetwork(t *testing.T, relays int, relayOpts ...func(*relay.Config)) *net
 	for i := 0; i < relays; i++ {
 		k, _ := p2p.NewKeys()
 		rc := relay.Config{Listen: []string{"/ip4/127.0.0.1/tcp/0", "/ip6/::1/tcp/0"}, // dual stack
-			PortalKeys: []ed25519.PublicKey{passPub}, AllowPeers: []peer.ID{ck.PeerID}}
+			Networks: []relay.Network{{Name: "test", PortalKeys: []ed25519.PublicKey{passPub}, AllowPeers: []peer.ID{ck.PeerID}}}}
 		for _, o := range relayOpts {
 			o(&rc)
 		}

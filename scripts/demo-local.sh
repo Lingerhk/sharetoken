@@ -43,9 +43,16 @@ COORD=(-key coord.key -db sharetoken.db)
 PASSKEY=$("$BIN/portal" -db sharetoken.db pass-key)   # relays trust passes signed with it
 COORD_ID=$("$BIN/coordinator" "${COORD[@]}" id)        # relays let the coordinator reserve without one
 echo "   portal pass key $PASSKEY"
-RELAY_FLAGS=(-portal-key "$PASSKEY" -allow-peer "$COORD_ID")
-"$BIN/relay" -key relay-a.key -listen /ip4/127.0.0.1/tcp/4201,/ip6/::1/tcp/4201 -status 127.0.0.1:4211 "${RELAY_FLAGS[@]}" > relay-a.log 2>&1 & RELAY_A=$!; PIDS+=($RELAY_A)
-"$BIN/relay" -key relay-b.key -listen /ip4/127.0.0.1/tcp/4202,/ip6/::1/tcp/4202 -status 127.0.0.1:4212 "${RELAY_FLAGS[@]}" > relay-b.log 2>&1 & RELAY_B=$!; PIDS+=($RELAY_B)
+cat > relay.yaml <<YAML
+version: 1
+access:
+  networks:
+    - name: demo
+      portal_keys: [$PASSKEY]
+      allow_peers: [$COORD_ID]
+YAML
+"$BIN/relay" -config relay.yaml -key relay-a.key -listen /ip4/127.0.0.1/tcp/4201,/ip6/::1/tcp/4201 -status 127.0.0.1:4211 > relay-a.log 2>&1 & RELAY_A=$!; PIDS+=($RELAY_A)
+"$BIN/relay" -config relay.yaml -key relay-b.key -listen /ip4/127.0.0.1/tcp/4202,/ip6/::1/tcp/4202 -status 127.0.0.1:4212 > relay-b.log 2>&1 & RELAY_B=$!; PIDS+=($RELAY_B)
 waitlog relay-a.log "portal relay add"; waitlog relay-b.log "portal relay add"
 # Dual stack: each relay is registered with its IPv4 and IPv6 address, as it prints them.
 RA=$(sed -n "s/.*portal relay add '\([^']*\)'.*/\1/p" relay-a.log)
@@ -68,7 +75,7 @@ echo "   portal /api/v1/network:"; curl -s $PORTAL/api/v1/network | strip | sed 
 echo; echo "== 1. Users register (password from SHARETOKEN_PASSWORD) and configure sharing"
 user() { # name http-port
   export SHARETOKEN_HOME="$S/$1"
-  SHARETOKEN_PASSWORD="password-$1" "$BIN/sharetoken" register -portal $PORTAL -user "$1" -device "$1-box" | head -1 | strip | sed "s/^/   $1: /"
+  SHARETOKEN_PASSWORD="password-$1" SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" register -user "$1" -device "$1-box" | head -1 | strip | sed "s/^/   $1: /"
 }
 st() { SHARETOKEN_HOME="$S/$1" "$BIN/sharetoken" "${@:2}"; }
 stup() { SHARETOKEN_HOME="$S/$1" exec "$BIN/sharetoken" up "${@:2}"; } # exec: $! is then the client's PID

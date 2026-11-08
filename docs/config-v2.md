@@ -15,7 +15,7 @@
 | 时长/大小 | `30s`/`10m`/`720h`；大小 `16KiB` |
 | 机密 | yaml 里不放明文：`password_env` / `password_file`、`api_key_env`；`*_file` 权限宽于 0600 时告警 |
 | 校验 | 启动时统一校验，一次性列出全部错误；`coordinator|portal -config x.yaml check-config`、`relay -config x.yaml -check-config` 只校验并打印生效配置（配置里只有环境变量名/文件路径，没有机密） |
-| 热加载 | 第一版不做。后续可考虑 relay 的 `access.portal_keys` 支持 SIGHUP（便于轮换 pass key） |
+| 热加载 | 第一版不做。后续可考虑 relay 的 `access.networks` 支持 SIGHUP（便于轮换 pass key） |
 | 日志 | 统一 `log.level/format/file`，接到已有的 `Log *slog.Logger` 字段 |
 
 **不进配置文件、继续放数据库的**：中继列表（`portal relay add`）、用户/设备/额度、管理员 MFA 密钥。这些是运行时数据，由 portal 管理、coordinator 同步。
@@ -32,9 +32,12 @@
 | network.listen | F `-listen` | tcp/quic × v4/v6 :4001 |
 | network.announce | F `-announce` | 空 |
 | network.max_conns | F `-max-conns` | 8192 |
-| access.portal_keys | F `-portal-key`（可重复） | 空 = 开放中继（告警） |
-| access.allow_peers | F `-allow-peer`（可重复） | 空（告警） |
-| access.max_devices_per_user | F `-max-devices-per-user` | 4 |
+| access.networks | 列表，每项一个网络（prod、dev）；只能写在配置文件里 | 空 = 开放中继（告警） |
+| access.networks[].name | 必填，不可重复 | |
+| access.networks[].portal_keys | 必填，不可与其他网络重复 | |
+| access.networks[].allow_peers | 该网络的协调器，不可与其他网络重复 | 空（告警） |
+| access.networks[].max_devices_per_user | 账号只在本网络内计数 | 4 |
+| access.networks[].max_reservations | 该网络的设备合计上限，协调器不计 | 0 = 不单独限制 |
 | limits.max_reservations | F | 4096 |
 | limits.max_reservations_per_ip | F | 64 |
 | limits.max_circuits | F | 4096 |
@@ -121,3 +124,7 @@ Go 侧用 `os.UserConfigDir/UserCacheDir` + 少量补充；钥匙串用 `github.
 ### 3.4 格式
 
 客户端配置主要由 GUI 写，人很少手改：建议**保留 JSON**（机器写 YAML 会丢注释，没收益），加 `version` 字段做迁移；首次启动自动把旧 `~/.sharetoken/config.json` 迁到新目录、token/key 迁进钥匙串，旧文件改名 `.migrated` 保留。若希望与服务端统一成 YAML 也可以，代价不大。
+
+### mailserver 与门户的邮件配置
+
+`mailserver` 的配置见 `configs/mail.example.yaml`，门户新增 `accounts.email_verification`、`mail.from`、`mail.support`。说明见 [mail.md](mail.md)。

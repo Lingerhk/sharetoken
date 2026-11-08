@@ -168,10 +168,44 @@ func (p *PortalClient) Register(ctx context.Context, username, password, tokenNa
 	return &out, err
 }
 
+// RegisterEmail signs up with an email address as the account name and
+// returns a login token. code is the emailed verification code, for portals
+// that require one (PortalInfo.EmailVerification).
+func (p *PortalClient) RegisterEmail(ctx context.Context, email, password, code, tokenName string) (*AuthResult, error) {
+	var out AuthResult
+	err := p.Do(ctx, http.MethodPost, "/api/v1/register", map[string]string{"email": email, "password": password, "code": code, "token_name": tokenName}, &out)
+	return &out, err
+}
+
+// CodeSent is the portal's answer to a request for a verification code.
+type CodeSent struct {
+	CooldownSeconds  int `json:"cooldown_seconds"`
+	ExpiresInSeconds int `json:"expires_in_seconds"`
+}
+
+// RequestRegisterCode asks the portal to mail a sign-up code.
+func (p *PortalClient) RequestRegisterCode(ctx context.Context, email string) (*CodeSent, error) {
+	var out CodeSent
+	err := p.Do(ctx, http.MethodPost, "/api/v1/register/code", map[string]string{"email": email}, &out)
+	return &out, err
+}
+
 // Login returns a login token.
 func (p *PortalClient) Login(ctx context.Context, username, password, tokenName string) (*AuthResult, error) {
+	return p.LoginCode(ctx, username, password, "", tokenName)
+}
+
+// LoginCode is Login with a two-factor code, which administrators need.
+func (p *PortalClient) LoginCode(ctx context.Context, username, password, code, tokenName string) (*AuthResult, error) {
 	var out AuthResult
-	err := p.Do(ctx, http.MethodPost, "/api/v1/login", map[string]string{"username": username, "password": password, "token_name": tokenName}, &out)
+	err := p.Do(ctx, http.MethodPost, "/api/v1/login", map[string]string{"username": username, "password": password, "totp": code, "token_name": tokenName}, &out)
+	return &out, err
+}
+
+// Info returns what the portal publishes before anyone signs in.
+func (p *PortalClient) Info(ctx context.Context) (*portal.Info, error) {
+	var out portal.Info
+	err := p.Do(ctx, http.MethodGet, "/api/v1/info", nil, &out)
 	return &out, err
 }
 

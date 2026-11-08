@@ -177,23 +177,28 @@ func (a *Agent) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Agent) portalPassthrough(path string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		target := path
-		if q := r.URL.RawQuery; q != "" {
-			target += "?" + q
-		}
-		var raw json.RawMessage
-		if err := a.portal.Do(r.Context(), http.MethodGet, target, nil, &raw); err != nil {
-			status := http.StatusBadGateway
-			if pe, ok := err.(*PortalError); ok {
-				status = pe.Status
-			}
-			writeError(w, status, err.Error())
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(raw)
+	return func(w http.ResponseWriter, r *http.Request) { _ = forwardPortalGET(w, r, a.portal, path) }
+}
+
+// forwardPortalGET answers r with the portal's reply to a GET of path, and
+// returns the error it reported, if any.
+func forwardPortalGET(w http.ResponseWriter, r *http.Request, pc *PortalClient, path string) error {
+	target := path
+	if q := r.URL.RawQuery; q != "" {
+		target += "?" + q
 	}
+	var raw json.RawMessage
+	if err := pc.Do(r.Context(), http.MethodGet, target, nil, &raw); err != nil {
+		status, code := http.StatusBadGateway, "portal_unreachable"
+		if pe, ok := err.(*PortalError); ok {
+			status, code = pe.Status, pe.Code
+		}
+		writeErrorCode(w, status, code, err.Error())
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(raw)
+	return nil
 }
 
 func (a *Agent) handleSetShare(w http.ResponseWriter, r *http.Request) {
@@ -277,4 +282,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]string{"message": msg}})
+}
+
+func writeErrorCode(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": msg}})
 }

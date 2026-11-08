@@ -1,4 +1,6 @@
 bin/
+dist/
+gui/rsrc_windows_*.syso
 *.key
 *.db
 *.db-wal

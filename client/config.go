@@ -16,16 +16,18 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
+	"sharetoken/internal/secfile"
 	"sharetoken/node"
 )
 
 // Config is the client's settings file (config.json in the home directory).
 type Config struct {
+	Env        string `json:"env"`                   // build type that wrote this file (see LoadConfig)
 	Portal     string `json:"portal"`                // portal base URL
 	PortalPin  string `json:"portal_pin,omitempty"`  // fingerprint of the portal's self-signed certificate
 	User       string `json:"user,omitempty"`        // username of the logged-in user
@@ -73,17 +75,27 @@ type ShareConfig struct {
 
 // Defaults.
 const (
-	DefaultHTTP          = "127.0.0.1:9787"
 	DefaultUpstream      = "http://127.0.0.1:11434/v1"
 	DefaultBudgetMicros  = 200_000
 	DefaultPriceInMicros = 100_000
 	DefaultPriceOut      = 200_000
 )
 
+// PortalAddr is the portal a new login goes to: the build type's. Other builds
+// than prod can be pointed at a test network with $SHARETOKEN_PORTAL; a prod
+// build ignores it, so that the environment cannot send passwords elsewhere.
+func PortalAddr() string {
+	if v := strings.TrimSpace(os.Getenv("SHARETOKEN_PORTAL")); v != "" && Env != EnvProd {
+		return v
+	}
+	return BuiltInPortal()
+}
+
 // DefaultConfig returns a fresh configuration.
 func DefaultConfig() Config {
 	return Config{
-		HTTP:   DefaultHTTP,
+		Env:    Env,
+		HTTP:   DefaultHTTP(),
 		Listen: DefaultListen(),
 		NAT:    true,
 		Buy:    BuyConfig{BudgetMicros: DefaultBudgetMicros, Evidence: true},
@@ -99,15 +111,13 @@ func DefaultListen() []string {
 	return []string{"/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1", "/ip6/::/tcp/0", "/ip6/::/udp/0/quic-v1"}
 }
 
-var oldDefaultListen = []string{"/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1"}
-
 func (c *Config) fill() {
 	d := DefaultConfig()
 	if c.HTTP == "" {
 		c.HTTP = d.HTTP
 	}
-	if len(c.Listen) == 0 || slices.Equal(c.Listen, oldDefaultListen) {
-		c.Listen = d.Listen // configs saved before IPv6 was on by default
+	if len(c.Listen) == 0 {
+		c.Listen = d.Listen
 	}
 	if c.Buy.BudgetMicros == 0 {
 		c.Buy.BudgetMicros = d.Buy.BudgetMicros
@@ -150,17 +160,6 @@ func (s *ShareConfig) Validate() error {
 	return nil
 }
 
-// Home is the client's state directory: $SHARETOKEN_HOME, else ~/.sharetoken.
-func Home() string {
-	if h := os.Getenv("SHARETOKEN_HOME"); h != "" {
-		return h
-	}
-	if h, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(h, ".sharetoken")
-	}
-	return ".sharetoken"
-}
-
 // Files in the home directory.
 const (
 	ConfigFile  = "config.json"
@@ -169,6 +168,11 @@ const (
 )
 
 // LoadConfig reads home/config.json, returning defaults if it does not exist.
+//
+// A file without a build type predates them and is not supported: it is deleted
+// with the device identity, and the user signs in again. A file of the other
+// build type is refused and left alone: this client was pointed at the wrong
+// directory, and those are that environment's credentials.
 func LoadConfig(home string) (Config, error) {
 	c := DefaultConfig()
 	data, err := os.ReadFile(filepath.Join(home, ConfigFile))
@@ -178,6 +182,18 @@ func LoadConfig(home string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
+	var file Config
+	if err := json.Unmarshal(data, &file); err != nil {
+		return c, fmt.Errorf("%s: %w", filepath.Join(home, ConfigFile), err)
+	}
+	switch file.Env {
+	case Env:
+	case "":
+		slog.Warn("deleting the old configuration in this directory; sign in again", "home", home)
+		return DefaultConfig(), removeOldState(home)
+	default:
+		return c, fmt.Errorf("%s belongs to a %s client, and this is a %s client: use another directory", filepath.Join(home, ConfigFile), file.Env, Env)
+	}
 	if err := json.Unmarshal(data, &c); err != nil {
 		return c, fmt.Errorf("%s: %w", filepath.Join(home, ConfigFile), err)
 	}
@@ -185,17 +201,30 @@ func LoadConfig(home string) (Config, error) {
 	return c, nil
 }
 
+// removeOldState deletes what a client of before the build types left behind.
+// The usage-statistics file stays: it may hold the user's opt-out.
+func removeOldState(home string) error {
+	var errs []error
+	for _, f := range []string{ConfigFile, KeyFile, NetworkFile} {
+		if err := os.Remove(filepath.Join(home, f)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // SaveConfig writes home/config.json (mode 0600: it holds the API token).
 func SaveConfig(home string, c Config) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
+	c.Env = Env
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
 	tmp := filepath.Join(home, ConfigFile+".tmp")
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	if err := secfile.WriteFile(tmp, append(data, '\n')); err != nil {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(home, ConfigFile))

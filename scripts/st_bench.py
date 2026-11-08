@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """sharetoken client test kit: API functional checks and load generation
-against a running `sharetoken up` endpoint (default http://127.0.0.1:9787).
+against a running `sharetoken up` endpoint (default http://127.0.0.1:9887).
 
   st_bench.py func  [-b BASE] -m MODEL [--tools]           functional suite
   st_bench.py load  [-b BASE] -m MODEL -c CONC (-n N | -d SECS) [--stream]
@@ -17,7 +17,7 @@ import threading
 import time
 import urllib.parse
 
-DEFAULT_BASE = "http://127.0.0.1:9787"
+DEFAULT_BASE = "http://127.0.0.1:9887"
 
 
 def conn_for(base, timeout=600):
