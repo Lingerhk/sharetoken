@@ -5,17 +5,16 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/portal"
 )
 
 // A portal on HTTPS with a self-signed certificate: the client works only
 // with the matching pin.
 func TestPortalPinning(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "p.db"))
+	db, err := mysqldb.OpenTest()
 	if err != nil {
 		t.Fatal(err)
 	}

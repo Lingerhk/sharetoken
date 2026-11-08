@@ -7,7 +7,7 @@
 // database with the portal, which manages users, devices and credits.
 //
 //	coordinator -config coordinator.yaml                 # serve (configs/coordinator.example.yaml)
-//	coordinator -db sharetoken.db                        # or flags only
+//	coordinator -db mysql://sharetoken@127.0.0.1/sharetoken  # or flags only
 //	coordinator -reference id=qwen2.5-7b,upstream=qwen2.5:7b,url=http://127.0.0.1:11434/v1
 //	                                                     # + audit nodes serving qwen2.5-7b
 //	coordinator balance <peer-id>                        # operator commands, run beside
@@ -41,7 +41,7 @@ import (
 	"sharetoken/coordinator"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/config"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/node"
 	"sharetoken/p2p"
 	"sharetoken/tokens"
@@ -115,7 +115,7 @@ func defaults() File {
 	var f File
 	f.Version = config.Version
 	f.Identity.KeyFile = "coordinator.key"
-	f.Database.Database = config.DefaultDatabase("sharetoken.db")
+	f.Database.Database = config.DefaultDatabase("")
 	f.Database.StartupBusyRetry = config.D("2m")
 	f.Network.MaxConns = 8192
 	f.Network.RelaySync = config.D("15s")
@@ -148,7 +148,7 @@ func load(args []string) (File, []string, error) {
 	fl := config.Flags{FlagSet: fs}
 	fs.String("config", "", "YAML configuration file (configs/coordinator.example.yaml); flags given explicitly override it")
 	fs.StringVar(&f.Identity.KeyFile, "key", f.Identity.KeyFile, "identity seed file (created with mode 0600 if missing)")
-	fs.StringVar(&f.Database.DSN, "db", f.Database.DSN, `database shared with the portal: a SQLite file, or mysql://user@host:port/db (password from database.password_env/password_file, default $SHARETOKEN_DB_PASSWORD)`)
+	fs.StringVar(&f.Database.DSN, "db", f.Database.DSN, `database shared with the portal: mysql://user@host:port/db (password from database.password_env/password_file, default $SHARETOKEN_DB_PASSWORD)`)
 	fl.List(&f.Network.Listen, "listen", "comma-separated listen multiaddrs (default: none; the coordinator is reachable only through its relays)")
 	fs.Int64Var(&f.Market.FeeBps, "fee-bps", f.Market.FeeBps, "platform fee, in basis points of each settled job")
 	fl.Repeated(&f.Network.Relays, "relay", "relay to reserve on, as a full multiaddr ending in /p2p/<id> (repeatable), besides those registered in the database")
@@ -255,7 +255,7 @@ func openDB(f File) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("database password: %w", err)
 	}
-	return sqlite.OpenWith(f.Database.DSN, sqlite.Options{Password: pw, MaxOpenConns: f.Database.MaxOpenConns,
+	return mysqldb.OpenWith(f.Database.DSN, mysqldb.Options{Password: pw, MaxOpenConns: f.Database.MaxOpenConns,
 		MaxIdleConns: f.Database.MaxIdleConns, ConnMaxLifetime: f.Database.ConnMaxLifetime.T(),
 		ConnectTimeout: f.Database.ConnectTimeout.T(), LockWaitTimeout: f.Database.LockWaitTimeout.T()})
 }
@@ -299,12 +299,6 @@ func main() {
 	}
 	defer db.Close()
 
-	if cmd == "copy-db" { // before the admin engine: it must not write the source
-		if err := copyDB(db, args[1:]); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
 	if cmd != "" && cmd != "serve" {
 		if err := admin(keys, db, cmd, args[1:]); err != nil {
 			log.Fatal(err)
@@ -338,13 +332,13 @@ func main() {
 	defer h.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// Startup migrates the shared database under a write lock; if the portal
-	// (or an admin command) holds it longer than the busy timeout, retry for
-	// a while instead of exiting.
+	// Startup writes to the shared database under the write lock; if the portal
+	// (or an admin command) holds it longer than the lock wait timeout, retry
+	// for a while instead of exiting.
 	var svc *coordinator.Service
 	for deadline := time.Now().Add(f.Database.StartupBusyRetry.T()); ; {
 		svc, err = coordinator.NewService(ctx, h, keys, cfg)
-		if err == nil || !sqlite.IsBusy(err) || time.Now().After(deadline) {
+		if err == nil || !mysqldb.IsBusy(err) || time.Now().After(deadline) {
 			break
 		}
 		log.Printf("database busy at startup (%v); retrying", err)
@@ -431,27 +425,7 @@ func buildReferences(rs []Reference) ([]audit.Reference, map[string]tokens.Serve
 }
 
 // admin runs an operator command against the database. It is safe beside a
-// running coordinator: SQLite serializes the two processes' transactions.
-// copyDB copies the -db database into another one, normally an empty MySQL
-// database: coordinator -db st.db copy-db mysql://sharetoken@host/sharetoken.
-// Stop the portal and the coordinator first.
-func copyDB(src *sql.DB, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: coordinator -db <source> copy-db <destination DSN or file>")
-	}
-	dst, err := sqlite.Open(args[0])
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
-	start := time.Now()
-	if err := coordinator.CopyDatabase(src, dst, func(t string, n int64) { fmt.Printf("%-16s %d rows\n", t, n) }); err != nil {
-		return err
-	}
-	fmt.Printf("copied in %v; check it with: coordinator -db <destination> check\n", time.Since(start).Round(time.Millisecond))
-	return nil
-}
-
+// running coordinator: the write lock serializes the two processes' transactions.
 func admin(keys *p2p.Keys, db *sql.DB, cmd string, args []string) error {
 	eng, err := coordinator.NewEngine(keys.ID(), keys.Signer, coordinator.Config{DB: db})
 	if err != nil {

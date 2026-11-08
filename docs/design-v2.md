@@ -1,6 +1,6 @@
 # sharetoken 设计文档 v2：用户 / 中继 / 协调器 / 门户 四角色架构
 
-> 版本 v2（2026-11-07，分支 `arch-v2`）。v1 的密码学机制（收据、证据裁决、抽检、TEE）全部保留，见 [design-v1.md](design-v1.md)；本文只讲 v2 的架构调整。使用与部署见 [guide-v2.md](guide-v2.md)，测试与实测见 [validation-v2.md](validation-v2.md)。
+> 版本 v2（2026-11-07，分支 `arch-v2`）。收据、证据裁决、抽检、TEE 是这套架构的密码学基础；本文讲角色划分和架构。使用与部署见 [guide-v2.md](guide-v2.md)，测试与实测见 [validation-v2.md](validation-v2.md)。
 
 ## 1. 角色
 
@@ -20,7 +20,7 @@
    │  买 + 卖       │                                                 └────┬─────┘
    │  127.0.0.1:9787│      ┌─────────┐   ┌─────────┐                      │ 共用数据库
    └──────┬───────┘      │ relay A │   │ relay B │ …                 ┌────┴──────┐
-          │ 测 RTT，选最优 └──┬──────┘   └──┬──────┘                   │  SQLite   │
+          │ 测 RTT，选最优 └──┬──────┘   └──┬──────┘                   │  MySQL    │
           ├──────────────────┘ 控制面        │                         │(以后 MySQL)│
           │   /p2p-circuit ───────────────► 协调器在每个中继上都有预约 ◄─┤           │
           │                                 │                         └────┬──────┘
@@ -37,8 +37,8 @@
 
 - v1：一个 peer ID 一个账户。v2：门户把设备的 peer ID **绑定**到用户，协调器在每个经认证的 libp2p 流上把 peer 解析成 `user:<id>` 账户（`accounts.DeviceAccount`）。一个用户可以有多台设备，卖出赚到的钱任何一台都能花。
 - 作业表新增 `buyer_acct`、`node_acct`、`prompt_tokens`、`completion_tokens`：付款方和收款方在**签 Ticket 时**固定下来，之后解绑设备也不会改变这一单的去向。
-- 撮合排除**同一用户**的所有设备（v1 只排除同一 peer），防止自买自卖刷手续费和信誉。
-- 未绑定或已禁用用户的设备：公告 Offer、申请 Ticket、查余额都返回 `unauthorized`。测试与本地演示可用 `-open-accounts` 退回 v1 的「一个 peer 一个账户」。
+- 撮合排除**同一用户**的所有设备，防止自买自卖刷手续费和信誉。
+- 未绑定或已禁用用户的设备：公告 Offer、申请 Ticket、查余额都返回 `unauthorized`。测试与本地演示可用 `-open-accounts` 让每个 peer 自成一个账户。
 - 抽检身份由平台出资，仍是 peer 级账户（`acct:<peer>`）。
 
 ### 2.2 设备绑定必须证明持有设备私钥
@@ -63,11 +63,11 @@
 
 ### 2.5 Offer 改为直接公告
 
-v1 用 GossipSub 广播 Offer；v2 只有一个协调器，改为每 15 秒经控制面发一次 `announce`（同时是心跳），去掉了 pubsub 依赖。协调器校验「公告者 == Offer 的签名节点」并解析其账户。
+节点每 15 秒经控制面发一次 `announce`（同时是心跳）。协调器校验「公告者 == Offer 的签名节点」并解析其账户。
 
-### 2.6 节点放弃失败的单（修复 v1 已知问题 3.2）
+### 2.6 节点放弃失败的单
 
-节点在交付任何内容之前失败（模型服务出错、满载、请求解不开）时，向协调器发 `abandon`：协调器立即退回买家的冻结额并释放节点的并发名额，记一次失败。只有被分配的节点能放弃、且只能在结算前放弃——放弃等于放弃收款，节点没有说谎的动机。v1 中这样的单要冻结约 17 分钟并占着节点名额。
+节点在交付任何内容之前失败（模型服务出错、满载、请求解不开）时，向协调器发 `abandon`：协调器立即退回买家的冻结额并释放节点的并发名额，记一次失败。只有被分配的节点能放弃、且只能在结算前放弃——放弃等于放弃收款，节点没有说谎的动机。
 
 ### 2.7 买家拿了 Ticket 不来连（修复另一半）
 
@@ -139,15 +139,13 @@ v1 用 GossipSub 广播 Offer；v2 只有一个协调器，改为每 15 秒经�
 | 会话长期有效 | 浏览器会话默认 24 小时（`-session-ttl`），在 token 列表里可见并可吊销；改密码可一键吊销其他会话；管理员重置密码默认吊销该用户全部 token |
 | 门户被反向代理 | `-behind-tls-proxy` 或 `X-Forwarded-Proto: https` 时 cookie 仍标 Secure，Origin 校验按 https 比较 |
 
-争议裁决（`POST /api/v1/admin/disputes/{job}/resolve`）由门户进程直接在共用数据库里结算（`coordinator.ResolveDispute`）：和协调器的 `finalize/refund` 是同一段代码，**服务中的**协调器启动时把手续费率写进 `meta.fee_bps` 供门户读取（`Engine.RecordFeeRate`，运维子命令不会覆盖它）；SQLite 的 `BEGIN IMMEDIATE` 保证两个进程的写事务串行。
+争议裁决（`POST /api/v1/admin/disputes/{job}/resolve`）由门户进程直接在共用数据库里结算（`coordinator.ResolveDispute`）：和协调器的 `finalize/refund` 是同一段代码，**服务中的**协调器启动时把手续费率写进 `meta.fee_bps` 供门户读取（`Engine.RecordFeeRate`，运维子命令不会覆盖它）；`st_write_lock` 行锁保证两个进程的写事务串行。
 
-**管理员两步验证。** 管理员的密码只换来一个 5 分钟有效的 challenge，不发任何 token。已绑定的管理员再交一个 TOTP 码（`POST /api/v1/web/mfa` 或 `/api/v1/mfa`；API 客户端也可在登录请求里直接带 `totp`）；未绑定的管理员先在网页完成绑定（服务器生成 20 字节密钥，以二维码和 base32 文本展示，首个验证码正确才写库），所以第一次登录也不存在"没有二步的管理员会话"。校验接受前后各一个周期，并记录最后接受的步数，同一码不能重放；错码计入登录限流，一个 challenge 错 5 次作废。`api_tokens.mfa` 记录 token 是否来自两步登录，`admin` 中间件要求它为真：提升为管理员、或本功能上线之前的旧 token 都拿不到管理权限，必须重新登录。密钥用门户签名私钥（`portal-pass.key`）派生的 AES-GCM 密钥加密后存于 `users.mfa_secret`，拿到数据库文件不等于拿到验证器密钥；没有该密钥的门户进程（如管理命令）无法让管理员登录，但 `portal mfa-reset` 不需要它。普通用户不要求两步验证。
+**管理员两步验证。** 管理员的密码只换来一个 5 分钟有效的 challenge，不发任何 token。已绑定的管理员再交一个 TOTP 码（`POST /api/v1/web/mfa` 或 `/api/v1/mfa`；API 客户端也可在登录请求里直接带 `totp`）；未绑定的管理员先在网页完成绑定（服务器生成 20 字节密钥，以二维码和 base32 文本展示，首个验证码正确才写库），所以第一次登录也不存在"没有二步的管理员会话"。校验接受前后各一个周期，并记录最后接受的步数，同一码不能重放；错码计入登录限流，一个 challenge 错 5 次作废。`api_tokens.mfa` 记录 token 是否来自两步登录，`admin` 中间件要求它为真：提升为管理员之前发的 token 拿不到管理权限，必须重新登录。密钥用门户签名私钥（`portal-pass.key`）派生的 AES-GCM 密钥加密后存于 `users.mfa_secret`，拿到数据库文件不等于拿到验证器密钥；没有该密钥的门户进程（如管理命令）无法让管理员登录，但 `portal mfa-reset` 不需要它。普通用户不要求两步验证。
 
 ## 3. 数据库
 
-### 3.1 现在：SQLite，门户与协调器放在同一台机器
-
-两个进程打开同一个文件（WAL、`busy_timeout`、`BEGIN IMMEDIATE`），SQLite 负责跨进程串行化写事务。谁先启动都会建全表（`coordinator.Migrate`），v1 数据库原地升级（补列）。
+门户、协调器和邮件服务共用一个 MySQL 8（InnoDB）库（`internal/mysqldb`）。`-db mysql://user@host:port/db` 指定，可以分机部署。
 
 | 表 | 写入方 | 读取方 |
 |---|---|---|
@@ -155,33 +153,14 @@ v1 用 GossipSub 广播 Offer；v2 只有一个协调器，改为每 15 秒经�
 | `relays` | 门户（登记）、协调器（可达状态） | 门户、协调器 |
 | `ledger_*` | 门户（发放/扣减）、协调器（冻结/结算/退款） | 两边 |
 | `jobs`、`nodes`、`audits`、`peers`、`meta` | 协调器 | 门户（账单、用量、协调器 ID） |
+| `schema_migrations` | 门户、协调器（编号迁移） | 所有进程 |
 
-### 3.2 以后：MySQL（建议），门户和协调器分机部署
+- **迁移：** 表结构按编号迁移（`core`、`mail` 两个组件），谁先启动谁执行，其他进程等待；规则见 [versioning.md](versioning.md)。
+- **单写者：** 所有写事务经 `mysqldb.Begin` 先锁 `st_write_lock` 的唯一一行，门户和协调器的写入跨进程严格串行，事务内「读出再写回」的代码因此是正确的；只读事务（门户的 `ledgerRead`）不取这把锁。
+- **upsert：** 「先 UPDATE，没匹配到再 INSERT」，连接开启 `CLIENT_FOUND_ROWS`，RowsAffected 按匹配行计数。
+- **排序规则：** `utf8mb4_bin`，字符串按字节比较。
 
-问题「使用 MySQL？」的回答：**是**，等门户和协调器需要分开部署、或要多个门户实例时，用 MySQL 8（InnoDB）远程连接。SQLite 不能跨机器共享。迁移要处理的点（都集中在 `ledger`、`accounts`、`coordinator/store.go`、`internal/sqlite`）：
-
-| SQLite 写法 | MySQL 对应 |
-|---|---|
-| `STRICT` 表、`INTEGER PRIMARY KEY AUTOINCREMENT` | 去掉 STRICT；`BIGINT AUTO_INCREMENT` |
-| `INSERT … ON CONFLICT (k) DO UPDATE` | `INSERT … ON DUPLICATE KEY UPDATE` |
-| `BEGIN IMMEDIATE` 单写者；门户只读路径用只读（deferred）事务，WAL 下不取写锁、不被协调器的写阻塞；写路径遇 SQLITE_BUSY 返回 503，启动迁移遇忙重试 | 事务内对账户行 `SELECT … FOR UPDATE`；协调器仍是单进程，内存锁照旧；只读事务换成 `START TRANSACTION READ ONLY` |
-| 部分索引 `… WHERE open = 1`、`… WHERE dispute_outcome != ''` | 普通索引 `(owner, open)`、`(dispute_outcome, created_at)` |
-| 列表查询用两段 `ORDER BY … LIMIT` 子查询 `UNION ALL` 合并（代替 `a = ? OR b = ?`，避免对整段历史排序）；`+status = ?` 禁用索引 | `UNION ALL` 写法原样可用；`+col` 技巧换成 `IGNORE INDEX` 或直接建 `(acct, status, created_at)` 索引 |
-| `pragma_table_info` 补列 | `information_schema.COLUMNS` |
-| TEXT 主键/唯一键 | `VARCHAR(128)`（peer ID 52 字符） |
-| 对账 CTE | MySQL 8 支持，原样可用 |
-
-**已实现（2026-11-08）**：`-db mysql://user@host:port/db` 选择 MySQL（`internal/sqlite/mysql.go`）。实际做法和上表的出入：
-
-- 表结构是单独的一份 `SchemaMySQL`（`ledger`、`accounts`、`coordinator` 各一份，索引直接写在 `CREATE TABLE` 里）；部分索引改成普通复合索引，`TEXT` 主键/索引列改成 `VARCHAR(191)`，二进制列用 `VARBINARY`/`MEDIUMBLOB`，排序规则 `utf8mb4_bin`（与 SQLite 一样按字节比较）。
-- DML 只有一份，写成两边都能执行的形式：upsert 改为「先 UPDATE，没匹配到再 INSERT」（连接开启 `CLIENT_FOUND_ROWS`，RowsAffected 和 SQLite 一样按匹配行计数）；`'a' || b` 改为 `CONCAT`；派生表加别名；`meta.key` 用反引号；`LIKE` 的转义字符换成 `!`，并对两边做 `LOWER`。
-- 单写者：没有逐个改成 `SELECT … FOR UPDATE`，而是所有写事务经 `sqlite.Begin` 先锁 `st_write_lock` 的唯一一行，门户和协调器的写入跨进程严格串行，原有「事务内读出再写回」的代码不用改；只读事务（门户的 `ledgerRead`）不取这把锁。`TestMySQLWritersAreSerialized` 验证两个连接池并发读改写不丢更新。
-- `+status` 技巧在 MySQL 里是无操作（一元加号被解析器丢弃），保留不影响结果。
-- 迁移：`coordinator copy-db <DSN>` 逐表复制到空库。
-
-测试环境的门户和协调器已于 2026-11-08 迁到 orb VM `st-db` 上的 MySQL 8.0（见 test-env.md 和 validation-v2-mysql.md）。
-
-## 4. 威胁对照（v2 新增部分）
+## 4. 威胁对照
 
 | 威胁 | 防御 | 代码 |
 |---|---|---|
@@ -206,10 +185,10 @@ v1 用 GossipSub 广播 Offer；v2 只有一个协调器，改为每 15 秒经�
 - **拿票不来连仍有短暂代价**：每张票最多让节点空等 2.5 分钟（每账户最多 4 张）。
 - **自签名证书依赖首次确认**：用户必须把指纹与运维公布的核对；有域名时更推荐 CA 证书。没有内置 ACME 自动签发，可以用 `-tls-cert` 指向 certbot 生成的证书或放在 Caddy/nginx 后面。
 - **IPv6 只在本机回环验证过**：双栈和跨地址族桥接在 `::1` 上测过，公网 IPv6、运营商防火墙、只有 v6 的 NAT64 网络未实测。
-- **协调器单实例**，账本仍由它和门户记录（与 v1 相同）。
+- **协调器单实例**，账本由它和门户记录。
 - **用量统计只覆盖保留期内的作业**（默认 30 天）；钱的历史在账本里永久保留。
 - **抽检经费从平台手续费账户预支**，抽检进行中平台账户可能为负，结束后余额自动退回。
-- v1 的其余边界（无 TEE 时运营者可见 prompt、抽检是概率性的等）不变。
+- 无 TEE 时运营者可见 prompt；抽检是概率性的。
 
 ## 6. 下一步
 

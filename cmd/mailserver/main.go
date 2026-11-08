@@ -32,7 +32,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"sharetoken/internal/config"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/mailer"
 )
 
@@ -198,7 +198,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("database password: %v", err)
 	}
-	db, err := sqlite.OpenWith(f.Database.DSN, sqlite.Options{Password: pw, MaxOpenConns: f.Database.MaxOpenConns,
+	db, err := mysqldb.OpenWith(f.Database.DSN, mysqldb.Options{Password: pw, MaxOpenConns: f.Database.MaxOpenConns,
 		MaxIdleConns: f.Database.MaxIdleConns, ConnMaxLifetime: f.Database.ConnMaxLifetime.T(),
 		ConnectTimeout: f.Database.ConnectTimeout.T(), LockWaitTimeout: f.Database.LockWaitTimeout.T()})
 	if err != nil {

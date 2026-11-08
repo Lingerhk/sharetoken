@@ -2,21 +2,21 @@ package accounts
 
 import (
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
+	"sharetoken/ledger"
 )
 
 func testStore(t *testing.T) *Store {
 	t.Helper()
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "a.db"))
+	db, err := mysqldb.OpenTest()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(Schema); err != nil {
+	if err := mysqldb.Migrate(db, "accounts", []mysqldb.Migration{{Version: 1, Name: "accounts", SQL: ledger.Schema + Schema}}); err != nil {
 		t.Fatal(err)
 	}
 	return &Store{DB: db}

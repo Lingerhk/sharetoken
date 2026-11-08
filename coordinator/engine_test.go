@@ -3,14 +3,12 @@ package coordinator
 import (
 	"crypto/ed25519"
 	"encoding/hex"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"sharetoken/attest"
 	"sharetoken/evidence"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/ledger"
 	"sharetoken/p2p"
 	"sharetoken/protocol"
@@ -40,6 +38,14 @@ func newStrictFixture(t *testing.T, cfg Config) *fixture {
 	f := &fixture{t: t, now: time.Unix(1_800_000_000, 0)}
 	coord := mustKeys(t)
 	cfg.Now = func() time.Time { return f.now }
+	if cfg.DB == nil {
+		db, err := mysqldb.OpenTest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		cfg.DB = db
+	}
 	eng, err := NewEngine(coord.ID(), coord.Signer, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -451,11 +457,14 @@ func TestMutualAidEarnThenSpend(t *testing.T) {
 }
 
 func TestStateSurvivesRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "coordinator.db")
+	path, err := mysqldb.TestDSN()
+	if err != nil {
+		t.Fatal(err)
+	}
 	coord, node, buyer := mustKeys(t), mustKeys(t), mustKeys(t)
 	now := time.Unix(1_800_000_000, 0)
 	open := func() *Engine {
-		db, err := sqlite.Open(path)
+		db, err := mysqldb.Open(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -487,7 +496,7 @@ func TestStateSurvivesRestart(t *testing.T) {
 	f.booksBalance()
 
 	// The database belongs to this coordinator key.
-	db, _ := sqlite.Open(path)
+	db, _ := mysqldb.Open(path)
 	defer db.Close()
 	other := mustKeys(t)
 	if _, err := NewEngine(other.ID(), other.Signer, Config{DB: db}); err == nil {
@@ -802,40 +811,6 @@ func TestTicketsNeverStartedAreReleasedEarly(t *testing.T) {
 		t.Fatalf("late start: want conflict, got %v", err)
 	}
 	f.booksBalance()
-}
-
-// The per-request queries must use an index that does not grow with an
-// account's job history (they run under the engine's write lock).
-func TestHotQueriesAreIndexed(t *testing.T) {
-	f := newFixture(t, Config{})
-	if sqlite.IsMySQL(f.eng.db) {
-		t.Skip("asserts SQLite query plans")
-	}
-	for q, want := range map[string]string{
-		`SELECT node, dispute_reason != '' FROM jobs WHERE buyer_acct = 'a' AND status = 'held' AND started_at = 0 AND created_at < 1`:          "jobs_buyer_unstarted (buyer_acct=? AND status=? AND started_at=? AND created_at<?)",
-		`SELECT node, COUNT(*) FROM jobs WHERE status = 'held' AND (started_at != 0 OR ticket_expires = 0 OR ticket_expires > 1) GROUP BY node`: "jobs_status_node (status=?)",
-		`SELECT SUM(prompt_tokens), SUM(cost) FROM jobs WHERE buyer_acct = 'a' AND status = 'final'`:                                            "COVERING INDEX jobs_buy_usage",
-		`SELECT SUM(completion_tokens), SUM(cost - fee) FROM jobs WHERE node_acct = 'a' AND status = 'final'`:                                   "COVERING INDEX jobs_sell_usage",
-		`DELETE FROM jobs WHERE status IN ('final', 'released', 'refunded') AND done_at < 1`:                                                    "jobs_status_done (status=? AND done_at<?)",
-	} {
-		var plan strings.Builder
-		rows, err := f.eng.db.Query("EXPLAIN QUERY PLAN " + q)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for rows.Next() {
-			var id, parent, notused int
-			var detail string
-			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
-				t.Fatal(err)
-			}
-			plan.WriteString(detail + "\n")
-		}
-		rows.Close()
-		if !strings.Contains(plan.String(), want) {
-			t.Errorf("%s\nplan: %s\nwant index %s", q, plan.String(), want)
-		}
-	}
 }
 
 // A node that is not connected to the coordinator (crashed, or its relay just

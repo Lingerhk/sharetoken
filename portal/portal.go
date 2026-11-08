@@ -2,8 +2,7 @@
 // sign-up and login, API tokens, device binding, credit balances and grants,
 // job and token-usage history, and the relay registry.
 //
-// It shares one database with the coordinator (today a SQLite file on the
-// same machine; later a networked database). The portal never talks to the
+// It shares one database with the coordinator (MySQL). The portal never talks to the
 // coordinator: it writes accounts and credit grants, the coordinator writes
 // jobs and settlements, and both move money only through the double-entry
 // ledger inside a database transaction.
@@ -32,7 +31,7 @@ import (
 
 	"sharetoken/accounts"
 	"sharetoken/coordinator"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/ledger"
 	"sharetoken/mailer"
 	"sharetoken/relaypass"
@@ -105,7 +104,7 @@ func New(cfg Config) (*Server, error) {
 		cfg.Log = slog.Default().With("component", "portal")
 	}
 	// Under heavy coordinator traffic the write lock can be held past the
-	// busy timeout; a transient SQLITE_BUSY at start must not take the portal
+	// lock wait timeout; a transient timeout at start must not take the portal
 	// down (it stayed down once on the test network for exactly this).
 	deadline := time.Now().Add(migrateRetryFor)
 	for {
@@ -116,7 +115,7 @@ func New(cfg Config) (*Server, error) {
 		if err == nil {
 			break
 		}
-		if !sqlite.IsBusy(err) || time.Now().After(deadline) {
+		if !mysqldb.IsBusy(err) || time.Now().After(deadline) {
 			return nil, err
 		}
 		cfg.Log.Warn("database busy, retrying migration", "err", err)
@@ -264,7 +263,7 @@ func (s *Server) Overview() (Overview, error) {
 }
 
 func (s *Server) ledgerTx(fn func(tx *sql.Tx, led *ledger.Tx) error) error {
-	tx, err := sqlite.Begin(s.db)
+	tx, err := mysqldb.Begin(s.db)
 	if err != nil {
 		return err
 	}
@@ -1121,7 +1120,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func (s *Server) internal(w http.ResponseWriter, err error) {
-	if sqlite.IsBusy(err) {
+	if mysqldb.IsBusy(err) {
 		// Another process held the write lock for the whole busy timeout.
 		// Nothing is wrong with the request: tell the client to retry.
 		s.log.Warn("database busy", "err", err)

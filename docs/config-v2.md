@@ -52,9 +52,9 @@
 | yaml | 来源 | 默认 |
 |---|---|---|
 | identity.key_file | F `-key` | coordinator.key |
-| database.dsn | F `-db` | sharetoken.db |
+| database.dsn | F `-db` | 无，必填（mysql://） |
 | database.password_env/file | 原 `$SHARETOKEN_DB_PASSWORD` 写死 | SHARETOKEN_DB_PASSWORD |
-| database.max_open_conns / max_idle_conns / conn_max_lifetime | H `internal/sqlite/mysql.go` | 32 / 8 / 30m |
+| database.max_open_conns / max_idle_conns / conn_max_lifetime | H `internal/mysqldb` | 32 / 8 / 30m |
 | database.connect_timeout / lock_wait_timeout | H 同上 | 10s / 10s |
 | database.startup_busy_retry | H main.go | 2m |
 | network.listen / max_conns / relays | F | 空 / 8192 / 空 |

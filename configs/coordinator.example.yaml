@@ -11,10 +11,10 @@ identity:
 
 # 与 portal 共用同一个库（两边配置必须指向同一 DSN）
 database:
-  # SQLite 文件路径，或 mysql://user@host:port/db
+  # mysql://user@host:port/db
   dsn: mysql://sharetoken@127.0.0.1:3306/sharetoken
   password_env: SHARETOKEN_DB_PASSWORD   # 或 password_file: /etc/sharetoken/db.pass
-  # 以下为 [新增，原硬编码]，仅 MySQL 生效；SQLite 固定单连接
+  # 以下为 [新增，原硬编码]
   max_open_conns: 32
   max_idle_conns: 8
   conn_max_lifetime: 30m

@@ -1,5 +1,5 @@
 // Package ledger is the coordinator's double-entry credit ledger, stored in
-// SQLite.
+// MySQL.
 //
 // Every movement is a balanced transfer between two accounts and is journaled,
 // so the sum of all balances is always zero: deposits come from the External
@@ -57,34 +57,8 @@ var (
 	ErrOverflow          = errors.New("ledger: balance overflow")
 )
 
-// Schema creates the ledger tables. It is idempotent.
+// Schema creates the ledger tables.
 const Schema = `
-CREATE TABLE IF NOT EXISTS ledger_accounts (
-	account TEXT PRIMARY KEY,
-	balance INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS ledger_holds (
-	job_id TEXT PRIMARY KEY,
-	owner  TEXT NOT NULL,
-	amount INTEGER NOT NULL CHECK (amount > 0),
-	open   INTEGER NOT NULL CHECK (open IN (0, 1))
-) STRICT;
-CREATE INDEX IF NOT EXISTS ledger_holds_open_by_owner ON ledger_holds(owner) WHERE open = 1;
-CREATE TABLE IF NOT EXISTS ledger_entries (
-	seq     INTEGER PRIMARY KEY AUTOINCREMENT,
-	at      INTEGER NOT NULL,
-	job_id  TEXT NOT NULL,
-	debit   TEXT NOT NULL,
-	credit  TEXT NOT NULL,
-	amount  INTEGER NOT NULL CHECK (amount > 0),
-	memo    TEXT NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS ledger_entries_by_debit  ON ledger_entries(debit, seq);
-CREATE INDEX IF NOT EXISTS ledger_entries_by_credit ON ledger_entries(credit, seq);
-`
-
-// SchemaMySQL is Schema for MySQL 8 (see internal/sqlite/mysql.go).
-const SchemaMySQL = `
 CREATE TABLE IF NOT EXISTS ledger_accounts (
 	account VARCHAR(191) PRIMARY KEY,
 	balance BIGINT NOT NULL
@@ -182,7 +156,7 @@ func (l *Tx) transfer(jobID, from, to string, amount int64, memo string) error {
 
 func (l *Tx) setBalance(account string, balance int64) error {
 	// UPDATE then INSERT instead of an upsert (portable to MySQL); safe
-	// because writers are serialized (sqlite.Begin).
+	// because writers are serialized (mysqldb.Begin).
 	res, err := l.tx.Exec(`UPDATE ledger_accounts SET balance = ? WHERE account = ?`, balance, account)
 	if err != nil {
 		return err
@@ -388,7 +362,7 @@ func (l *Tx) Sum() (int64, error) {
 // database was edited outside the ledger.
 func (l *Tx) Reconcile() error {
 	// Grouping each column before the union, and two NOT EXISTS instead of an
-	// OR of the two columns, let both SQLite and MySQL use the (debit, …) and
+	// OR of the two columns, let MySQL use the (debit, …) and
 	// (credit, …) indexes; the OR form scanned the journal once per account
 	// on MySQL (4.7 s at 400k entries).
 	rows, err := l.tx.Query(`

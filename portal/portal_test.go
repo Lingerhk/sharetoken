@@ -9,13 +9,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"sharetoken/accounts"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/p2p"
 	"sharetoken/relaypass"
 )
@@ -55,14 +53,8 @@ func (a *api) call(method, path, token string, body any, wantStatus int, out any
 	}
 }
 
-// openSharedDB opens a fresh shared database: a SQLite file, or a private
-// MySQL database when SHARETOKEN_TEST_MYSQL is set (see internal/sqlite).
-func openSharedDB(t *testing.T) (*sql.DB, error) {
-	if os.Getenv("SHARETOKEN_TEST_MYSQL") != "" {
-		return sqlite.Open(sqlite.Memory)
-	}
-	return sqlite.Open(filepath.Join(t.TempDir(), "shared.db"))
-}
+// openSharedDB opens a fresh shared database.
+func openSharedDB(t *testing.T) (*sql.DB, error) { return mysqldb.OpenTest() }
 
 func newPortal(t *testing.T, cfg Config) (*Server, *api) {
 	t.Helper()

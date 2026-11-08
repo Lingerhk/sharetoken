@@ -9,7 +9,7 @@
 // account only needs the mail_outbox, mail_inbox and mail_status tables.
 //
 // Mail tables do not touch the ledger, so nothing here takes the database-wide
-// write lock (sqlite.Begin): every write is a single statement, and claims are
+// write lock (mysqldb.Begin): every write is a single statement, and claims are
 // compare-and-swap updates.
 package mailer
 
@@ -22,81 +22,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 )
 
-// Schema creates the mail tables on SQLite. It is idempotent.
+// Schema creates the mail tables.
 const Schema = `
-CREATE TABLE IF NOT EXISTS mail_outbox (
-	id              INTEGER PRIMARY KEY AUTOINCREMENT,
-	kind            TEXT NOT NULL,                -- verify, notice, reply, compose, test
-	has_secret      INTEGER NOT NULL DEFAULT 0,   -- body holds a secret: never shown, wiped once finished
-	from_addr       TEXT NOT NULL,                -- "Name <a@b>"
-	to_addr         TEXT NOT NULL,
-	reply_to        TEXT NOT NULL DEFAULT '',
-	subject         TEXT NOT NULL,
-	text_body       TEXT NOT NULL,
-	html_body       TEXT NOT NULL DEFAULT '',
-	in_reply_to     TEXT NOT NULL DEFAULT '',
-	message_id      TEXT NOT NULL DEFAULT '',
-	created_by      TEXT NOT NULL DEFAULT '',     -- administrator who wrote it
-	status          TEXT NOT NULL,                -- queued, sending, sent, failed, cancelled
-	attempts        INTEGER NOT NULL DEFAULT 0,
-	next_attempt_at INTEGER NOT NULL DEFAULT 0,
-	expires_at      INTEGER NOT NULL DEFAULT 0,   -- give up after this; 0: the server's retry window
-	claimed_at      INTEGER NOT NULL DEFAULT 0,
-	last_error      TEXT NOT NULL DEFAULT '',
-	remote          TEXT NOT NULL DEFAULT '',     -- the server that took it
-	created_at      INTEGER NOT NULL,
-	finished_at     INTEGER NOT NULL DEFAULT 0
-) STRICT;
-CREATE INDEX IF NOT EXISTS mail_outbox_due ON mail_outbox(status, next_attempt_at);
-CREATE TABLE IF NOT EXISTS mail_inbox (
-	id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	mailbox     TEXT NOT NULL,                    -- the local address it was sent to
-	mail_from   TEXT NOT NULL DEFAULT '',         -- envelope sender; empty for bounces
-	from_hdr    TEXT NOT NULL DEFAULT '',
-	subject     TEXT NOT NULL DEFAULT '',
-	message_id  TEXT NOT NULL DEFAULT '',
-	remote_ip   TEXT NOT NULL DEFAULT '',
-	helo        TEXT NOT NULL DEFAULT '',
-	tls         INTEGER NOT NULL DEFAULT 0,
-	spf         TEXT NOT NULL DEFAULT '',
-	dkim        TEXT NOT NULL DEFAULT '',
-	verified    INTEGER NOT NULL DEFAULT 0,       -- SPF or DKIM passed for the From domain
-	is_bounce   INTEGER NOT NULL DEFAULT 0,
-	size        INTEGER NOT NULL DEFAULT 0,
-	raw         BLOB NOT NULL,
-	status      TEXT NOT NULL DEFAULT 'inbox',    -- inbox, archived
-	read_at     INTEGER NOT NULL DEFAULT 0,
-	replied_at  INTEGER NOT NULL DEFAULT 0,
-	received_at INTEGER NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS mail_inbox_by_status ON mail_inbox(status, id);
-CREATE TABLE IF NOT EXISTS mail_codes (
-	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	purpose    TEXT NOT NULL,
-	email      TEXT NOT NULL,
-	ip         TEXT NOT NULL DEFAULT '',
-	salt       BLOB NOT NULL,
-	code_hash  BLOB NOT NULL,
-	attempts   INTEGER NOT NULL DEFAULT 0,
-	consumed   INTEGER NOT NULL DEFAULT 0,
-	expires_at INTEGER NOT NULL,
-	created_at INTEGER NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS mail_codes_by_email ON mail_codes(email, purpose, id);
-CREATE INDEX IF NOT EXISTS mail_codes_by_ip ON mail_codes(ip, created_at);
-CREATE INDEX IF NOT EXISTS mail_codes_by_time ON mail_codes(created_at);
-CREATE TABLE IF NOT EXISTS mail_status (
-	name       TEXT PRIMARY KEY,
-	value      TEXT NOT NULL,
-	updated_at INTEGER NOT NULL
-) STRICT;
-`
-
-// SchemaMySQL is Schema for MySQL 8.
-const SchemaMySQL = `
 CREATE TABLE IF NOT EXISTS mail_outbox (
 	id              BIGINT PRIMARY KEY AUTO_INCREMENT,
 	kind            VARCHAR(32) NOT NULL,
@@ -165,14 +95,14 @@ CREATE TABLE IF NOT EXISTS mail_status (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 `
 
+// Migrations is the schema of the mail tables, as component "mail".
+var Migrations = []mysqldb.Migration{
+	{Version: 1, Name: "initial schema", SQL: Schema},
+}
+
 // Migrate creates the mail tables. The portal runs it; the mail server's
 // restricted database account cannot.
-func Migrate(db *sql.DB) error {
-	if sqlite.IsMySQL(db) {
-		return sqlite.Migrate(db, SchemaMySQL)
-	}
-	return sqlite.Migrate(db, Schema)
-}
+func Migrate(db *sql.DB) error { return mysqldb.Migrate(db, "mail", Migrations) }
 
 // Outbox and inbox states.
 const (

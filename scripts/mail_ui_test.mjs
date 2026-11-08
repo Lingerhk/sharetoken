@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Browser test of email sign-up and the admin console's mail section, against
-// real processes: a portal and a mail server on a temporary SQLite database.
+// real processes: a portal and a mail server on a temporary MySQL database.
 // A headless Chrome drives the pages; a plain SMTP dialogue delivers hostile
 // mail to the real receiving server. Nothing leaves this machine: delivery goes
 // to a closed local port, so outgoing mail stays queued where the test reads it.
@@ -32,8 +32,10 @@ function run(bin, args, name) {
 
 // ---- stack ----
 execFileSync('go', ['build', '-o', dir + '/', './cmd/portal', './cmd/mailserver'], { cwd: ROOT, stdio: 'inherit' });
+const DSN = execFileSync(join(ROOT, 'scripts/local-mysql.sh'), ['new-db', 'st_mail_ui'], { encoding: 'utf8' }).trim();
+process.env.SHARETOKEN_DB_PASSWORD = '';
 writeFileSync(join(dir, 'portal.yaml'), `version: 1
-database: {dsn: st.db}
+database: {dsn: "${DSN}"}
 keys: {pass_key_file: pass.key}
 http: {listen: "127.0.0.1:${PORTAL}"}
 tls: {mode: auto}
@@ -41,7 +43,7 @@ accounts: {open_registration: true, signup_credit_micros: 1000000, email_verific
 mail: {from: "ShareToken <team@ui.test>", support: "ShareToken Support <support@ui.test>"}
 `);
 writeFileSync(join(dir, 'mail.yaml'), `version: 1
-database: {dsn: st.db}
+database: {dsn: "${DSN}"}
 hostname: mail.ui.test
 domain: ui.test
 dkim: {selector: t1, key_file: dkim.key}
@@ -54,7 +56,7 @@ execFileSync('./mailserver', ['-config', 'mail.yaml', 'dkim-keygen'], { cwd: dir
 run('./portal', ['-config', 'portal.yaml', 'serve'], 'portal');
 run('./mailserver', ['-config', 'mail.yaml', 'serve'], 'mailserver');
 for (let i = 0; i < 100; i++) { try { if ((await fetch(base + '/healthz')).ok) break; } catch { /* starting */ } await sleep(100); }
-const sql = q => execFileSync('sqlite3', [join(dir, 'st.db'), q], { encoding: 'utf8' }).trim();
+const sql = q => execFileSync('docker', ['exec', 'st-test-mysql', 'mysql', '-h127.0.0.1', '-uroot', '-N', '--default-character-set=utf8mb4', 'st_mail_ui', '-e', q], { encoding: 'utf8' }).trim();
 
 // ---- SMTP ----
 function smtp(from, to, message) {

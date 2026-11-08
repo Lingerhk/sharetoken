@@ -44,7 +44,7 @@ import (
 	"sharetoken/attest"
 	"sharetoken/evidence"
 	"sharetoken/internal/canon"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/ledger"
 	"sharetoken/protocol"
 	"sharetoken/receipt"
@@ -218,7 +218,6 @@ type Engine struct {
 	priv  ed25519.PrivateKey
 	cfg   Config
 	db    *sql.DB
-	ownDB bool
 	log   *slog.Logger
 
 	mu     sync.Mutex // serializes transactions; guards offers
@@ -235,16 +234,12 @@ type Engine struct {
 // from the journal, and signs tickets as self with priv.
 func NewEngine(self string, priv ed25519.PrivateKey, cfg Config) (*Engine, error) {
 	cfg.setDefaults()
-	db, own := cfg.DB, false
+	db := cfg.DB
 	if db == nil {
-		var err error
-		if db, err = sqlite.Open(sqlite.Memory); err != nil {
-			return nil, err
-		}
-		own = true
+		return nil, errors.New("coordinator: no database")
 	}
 	e := &Engine{
-		self: self, priv: priv, cfg: cfg, db: db, ownDB: own, log: cfg.Log,
+		self: self, priv: priv, cfg: cfg, db: db, log: cfg.Log,
 		offers: make(map[string]*offerEntry), teeCache: make(map[[32]byte]string), started: cfg.Now(),
 	}
 	if err := Migrate(db); err != nil {
@@ -294,9 +289,6 @@ func (e *Engine) RecordFeeRate() error {
 
 // Close releases the database if the engine opened it.
 func (e *Engine) Close() {
-	if e.ownDB {
-		_ = e.db.Close()
-	}
 }
 
 // Now is the engine's clock.
@@ -313,7 +305,7 @@ func (e *Engine) update(fn func(tx *sql.Tx, led *ledger.Tx) error) error {
 }
 
 func (e *Engine) updateLocked(fn func(tx *sql.Tx, led *ledger.Tx) error) error {
-	tx, err := sqlite.Begin(e.db)
+	tx, err := mysqldb.Begin(e.db)
 	if err != nil {
 		return fmt.Errorf("coordinator: begin: %w", err)
 	}
@@ -497,7 +489,7 @@ func (e *Engine) AccountBalance(account string) (b int64, err error) {
 // CheckBooks replays the journal against the balances (operators, tests).
 // It reads in a read-only transaction: the replay takes seconds on a large
 // journal and must not hold the write lock (on MySQL the database-wide one,
-// see sqlite.Begin) while the live coordinator is settling jobs. Each check
+// see mysqldb.Begin) while the live coordinator is settling jobs. Each check
 // of Reconcile is one statement, so it sees a consistent state.
 func (e *Engine) CheckBooks() error {
 	tx, err := e.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})

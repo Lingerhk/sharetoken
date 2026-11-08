@@ -2,9 +2,6 @@ bin/
 dist/
 gui/rsrc_windows_*.syso
 *.key
-*.db
-*.db-wal
-*.db-shm
 .DS_Store
 *.env
 

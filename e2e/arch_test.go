@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +25,7 @@ import (
 
 	"sharetoken/client"
 	"sharetoken/coordinator"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/node"
 	"sharetoken/p2p"
 	"sharetoken/portal"
@@ -57,10 +56,13 @@ func newNetwork(t *testing.T, relays int, relayOpts ...func(*relay.Config)) *net
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	n := &network{t: t, ctx: ctx}
-	dbPath := filepath.Join(t.TempDir(), "sharetoken.db")
+	dbPath, err := mysqldb.TestDSN()
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// Portal first: it creates the schema; the coordinator joins the file.
-	pdb, err := sqlite.Open(dbPath)
+	// Portal first: it creates the schema; the coordinator joins the database.
+	pdb, err := mysqldb.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +102,7 @@ func newNetwork(t *testing.T, relays int, relayOpts ...func(*relay.Config)) *net
 		}
 	}
 
-	cdb, err := sqlite.Open(dbPath)
+	cdb, err := mysqldb.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

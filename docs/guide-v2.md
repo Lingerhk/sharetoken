@@ -59,12 +59,15 @@ sharetoken up                               # 已在运行时 share 命令会立
 
 ## 2. 运维部署
 
-最小部署：1 台公网机器跑门户 + 协调器（共用 SQLite）+ 一个中继；更多中继放在不同网络位置。门户和协调器要分机，或者需要多个门户实例时，改用 MySQL 8（见 §2.2）。
+最小部署：1 台公网机器跑门户 + 协调器 + MySQL 8 + 一个中继；更多中继放在不同网络位置。数据库准备见 §2.2。
 
 ```bash
+export SHARETOKEN_DB_PASSWORD=…
+DSN=mysql://sharetoken@127.0.0.1:3306/sharetoken
+
 # 先取两个值：门户签凭证的公钥、协调器的 peer ID（各自首次运行时生成密钥）
-portal -db sharetoken.db pass-key             # ed25519:…
-coordinator -db sharetoken.db id              # 12D3Koo…
+portal -db $DSN pass-key             # ed25519:…
+coordinator -db $DSN id              # 12D3Koo…
 
 # 中继（每台公网机器一个；云主机用 -announce 声明公网地址，IPv4 和 IPv6 都写）
 # 准入写在配置文件的 access.networks：门户公钥 + 协调器 peer ID，一个中继可服务多个网络（configs/relay.example.yaml）
@@ -75,17 +78,17 @@ relay -config relay.yaml -key relay.key -listen /ip4/0.0.0.0/tcp/8091,/ip6/::/tc
 #   ← 原样复制到门户；-status 提供 JSON 统计。机器没有 IPv6 时会提示「IPv6-only users cannot reach this relay」
 #   只有出示门户凭证的注册用户设备（以及协调器）才能预约；不配 access.networks 则为开放中继
 
-# 门户（与协调器同机，同一个数据库文件）；默认 HTTPS
-portal -db sharetoken.db serve -listen :8092 -open-registration -signup-credit 5000000
+# 门户（和协调器共用一个库）；默认 HTTPS
+portal -db $DSN serve -listen :8092 -open-registration -signup-credit 5000000
 #   没给 -tls-cert/-tls-key 时生成自签名证书（portal-tls/，务必保留）并打印指纹 sha256:…，
 #   把它公布给用户；有域名证书时：-tls-cert fullchain.pem -tls-key privkey.pem
 #   明文 HTTP 只在监听 127.0.0.1 或加 -insecure-http（仅测试网）时使用
-SHARETOKEN_PASSWORD=… portal -db sharetoken.db useradd -admin root
-portal -db sharetoken.db relay add '/ip4/203.0.113.7/tcp/8091/p2p/12D3Koo…,/ip6/2001:db8::7/tcp/8091/p2p/12D3Koo…' relay-sh cn-east
+SHARETOKEN_PASSWORD=… portal -db $DSN useradd -admin root
+portal -db $DSN relay add '/ip4/203.0.113.7/tcp/8091/p2p/12D3Koo…,/ip6/2001:db8::7/tcp/8091/p2p/12D3Koo…' relay-sh cn-east
 #   一个中继一条：同一 peer ID 的多个地址用逗号连接；已登记的中继要改地址就先 relay rm 再 add
 
 # 协调器（不监听端口；自动在所有登记的中继上预约）
-coordinator -db sharetoken.db -fee-bps 500 \
+coordinator -db $DSN -fee-bps 500 \
   -reference id=qwen2.5:7b,upstream=qwen2.5:7b,url=http://127.0.0.1:11434/v1   # 可选：抽检与精确计数
 ```
 
@@ -96,7 +99,7 @@ coordinator -db sharetoken.db -fee-bps 500 \
 | `portal users` / `user <user>` / `disable\|enable <user>` | 用户管理；禁用立即生效（token 失效、设备被协调器拒绝） |
 | `portal relay add\|ls\|rm\|enable\|disable` | 中继登记（地址可为 v4,v6 逗号连接，按 peer ID 去重）；协调器 15 秒内跟进 |
 | `portal overview` | 用户数、流通 credit、平台手续费、冻结额、账本回放结果、各状态作业数、中继可达数 |
-| `coordinator disputes\|resolve\|nodes\|audits\|relays\|check\|balance` | 同 v1，另加 `relays` 查看各中继预约状态 |
+| `coordinator disputes\|resolve\|nodes\|audits\|relays\|check\|balance` | 争议、节点、抽检、中继预约状态、账本检查、余额 |
 
 所有运维命令直接读写数据库，可以和运行中的服务同时执行。
 
@@ -108,7 +111,7 @@ coordinator -db sharetoken.db -fee-bps 500 \
 
 ### 2.2 使用 MySQL
 
-`-db` 写成 `mysql://user@host:port/database` 就用 MySQL 8（InnoDB），其余命令和参数不变。密码放在环境变量 `SHARETOKEN_DB_PASSWORD`（不要写进 URL，否则会出现在进程列表里）；URL 里的其它查询参数作为会话变量传给服务器。
+`-db` 写成 `mysql://user@host:port/database`，只支持 MySQL 8（InnoDB）。密码放在环境变量 `SHARETOKEN_DB_PASSWORD`（不要写进 URL，否则会出现在进程列表里）；URL 里的其它查询参数作为会话变量传给服务器。
 
 ```bash
 # MySQL 上（一次）
@@ -123,10 +126,9 @@ coordinator -db mysql://sharetoken@10.0.0.5:3306/sharetoken -fee-bps 500 …
 ```
 
 - 表结构由门户或协调器启动时自动创建（谁先启动都行）；需要建表、改表的权限（`ALL ON sharetoken.*`）。
-- **从 SQLite 迁过来**：先停掉门户和协调器，再 `coordinator -db sharetoken.db copy-db mysql://sharetoken@host/sharetoken`（目标库必须是空的；逐表复制，约 1 万行/秒），然后 `coordinator -db mysql://… check` 核对账本，最后两边都改用 MySQL 启动。原 SQLite 文件保留作备份。门户签名密钥、TLS 证书、协调器密钥照旧使用，所以用户的证书指纹、中继准入、两步验证都不受影响。
 - 服务器建议：`transaction_isolation = READ-COMMITTED`（客户端每个会话也会设置）、`skip_name_resolve = ON`（否则每个新连接会因反向 DNS 卡住几秒）、`innodb_flush_log_at_trx_commit = 1`（账本要求提交即落盘）、`tmp_table_size = 256M`（账本回放按账户分组，默认 16 MB 会落盘）、`innodb_buffer_pool_size` 至少放得下 `jobs` 表（每个作业约 6 KB 数据 + 索引）。只让门户和协调器所在的机器连 3306。
-- 一致性：每个写事务开始时锁住 `st_write_lock` 表的唯一一行，门户和协调器的写入因此严格串行，和 SQLite 的单写者语义一致（余额是「读出 → 计算 → 写回」，并发写会丢更新）；只读查询不受影响。锁等待最多 10 秒，超时按「数据库忙」处理（门户返回 503，启动时重试）。
-- 测试：`SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/ SHARETOKEN_DB_PASSWORD=… go test ./...` 让所有用内存库的测试改在 MySQL 上跑（每个测试建一个 `sttest_<时间>_<随机>` 库，超过一小时的会在之后的测试中自动删除）；只针对 SQLite 查询计划的测试会跳过。
+- 一致性：每个写事务开始时锁住 `st_write_lock` 表的唯一一行，门户和协调器的写入因此严格串行（余额是「读出 → 计算 → 写回」，并发写会丢更新）；只读查询不受影响。锁等待最多 10 秒，超时按「数据库忙」处理（门户返回 503，启动时重试）。
+- 测试：`scripts/test.sh` 在 Docker 里起一个 MySQL 8 再跑 `go test`；也可以设 `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/` 用现成的服务器（每个测试建一个 `sttest_<时间>_<随机>` 库，超过一小时的会在之后的测试中自动删除）。
 
 ### 2.1 门户网页
 

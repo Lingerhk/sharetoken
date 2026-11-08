@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/ledger"
 	"sharetoken/protocol"
 )
@@ -344,7 +344,7 @@ var ErrNotDisputed = errors.New("coordinator: job is not disputed")
 // the node charged a lost dispute. It uses the fee rate the coordinator
 // recorded in the database and is atomic with the coordinator's own writes.
 func ResolveDispute(db *sql.DB, jobID string, payNode bool, now time.Time) error {
-	tx, err := sqlite.Begin(db)
+	tx, err := mysqldb.Begin(db)
 	if err != nil {
 		return err
 	}

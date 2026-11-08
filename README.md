@@ -24,13 +24,13 @@
 | 虚报用量会被退款 | 买家拒签后提交**这一单**的密钥作为证据，协调器用参考模型精确数 token 后自动裁决 |
 | 节点没有偷换成小模型 | 协调器随机抽检，在参考模型上重算比对，不符的节点被暂停接单 |
 | 节点运营者也看不到 prompt（可选） | AMD SEV-SNP / Intel TDX 机密虚拟机，quote 绑定节点的两把公钥 |
-| 账不会丢 | SQLite 复式账本，启动时回放日志对账 |
+| 账不会丢 | MySQL 复式账本，启动时回放日志对账 |
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| [docs/design-v2.md](docs/design-v2.md) | v2 架构：四个角色、用户账户、经中继访问协调器、中继选择、共用数据库（SQLite 或 MySQL） |
+| [docs/design-v2.md](docs/design-v2.md) | v2 架构：四个角色、用户账户、经中继访问协调器、中继选择、共用 MySQL 数据库 |
 | [docs/guide-v2.md](docs/guide-v2.md) | 用户命令、运维部署、本地管理 API（GUI）、门户 HTTP API |
 | [docs/gui.md](docs/gui.md) | 桌面客户端（macOS / Linux / Windows）：结构、本地 API、邮箱账号、构建和测试 |
 | [docs/windows-env.md](docs/windows-env.md) | Windows 调试虚拟机：连接、构建、测试方法和平台差异 |
@@ -38,8 +38,6 @@
 | [docs/validation-v2-distributed.md](docs/validation-v2-distributed.md) | 7 机跨三大洲实测：功能、性能、故障注入、长稳 |
 | [docs/validation-v2-mysql.md](docs/validation-v2-mysql.md) | 门户和协调器迁到 MySQL 后的复测 |
 | [docs/test-env.md](docs/test-env.md) | 分布式测试环境（主机、访问路径、脚本） |
-| [docs/design-v1.md](docs/design-v1.md) | 收据、证据裁决、抽检、TEE 等机制（v2 沿用） |
-| [docs/validation-v1.md](docs/validation-v1.md) | v1 实测与协调器压测 |
 | [reports/](reports/) | 前期调研：AI token 共享平台 |
 
 ## 快速开始
@@ -47,14 +45,16 @@
 ```bash
 go build -o bin/ ./cmd/...
 
-# 运维：门户 + 协调器（同机，共用 SQLite）、中继（公网机器）
-bin/portal -db sharetoken.db pass-key          # 门户签发中继凭证的公钥 ed25519:…
-bin/coordinator -db sharetoken.db id           # 协调器 peer ID
+# 运维：门户 + 协调器（共用 MySQL 8，先建好空库）、中继（公网机器）
+export SHARETOKEN_DB_PASSWORD=…
+DSN=mysql://sharetoken@127.0.0.1:3306/sharetoken
+bin/portal -db $DSN pass-key          # 门户签发中继凭证的公钥 ed25519:…
+bin/coordinator -db $DSN id           # 协调器 peer ID
 bin/relay -config relay.yaml                   # 门户公钥和协调器 ID 写在 access.networks（configs/relay.example.yaml）；打印 portal relay add '…' 命令
-bin/portal -db sharetoken.db serve -listen :8092 -open-registration -signup-credit 5000000
+bin/portal -db $DSN serve -listen :8092 -open-registration -signup-credit 5000000
 #   默认 HTTPS（自签名证书，打印指纹，用户登录时用 -portal-pin 确认）
-bin/portal -db sharetoken.db relay add '/ip4/<公网IPv4>/tcp/8091/p2p/<id>,/ip6/<公网IPv6>/tcp/8091/p2p/<id>' relay-1
-bin/coordinator -db sharetoken.db \
+bin/portal -db $DSN relay add '/ip4/<公网IPv4>/tcp/8091/p2p/<id>,/ip6/<公网IPv6>/tcp/8091/p2p/<id>' relay-1
+bin/coordinator -db $DSN \
   -reference id=gemma-4-e4b,upstream=gemma4:e4b,url=http://127.0.0.1:11434/v1   # 可选：抽检 + 精确计数
 
 # 用户
@@ -77,7 +77,7 @@ scripts/demo-local.sh    # 需要 Ollama 和本地模型（默认 gemma4:e4b，�
 ## 测试
 
 ```bash
-go test -race ./...
+scripts/test.sh -race ./...   # 在 Docker 里起 MySQL 8 再跑 go test
 ```
 
-覆盖签名与防篡改、计费整数运算、SQLite 账本（重启、回滚、篡改检测）、结算与证据裁决的全部路径、抽检判定、SEV-SNP（测试用 AMD 证书链）和 TDX（Intel 真实生产 quote）验证，以及基于真实 libp2p 的端到端测试：故障切换、Ticket 重放与盗用、虚报用量按证据退款、抽检抓出换模型和虚报用量的节点、只用 TEE 节点；v2 的完整拓扑测试（多中继、只经中继可达的协调器、门户共用数据库、用户互为买卖、中继宕机切换）、门户 API、设备绑定防伪。
+覆盖签名与防篡改、计费整数运算、MySQL 账本（重启、回滚、篡改检测）、结算与证据裁决的全部路径、抽检判定、SEV-SNP（测试用 AMD 证书链）和 TDX（Intel 真实生产 quote）验证，以及基于真实 libp2p 的端到端测试：故障切换、Ticket 重放与盗用、虚报用量按证据退款、抽检抓出换模型和虚报用量的节点、只用 TEE 节点；v2 的完整拓扑测试（多中继、只经中继可达的协调器、门户共用数据库、用户互为买卖、中继宕机切换）、门户 API、设备绑定防伪。

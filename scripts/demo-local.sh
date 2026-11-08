@@ -1,8 +1,8 @@
 #!/bin/bash
-# Live localhost demo of the v2 architecture with a real model.
+# Live localhost demo of the architecture with a real model.
 #
 #   relay-a, relay-b   forward encrypted traffic only
-#   portal             users, devices, credits (SQLite file shared with the coordinator)
+#   portal             users, devices, credits (MySQL database shared with the coordinator)
 #   coordinator        accounting platform; listens nowhere, reachable only through the relays;
 #                      reference copy of the model (audits + exact token counts)
 #   alice              user: shares gemma4:e4b from Ollama (honest), and buys
@@ -39,8 +39,10 @@ python3 "$ROOT/scripts/inflating_upstream.py" 11999 "$OLLAMA" > cheat-upstream.l
 for _ in $(seq 1 50); do nc -z 127.0.0.1 11999 2>/dev/null && break; sleep 0.2; done
 
 echo; echo "== 0. Relays, portal, coordinator"
-COORD=(-key coord.key -db sharetoken.db)
-PASSKEY=$("$BIN/portal" -db sharetoken.db pass-key)   # relays trust passes signed with it
+export SHARETOKEN_DB_PASSWORD=
+DSN=$("$ROOT/scripts/local-mysql.sh" new-db st_demo)
+COORD=(-key coord.key -db "$DSN")
+PASSKEY=$("$BIN/portal" -db "$DSN" pass-key)   # relays trust passes signed with it
 COORD_ID=$("$BIN/coordinator" "${COORD[@]}" id)        # relays let the coordinator reserve without one
 echo "   portal pass key $PASSKEY"
 cat > relay.yaml <<YAML
@@ -58,11 +60,11 @@ waitlog relay-a.log "portal relay add"; waitlog relay-b.log "portal relay add"
 RA=$(sed -n "s/.*portal relay add '\([^']*\)'.*/\1/p" relay-a.log)
 RB=$(sed -n "s/.*portal relay add '\([^']*\)'.*/\1/p" relay-b.log)
 
-"$BIN/portal" -db sharetoken.db serve -listen 127.0.0.1:8092 -open-registration -signup-credit 5000000 > portal.log 2>&1 & PIDS+=($!)
+"$BIN/portal" -db "$DSN" serve -listen 127.0.0.1:8092 -open-registration -signup-credit 5000000 > portal.log 2>&1 & PIDS+=($!)
 waitlog portal.log "listening"
-SHARETOKEN_PASSWORD=adminadmin "$BIN/portal" -db sharetoken.db useradd -admin root > /dev/null
-"$BIN/portal" -db sharetoken.db relay add "$RA" relay-a local > /dev/null
-"$BIN/portal" -db sharetoken.db relay add "$RB" relay-b local > /dev/null
+SHARETOKEN_PASSWORD=adminadmin "$BIN/portal" -db "$DSN" useradd -admin root > /dev/null
+"$BIN/portal" -db "$DSN" relay add "$RA" relay-a local > /dev/null
+"$BIN/portal" -db "$DSN" relay add "$RB" relay-b local > /dev/null
 echo "   relays registered (IPv4 + IPv6): relay-a, relay-b"
 
 "$BIN/coordinator" "${COORD[@]}" -fee-bps 800 \
@@ -134,7 +136,7 @@ curl -s -m 600 -D headers2.txt http://127.0.0.1:9788/v1/chat/completions -H 'Con
 sleep 3
 echo; echo "== 7. Accounts (portal): credits moved between users"
 for u in alice bob carol; do SHARETOKEN_HOME="$S/$u" "$BIN/sharetoken" balance | sed "s/^/   /"; done
-"$BIN/portal" -db sharetoken.db overview | grep -E 'circulating|platform_fees|books' | sed 's/^/   /'
+"$BIN/portal" -db "$DSN" overview | grep -E 'circulating|platform_fees|books' | sed 's/^/   /'
 
 kill $COORD_PID; wait $COORD_PID 2>/dev/null
 echo; echo "== 8. Coordinator stopped; the shared books replay"

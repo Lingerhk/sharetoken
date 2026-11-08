@@ -4,25 +4,29 @@ import (
 	"database/sql"
 	"errors"
 	"math"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 )
 
-func openDB(t *testing.T, path string) *sql.DB {
+func newDSN(t *testing.T) string {
 	t.Helper()
-	db, err := sqlite.Open(path)
+	dsn, err := mysqldb.TestDSN()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dsn
+}
+
+func openDB(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := mysqldb.Open(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	schema := Schema
-	if sqlite.IsMySQL(db) {
-		schema = SchemaMySQL
-	}
-	if err := sqlite.Migrate(db, schema); err != nil {
+	if err := mysqldb.Migrate(db, "ledger", []mysqldb.Migration{{Version: 1, Name: "ledger", SQL: Schema}}); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -61,7 +65,7 @@ func checkBooks(t *testing.T, db *sql.DB) {
 }
 
 func TestHoldCaptureSplitsCostFeeAndRefund(t *testing.T) {
-	db := openDB(t, sqlite.Memory)
+	db := openDB(t, newDSN(t))
 	buyer, node := Account("buyer"), Account("node")
 	must(t, update(t, db, func(l *Tx) error {
 		if err := l.Deposit(buyer, 1_000, "deposit"); err != nil {
@@ -94,7 +98,7 @@ func TestHoldCaptureSplitsCostFeeAndRefund(t *testing.T) {
 
 func TestEarnThenSpend(t *testing.T) {
 	// The mutual-aid loop: a peer earns by serving, then spends those credits.
-	db := openDB(t, sqlite.Memory)
+	db := openDB(t, newDSN(t))
 	alice, bob := Account("alice"), Account("bob")
 	must(t, update(t, db, func(l *Tx) error {
 		_ = l.Deposit(alice, 100, "deposit")
@@ -109,7 +113,7 @@ func TestEarnThenSpend(t *testing.T) {
 }
 
 func TestFailedOperationRollsBackTheWholeTransaction(t *testing.T) {
-	db := openDB(t, sqlite.Memory)
+	db := openDB(t, newDSN(t))
 	err := update(t, db, func(l *Tx) error {
 		if err := l.Deposit(Account("b"), 10, "deposit"); err != nil {
 			return err
@@ -126,7 +130,7 @@ func TestFailedOperationRollsBackTheWholeTransaction(t *testing.T) {
 }
 
 func TestCaptureCannotExceedHold(t *testing.T) {
-	db := openDB(t, sqlite.Memory)
+	db := openDB(t, newDSN(t))
 	err := update(t, db, func(l *Tx) error {
 		_ = l.Deposit(Account("b"), 100, "deposit")
 		_ = l.Hold("j", Account("b"), 50)
@@ -139,7 +143,7 @@ func TestCaptureCannotExceedHold(t *testing.T) {
 }
 
 func TestHoldClosesOnlyOnce(t *testing.T) {
-	db := openDB(t, sqlite.Memory)
+	db := openDB(t, newDSN(t))
 	must(t, update(t, db, func(l *Tx) error {
 		_ = l.Deposit(Account("b"), 100, "deposit")
 		_ = l.Hold("j", Account("b"), 50)
@@ -162,7 +166,7 @@ func TestHoldClosesOnlyOnce(t *testing.T) {
 }
 
 func TestReleaseRefundsEverything(t *testing.T) {
-	db := openDB(t, sqlite.Memory)
+	db := openDB(t, newDSN(t))
 	must(t, update(t, db, func(l *Tx) error {
 		_ = l.Deposit(Account("b"), 100, "deposit")
 		_ = l.Hold("j", Account("b"), 70)
@@ -175,7 +179,7 @@ func TestReleaseRefundsEverything(t *testing.T) {
 }
 
 func TestFundMayOverdrawPlatformAndTransferMayNot(t *testing.T) {
-	db := openDB(t, sqlite.Memory)
+	db := openDB(t, newDSN(t))
 	must(t, update(t, db, func(l *Tx) error { return l.Fund(Account("auditor"), 500, "audit funding") }))
 	if got := balance(t, db, PlatformFees); got != -500 {
 		t.Fatalf("platform = %d, want -500 (operator subsidy)", got)
@@ -189,7 +193,7 @@ func TestFundMayOverdrawPlatformAndTransferMayNot(t *testing.T) {
 }
 
 func TestFeeMathDoesNotOverflow(t *testing.T) {
-	db := openDB(t, sqlite.Memory)
+	db := openDB(t, newDSN(t))
 	big := int64(1) << 61
 	var fee int64
 	must(t, update(t, db, func(l *Tx) (err error) {
@@ -207,7 +211,7 @@ func TestFeeMathDoesNotOverflow(t *testing.T) {
 }
 
 func TestBooksSurviveRestartAndReconcileCatchesTampering(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ledger.db")
+	path := newDSN(t)
 	db := openDB(t, path)
 	must(t, update(t, db, func(l *Tx) error {
 		_ = l.Deposit(Account("b"), 1_000, "deposit")

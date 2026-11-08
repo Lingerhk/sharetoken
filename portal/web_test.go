@@ -10,14 +10,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"sharetoken/accounts"
 	"sharetoken/coordinator"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/ledger"
 	"sharetoken/p2p"
 	"sharetoken/protocol"
@@ -549,13 +548,15 @@ func TestResolveDisputeFromPortal(t *testing.T) {
 // load. Reads must not wait for it, and a write that does time out must come
 // back as 503, not 500.
 func TestReadsDoNotNeedWriteLock(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "shared.db")
-	// The portal's own connection, with a short busy timeout so the test is quick.
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(200)&_txlock=immediate&_pragma=journal_mode(WAL)")
+	dsn, err := mysqldb.TestDSN()
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
+	// The portal's own connection, with a short lock wait so the test is quick.
+	db, err := mysqldb.OpenWith(dsn, mysqldb.Options{LockWaitTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = db.Close() })
 	s, err := New(Config{DB: db, OpenRegistration: true, SignupCreditMicros: 5_000_000})
 	if err != nil {
@@ -569,19 +570,16 @@ func TestReadsDoNotNeedWriteLock(t *testing.T) {
 	c.call("POST", "/api/v1/tokens", map[string]any{"name": "first"}, 201, nil)
 
 	// Another process (the coordinator) takes and keeps the write lock.
-	holder, err := sqlite.Open(path)
+	holder, err := mysqldb.Open(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = holder.Close() })
-	lock, err := holder.Begin()
+	lock, err := mysqldb.Begin(holder)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer lock.Rollback()
-	if _, err := lock.Exec(`UPDATE users SET disabled = disabled`); err != nil {
-		t.Fatal(err)
-	}
 
 	start := time.Now()
 	var me struct {

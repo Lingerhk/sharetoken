@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sharetoken/internal/mysqldb"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -112,6 +113,12 @@ func newMarketWith(t *testing.T, cfg coordinator.Config) *market {
 	h, k := newHost(t)
 	cfg.FeeBps = feeBps
 	cfg.OpenAccounts = true
+	db, err := mysqldb.OpenTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	cfg.DB = db
 	svc, err := coordinator.NewService(ctx, h, k, cfg)
 	if err != nil {
 		t.Fatal(err)

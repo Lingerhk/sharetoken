@@ -4,149 +4,27 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"sharetoken/accounts"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/ledger"
 	"sharetoken/protocol"
 	"sharetoken/receipt"
 )
 
-// Migrate creates or upgrades every table of the shared database: ledger,
-// accounts and coordinator state. The portal and the coordinator both call it,
-// so either may start first.
-func Migrate(db *sql.DB) error {
-	mysql := sqlite.IsMySQL(db)
-	schemas := []string{ledger.Schema, accounts.Schema, Schema}
-	if mysql {
-		schemas = []string{ledger.SchemaMySQL, accounts.SchemaMySQL, SchemaMySQL}
-	}
-	if err := sqlite.Migrate(db, schemas...); err != nil {
-		return err
-	}
-	// v1 databases predate the account and token columns of jobs.
-	for _, col := range []struct{ name, def string }{
-		{"buyer_acct", "TEXT NOT NULL DEFAULT ''"},
-		{"node_acct", "TEXT NOT NULL DEFAULT ''"},
-		{"prompt_tokens", "INTEGER NOT NULL DEFAULT 0"},
-		{"completion_tokens", "INTEGER NOT NULL DEFAULT 0"},
-		{"started_at", "INTEGER NOT NULL DEFAULT 0"},
-		{"ticket_expires", "INTEGER NOT NULL DEFAULT 0"},
-	} {
-		if err := sqlite.AddColumn(db, "jobs", col.name, col.def); err != nil {
-			return fmt.Errorf("coordinator: migrate jobs.%s: %w", col.name, err)
-		}
-	}
-	// Columns added after the first v2 databases were created.
-	for _, c := range []struct{ table, name, def string }{
-		{"relays", "rtt_ms", "INTEGER NOT NULL DEFAULT 0"}, // the coordinator's measured round trip
-		{"users", "mfa_secret", "BLOB NOT NULL DEFAULT x''"},
-		{"users", "mfa_enrolled_at", "INTEGER NOT NULL DEFAULT 0"},
-		{"users", "mfa_last_step", "INTEGER NOT NULL DEFAULT 0"},
-		{"api_tokens", "mfa", "INTEGER NOT NULL DEFAULT 0"},
-	} {
-		if err := sqlite.AddColumn(db, c.table, c.name, c.def); err != nil {
-			return fmt.Errorf("coordinator: migrate %s.%s: %w", c.table, c.name, err)
-		}
-	}
-	if mysql {
-		return nil // SchemaMySQL declares the indexes inside CREATE TABLE
-	}
-	return sqlite.Migrate(db, jobIndexes)
+// Migrations is the schema of the shared database: ledger, accounts and
+// coordinator state, as component "core".
+var Migrations = []mysqldb.Migration{
+	{Version: 1, Name: "initial schema", SQL: ledger.Schema + accounts.Schema + Schema},
 }
 
-const jobIndexes = `
-CREATE INDEX IF NOT EXISTS jobs_by_buyer_acct ON jobs(buyer_acct, created_at);
-CREATE INDEX IF NOT EXISTS jobs_by_node_acct  ON jobs(node_acct, created_at);
-CREATE INDEX IF NOT EXISTS jobs_unstarted     ON jobs(status, started_at, ticket_expires);
--- IssueTicket counts a buyer's unused tickets on every request: without this
--- the query walks the account's whole job history under the write lock.
-CREATE INDEX IF NOT EXISTS jobs_buyer_unstarted ON jobs(buyer_acct, status, started_at, created_at);
--- Covering indexes for the portal's per-account usage totals: without them the
--- totals read every (multi-kilobyte) job row of the account.
-CREATE INDEX IF NOT EXISTS jobs_buy_usage  ON jobs(buyer_acct, status, prompt_tokens, completion_tokens, cost);
-CREATE INDEX IF NOT EXISTS jobs_sell_usage ON jobs(node_acct, status, prompt_tokens, completion_tokens, cost, fee);
--- The history purge (DELETE … WHERE status IN (…) AND done_at < ?) must seek,
--- not read every finished job: it runs under the write lock.
-CREATE INDEX IF NOT EXISTS jobs_status_done ON jobs(status, done_at);
--- The admin console lists all jobs (optionally one status) newest first:
--- without these the listing sorts the whole table on every page.
-CREATE INDEX IF NOT EXISTS jobs_by_created        ON jobs(created_at);
-CREATE INDEX IF NOT EXISTS jobs_by_status_created ON jobs(status, created_at);
--- Judged disputes are rare; the admin console lists them newest first.
-CREATE INDEX IF NOT EXISTS jobs_judged ON jobs(created_at) WHERE dispute_outcome != '';
-`
+// Migrate brings the shared database up to date. The portal and the coordinator
+// both call it, so either may start first.
+func Migrate(db *sql.DB) error { return mysqldb.Migrate(db, "core", Migrations) }
 
 // Schema holds the coordinator's durable state next to the ledger tables.
 // Offers are deliberately not stored: nodes re-announce them every few seconds.
 const Schema = `
-CREATE TABLE IF NOT EXISTS meta (
-	key   TEXT PRIMARY KEY,
-	value TEXT NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS jobs (
-	job_id          TEXT PRIMARY KEY,
-	buyer           TEXT NOT NULL,
-	node            TEXT NOT NULL,
-	buyer_acct      TEXT NOT NULL DEFAULT '',
-	node_acct       TEXT NOT NULL DEFAULT '',
-	model           TEXT NOT NULL,
-	status          TEXT NOT NULL,
-	ticket          BLOB NOT NULL,
-	receipt         BLOB,
-	cost            INTEGER NOT NULL DEFAULT 0,
-	fee             INTEGER NOT NULL DEFAULT 0,
-	dispute_reason  TEXT NOT NULL DEFAULT '',
-	dispute_outcome TEXT NOT NULL DEFAULT '',
-	dispute_detail  TEXT NOT NULL DEFAULT '',
-	created_at      INTEGER NOT NULL,
-	release_at      INTEGER NOT NULL,
-	finalize_at     INTEGER NOT NULL DEFAULT 0,
-	done_at         INTEGER NOT NULL DEFAULT 0,
-	prompt_tokens     INTEGER NOT NULL DEFAULT 0,
-	completion_tokens INTEGER NOT NULL DEFAULT 0,
-	started_at        INTEGER NOT NULL DEFAULT 0,
-	ticket_expires    INTEGER NOT NULL DEFAULT 0
-) STRICT;
-CREATE INDEX IF NOT EXISTS jobs_status_release  ON jobs(status, release_at);
-CREATE INDEX IF NOT EXISTS jobs_status_finalize ON jobs(status, finalize_at);
-CREATE INDEX IF NOT EXISTS jobs_status_node     ON jobs(status, node);
-CREATE INDEX IF NOT EXISTS jobs_buyer_status    ON jobs(buyer, status);
-CREATE TABLE IF NOT EXISTS nodes (
-	node              TEXT PRIMARY KEY,
-	reputation        INTEGER NOT NULL,
-	successes         INTEGER NOT NULL DEFAULT 0,
-	failures          INTEGER NOT NULL DEFAULT 0,
-	disputes_lost     INTEGER NOT NULL DEFAULT 0,
-	audits_passed     INTEGER NOT NULL DEFAULT 0,
-	audits_failed     INTEGER NOT NULL DEFAULT 0,
-	audit_fail_streak INTEGER NOT NULL DEFAULT 0,
-	suspended_until   INTEGER NOT NULL DEFAULT 0
-) STRICT;
-CREATE TABLE IF NOT EXISTS peers (
-	peer         TEXT PRIMARY KEY,
-	dev_credited INTEGER NOT NULL DEFAULT 0,
-	auditor      INTEGER NOT NULL DEFAULT 0,
-	created_at   INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS audits (
-	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	at         INTEGER NOT NULL,
-	job_id     TEXT NOT NULL,
-	node       TEXT NOT NULL,
-	model      TEXT NOT NULL,
-	verdict    TEXT NOT NULL,
-	similarity REAL NOT NULL,
-	detail     TEXT NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS audits_by_node ON audits(node, at);
-`
-
-// SchemaMySQL is Schema plus jobIndexes for MySQL 8 (see
-// internal/sqlite/mysql.go). The partial index jobs_judged becomes a plain
-// (dispute_outcome, created_at) index.
-const SchemaMySQL = `
 CREATE TABLE IF NOT EXISTS meta (
 	` + "`key`" + ` VARCHAR(191) PRIMARY KEY,
 	value TEXT NOT NULL
@@ -259,12 +137,6 @@ func loadJob(tx *sql.Tx, id string) (*job, error) {
 	if err := json.Unmarshal(ticket, &j.ticket); err != nil {
 		return nil, err
 	}
-	if j.buyerAcct == "" { // a job written by v1
-		j.buyerAcct = ledger.Account(j.ticket.Buyer)
-	}
-	if j.nodeAcct == "" {
-		j.nodeAcct = ledger.Account(j.ticket.Node)
-	}
 	if len(rcpt) > 0 {
 		j.receipt = new(receipt.SignedReceipt)
 		if err := json.Unmarshal(rcpt, j.receipt); err != nil {
@@ -348,9 +220,8 @@ func saveStats(tx *sql.Tx, s *NodeStats) error {
 		`INSERT INTO nodes (`+statsColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, append([]any{s.Node}, vals...))
 }
 
-// upsert runs update and, when it matched no row, insert: a portable upsert
-// (SQLite and MySQL spell ON CONFLICT differently). It is exact because
-// writers are serialized (sqlite.Begin).
+// upsert runs update and, when it matched no row, insert. It is exact because
+// writers are serialized (mysqldb.Begin).
 func upsert(tx *sql.Tx, update string, uargs []any, insert string, iargs []any) error {
 	res, err := tx.Exec(update, uargs...)
 	if err != nil {

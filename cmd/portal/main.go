@@ -2,7 +2,7 @@
 // commands. It shares its database with the coordinator.
 //
 //	portal -config portal.yaml serve            # configs/portal.example.yaml; flags below override it
-//	portal [-db sharetoken.db] serve [-listen :8092] [-open-registration] [-signup-credit 1000000]
+//	portal -db mysql://sharetoken@127.0.0.1/sharetoken serve [-listen :8092] [-open-registration] [-signup-credit 1000000]
 //	                                            # HTTPS: -tls-cert/-tls-key, else a self-signed certificate
 //	                                            # (fingerprint printed; clients pin it); plain HTTP only on
 //	                                            # loopback or with -insecure-http
@@ -45,7 +45,7 @@ import (
 
 	"sharetoken/internal/cli"
 	"sharetoken/internal/config"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/p2p"
 	"sharetoken/portal"
 	"sharetoken/relaypass"
@@ -95,7 +95,7 @@ type File struct {
 func defaults() File {
 	var f File
 	f.Version = config.Version
-	f.Database = config.DefaultDatabase("sharetoken.db")
+	f.Database = config.DefaultDatabase("")
 	f.Keys.PassKeyFile = "portal-pass.key"
 	f.HTTP.Listen = ":8092"
 	f.HTTP.ReadHeaderTimeout, f.HTTP.ReadTimeout, f.HTTP.WriteTimeout, f.HTTP.ShutdownTimeout = config.D("10s"), config.D("30s"), config.D("60s"), config.D("5s")
@@ -160,7 +160,7 @@ func main() {
 			&f.TLS.CertFile, &f.TLS.KeyFile, &f.TLS.SelfSignedDir, &f.Log.File)
 	}
 	flag.String("config", "", "YAML configuration file (configs/portal.example.yaml); flags given explicitly override it")
-	flag.StringVar(&f.Database.DSN, "db", f.Database.DSN, "database shared with the coordinator: a SQLite file, or mysql://user@host:port/db (password from database.password_env/password_file, default $SHARETOKEN_DB_PASSWORD)")
+	flag.StringVar(&f.Database.DSN, "db", f.Database.DSN, "database shared with the coordinator: mysql://user@host:port/db (password from database.password_env/password_file, default $SHARETOKEN_DB_PASSWORD)")
 	flag.StringVar(&f.Keys.PassKeyFile, "pass-key", f.Keys.PassKeyFile, "key that signs relay passes (created with mode 0600 if missing; relays trust its public key: `portal pass-key`)")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, `usage: portal [-config portal.yaml] [-db file] <command>
@@ -192,7 +192,7 @@ commands: serve, check-config, useradd, passwd, grant, users, user, disable, ena
 	if err != nil {
 		log.Fatalf("database password: %v", err)
 	}
-	db, err := sqlite.OpenWith(f.Database.DSN, sqlite.Options{Password: pw, MaxOpenConns: f.Database.MaxOpenConns,
+	db, err := mysqldb.OpenWith(f.Database.DSN, mysqldb.Options{Password: pw, MaxOpenConns: f.Database.MaxOpenConns,
 		MaxIdleConns: f.Database.MaxIdleConns, ConnMaxLifetime: f.Database.ConnMaxLifetime.T(),
 		ConnectTimeout: f.Database.ConnectTimeout.T(), LockWaitTimeout: f.Database.LockWaitTimeout.T()})
 	if err != nil {

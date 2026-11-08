@@ -19,7 +19,7 @@
 | 主机 | 地址 | 规格 | 角色 | 目录 |
 |---|---|---|---|---|
 | **orb VM** `st-db`（压测用） | 192.168.139.91（OrbStack NAT，IP 可能变，用 `orb run -m st-db`） | x86_64，**限 4 CPU / 8 GB**（cgroup：`nproc`/`free` 显示的是宿主值，`/sys/fs/cgroup/cpu.max`、`memory.max` 才是限额），Ubuntu 24.04 | MySQL 8.0（只听 127.0.0.1）+ 门户 :8092（HTTPS 自签名）+ 协调器 | `~/st-test` |
-| **armbian（生产）** | 192.168.6.91（LAN）、192.168.8.91（ZeroTier）；公网 27.125.141.245（动态，路由器映射 80/443） | aarch64 4 核 2 GB，eMMC | **生产**门户 + 协调器 + Docker MySQL + nginx（Let's Encrypt） | `~/sharetoken-prod`（旧的 `~/st-test` 里 SQLite 时期的 `st.db` 留作备份） |
+| **armbian（生产）** | 192.168.6.91（LAN）、192.168.8.91（ZeroTier）；公网 27.125.141.245（动态，路由器映射 80/443） | aarch64 4 核 2 GB，eMMC | **生产**门户 + 协调器 + Docker MySQL + nginx（Let's Encrypt） | `~/sharetoken-prod` |
 | **US** | 165.227.115.27 / 2604:a880:800:14:0:3:d0f4:b000 | x86_64 1 核 453 MB，Ubuntu | relay-us :4001；用户 uma（只买） | `~/st-test` |
 | **SG** | 201.79.122.100 / 2400:6180:0:d2:0:3:50d5:3000 | x86_64 1 核 453 MB，Ubuntu | relay-sg :4001；用户 sam（卖 mock-fast + 买） | `~/st-test` |
 | **CN**（TECS） | 119.29.250.173（**无公网 IPv6**） | x86_64 2 核 2 GB，CentOS 7，与 frps/blog 等共用 | relay-cn **:8091**；用户 carol（卖 mock-fast + 买） | `~/st-test`（源码编译在 `~/sharetoken-v2/src2`） |
@@ -112,6 +112,5 @@ MOCK_WORDS=48 MOCK_DELAY_MS=5 python3 mock_upstream.py 18080 mock-fast
 4. **ZeroTier**：armbian、CN、Mac（192.168.8.123）都在 192.168.8.x 上。客户端默认监听 0.0.0.0 会通告 ZeroTier 地址，这几台之间可能直连而不经中继。要测纯中继路径，就用 `up -listen` 只绑局域网地址。
 5. **OrbStack 会把 VM 里监听的端口自动转发到 Mac 的 127.0.0.1**。bob 如果也用默认的 9787，会和 Mac 上的 alice 抢端口：谁后启动谁就 `bind: address already in use` 退出，而且 Mac 上 `curl 127.0.0.1:9787` 可能实际连到的是 bob。所以 bob 的 `config.json` 里 `"http": "127.0.0.1:9788"`，在 orb 里压测要加 `-b http://127.0.0.1:9788`。
 6. **zsh**：本地脚本里 `$h:st-test` 会被 zsh 当作修饰符展开，要写成 `${h}:st-test`。
-7. （armbian 时期）armbian 的 Python sqlite3 太旧，读不了带 STRICT 的库。现在直接在 st-db 上 `sudo mysql sharetoken`。
-8. 协调器在 armbian（纯 Go SQLite + ARM）上的上限约 40 作业/秒。迁到 st-db + MySQL 后，2 个买家 c=32 时约 73 作业/秒，瓶颈变成卖家名额和网络延迟；协调器每个写事务的提交约 2.6 ms（VM 磁盘 fsync），见 validation-v2-mysql.md。
+8. st-db + MySQL 上，2 个买家 c=32 时约 73 作业/秒，瓶颈变成卖家名额和网络延迟；协调器每个写事务的提交约 2.6 ms（VM 磁盘 fsync），见 validation-v2-mysql.md。
 9. **orb VM 的资源限额**用 `orb create --cpus 4 --memory 8G` 设置，`orb restart` 后才生效；VM 里的 `nproc`、`free` 仍显示宿主机的 14 核 / 16 GB，以 cgroup 为准。Go 1.25+ 按 cgroup 限额设置 GOMAXPROCS。

@@ -33,71 +33,8 @@ import (
 	"sharetoken/protocol"
 )
 
-// Schema creates the shared user-management tables. It is idempotent.
+// Schema creates the shared user-management tables.
 const Schema = `
-CREATE TABLE IF NOT EXISTS users (
-	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	username   TEXT NOT NULL UNIQUE,
-	pass_hash  TEXT NOT NULL,
-	is_admin   INTEGER NOT NULL DEFAULT 0,
-	disabled   INTEGER NOT NULL DEFAULT 0,
-	created_at INTEGER NOT NULL,
-	mfa_secret      BLOB NOT NULL DEFAULT x'',   -- TOTP secret, sealed by the portal; empty: not enrolled
-	mfa_enrolled_at INTEGER NOT NULL DEFAULT 0,
-	mfa_last_step   INTEGER NOT NULL DEFAULT 0   -- last accepted TOTP step (replay protection)
-) STRICT;
-CREATE TABLE IF NOT EXISTS api_tokens (
-	id           INTEGER PRIMARY KEY AUTOINCREMENT,
-	user_id      INTEGER NOT NULL REFERENCES users(id),
-	name         TEXT NOT NULL,
-	hash         BLOB NOT NULL UNIQUE,
-	prefix       TEXT NOT NULL,
-	created_at   INTEGER NOT NULL,
-	last_used_at INTEGER NOT NULL DEFAULT 0,
-	expires_at   INTEGER NOT NULL DEFAULT 0,
-	revoked      INTEGER NOT NULL DEFAULT 0,
-	mfa          INTEGER NOT NULL DEFAULT 0      -- issued after two-factor verification
-) STRICT;
-CREATE INDEX IF NOT EXISTS api_tokens_by_user ON api_tokens(user_id);
-CREATE TABLE IF NOT EXISTS devices (
-	peer         TEXT PRIMARY KEY,
-	user_id      INTEGER NOT NULL REFERENCES users(id),
-	name         TEXT NOT NULL,
-	created_at   INTEGER NOT NULL,
-	last_seen_at INTEGER NOT NULL DEFAULT 0
-) STRICT;
-CREATE INDEX IF NOT EXISTS devices_by_user ON devices(user_id);
-CREATE TABLE IF NOT EXISTS relays (
-	id             INTEGER PRIMARY KEY AUTOINCREMENT,
-	addr           TEXT NOT NULL UNIQUE,
-	name           TEXT NOT NULL DEFAULT '',
-	region         TEXT NOT NULL DEFAULT '',
-	enabled        INTEGER NOT NULL DEFAULT 1,
-	coordinator_ok INTEGER NOT NULL DEFAULT 0,
-	checked_at     INTEGER NOT NULL DEFAULT 0,
-	detail         TEXT NOT NULL DEFAULT '',
-	rtt_ms         INTEGER NOT NULL DEFAULT 0
-) STRICT;
-CREATE TABLE IF NOT EXISTS feedback (
-	id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	user_id     INTEGER NOT NULL REFERENCES users(id),
-	category    TEXT NOT NULL,
-	message     TEXT NOT NULL,
-	source      TEXT NOT NULL,
-	app_version TEXT NOT NULL DEFAULT '',
-	os          TEXT NOT NULL DEFAULT '',
-	lang        TEXT NOT NULL DEFAULT '',
-	status      TEXT NOT NULL,
-	created_at  INTEGER NOT NULL,
-	handled_at  INTEGER NOT NULL DEFAULT 0,
-	handled_by  TEXT NOT NULL DEFAULT ''
-) STRICT;
-CREATE INDEX IF NOT EXISTS feedback_by_user ON feedback(user_id, id);
-CREATE INDEX IF NOT EXISTS feedback_by_status ON feedback(status, id);
-`
-
-// SchemaMySQL is Schema for MySQL 8 (see internal/sqlite/mysql.go).
-const SchemaMySQL = `
 CREATE TABLE IF NOT EXISTS users (
 	id         BIGINT PRIMARY KEY AUTO_INCREMENT,
 	username   VARCHAR(191) NOT NULL UNIQUE,

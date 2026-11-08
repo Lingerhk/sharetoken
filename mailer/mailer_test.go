@@ -16,12 +16,12 @@ import (
 
 	"github.com/emersion/go-msgauth/dkim"
 
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 )
 
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	db, err := sqlite.Open(sqlite.Memory)
+	db, err := mysqldb.OpenTest()
 	if err != nil {
 		t.Fatal(err)
 	}

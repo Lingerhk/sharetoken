@@ -25,8 +25,10 @@ BIN=$DIR/bin; mkdir -p "$BIN"
 run() { local log=$1; shift; "$@" > "$log" 2>&1 & echo $! >> pids; }
 wait_for() { for _ in $(seq 1 150); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 0.2; done; echo "timed out waiting for $2 in $1" >&2; tail -5 "$1" >&2; exit 1; }
 
-COORD=(-key coord.key -db st.db)
-PASSKEY=$("$BIN/portal" -db st.db pass-key)
+export SHARETOKEN_DB_PASSWORD=
+DSN=$("$ROOT/scripts/local-mysql.sh" new-db st_gui_stack)
+COORD=(-key coord.key -db "$DSN")
+PASSKEY=$("$BIN/portal" -db "$DSN" pass-key)
 COORD_ID=$("$BIN/coordinator" "${COORD[@]}" id)
 cat > relay.yaml <<YAML
 version: 1
@@ -48,10 +50,10 @@ tls:
   self_signed_hosts: [127.0.0.1]
 YAML
 mkdir -p tls
-"$BIN/portal" -config portal.yaml -db st.db serve -listen 127.0.0.1:$PORTAL_PORT -open-registration -signup-credit 5000000 > portal.log 2>&1 &
+"$BIN/portal" -config portal.yaml -db "$DSN" serve -listen 127.0.0.1:$PORTAL_PORT -open-registration -signup-credit 5000000 > portal.log 2>&1 &
 PORTAL_PID=$!; echo $PORTAL_PID >> pids
 wait_for portal.log "listening"
-"$BIN/portal" -db st.db relay add "$RA" relay-local test > /dev/null
+"$BIN/portal" -db "$DSN" relay add "$RA" relay-local test > /dev/null
 PIN=$(openssl s_client -connect 127.0.0.1:$PORTAL_PORT </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f')
 PIN=sha256:$PIN
 

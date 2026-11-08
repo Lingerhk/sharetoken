@@ -21,7 +21,7 @@ import (
 
 	"sharetoken/accounts"
 	"sharetoken/internal/secfile"
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/internal/totp"
 	"sharetoken/portal"
 )
@@ -47,7 +47,7 @@ type daemonEnv struct {
 
 func newDaemonEnv(t *testing.T, cfg portal.Config, useTLS bool) *daemonEnv {
 	t.Helper()
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "p.db"))
+	db, err := mysqldb.OpenTest()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -88,10 +88,8 @@ Gmail 实测（2026-11-09）：邮件能收到，但**进垃圾邮件**。所以
 ## 测试
 
 ```bash
-go test -race ./mailer ./portal ./client     # 真实 SMTP 往返、DKIM、限流、验证码、管理接口
+scripts/test.sh -race ./mailer ./portal ./client     # 真实 SMTP 往返、DKIM、限流、验证码、管理接口
 node scripts/mail_ui_test.mjs                # 无头 Chrome + 真实进程：注册、恶意邮件、后台全流程
 ```
-
-MySQL 保留字不会被 SQLite 测试发现（`sensitive` 曾导致 dev 门户起不来），改表结构后要用 `SHARETOKEN_TEST_MYSQL` 跑一遍，或先部署到 dev。
 
 外部验证：`./mailserver -config mail.yaml send-test check-auth@verifier.port25.com`，报告会回信到发件地址，同时验证了互联网收信。

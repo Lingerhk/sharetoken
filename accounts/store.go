@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"sharetoken/internal/sqlite"
+	"sharetoken/internal/mysqldb"
 	"sharetoken/p2p"
 )
 
@@ -79,7 +79,7 @@ func (s *Store) now() time.Time {
 }
 
 func (s *Store) tx(fn func(tx *sql.Tx) error) error {
-	tx, err := sqlite.Begin(s.DB)
+	tx, err := mysqldb.Begin(s.DB)
 	if err != nil {
 		return err
 	}
