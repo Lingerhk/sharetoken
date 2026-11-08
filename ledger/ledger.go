@@ -83,6 +83,32 @@ CREATE INDEX IF NOT EXISTS ledger_entries_by_debit  ON ledger_entries(debit, seq
 CREATE INDEX IF NOT EXISTS ledger_entries_by_credit ON ledger_entries(credit, seq);
 `
 
+// SchemaMySQL is Schema for MySQL 8 (see internal/sqlite/mysql.go).
+const SchemaMySQL = `
+CREATE TABLE IF NOT EXISTS ledger_accounts (
+	account VARCHAR(191) PRIMARY KEY,
+	balance BIGINT NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS ledger_holds (
+	job_id VARCHAR(191) PRIMARY KEY,
+	owner  VARCHAR(191) NOT NULL,
+	amount BIGINT NOT NULL CHECK (amount > 0),
+	open   BIGINT NOT NULL CHECK (open IN (0, 1)),
+	KEY ledger_holds_open_by_owner (owner, open)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS ledger_entries (
+	seq     BIGINT PRIMARY KEY AUTO_INCREMENT,
+	at      BIGINT NOT NULL,
+	job_id  VARCHAR(191) NOT NULL,
+	debit   VARCHAR(191) NOT NULL,
+	credit  VARCHAR(191) NOT NULL,
+	amount  BIGINT NOT NULL CHECK (amount > 0),
+	memo    TEXT NOT NULL,
+	KEY ledger_entries_by_debit (debit, seq),
+	KEY ledger_entries_by_credit (credit, seq)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+`
+
 // Entry is one journal line: Amount moved from Debit to Credit.
 type Entry struct {
 	Seq    int64  `json:"seq"`
@@ -155,8 +181,16 @@ func (l *Tx) transfer(jobID, from, to string, amount int64, memo string) error {
 }
 
 func (l *Tx) setBalance(account string, balance int64) error {
-	_, err := l.tx.Exec(`INSERT INTO ledger_accounts (account, balance) VALUES (?, ?)
-		ON CONFLICT (account) DO UPDATE SET balance = excluded.balance`, account, balance)
+	// UPDATE then INSERT instead of an upsert (portable to MySQL); safe
+	// because writers are serialized (sqlite.Begin).
+	res, err := l.tx.Exec(`UPDATE ledger_accounts SET balance = ? WHERE account = ?`, balance, account)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n > 0 {
+		return err
+	}
+	_, err = l.tx.Exec(`INSERT INTO ledger_accounts (account, balance) VALUES (?, ?)`, account, balance)
 	return err
 }
 
@@ -324,7 +358,7 @@ func (l *Tx) AccountEntries(account string, beforeSeq int64, limit int) ([]Entry
 	// exact because transfer refuses debit = credit.
 	const side = `SELECT seq, at, job_id, debit, credit, amount, memo FROM ledger_entries
 		WHERE %s = ? AND seq < ? ORDER BY seq DESC LIMIT ?`
-	rows, err := l.tx.Query(`SELECT * FROM (`+fmt.Sprintf(side, "debit")+`) UNION ALL SELECT * FROM (`+fmt.Sprintf(side, "credit")+`)
+	rows, err := l.tx.Query(`SELECT * FROM (`+fmt.Sprintf(side, "debit")+`) AS d UNION ALL SELECT * FROM (`+fmt.Sprintf(side, "credit")+`) AS c
 		ORDER BY seq DESC LIMIT ?`, account, beforeSeq, limit, account, beforeSeq, limit, limit)
 	if err != nil {
 		return nil, err
@@ -353,11 +387,15 @@ func (l *Tx) Sum() (int64, error) {
 // holds exactly its open hold. Run it at startup: a mismatch means the
 // database was edited outside the ledger.
 func (l *Tx) Reconcile() error {
+	// Grouping each column before the union, and two NOT EXISTS instead of an
+	// OR of the two columns, let both SQLite and MySQL use the (debit, …) and
+	// (credit, …) indexes; the OR form scanned the journal once per account
+	// on MySQL (4.7 s at 400k entries).
 	rows, err := l.tx.Query(`
 		WITH flows AS (
-			SELECT credit AS account, amount AS delta FROM ledger_entries
+			SELECT credit AS account, SUM(amount) AS delta FROM ledger_entries GROUP BY credit
 			UNION ALL
-			SELECT debit, -amount FROM ledger_entries
+			SELECT debit, -SUM(amount) FROM ledger_entries GROUP BY debit
 		),
 		replayed AS (SELECT account, SUM(delta) AS balance FROM flows GROUP BY account)
 		SELECT r.account, r.balance, COALESCE(a.balance, 0) FROM replayed r
@@ -366,7 +404,8 @@ func (l *Tx) Reconcile() error {
 		UNION ALL
 		SELECT a.account, 0, a.balance FROM ledger_accounts a
 			WHERE a.balance != 0 AND NOT EXISTS (
-				SELECT 1 FROM ledger_entries e WHERE e.debit = a.account OR e.credit = a.account)
+				SELECT 1 FROM ledger_entries e WHERE e.debit = a.account) AND NOT EXISTS (
+				SELECT 1 FROM ledger_entries e WHERE e.credit = a.account)
 		LIMIT 1`)
 	if err != nil {
 		return err
@@ -391,7 +430,7 @@ func (l *Tx) Reconcile() error {
 	var job string
 	var amount, balance int64
 	err = l.tx.QueryRow(`SELECT h.job_id, h.amount * h.open, COALESCE(a.balance, 0) FROM ledger_holds h
-		LEFT JOIN ledger_accounts a ON a.account = 'hold:' || h.job_id
+		LEFT JOIN ledger_accounts a ON a.account = CONCAT('hold:', h.job_id)
 		WHERE h.amount * h.open != COALESCE(a.balance, 0) LIMIT 1`).Scan(&job, &amount, &balance)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):

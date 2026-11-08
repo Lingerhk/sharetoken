@@ -58,3 +58,29 @@ func TestPingRelay(t *testing.T) {
 		t.Fatal("ping of a closed relay succeeded")
 	}
 }
+
+func TestLinkMonitorLossy(t *testing.T) {
+	m := NewLinkMonitor(30)
+	now := time.Unix(0, 0)
+	lost := errors.New("timeout")
+	for range 3 {
+		m.Add("r", 0, lost, now)
+	}
+	if m.Lossy() {
+		t.Fatal("lossy on too few samples")
+	}
+	for range 7 {
+		m.Add("r", time.Millisecond, nil, now)
+	}
+	if !m.Lossy() { // 3 of 10 lost
+		t.Fatal("30% loss not reported")
+	}
+	m.Add("r", time.Millisecond, nil, now)
+	if m.Lossy() { // 3 of 11
+		t.Fatal("27% loss reported as lossy")
+	}
+	m.Add("other", 0, lost, now) // a new relay starts a new window
+	if m.Lossy() {
+		t.Fatal("old relay's losses carried over")
+	}
+}

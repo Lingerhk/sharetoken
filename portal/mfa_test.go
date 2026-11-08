@@ -2,12 +2,10 @@ package portal
 
 import (
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"sharetoken/internal/sqlite"
 	"sharetoken/internal/totp"
 )
 
@@ -20,7 +18,7 @@ type challengeResp struct {
 // a code at every later one; tokens remember it, and admin endpoints accept
 // nothing less.
 func TestAdminLoginRequiresTwoFactor(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "shared.db"))
+	db, err := openSharedDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}

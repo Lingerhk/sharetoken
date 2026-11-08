@@ -18,7 +18,11 @@ func openDB(t *testing.T, path string) *sql.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := sqlite.Migrate(db, Schema); err != nil {
+	schema := Schema
+	if sqlite.IsMySQL(db) {
+		schema = SchemaMySQL
+	}
+	if err := sqlite.Migrate(db, schema); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -234,5 +238,17 @@ func TestBooksSurviveRestartAndReconcileCatchesTampering(t *testing.T) {
 	}
 	if err := update(t, db, func(l *Tx) error { return l.Reconcile() }); err == nil {
 		t.Fatal("reconcile accepted a tampered balance")
+	}
+	if _, err := db.Exec(`UPDATE ledger_accounts SET balance = balance - 1 WHERE account = ?`, Account("n")); err != nil {
+		t.Fatal(err)
+	}
+	checkBooks(t, db)
+
+	// So are balances that no journal entry explains, even when they cancel out.
+	if _, err := db.Exec(`INSERT INTO ledger_accounts (account, balance) VALUES ('ghost:a', 5), ('ghost:b', -5)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := update(t, db, func(l *Tx) error { return l.Reconcile() }); err == nil {
+		t.Fatal("reconcile accepted balances without journal entries")
 	}
 }

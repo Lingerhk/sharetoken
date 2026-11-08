@@ -1,28 +1,29 @@
 #!/bin/bash
-# Build from the working tree and roll out: coordinator (armbian) + every user client.
+# Build from the working tree and roll out: coordinator (orb VM st-db, MySQL) + every user client.
 # Relays and the portal are left alone unless given: deploy.sh [--relays] [--portal]
 set -u
 . "$(dirname "$0")/env.sh"
 cd "$REPO" || exit 1
 DO_RELAYS=0; DO_PORTAL=0
 for a in "$@"; do case $a in --relays) DO_RELAYS=1;; --portal) DO_PORTAL=1;; esac; done
-for c in coordinator sharetoken portal relay; do
+for c in sharetoken relay; do
   GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $W/build/arm64/$c ./cmd/$c || exit 1
 done
-for c in sharetoken relay; do
+for c in sharetoken relay coordinator portal; do
   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $W/build/amd64/$c ./cmd/$c || exit 1
-  gzip -kf $W/build/amd64/$c
 done
+for c in sharetoken relay; do gzip -kf $W/build/amd64/$c; done
 go build -o $W/sharetoken ./cmd/sharetoken || exit 1
 # CN builds from source (uploads to it are very slow); never ship docs/test_env.txt or secrets
 git ls-files -co --exclude-standard | grep -v -e '^docs/test_env.txt' -e 'secrets' -e '^reports/' > $W/files.txt
 COPYFILE_DISABLE=1 tar czf $W/src.tgz -T $W/files.txt
 
-# armbian
-rsh $ARMBIAN 'mkdir -p ~/st-test/new'
-scp $Q $W/build/arm64/coordinator $W/build/arm64/portal s0nnet@$ARMBIAN:st-test/new/ || exit 1
-rsh $ARMBIAN "cd ~/st-test && pkill -x coordinator; sleep 1; mv new/coordinator . && setsid nohup $COORD_CMD >> coord.log 2>&1 < /dev/null & sleep 1; echo coordinator restarted"
-[ $DO_PORTAL = 1 ] && rsh $ARMBIAN "cd ~/st-test && cp portal portal.prev; pkill -x portal; sleep 1; mv new/portal . && setsid nohup $PORTAL_CMD >> portal.log 2>&1 < /dev/null & sleep 1; echo portal restarted"
+# st-db (orb VM: the Mac's files are mounted, so copy straight from $W)
+stdbsh "cd ~/st-test && pkill -x coordinator; sleep 1; cp $W/build/amd64/coordinator . && echo coordinator copied" || exit 1
+coord_start; echo coordinator restarted
+if [ $DO_PORTAL = 1 ]; then
+  stdbsh "cd ~/st-test && cp portal portal.prev; pkill -x portal; sleep 1; cp $W/build/amd64/portal ." && portal_start && echo portal restarted
+fi
 
 client_restart() { # host user
   rsh $1 "cd ~/st-test && pkill -x sharetoken; sleep 1; mv sharetoken.new sharetoken; SHARETOKEN_HOME=\$HOME/st-test/$2 setsid nohup ./sharetoken up >> $2.log 2>&1 < /dev/null & sleep 1; echo $2 restarted"

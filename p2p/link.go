@@ -81,6 +81,29 @@ func (m *LinkMonitor) Reset(relay string) {
 	m.relay, m.samples, m.lastErr, m.updated = relay, nil, "", time.Time{}
 }
 
+// Lossy reports whether the current link is dropping too many pings to
+// carry control traffic reliably: at least lossyMin pings in the window and
+// at least lossyPct percent of them unanswered.
+func (m *LinkMonitor) Lossy() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.samples) < lossyMin {
+		return false
+	}
+	lost := 0
+	for _, s := range m.samples {
+		if !s.ok {
+			lost++
+		}
+	}
+	return lost*100 >= lossyPct*len(m.samples)
+}
+
+const (
+	lossyMin = 5
+	lossyPct = 30
+)
+
 // Quality summarises the window; nil before the first ping.
 func (m *LinkMonitor) Quality() *LinkQuality {
 	m.mu.Lock()

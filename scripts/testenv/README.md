@@ -4,8 +4,8 @@
 
 | 脚本 | 作用 |
 |---|---|
-| `env.sh` | 主机地址、peer ID、启动命令、辅助函数（`rsh`、`orbsh`、`iboxsh`、`relay_start`）；其他脚本都会 source 它 |
-| `tunnels.sh` | 重建 Mac 发起的 SSH 隧道（Ollama 参考模型 → armbian；门户 → orb、US、SG；instabox → US）。Mac 重启或休眠后先跑这个 |
+| `env.sh` | 主机地址、peer ID、启动命令、辅助函数（`rsh`、`orbsh`、`stdbsh`、`iboxsh`、`relay_start`、`coord_start`、`portal_start`）；其他脚本都会 source 它 |
+| `tunnels.sh` | 重建 Mac 发起的 SSH 隧道（门户 → US、SG；instabox → US）。门户和协调器在 orb VM st-db 上，Mac、orb、CN 经 OrbStack 端口转发直接访问。Mac 重启或休眠后先跑这个 |
 | `deploy.sh [--relays] [--portal]` | 用当前工作区交叉编译，滚动更新协调器和 6 个客户端（CN 在服务器上用源码编译）；默认不动中继和门户 |
 | `push-tools.sh` | 把 `st_bench.py`、`mock_upstream.py` 分发到所有机器 |
 | `status.sh` | 每个用户一行：协调器连接、所用中继、共享统计；外加三个中继的 JSON 统计 |

@@ -70,7 +70,11 @@ type Config struct {
 	// Addrs returns the addresses to advertise (default: the host's own).
 	// A node behind NAT adds its relay circuit addresses here.
 	Addrs func() []string
-	Now   func() time.Time
+	// OnCoordinatorUnreachable, if set, is called when a call to the
+	// coordinator fails in transport (no answer, as opposed to a refusal), so
+	// the client can fail over to another relay at once. It must not block.
+	OnCoordinatorUnreachable func()
+	Now                      func() time.Time
 }
 
 func (c *Config) setDefaults() {
@@ -251,7 +255,7 @@ func (s *Service) announce() error {
 	s.statMu.Unlock()
 	ctx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
 	defer cancel()
-	return p2p.Call(ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, protocol.TypeAnnounce, o, protocol.TypeOK, nil)
+	return s.call(ctx, protocol.TypeAnnounce, o, protocol.TypeOK, nil)
 }
 
 func (s *Service) handleInfer(st network.Stream) {
@@ -449,7 +453,7 @@ func (s *Service) settle(t protocol.Ticket, sr receipt.SignedReceipt, ack []byte
 	deadline := time.Unix(0, t.ExpiresAt).Add(settleRetryWindow)
 	err := s.retryUntil(deadline, func(ctx context.Context) (bool, error) {
 		var resp protocol.SettleResponse
-		err := p2p.Call(ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, protocol.TypeSettle, req, protocol.TypeSettled, &resp)
+		err := s.call(ctx, protocol.TypeSettle, req, protocol.TypeSettled, &resp)
 		if err == nil {
 			s.served.Add(1)
 			if resp.Status == "final" {
@@ -485,11 +489,20 @@ func (s *Service) sendAbandon(req protocol.AbandonRequest) {
 	t := req.Ticket
 	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
-	err := p2p.Call(ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, protocol.TypeAbandon,
+	err := s.call(ctx, protocol.TypeAbandon,
 		req, protocol.TypeOK, nil)
 	if err != nil && s.ctx.Err() == nil {
 		s.log.Warn("could not abandon job; its hold is released at the ticket's deadline", "job", t.JobID, "err", err)
 	}
+}
+
+// call is p2p.Call to the coordinator, reporting transport failures.
+func (s *Service) call(ctx context.Context, reqType string, req any, respType string, resp any) error {
+	err := p2p.Call(ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, reqType, req, respType, resp)
+	if err != nil && protocol.CodeOf(err) == "" && ctx.Err() == nil && s.cfg.OnCoordinatorUnreachable != nil {
+		s.cfg.OnCoordinatorUnreachable()
+	}
+	return err
 }
 
 // reportStarted reports a started job, retrying transient failures; cancel
@@ -500,7 +513,7 @@ func (s *Service) reportStarted(t protocol.Ticket, cancel context.CancelFunc) {
 	// down, coordinator restarting) does not make a running job look unused.
 	deadline := time.Unix(0, t.ExpiresAt).Add(startReportGrace)
 	s.retryUntil(deadline, func(ctx context.Context) (bool, error) {
-		err := p2p.Call(ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, protocol.TypeStarted,
+		err := s.call(ctx, protocol.TypeStarted,
 			protocol.StartedRequest{Ticket: t}, protocol.TypeOK, nil)
 		switch code := protocol.CodeOf(err); {
 		case err == nil:

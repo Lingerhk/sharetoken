@@ -17,6 +17,10 @@ import (
 // accounts and coordinator state. The portal and the coordinator both call it,
 // so either may start first.
 func Migrate(db *sql.DB) error {
+	if sqlite.IsMySQL(db) {
+		// One schema version so far: the tables are created complete.
+		return sqlite.Migrate(db, ledger.SchemaMySQL, accounts.SchemaMySQL, SchemaMySQL)
+	}
 	if err := sqlite.Migrate(db, ledger.Schema, accounts.Schema, Schema); err != nil {
 		return err
 	}
@@ -133,6 +137,82 @@ CREATE TABLE IF NOT EXISTS audits (
 	detail     TEXT NOT NULL
 ) STRICT;
 CREATE INDEX IF NOT EXISTS audits_by_node ON audits(node, at);
+`
+
+// SchemaMySQL is Schema plus jobIndexes for MySQL 8 (see
+// internal/sqlite/mysql.go). The partial index jobs_judged becomes a plain
+// (dispute_outcome, created_at) index.
+const SchemaMySQL = `
+CREATE TABLE IF NOT EXISTS meta (
+	` + "`key`" + ` VARCHAR(191) PRIMARY KEY,
+	value TEXT NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS jobs (
+	job_id          VARCHAR(191) PRIMARY KEY,
+	buyer           VARCHAR(191) NOT NULL,
+	node            VARCHAR(191) NOT NULL,
+	buyer_acct      VARCHAR(191) NOT NULL DEFAULT '',
+	node_acct       VARCHAR(191) NOT NULL DEFAULT '',
+	model           VARCHAR(255) NOT NULL,
+	status          VARCHAR(32) NOT NULL,
+	ticket          MEDIUMBLOB NOT NULL,
+	receipt         MEDIUMBLOB,
+	cost            BIGINT NOT NULL DEFAULT 0,
+	fee             BIGINT NOT NULL DEFAULT 0,
+	dispute_reason  TEXT NOT NULL DEFAULT (''),
+	dispute_outcome VARCHAR(64) NOT NULL DEFAULT '',
+	dispute_detail  TEXT NOT NULL DEFAULT (''),
+	created_at      BIGINT NOT NULL,
+	release_at      BIGINT NOT NULL,
+	finalize_at     BIGINT NOT NULL DEFAULT 0,
+	done_at         BIGINT NOT NULL DEFAULT 0,
+	prompt_tokens     BIGINT NOT NULL DEFAULT 0,
+	completion_tokens BIGINT NOT NULL DEFAULT 0,
+	started_at        BIGINT NOT NULL DEFAULT 0,
+	ticket_expires    BIGINT NOT NULL DEFAULT 0,
+	KEY jobs_status_release (status, release_at),
+	KEY jobs_status_finalize (status, finalize_at),
+	KEY jobs_status_node (status, node),
+	KEY jobs_buyer_status (buyer, status),
+	KEY jobs_by_buyer_acct (buyer_acct, created_at),
+	KEY jobs_by_node_acct (node_acct, created_at),
+	KEY jobs_unstarted (status, started_at, ticket_expires),
+	KEY jobs_buyer_unstarted (buyer_acct, status, started_at, created_at),
+	KEY jobs_buy_usage (buyer_acct, status, prompt_tokens, completion_tokens, cost),
+	KEY jobs_sell_usage (node_acct, status, prompt_tokens, completion_tokens, cost, fee),
+	KEY jobs_status_done (status, done_at),
+	KEY jobs_by_created (created_at),
+	KEY jobs_by_status_created (status, created_at),
+	KEY jobs_judged (dispute_outcome, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS nodes (
+	node              VARCHAR(191) PRIMARY KEY,
+	reputation        BIGINT NOT NULL,
+	successes         BIGINT NOT NULL DEFAULT 0,
+	failures          BIGINT NOT NULL DEFAULT 0,
+	disputes_lost     BIGINT NOT NULL DEFAULT 0,
+	audits_passed     BIGINT NOT NULL DEFAULT 0,
+	audits_failed     BIGINT NOT NULL DEFAULT 0,
+	audit_fail_streak BIGINT NOT NULL DEFAULT 0,
+	suspended_until   BIGINT NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS peers (
+	peer         VARCHAR(191) PRIMARY KEY,
+	dev_credited BIGINT NOT NULL DEFAULT 0,
+	auditor      BIGINT NOT NULL DEFAULT 0,
+	created_at   BIGINT NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS audits (
+	id         BIGINT PRIMARY KEY AUTO_INCREMENT,
+	at         BIGINT NOT NULL,
+	job_id     VARCHAR(191) NOT NULL,
+	node       VARCHAR(191) NOT NULL,
+	model      VARCHAR(255) NOT NULL,
+	verdict    VARCHAR(32) NOT NULL,
+	similarity DOUBLE NOT NULL,
+	detail     TEXT NOT NULL,
+	KEY audits_by_node (node, at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 `
 
 // job is one row of the jobs table.
@@ -257,13 +337,25 @@ func loadStats(tx *sql.Tx, node string) (*NodeStats, error) {
 }
 
 func saveStats(tx *sql.Tx, s *NodeStats) error {
-	_, err := tx.Exec(`INSERT INTO nodes (`+statsColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (node) DO UPDATE SET reputation = excluded.reputation, successes = excluded.successes,
-		failures = excluded.failures, disputes_lost = excluded.disputes_lost, audits_passed = excluded.audits_passed,
-		audits_failed = excluded.audits_failed, audit_fail_streak = excluded.audit_fail_streak,
-		suspended_until = excluded.suspended_until`,
-		s.Node, s.Reputation, int64(s.Successes), int64(s.Failures), int64(s.DisputesLost),
-		int64(s.AuditsPassed), int64(s.AuditsFailed), int64(s.AuditFailStreak), s.SuspendedUntil)
+	vals := []any{s.Reputation, int64(s.Successes), int64(s.Failures), int64(s.DisputesLost),
+		int64(s.AuditsPassed), int64(s.AuditsFailed), int64(s.AuditFailStreak), s.SuspendedUntil}
+	return upsert(tx, `UPDATE nodes SET reputation = ?, successes = ?, failures = ?, disputes_lost = ?,
+		audits_passed = ?, audits_failed = ?, audit_fail_streak = ?, suspended_until = ? WHERE node = ?`, append(vals, s.Node),
+		`INSERT INTO nodes (`+statsColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, append([]any{s.Node}, vals...))
+}
+
+// upsert runs update and, when it matched no row, insert: a portable upsert
+// (SQLite and MySQL spell ON CONFLICT differently). It is exact because
+// writers are serialized (sqlite.Begin).
+func upsert(tx *sql.Tx, update string, uargs []any, insert string, iargs []any) error {
+	res, err := tx.Exec(update, uargs...)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n > 0 {
+		return err
+	}
+	_, err = tx.Exec(insert, iargs...)
 	return err
 }
 
@@ -277,9 +369,14 @@ func updateStats(tx *sql.Tx, node string, fn func(s *NodeStats)) (*NodeStats, er
 	return s, saveStats(tx, s)
 }
 
-// busyNodes counts each node's jobs that are ticketed but not yet settled.
-func busyNodes(tx *sql.Tx) (map[string]uint32, error) {
-	rows, err := tx.Query(`SELECT node, COUNT(*) FROM jobs WHERE status = 'held' GROUP BY node`)
+// busyNodes counts each node's jobs that are ticketed but not yet settled,
+// except unstarted ones whose ticket expired before staleBefore (UnixNano):
+// those are past their start grace and only kept, not released, because
+// their node reconnected and a start report may still arrive; they must not
+// keep its slots (a node that restarted lost them for good).
+func busyNodes(tx *sql.Tx, staleBefore int64) (map[string]uint32, error) {
+	rows, err := tx.Query(`SELECT node, COUNT(*) FROM jobs WHERE status = 'held'
+		AND (started_at != 0 OR ticket_expires = 0 OR ticket_expires > ?) GROUP BY node`, staleBefore)
 	if err != nil {
 		return nil, err
 	}

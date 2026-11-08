@@ -46,7 +46,7 @@ import (
 )
 
 func main() {
-	dbPath := flag.String("db", "sharetoken.db", "database shared with the coordinator")
+	dbPath := flag.String("db", "sharetoken.db", "database shared with the coordinator: a SQLite file, or mysql://user@host:port/db (password from $SHARETOKEN_DB_PASSWORD)")
 	passKeyPath := flag.String("pass-key", "portal-pass.key", "key that signs relay passes (created with mode 0600 if missing; relays trust its public key: `portal pass-key`)")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, `usage: portal [-db file] <command>

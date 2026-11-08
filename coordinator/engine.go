@@ -24,6 +24,7 @@ package coordinator
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -82,11 +83,18 @@ type Config struct {
 	FeeBps     int64         // platform fee in basis points of each settled job
 	TicketTTL  time.Duration // time a node has to start a ticketed job
 	StartGrace time.Duration // after the ticket expires, an unstarted job is released this late (default 30s)
+	// ReconnectGrace postpones that early release while the job's node
+	// reconnected to the coordinator after the ticket was issued (it lost or
+	// switched its relay, so its start report may still be on its way): the
+	// job is released no earlier than this long after the reconnect
+	// (default 2m; it is still released at the settlement deadline). Such a
+	// job no longer takes one of the node's slots.
+	ReconnectGrace time.Duration
 	// MaxStaleTickets is how many held tickets a buyer account may have that
 	// were issued over StaleAfter ago and never started; beyond it the buyer
-	// gets no new tickets until they are released (default 4).
+	// gets no new tickets until they are released (default 5).
 	MaxStaleTickets int
-	StaleAfter      time.Duration // default 10s
+	StaleAfter      time.Duration // default 15s
 	SettleGrace     time.Duration // extra time for settlement to arrive before the hold is released
 	DisputeWindow   time.Duration // unacknowledged settlements become final after this
 	MaxOfferTTL     time.Duration // offers claiming a longer validity are rejected
@@ -135,11 +143,16 @@ func (c *Config) setDefaults() {
 	if c.StartGrace == 0 {
 		c.StartGrace = 30 * time.Second
 	}
+	if c.ReconnectGrace == 0 {
+		c.ReconnectGrace = 2 * time.Minute
+	}
 	if c.MaxStaleTickets == 0 {
-		c.MaxStaleTickets = 4
+		c.MaxStaleTickets = 5
 	}
 	if c.StaleAfter == 0 {
-		c.StaleAfter = 10 * time.Second
+		// Start reports normally arrive within 0.3-2.5 s; 15 s leaves room for
+		// a node on a lossy relay path (validation-v2-mysql.md §4.2).
+		c.StaleAfter = 15 * time.Second
 	}
 	if c.SettleGrace == 0 {
 		c.SettleGrace = 15 * time.Minute
@@ -233,9 +246,9 @@ func NewEngine(self string, priv ed25519.PrivateKey, cfg Config) (*Engine, error
 		// A database holds tickets signed by one coordinator key; refuse to
 		// mix them with another's.
 		var owner string
-		switch err := tx.QueryRow(`SELECT value FROM meta WHERE key = 'coordinator'`).Scan(&owner); {
+		switch err := tx.QueryRow("SELECT value FROM meta WHERE `key` = 'coordinator'").Scan(&owner); {
 		case errors.Is(err, sql.ErrNoRows):
-			if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('coordinator', ?)`, self); err != nil {
+			if _, err := tx.Exec("INSERT INTO meta (`key`, value) VALUES ('coordinator', ?)", self); err != nil {
 				return err
 			}
 		case err != nil:
@@ -243,8 +256,14 @@ func NewEngine(self string, priv ed25519.PrivateKey, cfg Config) (*Engine, error
 		case owner != self:
 			return fmt.Errorf("coordinator: database belongs to coordinator %s, not %s", owner, self)
 		}
-		return led.Reconcile()
+		return nil
 	})
+	if err == nil {
+		// Replay the journal outside the write lock: it takes seconds on a
+		// large ledger, and every admin command opens an engine while the
+		// live coordinator and the portal keep writing.
+		err = e.CheckBooks()
+	}
 	if err != nil {
 		e.Close()
 		return nil, err
@@ -258,9 +277,9 @@ func NewEngine(self string, priv ed25519.PrivateKey, cfg Config) (*Engine, error
 // must not overwrite the live value.
 func (e *Engine) RecordFeeRate() error {
 	return e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
-		_, err := tx.Exec(`INSERT INTO meta (key, value) VALUES ('fee_bps', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-			strconv.FormatInt(e.cfg.FeeBps, 10))
-		return err
+		v := strconv.FormatInt(e.cfg.FeeBps, 10)
+		return upsert(tx, "UPDATE meta SET value = ? WHERE `key` = 'fee_bps'", []any{v},
+			"INSERT INTO meta (`key`, value) VALUES ('fee_bps', ?)", []any{v})
 	})
 }
 
@@ -285,7 +304,7 @@ func (e *Engine) update(fn func(tx *sql.Tx, led *ledger.Tx) error) error {
 }
 
 func (e *Engine) updateLocked(fn func(tx *sql.Tx, led *ledger.Tx) error) error {
-	tx, err := e.db.Begin()
+	tx, err := sqlite.Begin(e.db)
 	if err != nil {
 		return fmt.Errorf("coordinator: begin: %w", err)
 	}
@@ -467,8 +486,17 @@ func (e *Engine) AccountBalance(account string) (b int64, err error) {
 }
 
 // CheckBooks replays the journal against the balances (operators, tests).
+// It reads in a read-only transaction: the replay takes seconds on a large
+// journal and must not hold the write lock (on MySQL the database-wide one,
+// see sqlite.Begin) while the live coordinator is settling jobs. Each check
+// of Reconcile is one statement, so it sees a consistent state.
 func (e *Engine) CheckBooks() error {
-	return e.update(func(_ *sql.Tx, led *ledger.Tx) error { return led.Reconcile() })
+	tx, err := e.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	return ledger.On(tx, e.cfg.Now()).Reconcile()
 }
 
 // JobStatus reports a job's settlement state.
@@ -525,7 +553,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		if stale >= e.cfg.MaxStaleTickets || failed >= 4*e.cfg.MaxStaleTickets {
 			return protocol.Errorf(protocol.CodeBusy, "%d earlier tickets were never used (%d more reported failed); they are released when they expire", stale, failed)
 		}
-		busy, err := busyNodes(tx)
+		busy, err := busyNodes(tx, now.Add(-e.cfg.StartGrace).UnixNano())
 		if err != nil {
 			return err
 		}
@@ -625,7 +653,8 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 // never started, split into plain (possibly hoarded) ones and ones the buyer
 // reported failed. Tickets of nodes that are not connected right now are
 // skipped (their start reports cannot arrive), and so are tickets issued to a
-// device before its current connection (the reply may never have reached it).
+// device before its current connection (the reply may never have reached it)
+// or to a node before its current connection (its start report may be late).
 func (e *Engine) unusedTickets(tx *sql.Tx, buyerAcct string, now time.Time) (stale, failed int, err error) {
 	rows, err := tx.Query(`SELECT buyer, node, created_at, dispute_reason != '' FROM jobs
 		WHERE buyer_acct = ? AND status = 'held' AND started_at = 0 AND created_at < ?`,
@@ -650,6 +679,12 @@ func (e *Engine) unusedTickets(tx *sql.Tx, buyerAcct string, now time.Time) (sta
 			if since := e.cfg.ConnectedSince(device); since.IsZero() || since.UnixNano() > created {
 				continue
 			}
+			// The node reconnected after the ticket was issued (it lost or
+			// switched its relay): its start report may still be waiting in
+			// its retry queue, so the ticket says nothing about the buyer.
+			if since := e.cfg.ConnectedSince(node); !since.IsZero() && since.UnixNano() > created {
+				continue
+			}
 		}
 		if disputed {
 			failed++
@@ -665,13 +700,20 @@ func (e *Engine) grantDevCredit(tx *sql.Tx, led *ledger.Tx, peer, acct string, n
 		return nil
 	}
 	// Audit identities are funded by the platform and never get dev credit.
-	res, err := tx.Exec(`INSERT INTO peers (peer, dev_credited, created_at) VALUES (?, 1, ?)
-		ON CONFLICT (peer) DO UPDATE SET dev_credited = 1 WHERE dev_credited = 0 AND auditor = 0`, peer, now.UnixNano())
-	if err != nil {
+	var credited, auditor int
+	switch err := tx.QueryRow(`SELECT dev_credited, auditor FROM peers WHERE peer = ?`, peer).Scan(&credited, &auditor); {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.Exec(`INSERT INTO peers (peer, dev_credited, created_at) VALUES (?, 1, ?)`, peer, now.UnixNano()); err != nil {
+			return err
+		}
+	case err != nil:
 		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	case credited != 0 || auditor != 0:
 		return nil
+	default:
+		if _, err := tx.Exec(`UPDATE peers SET dev_credited = 1 WHERE peer = ?`, peer); err != nil {
+			return err
+		}
 	}
 	return led.Deposit(acct, int64(e.cfg.DevCreditMicros), "dev credit")
 }
@@ -734,6 +776,13 @@ func (e *Engine) Settle(submitter string, req protocol.SettleRequest) (*protocol
 		}
 		switch j.status {
 		case StatusReleased:
+			if j.startedAt == 0 && j.receipt == nil && len(req.Ack) > 0 && now.UnixNano() < j.releaseAt {
+				var late bool
+				if late, err = e.settleLate(tx, led, j, &req, now); err != nil || late {
+					resp = settled(j)
+					return err
+				}
+			}
 			return protocol.Errorf(protocol.CodeConflict, "ticket expired and its hold was released")
 		case StatusRefunded:
 			return protocol.Errorf(protocol.CodeConflict, "the buyer was refunded after a dispute")
@@ -782,6 +831,51 @@ func (e *Engine) Settle(submitter string, req protocol.SettleRequest) (*protocol
 		return saveJob(tx, j)
 	})
 	return resp, err
+}
+
+// settleLate pays out a job that was released early as never started (its
+// start report was lost, e.g. on a lossy relay path) when the settlement
+// still arrives before the job's settlement deadline with the buyer's
+// acknowledgement: the buyer confirmed it received the output, so it is
+// charged the receipt's cost (not the whole budget) and the node is paid as
+// usual. It returns false, changing nothing, when the buyer cannot cover the
+// cost any more (the released hold was spent): the settlement is refused.
+func (e *Engine) settleLate(tx *sql.Tx, led *ledger.Tx, j *job, req *protocol.SettleRequest, now time.Time) (bool, error) {
+	t := &j.ticket
+	if err := protocol.CheckReceipt(t, &req.Receipt); err != nil {
+		return false, err
+	}
+	r := &req.Receipt.Receipt
+	if err := verifyAck(t, r, req.Ack); err != nil {
+		return false, err
+	}
+	cost := protocol.TicketCost(t, r.PromptTokens, r.CompletionTokens)
+	var fee int64
+	if cost > 0 {
+		lateID := t.JobID + ":late"
+		switch err := led.Hold(lateID, j.buyerAcct, int64(cost)); {
+		case errors.Is(err, ledger.ErrInsufficientFunds):
+			e.log.Warn("late settlement refused: the buyer can no longer pay", "job", t.JobID, "cost", cost)
+			return false, nil
+		case err != nil:
+			return false, err
+		}
+		var err error
+		if fee, err = led.Capture(lateID, j.nodeAcct, int64(cost), e.cfg.FeeBps); err != nil {
+			return false, fmt.Errorf("coordinator: late capture %s: %w", t.JobID, err)
+		}
+	}
+	sr := req.Receipt
+	j.receipt, j.cost, j.fee = &sr, cost, fee
+	j.status, j.doneAt, j.disputeDetail = StatusFinal, now.UnixNano(), ""
+	if _, err := updateStats(tx, t.Node, func(s *NodeStats) {
+		s.Successes++
+		s.Reputation = min(maxReputation, s.Reputation+repPerSuccess)
+	}); err != nil {
+		return false, err
+	}
+	e.log.Info("settled a job released early as never started", "job", t.JobID, "cost", cost)
+	return true, saveJob(tx, j)
 }
 
 // Abandon releases a held job its node gave up before delivering anything:
@@ -1142,6 +1236,14 @@ func (e *Engine) Tick(now time.Time) {
 		e.tickJob(id, now, func(tx *sql.Tx, led *ledger.Tx, j *job) error {
 			if j.status != StatusHeld || j.startedAt != 0 || j.receipt != nil {
 				return nil
+			}
+			if e.cfg.ConnectedSince != nil {
+				// The node reconnected after the ticket was issued: its start
+				// report (or settlement) may be late rather than missing.
+				if since := e.cfg.ConnectedSince(j.ticket.Node); !since.IsZero() && since.UnixNano() > j.createdAt &&
+					now.Before(since.Add(e.cfg.ReconnectGrace)) {
+					return nil
+				}
 			}
 			if err := led.Release(id, "release (job never started)"); err != nil {
 				return err

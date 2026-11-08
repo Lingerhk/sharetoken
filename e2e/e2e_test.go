@@ -539,9 +539,12 @@ func TestNoShowTicketFreesTheNodeSoon(t *testing.T) {
 	if err != nil || !res.Verified {
 		t.Fatalf("queued request: %v", err)
 	}
-	if m.held(noShow) != 0 || time.Since(start) < time.Second {
-		t.Fatalf("served after %v while the no-show still held %d", time.Since(start), m.held(noShow))
+	if time.Since(start) < time.Second {
+		t.Fatalf("served after %v, before the no-show tickets' start deadline", time.Since(start))
 	}
+	// Their slots are free from the start deadline on; the holds go back at
+	// the coordinator's next tick.
+	waitFor(t, 5*time.Second, "the no-show holds to be released", func() bool { return m.held(noShow) == 0 })
 	m.waitStatus(res.Ticket.JobID, coordinator.StatusFinal)
 	if got := m.balance(buyerKeys); got != 5_000_000-20 {
 		t.Fatalf("buyer balance %d", got)

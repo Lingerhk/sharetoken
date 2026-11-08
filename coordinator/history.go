@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"sharetoken/internal/sqlite"
 	"sharetoken/ledger"
 	"sharetoken/protocol"
 )
@@ -71,8 +72,8 @@ func AccountJobs(db *sql.DB, acct, role string, beforeNanos int64, limit int) ([
 	if role == "" {
 		// Two index-ordered scans of at most limit rows each, merged: an OR of
 		// the two columns would sort the account's whole history.
-		query = `SELECT * FROM (SELECT ` + cols + ` FROM jobs WHERE buyer_acct = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?)
-			UNION ALL SELECT * FROM (SELECT ` + cols + ` FROM jobs WHERE node_acct = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?)
+		query = `SELECT * FROM (SELECT ` + cols + ` FROM jobs WHERE buyer_acct = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?) AS b
+			UNION ALL SELECT * FROM (SELECT ` + cols + ` FROM jobs WHERE node_acct = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?) AS s
 			ORDER BY created_at DESC LIMIT ?`
 		args = []any{acct, beforeNanos, limit, acct, beforeNanos, limit, limit}
 	}
@@ -161,7 +162,7 @@ func feeTerm(earn bool) string {
 // database, or "" before it first started.
 func CoordinatorID(db *sql.DB) (string, error) {
 	var id string
-	err := db.QueryRow(`SELECT value FROM meta WHERE key = 'coordinator'`).Scan(&id)
+	err := db.QueryRow("SELECT value FROM meta WHERE `key` = 'coordinator'").Scan(&id)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -248,7 +249,7 @@ func queryJobsSQL(status, acct string, beforeNanos int64, limit int) (string, []
 	sell, sellArgs := side("node_acct")
 	// UNION ALL is exact: IssueTicket never lets an account buy from itself,
 	// so no job matches both sides.
-	return `SELECT * FROM (` + buy + `) UNION ALL SELECT * FROM (` + sell + `) ORDER BY created_at DESC LIMIT ?`,
+	return `SELECT * FROM (` + buy + `) AS b UNION ALL SELECT * FROM (` + sell + `) AS s ORDER BY created_at DESC LIMIT ?`,
 		append(append(buyArgs, sellArgs...), limit)
 }
 
@@ -314,8 +315,8 @@ func QueryDisputes(q Querier, limit int) ([]DisputeInfo, error) {
 	const cols = `job_id, buyer, node, buyer_acct, node_acct, model, status, cost, dispute_reason, dispute_outcome, dispute_detail,
 		created_at, done_at`
 	rows, err := q.Query(`SELECT `+cols+` FROM (
-			SELECT * FROM (SELECT `+cols+` FROM jobs WHERE status = 'disputed' ORDER BY created_at DESC LIMIT ?)
-			UNION SELECT * FROM (SELECT `+cols+` FROM jobs WHERE dispute_outcome != '' ORDER BY created_at DESC LIMIT ?))
+			SELECT * FROM (SELECT `+cols+` FROM jobs WHERE status = 'disputed' ORDER BY created_at DESC LIMIT ?) AS o
+			UNION SELECT * FROM (SELECT `+cols+` FROM jobs WHERE dispute_outcome != '' ORDER BY created_at DESC LIMIT ?) AS j) AS d
 		ORDER BY status = 'disputed' DESC, created_at DESC LIMIT ?`, limit, limit, limit)
 	if err != nil {
 		return nil, err
@@ -343,7 +344,7 @@ var ErrNotDisputed = errors.New("coordinator: job is not disputed")
 // the node charged a lost dispute. It uses the fee rate the coordinator
 // recorded in the database and is atomic with the coordinator's own writes.
 func ResolveDispute(db *sql.DB, jobID string, payNode bool, now time.Time) error {
-	tx, err := db.Begin()
+	tx, err := sqlite.Begin(db)
 	if err != nil {
 		return err
 	}
@@ -361,7 +362,7 @@ func ResolveDispute(db *sql.DB, jobID string, payNode bool, now time.Time) error
 	led := ledger.On(tx, now)
 	if payNode {
 		var raw string
-		if err := tx.QueryRow(`SELECT value FROM meta WHERE key = 'fee_bps'`).Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRow("SELECT value FROM meta WHERE `key` = 'fee_bps'").Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		feeBps, _ := strconv.ParseInt(raw, 10, 64)

@@ -68,7 +68,7 @@ func TestPortalSideDisputeResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 	var raw string
-	if err := f.eng.db.QueryRow(`SELECT value FROM meta WHERE key = 'fee_bps'`).Scan(&raw); err != nil || raw != "1000" {
+	if err := f.eng.db.QueryRow("SELECT value FROM meta WHERE `key` = 'fee_bps'").Scan(&raw); err != nil || raw != "1000" {
 		t.Fatalf("fee_bps after an admin engine: %q %v", raw, err)
 	}
 	f.booksBalance()

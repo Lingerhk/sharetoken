@@ -37,8 +37,8 @@ func (e *Engine) RegisterAuditor(peer string, micros uint64) error {
 	}
 	now := e.cfg.Now()
 	return e.update(func(tx *sql.Tx, led *ledger.Tx) error {
-		if _, err := tx.Exec(`INSERT INTO peers (peer, auditor, created_at) VALUES (?, 1, ?)
-			ON CONFLICT (peer) DO UPDATE SET auditor = 1`, peer, now.UnixNano()); err != nil {
+		if err := upsert(tx, `UPDATE peers SET auditor = 1 WHERE peer = ?`, []any{peer},
+			`INSERT INTO peers (peer, auditor, created_at) VALUES (?, 1, ?)`, []any{peer, now.UnixNano()}); err != nil {
 			return err
 		}
 		return led.Fund(ledger.Account(peer), int64(micros), "audit funding")

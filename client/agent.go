@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -58,7 +59,8 @@ type Agent struct {
 	relays   []p2p.RelayRTT // last measurement, best first
 	current  string         // relay used to reach the coordinator
 	measured time.Time
-	link     *p2p.LinkMonitor // live pings of the current relay
+	link     *p2p.LinkMonitor     // live pings of the current relay
+	avoid    map[string]time.Time // relay -> until when not to choose it for coordinator traffic
 	buyer    *buyer.Client
 	proxy    *buyer.Proxy
 	share    *shareState
@@ -86,7 +88,7 @@ type shareState struct {
 func NewAgent(home string, cfg Config) *Agent {
 	cfg.fill()
 	return &Agent{home: home, cfg: cfg, log: slog.Default().With("component", "client"), warnings: map[string]string{}, kick: make(chan struct{}, 1),
-		link: p2p.NewLinkMonitor(linkWindow)}
+		link: p2p.NewLinkMonitor(linkWindow), avoid: map[string]time.Time{}}
 }
 
 // Start joins the network and serves the local API; it returns once the
@@ -153,6 +155,16 @@ func (a *Agent) Start(ctx context.Context) error {
 			a.log.Error("local API stopped", "err", err)
 		}
 	}()
+	// Losing the last connection to the coordinator (its relay died) is
+	// checked at once, not at the next health check.
+	a.mu.Lock()
+	coord := a.coord // fixed for the agent's life (a change needs a restart)
+	a.mu.Unlock()
+	a.h.Network().Notify(&network.NotifyBundle{DisconnectedF: func(n network.Network, c network.Conn) {
+		if c.RemotePeer() == coord && n.Connectedness(coord) != network.Connected {
+			a.Kick()
+		}
+	}})
 	go a.maintain()
 	a.writeRunFile()
 	return nil
@@ -336,6 +348,7 @@ func (a *Agent) bind(ctx context.Context) error {
 func (a *Agent) setupBuyer() error {
 	b := buyer.New(a.h, a.keys, peer.AddrInfo{ID: a.coord})
 	b.Evidence = a.cfg.Buy.Evidence
+	b.OnCoordinatorUnreachable = a.Kick
 	if v := a.cfg.Buy.FirstByteSeconds; v > 0 {
 		b.FirstByteTimeout = time.Duration(v) * time.Second
 	}
@@ -389,34 +402,119 @@ func (a *Agent) coordinatorOK(addr string) bool {
 // the best one. It keeps the current relay unless it failed or another is
 // clearly faster, so that small jitter does not cause flapping.
 func (a *Agent) selectRelay(ctx context.Context, currentFailed bool) {
+	res := a.measureRelays(ctx)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	avoided := func(addr string) bool { _, ok := a.avoid[addr]; return ok }
+	a.useRelayLocked(chooseRelay(res, a.current, currentFailed, a.coordinatorOK, avoided), currentFailed)
+}
+
+// measureRelays measures every candidate relay and records the result.
+func (a *Agent) measureRelays(ctx context.Context) []p2p.RelayRTT {
 	a.mu.Lock()
 	addrs := a.relayAddrs()
 	a.mu.Unlock()
 	res := p2p.MeasureRelays(ctx, a.h, addrs, 3)
-
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.relays, a.measured = res, time.Now()
-	best := chooseRelay(res, a.current, currentFailed, a.coordinatorOK)
+	pruneAvoid(a.avoid, res, time.Now())
+	return res
+}
+
+// failover moves coordinator traffic off failed, a relay the coordinator was
+// just found unreachable through. It tries the other reachable relays in
+// order of preference and moves to the first the coordinator answers
+// through; only then is failed avoided for a while (a relay that is up but
+// cannot carry the traffic, like a congested international link, often
+// measures fastest again at once). If the coordinator answers through none,
+// the coordinator itself is down (restarting): no relay is to blame, so the
+// client stays on the best one, by RTT, to be ready when it is back.
+func (a *Agent) failover(ctx context.Context, failed string) {
+	res := a.measureRelays(ctx)
+	a.mu.Lock()
+	avoided := func(addr string) bool { _, ok := a.avoid[addr]; return ok }
+	var cands []p2p.RelayRTT
+	for _, r := range res {
+		if r.OK() && r.Addr != failed {
+			cands = append(cands, r)
+		}
+	}
+	rank := func(r p2p.RelayRTT) int {
+		switch av, ok := avoided(r.Addr), a.coordinatorOK(r.Addr); {
+		case !av && ok:
+			return 0
+		case !av:
+			return 1
+		case ok:
+			return 2
+		}
+		return 3
+	}
+	sort.SliceStable(cands, func(i, j int) bool { return rank(cands[i]) < rank(cands[j]) })
+	a.mu.Unlock()
+
+	for i := range cands {
+		if !a.probeCoordinator(ctx, cands[i]) {
+			continue
+		}
+		a.mu.Lock()
+		if failed != "" {
+			a.avoid[failed] = time.Now().Add(relayAvoidFor)
+		}
+		a.useRelayLocked(&cands[i], true)
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(cands) > 0 {
+		a.warn("coordinator", "coordinator unreachable through every relay (restarting?); waiting on the best relay")
+	}
+	a.useRelayLocked(chooseRelay(res, a.current, true, a.coordinatorOK, avoided), true)
+}
+
+// probeCoordinator reports whether the coordinator can be reached through
+// relay r alone. It leaves the connection open when it can.
+func (a *Agent) probeCoordinator(ctx context.Context, r p2p.RelayRTT) bool {
+	ps := a.h.Peerstore()
+	ps.ClearAddrs(a.coord)
+	ps.AddAddrs(a.coord, p2p.CircuitAddrs(r.Info()), peerstore.TempAddrTTL)
+	if sw, ok := a.h.Network().(*swarm.Swarm); ok {
+		sw.Backoff().Clear(a.coord)
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return a.h.Connect(network.WithAllowLimitedConn(cctx, "sharetoken-ctrl"), peer.AddrInfo{ID: a.coord}) == nil
+}
+
+// useRelayLocked routes coordinator traffic through best (nil: none is
+// reachable). When currentFailed, connections through other relays are
+// closed at once; otherwise requests in flight on the old path may finish.
+func (a *Agent) useRelayLocked(best *p2p.RelayRTT, currentFailed bool) {
+	// The peerstore may hold a probe's address: always restore the chosen one.
+	ps := a.h.Peerstore()
 	if best == nil {
+		if a.current != "" {
+			if ai, err := p2p.ParseRelay(a.current); err == nil {
+				ps.ClearAddrs(a.coord)
+				ps.AddAddrs(a.coord, p2p.CircuitAddrs(ai), peerstore.PermanentAddrTTL)
+			}
+		}
 		a.warn("relay", "no relay is reachable; retrying")
 		return
 	}
 	a.warn("relay", "")
+	ps.ClearAddrs(a.coord)
+	ps.AddAddrs(a.coord, p2p.CircuitAddrs(best.Info()), peerstore.PermanentAddrTTL)
 	if best.Addr != a.current {
 		a.log.Info("using relay", "relay", best.Addr, "rtt", best.RTT.Round(100*time.Microsecond))
-		ps := a.h.Peerstore()
-		ps.ClearAddrs(a.coord)
-		ps.AddAddrs(a.coord, p2p.CircuitAddrs(best.Info()), peerstore.PermanentAddrTTL)
 		if a.current != "" {
+			grace := relaySwitchGrace
 			if currentFailed {
-				_ = a.h.Network().ClosePeer(a.coord) // reconnect through the new relay
-			} else {
-				// The old path still works: let requests in flight on it finish
-				// (closing it at once fails them, and orphans any ticket being
-				// issued), and move over once they are done.
-				go a.closeOldCoordinatorConns(best.Info().ID, relaySwitchGrace)
+				grace = 0 // the old path is dead; keep only the new relay's connection
 			}
+			go a.closeOldCoordinatorConns(best.Info().ID, grace)
 		}
 		a.current = best.Addr
 		a.link.Reset(best.Addr)
@@ -426,15 +524,46 @@ func (a *Agent) selectRelay(ctx context.Context, currentFailed bool) {
 	}
 }
 
+// pruneAvoid drops expired entries from avoid, and clears it when every
+// reachable relay is in it: then the coordinator itself is the likely problem
+// (restarting), not the relays, and the client should choose by RTT again.
+func pruneAvoid(avoid map[string]time.Time, res []p2p.RelayRTT, now time.Time) {
+	for r, until := range avoid {
+		if !now.Before(until) {
+			delete(avoid, r)
+		}
+	}
+	reachable, avoided := 0, 0
+	for _, r := range res {
+		if r.OK() {
+			reachable++
+			if _, ok := avoid[r.Addr]; ok {
+				avoided++
+			}
+		}
+	}
+	if reachable > 0 && avoided == reachable {
+		clear(avoid)
+	}
+}
+
 // chooseRelay picks the relay for coordinator traffic from a measurement
-// (best first): the fastest reachable relay, preferring those the coordinator
-// is known to be reachable through. It keeps current unless current failed or
-// the best is faster by more than max(5ms, 20%), so jitter causes no flapping.
-func chooseRelay(res []p2p.RelayRTT, current string, currentFailed bool, coordinatorOK func(string) bool) *p2p.RelayRTT {
+// (best first): the fastest reachable relay, preferring relays that are not
+// avoided (they recently failed to carry coordinator traffic) and then those
+// the coordinator is known to be reachable through. It keeps current unless
+// current failed or the best is faster by more than max(5ms, 20%), so jitter
+// causes no flapping.
+func chooseRelay(res []p2p.RelayRTT, current string, currentFailed bool, coordinatorOK, avoided func(string) bool) *p2p.RelayRTT {
 	var best *p2p.RelayRTT
-	for _, wantOK := range []bool{true, false} {
+	tiers := []func(string) bool{
+		func(a string) bool { return !avoided(a) && coordinatorOK(a) },
+		func(a string) bool { return !avoided(a) },
+		coordinatorOK,
+		func(string) bool { return true }, // a bad relay beats none
+	}
+	for _, ok := range tiers {
 		for i := range res {
-			if res[i].OK() && (!wantOK || coordinatorOK(res[i].Addr)) {
+			if res[i].OK() && ok(res[i].Addr) {
 				best = &res[i]
 				break
 			}
@@ -447,7 +576,7 @@ func chooseRelay(res []p2p.RelayRTT, current string, currentFailed bool, coordin
 		return best
 	}
 	for i := range res {
-		if r := &res[i]; r.Addr == current && r.OK() {
+		if r := &res[i]; r.Addr == current && r.OK() && !avoided(current) {
 			if best.RTT+max(5*time.Millisecond, r.RTT/5) >= r.RTT {
 				return r // not clearly better: stay
 			}
@@ -493,17 +622,40 @@ func (a *Agent) CoordinatorReachable(ctx context.Context) bool {
 	return a.h.Connect(network.WithAllowLimitedConn(cctx, "sharetoken-ctrl"), peer.AddrInfo{ID: a.coord}) == nil
 }
 
+// Kick asks for a health check now, e.g. because a call to the coordinator
+// just failed. It never blocks; checks run at most every kickMinInterval.
+func (a *Agent) Kick() {
+	select {
+	case a.kick <- struct{}{}:
+	default: // one is already pending
+	}
+}
+
+// kickMinInterval spaces out kicked health checks: while the coordinator is
+// down every request fails and kicks, and each check may refresh the portal
+// and re-measure every relay.
+const kickMinInterval = 2 * time.Second
+
 func (a *Agent) maintain() {
 	health := time.NewTicker(a.HealthEvery)
 	defer health.Stop()
 	lastRefresh := time.Now()
+	var lastCheck time.Time
 	for {
 		select {
 		case <-a.ctx.Done():
 			return
 		case <-health.C:
 		case <-a.kick:
+			if d := kickMinInterval - time.Since(lastCheck); d > 0 {
+				select {
+				case <-a.ctx.Done():
+					return
+				case <-time.After(d):
+				}
+			}
 		}
+		lastCheck = time.Now()
 		if time.Since(lastRefresh) > a.RefreshEvery {
 			lastRefresh = time.Now()
 			if err := a.refreshNetwork(a.ctx); err != nil {
@@ -520,14 +672,32 @@ func (a *Agent) maintain() {
 		current := a.current
 		a.mu.Unlock()
 		a.pingCurrent(current)
-		if !a.CoordinatorReachable(a.ctx) {
+		reachable := a.CoordinatorReachable(a.ctx)
+		lossy := current != "" && a.link.Lossy()
+		if !reachable || lossy {
 			a.mu.Lock()
-			a.warn("coordinator", "coordinator unreachable through "+a.current+"; switching relay")
+			if !reachable {
+				a.warn("coordinator", "coordinator unreachable through "+a.current+"; switching relay")
+			} else {
+				a.warn("coordinator", "relay "+a.current+" is losing pings; switching relay")
+			}
+			if lossy && reachable {
+				// The relay still carries traffic but drops it (a congested
+				// international link); it often measures fastest again right
+				// away, so keep off it for a while.
+				a.avoid[current] = time.Now().Add(relayAvoidFor)
+				a.link.Reset(current) // judge the next relay (or this one again) afresh
+			}
 			a.mu.Unlock()
 			if err := a.refreshNetwork(a.ctx); err == nil { // the portal knows which relays work
 				lastRefresh = time.Now()
 			}
-			a.selectRelay(a.ctx, true)
+			if !reachable {
+				a.failover(a.ctx, current)
+			} else {
+				// Move off gracefully: requests in flight finish on the old path.
+				a.selectRelay(a.ctx, false)
+			}
 			continue
 		}
 		a.mu.Lock()
@@ -538,6 +708,10 @@ func (a *Agent) maintain() {
 		}
 	}
 }
+
+// relayAvoidFor is how long a relay that failed to carry coordinator traffic
+// is passed over when others are reachable.
+const relayAvoidFor = 5 * time.Minute
 
 // relaySwitchGrace is how long the old coordinator connection is kept after
 // switching to a better relay.
@@ -617,11 +791,12 @@ func (a *Agent) startShareLocked(sc ShareConfig) error {
 	go st.reserver.Run(ctx)
 	h := a.h
 	svc, err := node.NewService(ctx, h, a.keys, node.Config{
-		Coordinator:    peer.AddrInfo{ID: a.coord},
-		Models:         sc.Models,
-		Upstream:       &node.OpenAICompat{BaseURL: sc.Upstream, APIKey: apiKey},
-		MaxConcurrency: sc.Concurrency,
-		Quote:          a.quote,
+		Coordinator:              peer.AddrInfo{ID: a.coord},
+		Models:                   sc.Models,
+		Upstream:                 &node.OpenAICompat{BaseURL: sc.Upstream, APIKey: apiKey},
+		MaxConcurrency:           sc.Concurrency,
+		Quote:                    a.quote,
+		OnCoordinatorUnreachable: a.Kick,
 		Addrs: func() []string {
 			out := p2p.AddrStrings(h)
 			for _, c := range st.reserver.CircuitAddrs() {

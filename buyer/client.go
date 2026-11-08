@@ -78,8 +78,13 @@ type Client struct {
 	FirstByteTimeout, IdleTimeout time.Duration
 	// Attestation verifies nodes' TEE quotes; required for RequireTEE.
 	Attestation *Attestation
-	log         *slog.Logger
-	bg          sync.WaitGroup // disputes being delivered in the background
+	// OnCoordinatorUnreachable, if set, is called when a call to the
+	// coordinator fails in transport (no answer, as opposed to a refusal):
+	// the client then checks its relay path at once instead of at the next
+	// health check. It must not block.
+	OnCoordinatorUnreachable func()
+	log                      *slog.Logger
+	bg                       sync.WaitGroup // disputes being delivered in the background
 }
 
 // Attestation is the buyer's TEE trust configuration.
@@ -230,10 +235,16 @@ const DefaultQueueWait = 30 * time.Second
 // side instead of failing requests whenever the network is momentarily full.
 func (c *Client) requestTicket(ctx context.Context, req ChatRequest, exclude []string) (*protocol.TicketResponse, error) {
 	deadline := time.Now().Add(c.QueueWait)
+	// A request that never reached the coordinator (its relay path just
+	// broke) is retried while the client fails over to another relay; the
+	// request was not sent, so this cannot issue two tickets.
+	noPathDeadline := time.Now().Add(noPathRetry)
 	backoff := 200 * time.Millisecond
 	for {
 		tr, err := c.requestTicketOnce(ctx, req, exclude)
-		if protocol.CodeOf(err) != protocol.CodeCapacity || time.Now().Add(backoff).After(deadline) {
+		retry := protocol.CodeOf(err) == protocol.CodeCapacity && !time.Now().Add(backoff).After(deadline) ||
+			errors.Is(err, p2p.ErrNoStream) && !time.Now().Add(backoff).After(noPathDeadline)
+		if !retry {
 			return tr, err
 		}
 		// Jitter spreads out buyers that were refused at the same moment.
@@ -247,9 +258,29 @@ func (c *Client) requestTicket(ctx context.Context, req ChatRequest, exclude []s
 	}
 }
 
+// noPathRetry bounds how long a ticket request that could not reach the
+// coordinator is retried: long enough for a relay failover (seconds), short
+// enough that a coordinator that is down fails requests quickly.
+const noPathRetry = 10 * time.Second
+
+// call is p2p.Call to the coordinator, reporting transport failures.
+func (c *Client) call(ctx context.Context, reqType string, req any, respType string, resp any) error {
+	err := p2p.Call(ctx, c.h, c.coordinator.ID, protocol.CtrlProtocol, reqType, req, respType, resp)
+	c.noteCoordinatorErr(ctx, err)
+	return err
+}
+
+// noteCoordinatorErr calls OnCoordinatorUnreachable for an error that is not
+// the coordinator's answer (and not the caller giving up).
+func (c *Client) noteCoordinatorErr(ctx context.Context, err error) {
+	if err != nil && protocol.CodeOf(err) == "" && ctx.Err() == nil && c.OnCoordinatorUnreachable != nil {
+		c.OnCoordinatorUnreachable()
+	}
+}
+
 func (c *Client) requestTicketOnce(ctx context.Context, req ChatRequest, exclude []string) (*protocol.TicketResponse, error) {
 	var tr protocol.TicketResponse
-	err := p2p.Call(ctx, c.h, c.coordinator.ID, protocol.CtrlProtocol, protocol.TypeTicketRequest,
+	err := c.call(ctx, protocol.TypeTicketRequest,
 		protocol.TicketRequest{
 			Model:        req.Model,
 			BudgetMicros: req.BudgetMicros,
@@ -523,6 +554,7 @@ func (c *Client) disputeWithEvidence(t *protocol.Ticket, sr *receipt.SignedRecei
 func (c *Client) SubmitEvidence(ctx context.Context, ev *protocol.Evidence, chunks [][]byte) (*protocol.Verdict, error) {
 	st, err := c.h.NewStream(network.WithAllowLimitedConn(ctx, "sharetoken-evidence"), c.coordinator.ID, lproto.ID(protocol.CtrlProtocol))
 	if err != nil {
+		c.noteCoordinatorErr(ctx, err)
 		return nil, err
 	}
 	defer st.Close()
@@ -576,21 +608,21 @@ const disputeRetryWindow = 3 * time.Minute
 
 // Dispute contests a job's settlement without evidence.
 func (c *Client) Dispute(ctx context.Context, jobID, reason string) error {
-	return p2p.Call(ctx, c.h, c.coordinator.ID, protocol.CtrlProtocol, protocol.TypeDispute,
+	return c.call(ctx, protocol.TypeDispute,
 		protocol.DisputeRequest{JobID: jobID, Reason: reason}, protocol.TypeOK, nil)
 }
 
 // Models lists models with live offers.
 func (c *Client) Models(ctx context.Context) ([]protocol.ModelSummary, error) {
 	var resp protocol.ModelsResponse
-	err := p2p.Call(ctx, c.h, c.coordinator.ID, protocol.CtrlProtocol, protocol.TypeModels, struct{}{}, protocol.TypeModels, &resp)
+	err := c.call(ctx, protocol.TypeModels, struct{}{}, protocol.TypeModels, &resp)
 	return resp.Models, err
 }
 
 // Balance reports this peer's account.
 func (c *Client) Balance(ctx context.Context) (protocol.BalanceResponse, error) {
 	var resp protocol.BalanceResponse
-	err := p2p.Call(ctx, c.h, c.coordinator.ID, protocol.CtrlProtocol, protocol.TypeBalance, struct{}{}, protocol.TypeBalance, &resp)
+	err := c.call(ctx, protocol.TypeBalance, struct{}{}, protocol.TypeBalance, &resp)
 	return resp, err
 }
 

@@ -3,11 +3,13 @@ package portal
 import (
 	"bytes"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -53,9 +55,18 @@ func (a *api) call(method, path, token string, body any, wantStatus int, out any
 	}
 }
 
+// openSharedDB opens a fresh shared database: a SQLite file, or a private
+// MySQL database when SHARETOKEN_TEST_MYSQL is set (see internal/sqlite).
+func openSharedDB(t *testing.T) (*sql.DB, error) {
+	if os.Getenv("SHARETOKEN_TEST_MYSQL") != "" {
+		return sqlite.Open(sqlite.Memory)
+	}
+	return sqlite.Open(filepath.Join(t.TempDir(), "shared.db"))
+}
+
 func newPortal(t *testing.T, cfg Config) (*Server, *api) {
 	t.Helper()
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "shared.db"))
+	db, err := openSharedDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +178,7 @@ func TestPortalAccountLifecycle(t *testing.T) {
 	a.call("GET", "/api/v1/network", "", nil, 503, nil) // no coordinator has started on this database
 	a.call("POST", "/api/v1/admin/relays", rootTok, map[string]string{"addr": "/ip4/1.2.3.4/tcp/1"}, 400, nil)
 	a.call("POST", "/api/v1/admin/relays", rootTok, map[string]string{"addr": "/ip4/1.2.3.4/tcp/1/p2p/" + k.ID(), "name": "r1"}, 201, nil)
-	if _, err := s.db.Exec(`INSERT INTO meta (key, value) VALUES ('coordinator', ?)`, k.ID()); err != nil {
+	if _, err := s.db.Exec("INSERT INTO meta (`key`, value) VALUES ('coordinator', ?)", k.ID()); err != nil {
 		t.Fatal(err)
 	}
 	var n NetworkInfo

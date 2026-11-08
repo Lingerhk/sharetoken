@@ -80,6 +80,55 @@ CREATE TABLE IF NOT EXISTS relays (
 ) STRICT;
 `
 
+// SchemaMySQL is Schema for MySQL 8 (see internal/sqlite/mysql.go).
+const SchemaMySQL = `
+CREATE TABLE IF NOT EXISTS users (
+	id         BIGINT PRIMARY KEY AUTO_INCREMENT,
+	username   VARCHAR(191) NOT NULL UNIQUE,
+	pass_hash  TEXT NOT NULL,
+	is_admin   BIGINT NOT NULL DEFAULT 0,
+	disabled   BIGINT NOT NULL DEFAULT 0,
+	created_at BIGINT NOT NULL,
+	mfa_secret      VARBINARY(255) NOT NULL DEFAULT '',
+	mfa_enrolled_at BIGINT NOT NULL DEFAULT 0,
+	mfa_last_step   BIGINT NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS api_tokens (
+	id           BIGINT PRIMARY KEY AUTO_INCREMENT,
+	user_id      BIGINT NOT NULL,
+	name         VARCHAR(255) NOT NULL,
+	hash         VARBINARY(64) NOT NULL UNIQUE,
+	prefix       VARCHAR(64) NOT NULL,
+	created_at   BIGINT NOT NULL,
+	last_used_at BIGINT NOT NULL DEFAULT 0,
+	expires_at   BIGINT NOT NULL DEFAULT 0,
+	revoked      BIGINT NOT NULL DEFAULT 0,
+	mfa          BIGINT NOT NULL DEFAULT 0,
+	KEY api_tokens_by_user (user_id),
+	FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS devices (
+	peer         VARCHAR(191) PRIMARY KEY,
+	user_id      BIGINT NOT NULL,
+	name         VARCHAR(255) NOT NULL,
+	created_at   BIGINT NOT NULL,
+	last_seen_at BIGINT NOT NULL DEFAULT 0,
+	KEY devices_by_user (user_id),
+	FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS relays (
+	id             BIGINT PRIMARY KEY AUTO_INCREMENT,
+	addr           VARCHAR(2048) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
+	name           VARCHAR(255) NOT NULL DEFAULT '',
+	region         VARCHAR(255) NOT NULL DEFAULT '',
+	enabled        BIGINT NOT NULL DEFAULT 1,
+	coordinator_ok BIGINT NOT NULL DEFAULT 0,
+	checked_at     BIGINT NOT NULL DEFAULT 0,
+	detail         TEXT NOT NULL DEFAULT (''),
+	rtt_ms         BIGINT NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+`
+
 // Errors.
 var (
 	ErrUnknownDevice  = errors.New("accounts: device is not bound to any user")

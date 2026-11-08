@@ -184,7 +184,7 @@ func TestWebSessionsAndCSRF(t *testing.T) {
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 
 func TestSecureCookieOverTLS(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "shared.db"))
+	db, err := openSharedDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +477,7 @@ func TestResolveDisputeFromPortal(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.db.Exec(`INSERT INTO meta (key, value) VALUES ('fee_bps', '1000')`); err != nil {
+	if _, err := s.db.Exec("INSERT INTO meta (`key`, value) VALUES ('fee_bps', '1000')"); err != nil {
 		t.Fatal(err)
 	}
 	seed("job-refund")
@@ -593,7 +593,7 @@ func TestReadsDoNotNeedWriteLock(t *testing.T) {
 // The network page shows the coordinator's latency to each relay and lists
 // working relays fastest first.
 func TestNetworkShowsRelayLatency(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "shared.db"))
+	db, err := openSharedDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +602,7 @@ func TestNetworkShowsRelayLatency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO meta (key, value) VALUES ('coordinator', 'coord')`); err != nil {
+	if _, err := db.Exec("INSERT INTO meta (`key`, value) VALUES ('coordinator', 'coord')"); err != nil {
 		t.Fatal(err)
 	}
 	seed := func(addr string, ok bool, rtt int64) {

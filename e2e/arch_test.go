@@ -1,18 +1,22 @@
 package e2e
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/control"
 	lnet "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -43,6 +47,8 @@ type network struct {
 	url     string // portal base URL
 	admin   string // admin token
 	passKey ed25519.PrivateKey
+	// healthEvery is the clients' health-check interval (default 200ms).
+	healthEvery time.Duration
 }
 
 func newNetwork(t *testing.T, relays int) *network {
@@ -134,6 +140,17 @@ func (n *network) user(name string, share *client.ShareConfig) *client.Agent {
 // there and can dial nothing else.
 func (n *network) userOn(name string, share *client.ShareConfig, listen string) *client.Agent {
 	n.t.Helper()
+	fam := ma.P_IP4
+	if strings.HasPrefix(listen, "/ip6/") {
+		fam = ma.P_IP6
+	}
+	return n.userWith(name, share, listen, onlyFamily{fam}, nil)
+}
+
+// userWith starts a user whose host dials through gater; edit, if not nil,
+// adjusts its configuration first.
+func (n *network) userWith(name string, share *client.ShareConfig, listen string, gater connmgr.ConnectionGater, edit func(*client.Config)) *client.Agent {
+	n.t.Helper()
 	home := n.t.TempDir()
 	pc := client.NewPortalClient(n.url, "", "")
 	res, err := pc.Register(n.ctx, name, "password-"+name, "test")
@@ -149,16 +166,15 @@ func (n *network) userOn(name string, share *client.ShareConfig, listen string) 
 	if share != nil {
 		cfg.Share = *share
 	}
+	if edit != nil {
+		edit(&cfg)
+	}
 	if err := client.SaveConfig(home, cfg); err != nil {
 		n.t.Fatal(err)
 	}
 	a := client.NewAgent(home, cfg)
-	a.HealthEvery, a.MeasureEvery = 200*time.Millisecond, time.Hour
-	fam := ma.P_IP4
-	if strings.HasPrefix(listen, "/ip6/") {
-		fam = ma.P_IP6
-	}
-	a.HostOptions = []libp2p.Option{libp2p.ConnectionGater(onlyFamily{fam})}
+	a.HealthEvery, a.MeasureEvery = cmp.Or(n.healthEvery, 200*time.Millisecond), time.Hour
+	a.HostOptions = []libp2p.Option{libp2p.ConnectionGater(gater)}
 	if err := a.Start(n.ctx); err != nil {
 		n.t.Fatalf("starting %s: %v", name, err)
 	}
@@ -470,5 +486,181 @@ func TestIPv4AndIPv6OnlyUsersTrade(t *testing.T) {
 			st := a.Status()
 			return st.Coordinator.Connected && st.Coordinator.Link != nil && st.Coordinator.Link.LossPct == 0
 		})
+	}
+}
+
+// blackhole is an IPv4-only gater that refuses circuit dials to one peer
+// through the relays in its set: those relays stay up and answer pings, but
+// the peer cannot be reached through them (a relay on a congested link, or,
+// with every relay in the set, the peer being down).
+type blackhole struct {
+	onlyFamily
+	target peer.ID
+	mu     sync.Mutex
+	relays map[peer.ID]bool
+}
+
+func (g *blackhole) set(relays ...peer.ID) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.relays = map[peer.ID]bool{}
+	for _, r := range relays {
+		g.relays[r] = true
+	}
+}
+
+func (g *blackhole) InterceptAddrDial(p peer.ID, a ma.Multiaddr) bool {
+	if p == g.target {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		for r := range g.relays {
+			if strings.Contains(a.String(), "/p2p/"+r.String()+"/p2p-circuit") {
+				return false
+			}
+		}
+	}
+	return g.onlyFamily.InterceptAddrDial(p, a)
+}
+
+// delayProxy forwards TCP connections to target, holding each chunk for
+// delay in both directions: a relay on a slower path.
+func delayProxy(t *testing.T, target string, delay time.Duration) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	pipe := func(dst, src net.Conn) {
+		defer dst.Close()
+		buf := make([]byte, 32<<10)
+		for {
+			k, err := src.Read(buf)
+			if k > 0 {
+				time.Sleep(delay)
+				if _, werr := dst.Write(buf[:k]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			u, err := net.Dial("tcp", target)
+			if err != nil {
+				_ = c.Close()
+				continue
+			}
+			go pipe(u, c)
+			go pipe(c, u)
+		}
+	}()
+	return l.Addr().String()
+}
+
+// A relay that answers pings fastest but cannot carry coordinator traffic is
+// passed over once it has failed, instead of being picked again and again by
+// RTT (validation-v2-mysql.md §4.1: relay-cn after relay-sg died), and a later
+// measurement does not move the client back onto it.
+func TestRelayThatFailsTheCoordinatorIsAvoided(t *testing.T) {
+	n := newNetwork(t, 2)
+	alice := n.user("alice", shareMock(mockUpstream(t, "mock-7b", false).URL, priceIn, priceOut))
+	fast, slow := n.relays[0].Host, n.relays[1].Host
+	var slowTCP string
+	for _, a := range slow.Addrs() {
+		if v, err := a.ValueForProtocol(ma.P_TCP); err == nil && strings.HasPrefix(a.String(), "/ip4/") {
+			ip, _ := a.ValueForProtocol(ma.P_IP4)
+			slowTCP = net.JoinHostPort(ip, v)
+		}
+	}
+	host, port, _ := net.SplitHostPort(delayProxy(t, slowTCP, 25*time.Millisecond))
+	slowAddr := p2p.RelayAddr(peer.AddrInfo{ID: slow.ID(), Addrs: []ma.Multiaddr{ma.StringCast("/ip4/" + host + "/tcp/" + port)}})
+	fastAddr := p2p.RelayAddr(peer.AddrInfo{ID: fast.ID(), Addrs: fast.Addrs()})
+
+	g := &blackhole{onlyFamily: onlyFamily{ma.P_IP4}, target: n.coordH}
+	bob := n.userWith("bob", nil, "/ip4/127.0.0.1/tcp/0", g, func(c *client.Config) { c.Relays = []string{fastAddr, slowAddr} })
+	waitFor(t, 20*time.Second, "alice's offer", func() bool { return len(n.coord.Engine.Offers()) == 1 })
+	if via := bob.Status().Coordinator.Via; via != fastAddr {
+		t.Fatalf("bob should start on the fast relay, is on %s", via)
+	}
+	chat(t, bob)
+
+	// The coordinator is down (unreachable through every relay): no relay is
+	// to blame, so bob stays on the fastest one instead of wandering onto
+	// slower ones and avoiding them all.
+	g.set(fast.ID(), slow.ID())
+	_ = bob.Host().Network().ClosePeer(n.coordH)
+	waitFor(t, 10*time.Second, "bob to notice the coordinator is gone", func() bool { return !bob.Status().Coordinator.Connected })
+	for range 15 {
+		bob.Kick()
+		time.Sleep(200 * time.Millisecond)
+		if via := bob.Status().Coordinator.Via; via != fastAddr {
+			t.Fatalf("coordinator down: bob left the fastest relay for %s", via)
+		}
+	}
+	g.set()
+	waitFor(t, 30*time.Second, "bob back on the fast relay", func() bool {
+		st := bob.Status()
+		return st.Coordinator.Via == fastAddr && st.Coordinator.Connected
+	})
+	chat(t, bob)
+
+	// The fast relay stops carrying coordinator traffic but keeps answering
+	// pings, while the coordinator is reachable through the slow one.
+	g.set(fast.ID())
+	_ = bob.Host().Network().ClosePeer(n.coordH)
+	waitFor(t, 30*time.Second, "bob to move to the slow relay", func() bool {
+		st := bob.Status()
+		return st.Coordinator.Via == slowAddr && st.Coordinator.Connected
+	})
+	for i := range 10 {
+		res := bob.Remeasure(n.ctx)
+		if len(res) != 2 || res[0].Addr != fastAddr || !res[0].OK() || !res[1].OK() || res[1].RTT < 20*time.Millisecond {
+			t.Fatalf("measurement %d: want the bad relay fastest and both up: %+v", i, res)
+		}
+		if via := bob.Status().Coordinator.Via; via != slowAddr {
+			t.Fatalf("measurement %d: bob moved back to the relay that cannot reach the coordinator", i)
+		}
+	}
+	if content, hdr := chat(t, bob); content != "Hello, world!" || hdr.Get("X-Sharetoken-Node") != alice.PeerID() {
+		t.Fatalf("after avoiding the relay bob got %q from %s", content, hdr.Get("X-Sharetoken-Node"))
+	}
+}
+
+// When the relay carrying a buyer's coordinator traffic dies, the failed
+// call itself triggers the failover (no periodic health check runs here),
+// and the request that hit the dead path is retried and succeeds instead of
+// failing.
+func TestFailedCoordinatorCallTriggersFailover(t *testing.T) {
+	n := newNetwork(t, 2)
+	n.healthEvery = time.Hour // only kicks drive failover
+	alice := n.user("alice", shareMock(mockUpstream(t, "mock-7b", false).URL, priceIn, priceOut))
+	bob := n.user("bob", nil)
+	waitFor(t, 20*time.Second, "alice's offer", func() bool { return len(n.coord.Engine.Offers()) == 1 })
+	chat(t, bob)
+
+	via := bob.Status().Coordinator.Via
+	for _, r := range n.relays {
+		if ai, _ := p2p.ParseRelay(via); ai.ID == r.Host.ID() {
+			_ = r.Close()
+		}
+	}
+	start := time.Now()
+	content, hdr := chat(t, bob) // fails the test on any error
+	if content != "Hello, world!" || hdr.Get("X-Sharetoken-Node") != alice.PeerID() {
+		t.Fatalf("after the relay died bob got %q from %s", content, hdr.Get("X-Sharetoken-Node"))
+	}
+	if d := time.Since(start); d > 15*time.Second {
+		t.Fatalf("failover took %s", d)
+	}
+	if st := bob.Status(); st.Coordinator.Via == via || !st.Coordinator.Connected {
+		t.Fatalf("bob still on the dead relay: %+v", st.Coordinator)
 	}
 }

@@ -6,12 +6,16 @@ import (
 	"testing"
 	"time"
 
+	"sharetoken/internal/sqlite"
 	"sharetoken/protocol"
 )
 
 // explain returns the query plan of a statement as one string.
 func explain(t *testing.T, db *sql.DB, query string, args ...any) string {
 	t.Helper()
+	if sqlite.IsMySQL(db) {
+		t.Skip("asserts SQLite query plans")
+	}
 	rows, err := db.Query("EXPLAIN QUERY PLAN "+query, args...)
 	if err != nil {
 		t.Fatal(err)

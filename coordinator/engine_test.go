@@ -808,12 +808,15 @@ func TestTicketsNeverStartedAreReleasedEarly(t *testing.T) {
 // account's job history (they run under the engine's write lock).
 func TestHotQueriesAreIndexed(t *testing.T) {
 	f := newFixture(t, Config{})
+	if sqlite.IsMySQL(f.eng.db) {
+		t.Skip("asserts SQLite query plans")
+	}
 	for q, want := range map[string]string{
-		`SELECT node, dispute_reason != '' FROM jobs WHERE buyer_acct = 'a' AND status = 'held' AND started_at = 0 AND created_at < 1`: "jobs_buyer_unstarted (buyer_acct=? AND status=? AND started_at=? AND created_at<?)",
-		`SELECT node, COUNT(*) FROM jobs WHERE status = 'held' GROUP BY node`:                                                          "jobs_status_node (status=?)",
-		`SELECT SUM(prompt_tokens), SUM(cost) FROM jobs WHERE buyer_acct = 'a' AND status = 'final'`:                                   "COVERING INDEX jobs_buy_usage",
-		`SELECT SUM(completion_tokens), SUM(cost - fee) FROM jobs WHERE node_acct = 'a' AND status = 'final'`:                          "COVERING INDEX jobs_sell_usage",
-		`DELETE FROM jobs WHERE status IN ('final', 'released', 'refunded') AND done_at < 1`:                                           "jobs_status_done (status=? AND done_at<?)",
+		`SELECT node, dispute_reason != '' FROM jobs WHERE buyer_acct = 'a' AND status = 'held' AND started_at = 0 AND created_at < 1`:          "jobs_buyer_unstarted (buyer_acct=? AND status=? AND started_at=? AND created_at<?)",
+		`SELECT node, COUNT(*) FROM jobs WHERE status = 'held' AND (started_at != 0 OR ticket_expires = 0 OR ticket_expires > 1) GROUP BY node`: "jobs_status_node (status=?)",
+		`SELECT SUM(prompt_tokens), SUM(cost) FROM jobs WHERE buyer_acct = 'a' AND status = 'final'`:                                            "COVERING INDEX jobs_buy_usage",
+		`SELECT SUM(completion_tokens), SUM(cost - fee) FROM jobs WHERE node_acct = 'a' AND status = 'final'`:                                   "COVERING INDEX jobs_sell_usage",
+		`DELETE FROM jobs WHERE status IN ('final', 'released', 'refunded') AND done_at < 1`:                                                    "jobs_status_done (status=? AND done_at<?)",
 	} {
 		var plan strings.Builder
 		rows, err := f.eng.db.Query("EXPLAIN QUERY PLAN " + q)
@@ -1004,4 +1007,222 @@ func TestFinishedJobsArePurgedAfterRetention(t *testing.T) {
 		}
 	}
 	f.booksBalance() // the journal is kept
+}
+
+// A ticket for a node that reconnected after it was issued (it lost or
+// switched its relay, so its start report may be late) does not count as
+// unused against the buyer.
+func TestTicketsBeforeANodeReconnectAreNotStale(t *testing.T) {
+	since := map[string]time.Time{}
+	f := newFixture(t, Config{MaxStaleTickets: 2, StaleAfter: 10 * time.Second,
+		ConnectedSince: func(p string) time.Time { return since[p] }})
+	node, buyer := mustKeys(t), mustKeys(t)
+	since[buyer.ID()] = f.now.Add(-time.Hour)
+	since[node.ID()] = f.now.Add(-time.Hour)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	f.deposit(buyer, 1_000_000)
+	f.ticket(buyer, 10)
+	f.ticket(buyer, 10)
+	f.now = f.now.Add(11 * time.Second)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
+		t.Fatalf("both connected throughout: want busy, got %v", err)
+	}
+	since[node.ID()] = f.now.Add(-time.Second) // the node just reconnected through another relay
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); err != nil {
+		t.Fatalf("tickets issued before the node's reconnect locked the buyer out: %v", err)
+	}
+}
+
+// A job whose node reconnected after the ticket was issued (its start report
+// may still be on its way) is not released early as never started; it is
+// once ReconnectGrace has passed since the reconnect.
+func TestUnstartedJobOfAReconnectedNodeIsNotReleasedEarly(t *testing.T) {
+	since := map[string]time.Time{}
+	f := newFixture(t, Config{TicketTTL: time.Minute, StartGrace: 30 * time.Second, ReconnectGrace: 5 * time.Minute,
+		ConnectedSince: func(p string) time.Time { return since[p] }})
+	node, other, buyer, buyer2 := mustKeys(t), mustKeys(t), mustKeys(t), mustKeys(t)
+	f.deposit(buyer2, 1_000_000)
+	since[node.ID()], since[other.ID()] = f.now.Add(-time.Hour), f.now.Add(-time.Hour)
+	f.offer(node, "m", priceIn, priceOut, 1)
+	f.deposit(buyer, 1_000_000)
+	reconnected := f.ticket(buyer, 1000)
+	f.offer(node, "m", priceIn, priceOut, 0) // stop offering: the next ticket goes to other
+	f.offer(other, "m", priceIn, priceOut, 1)
+	steady := f.ticket(buyer, 1000)
+	if steady.Node != other.ID() {
+		t.Fatalf("second ticket went to %s", steady.Node)
+	}
+	since[node.ID()] = f.now.Add(20 * time.Second) // node switched relays after the ticket
+
+	f.now = f.now.Add(91 * time.Second)
+	f.eng.Tick(f.now)
+	if st, _ := f.eng.JobStatus(steady.JobID); st != StatusReleased {
+		t.Fatalf("node connected throughout: want released, got %s", st)
+	}
+	if st, _ := f.eng.JobStatus(reconnected.JobID); st != StatusHeld {
+		t.Fatalf("node reconnected: want held, got %s", st)
+	}
+	// The kept job no longer takes the node's only slot (a node that
+	// restarted lost it for good).
+	f.offer(node, "m", priceIn, priceOut, 1)
+	r, err := f.eng.IssueTicket(buyer2.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1000, Node: node.ID()})
+	if err != nil {
+		t.Fatalf("slot still taken by the kept job: %v", err)
+	}
+	if err := f.eng.Abandon(node.ID(), protocol.AbandonRequest{Ticket: r.Ticket, Reason: "test", NoFault: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Its late start report is still accepted, and settlement proceeds as usual.
+	if err := f.eng.MarkStarted(node.ID(), *reconnected); err != nil {
+		t.Fatalf("late start report: %v", err)
+	}
+	sr := signReceipt(t, node, reconnected, 100, 50)
+	if resp, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *reconnected, Receipt: sr, Ack: ack(buyer, &sr)}); err != nil || resp.Status != string(StatusFinal) {
+		t.Fatalf("settle: %+v %v", resp, err)
+	}
+
+	// Without a start report the job is released once the grace runs out.
+	unreported := mustKeys(t)
+	since[unreported.ID()] = f.now.Add(-time.Hour)
+	f.offer(unreported, "m", priceIn, priceOut, 1)
+	resp, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1000, Node: unreported.ID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk := &resp.Ticket
+	since[unreported.ID()] = f.now.Add(10 * time.Second)
+	f.now = f.now.Add(4 * time.Minute)
+	f.eng.Tick(f.now)
+	if st, _ := f.eng.JobStatus(tk.JobID); st != StatusHeld {
+		t.Fatalf("within the reconnect grace: want held, got %s", st)
+	}
+	f.now = f.now.Add(2 * time.Minute) // 5m10s after the reconnect
+	f.eng.Tick(f.now)
+	if st, _ := f.eng.JobStatus(tk.JobID); st != StatusReleased || f.stats(unreported).Failures != 0 {
+		t.Fatalf("after the reconnect grace: %s, failures %d", st, f.stats(unreported).Failures)
+	}
+	f.booksBalance()
+}
+
+// A job released early as never started is still paid when its settlement
+// arrives before the settlement deadline with the buyer's acknowledgement
+// (the start report was lost): the buyer is charged the receipt's cost and
+// the node paid. Without an ack, past the deadline, or when the buyer can no
+// longer pay, the settlement is refused.
+func TestLateSettlementOfAnEarlyReleasedJob(t *testing.T) {
+	f := newFixture(t, Config{FeeBps: 500, TicketTTL: time.Minute, StartGrace: 30 * time.Second, SettleGrace: 15 * time.Minute})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 4)
+	f.deposit(buyer, 10_000)
+	tk := f.ticket(buyer, 5_000)
+	noAck := f.ticket(buyer, 1_000)
+	tooLate := f.ticket(buyer, 1_000)
+	f.now = f.now.Add(91 * time.Second)
+	f.eng.Tick(f.now)
+	for _, x := range []*protocol.Ticket{tk, noAck, tooLate} {
+		if st, _ := f.eng.JobStatus(x.JobID); st != StatusReleased {
+			t.Fatalf("want released early, got %s", st)
+		}
+	}
+	if f.balance(buyer) != 10_000 || f.held(buyer) != 0 {
+		t.Fatalf("after release: balance %d held %d", f.balance(buyer), f.held(buyer))
+	}
+
+	// A plain receipt, signed by the node alone, proves nothing.
+	sr := signReceipt(t, node, noAck, 100, 50)
+	if _, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *noAck, Receipt: sr}); protocol.CodeOf(err) != protocol.CodeConflict {
+		t.Fatalf("no ack: want conflict, got %v", err)
+	}
+	// An ack the node forged is rejected.
+	sr = signReceipt(t, node, tk, 1000, 500) // 1000*1 + 500*2 = 2000 micros
+	if _, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: sr, Ack: ack(node, &sr)}); protocol.CodeOf(err) != protocol.CodeBadRequest {
+		t.Fatalf("forged ack: want bad request, got %v", err)
+	}
+	// The buyer's ack: paid as a normal settlement, and idempotent.
+	req := protocol.SettleRequest{Ticket: *tk, Receipt: sr, Ack: ack(buyer, &sr)}
+	resp, err := f.eng.Settle(node.ID(), req)
+	if err != nil || resp.Status != string(StatusFinal) || resp.CostMicros != 2000 || resp.FeeMicros != 100 {
+		t.Fatalf("late settle: %+v %v", resp, err)
+	}
+	if again, err := f.eng.Settle(node.ID(), req); err != nil || again.Status != string(StatusFinal) {
+		t.Fatalf("repeat: %+v %v", again, err)
+	}
+	if f.balance(buyer) != 8_000 || f.balance(node) != 1_900 || f.stats(node).Successes != 1 {
+		t.Fatalf("buyer %d node %d stats %+v", f.balance(buyer), f.balance(node), f.stats(node))
+	}
+	if st, _ := f.eng.JobStatus(tk.JobID); st != StatusFinal {
+		t.Fatalf("job status %s", st)
+	}
+
+	// Past the settlement deadline (ticket + SettleGrace) it is refused.
+	f.now = f.now.Add(15 * time.Minute)
+	sr = signReceipt(t, node, tooLate, 100, 50)
+	if _, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tooLate, Receipt: sr, Ack: ack(buyer, &sr)}); protocol.CodeOf(err) != protocol.CodeConflict {
+		t.Fatalf("past the deadline: want conflict, got %v", err)
+	}
+	f.booksBalance()
+}
+
+// A late settlement the buyer can no longer cover is refused and changes
+// nothing.
+func TestLateSettlementTheBuyerCannotPay(t *testing.T) {
+	f := newFixture(t, Config{TicketTTL: time.Minute, StartGrace: 30 * time.Second})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 4)
+	f.deposit(buyer, 3_000)
+	tk := f.ticket(buyer, 3_000)
+	f.now = f.now.Add(91 * time.Second)
+	f.eng.Tick(f.now)
+	// The released funds are spent on another job meanwhile.
+	f.offer(node, "m", priceIn, priceOut, 4)
+	spend := f.ticket(buyer, 3_000)
+	sr := signReceipt(t, node, spend, 1000, 1000) // 3000
+	if _, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *spend, Receipt: sr, Ack: ack(buyer, &sr)}); err != nil {
+		t.Fatal(err)
+	}
+	sr = signReceipt(t, node, tk, 1000, 500)
+	if _, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: sr, Ack: ack(buyer, &sr)}); protocol.CodeOf(err) != protocol.CodeConflict {
+		t.Fatalf("unpayable: want conflict, got %v", err)
+	}
+	if st, _ := f.eng.JobStatus(tk.JobID); st != StatusReleased || f.balance(buyer) != 0 {
+		t.Fatalf("status %s buyer %d", st, f.balance(buyer))
+	}
+	f.booksBalance()
+}
+
+// The default hoarding limits: 5 unused tickets, counted after 15 s.
+func TestStaleTicketDefaults(t *testing.T) {
+	f := newFixture(t, Config{})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	f.deposit(buyer, 1_000_000)
+	for range 5 {
+		f.ticket(buyer, 10)
+	}
+	f.now = f.now.Add(14 * time.Second)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); err != nil {
+		t.Fatalf("5 tickets 14 s old are not stale yet: %v", err)
+	}
+	f.now = f.now.Add(2 * time.Second) // the first five are now 16 s old
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
+		t.Fatalf("5 stale tickets: want busy, got %v", err)
+	}
+}
+
+// Four stale tickets are below the default limit.
+func TestFourStaleTicketsAreAllowedByDefault(t *testing.T) {
+	f := newFixture(t, Config{})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	f.deposit(buyer, 1_000_000)
+	for range 4 {
+		f.ticket(buyer, 10)
+	}
+	f.now = f.now.Add(16 * time.Second)
+	f.offer(node, "m", priceIn, priceOut, 100)
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); err != nil {
+		t.Fatalf("4 stale tickets: %v", err)
+	}
 }

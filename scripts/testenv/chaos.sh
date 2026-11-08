@@ -10,7 +10,7 @@ EV=$OUT/events.log
 ev() { echo "$(date +%s) $*" | tee -a $EV; }
 # verify HOST PROCESS LABEL: 15s after a restart, record whether it is running
 # (in the background, so the schedule does not shift).
-verify() { ( sleep 15; if T=20 rsh $1 "pgrep -x $2 > /dev/null"; then ev "  verify: $3 up"; else ev "  verify: $3 NOT RUNNING"; fi ) & }
+verify() { ( sleep 15; if [ "$1" = "$STDB" ]; then T=20 stdbsh "pgrep -x $2 > /dev/null"; else T=20 rsh $1 "pgrep -x $2 > /dev/null"; fi; if [ $? = 0 ]; then ev "  verify: $3 up"; else ev "  verify: $3 NOT RUNNING"; fi ) & }
 
 ev start
 # load
@@ -21,11 +21,11 @@ python3 $REPO/scripts/st_bench.py load -m qwen2.5:0.5b -c 2 -d $D --stream --max
 
 sleep 60;  ev kill relay-sg;        timeout 20 ssh $Q -n s0nnet@$SG 'pkill -x relay'
 sleep 90;  ev restart relay-sg;     relay_start $SG $SG6; verify $SG relay relay-sg
-sleep 90;  ev kill -9 coordinator;  rsh $ARMBIAN 'pkill -9 -x coordinator'
-sleep 10;  ev restart coordinator;  rsh $ARMBIAN "cd ~/st-test && setsid nohup $COORD_CMD >> coord.log 2>&1 < /dev/null & sleep 1"; verify $ARMBIAN coordinator coordinator
+sleep 90;  ev kill -9 coordinator;  stdbsh 'pkill -9 -x coordinator'
+sleep 10;  ev restart coordinator;  coord_start; verify $STDB coordinator coordinator
 sleep 110; ev kill -9 seller-sam;   timeout 20 ssh $Q -n s0nnet@$SG 'pkill -9 -x sharetoken'
 sleep 60;  ev restart seller-sam;   timeout 20 ssh $Q -n s0nnet@$SG 'cd ~/st-test && SHARETOKEN_HOME=$HOME/st-test/sam setsid nohup ./sharetoken up >> sam.log 2>&1 < /dev/null & sleep 1'; verify $SG sharetoken seller-sam
-sleep 60;  ev restart portal;       rsh $ARMBIAN "cd ~/st-test && pkill -x portal; sleep 1; setsid nohup $PORTAL_CMD >> portal.log 2>&1 < /dev/null & sleep 1"; verify $ARMBIAN portal portal
+sleep 60;  ev restart portal;       stdbsh 'pkill -x portal'; sleep 1; portal_start; verify $STDB portal portal
 sleep 120; ev kill carol-upstream;  timeout 20 ssh $Q -n s0nnet@119.29.250.173 'for p in $(pgrep -u s0nnet -x python3); do grep -q mock_upstream /proc/$p/cmdline && kill $p; done'
 sleep 60;  ev restart carol-upstream; timeout 20 ssh $Q -n s0nnet@119.29.250.173 'cd ~/st-test && MOCK_WORDS=48 MOCK_DELAY_MS=5 setsid nohup python3 mock_upstream.py 18080 mock-fast >> mock.log 2>&1 < /dev/null & sleep 1'
 sleep 60;  ev kill relay-us;        timeout 20 ssh $Q -n s0nnet@$US 'pkill -x relay'

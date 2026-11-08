@@ -31,9 +31,12 @@
 
 | 文档 | 内容 |
 |---|---|
-| [docs/design-v2.md](docs/design-v2.md) | v2 架构：四个角色、用户账户、经中继访问协调器、中继选择、共用数据库与 MySQL 迁移 |
+| [docs/design-v2.md](docs/design-v2.md) | v2 架构：四个角色、用户账户、经中继访问协调器、中继选择、共用数据库（SQLite 或 MySQL） |
 | [docs/guide-v2.md](docs/guide-v2.md) | 用户命令、运维部署、本地管理 API（GUI）、门户 HTTP API |
 | [docs/validation-v2.md](docs/validation-v2.md) | 自动化测试、本机演示、三机跨公网实测 |
+| [docs/validation-v2-distributed.md](docs/validation-v2-distributed.md) | 7 机跨三大洲实测：功能、性能、故障注入、长稳 |
+| [docs/validation-v2-mysql.md](docs/validation-v2-mysql.md) | 门户和协调器迁到 MySQL 后的复测 |
+| [docs/test-env.md](docs/test-env.md) | 分布式测试环境（主机、访问路径、脚本） |
 | [docs/design-v1.md](docs/design-v1.md) | 收据、证据裁决、抽检、TEE 等机制（v2 沿用） |
 | [docs/validation-v1.md](docs/validation-v1.md) | v1 实测与协调器压测 |
 | [reports/](reports/) | 前期调研：AI token 共享平台 |

@@ -247,7 +247,7 @@ func (s *Server) Overview() (Overview, error) {
 }
 
 func (s *Server) ledgerTx(fn func(tx *sql.Tx, led *ledger.Tx) error) error {
-	tx, err := s.db.Begin()
+	tx, err := sqlite.Begin(s.db)
 	if err != nil {
 		return err
 	}

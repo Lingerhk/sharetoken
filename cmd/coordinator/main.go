@@ -46,7 +46,7 @@ import (
 
 func main() {
 	keyPath := flag.String("key", "coordinator.key", "identity seed file (created with mode 0600 if missing)")
-	dbPath := flag.String("db", "sharetoken.db", `SQLite database shared with the portal: ledger, accounts, jobs, node records`)
+	dbPath := flag.String("db", "sharetoken.db", `database shared with the portal (ledger, accounts, jobs, node records): a SQLite file, or mysql://user@host:port/db (password from $SHARETOKEN_DB_PASSWORD)`)
 	listen := flag.String("listen", "", "comma-separated listen multiaddrs (default: none; the coordinator is reachable only through its relays)")
 	feeBps := flag.Int64("fee-bps", 500, "platform fee, in basis points of each settled job")
 	var relays cli.Repeated
@@ -81,6 +81,12 @@ func main() {
 	}
 	defer db.Close()
 
+	if flag.Arg(0) == "copy-db" { // before the admin engine: it must not write the source
+		if err := copyDB(db, flag.Args()[1:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if cmd := flag.Arg(0); cmd != "" && cmd != "serve" {
 		if err := admin(keys, db, cmd, flag.Args()[1:]); err != nil {
 			log.Fatal(err)
@@ -202,6 +208,26 @@ func parseReferences(specs []string) ([]audit.Reference, map[string]tokens.Serve
 
 // admin runs an operator command against the database. It is safe beside a
 // running coordinator: SQLite serializes the two processes' transactions.
+// copyDB copies the -db database into another one, normally an empty MySQL
+// database: coordinator -db st.db copy-db mysql://sharetoken@host/sharetoken.
+// Stop the portal and the coordinator first.
+func copyDB(src *sql.DB, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: coordinator -db <source> copy-db <destination DSN or file>")
+	}
+	dst, err := sqlite.Open(args[0])
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	start := time.Now()
+	if err := coordinator.CopyDatabase(src, dst, func(t string, n int64) { fmt.Printf("%-16s %d rows\n", t, n) }); err != nil {
+		return err
+	}
+	fmt.Printf("copied in %v; check it with: coordinator -db <destination> check\n", time.Since(start).Round(time.Millisecond))
+	return nil
+}
+
 func admin(keys *p2p.Keys, db *sql.DB, cmd string, args []string) error {
 	eng, err := coordinator.NewEngine(keys.ID(), keys.Signer, coordinator.Config{DB: db})
 	if err != nil {

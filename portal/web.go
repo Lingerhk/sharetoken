@@ -507,7 +507,7 @@ func (s *Server) handleJournal(w http.ResponseWriter, r *http.Request, _ ctxUser
 		// Two index-ordered scans merged (an OR of the two columns would sort
 		// the account's whole history); UNION ALL is exact as debit != credit.
 		const side = `SELECT ` + cols + ` FROM ledger_entries WHERE %s = ? AND seq < ? ORDER BY seq DESC LIMIT ?`
-		query = `SELECT * FROM (` + fmt.Sprintf(side, "debit") + `) UNION ALL SELECT * FROM (` + fmt.Sprintf(side, "credit") + `) ORDER BY seq DESC LIMIT ?`
+		query = `SELECT * FROM (` + fmt.Sprintf(side, "debit") + `) AS d UNION ALL SELECT * FROM (` + fmt.Sprintf(side, "credit") + `) AS c ORDER BY seq DESC LIMIT ?`
 		args = []any{acct, before, limit, acct, before, limit, limit}
 	}
 	rows, err := s.db.Query(query, args...)
@@ -612,7 +612,7 @@ func (s *Server) overviewExtras(o *Overview) error {
 		return err
 	}
 	var raw sql.NullString
-	if err := s.db.QueryRow(`SELECT value FROM meta WHERE key = 'fee_bps'`).Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.db.QueryRow("SELECT value FROM meta WHERE `key` = 'fee_bps'").Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	o.FeeBps, _ = strconv.ParseInt(raw.String, 10, 64)

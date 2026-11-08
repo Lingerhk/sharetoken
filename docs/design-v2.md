@@ -76,7 +76,7 @@ v1 用 GossipSub 广播 Offer；v2 只有一个协调器，改为每 15 秒经�
 - 节点接下任务时（买家连上、Ticket 校验通过、拿到并发名额）**在后台**向协调器发 `started`，不增加首字节延迟；协调器记下 `jobs.started_at`。
 - Ticket 过期（默认 2 分钟）再过 30 秒仍未开始的单被释放：冻结额全数退回买家，**不扣节点信誉**，名额随之空出。节点最多被占 2.5 分钟，而不是 17 分钟。
 - 已开始的单照旧，等结算或到截止时间（这时才算节点失败）。
-- 防止反复刷票：一个买家账户里「签发超过 10 秒仍未开始」的 Ticket 达到 4 张时，不再给它新的 Ticket（`busy`）。正常并发请求几秒内就会开始，不受影响。
+- 防止反复刷票：一个买家账户里「签发超过 15 秒仍未开始」的 Ticket 达到 5 张时，不再给它新的 Ticket（`busy`）。正常并发请求几秒内就会开始，不受影响。
 - 迟到的 `started`（单已因未开始被释放）会收到 `conflict`，节点随即中止这一单，避免白干。
 - 参数：`TicketTTL`、`StartGrace`、`MaxStaleTickets`、`StaleAfter`（`coordinator.Config`）。
 
@@ -171,7 +171,15 @@ v1 用 GossipSub 广播 Offer；v2 只有一个协调器，改为每 15 秒经�
 | TEXT 主键/唯一键 | `VARCHAR(128)`（peer ID 52 字符） |
 | 对账 CTE | MySQL 8 支持，原样可用 |
 
-测试环境只有 ECS 上已停止的 MySQL，所以本版先用 SQLite；上面的改动加一个 `-db mysql://…` 驱动选择即可，`database/sql` 接口不变。
+**已实现（2026-11-08）**：`-db mysql://user@host:port/db` 选择 MySQL（`internal/sqlite/mysql.go`）。实际做法和上表的出入：
+
+- 表结构是单独的一份 `SchemaMySQL`（`ledger`、`accounts`、`coordinator` 各一份，索引直接写在 `CREATE TABLE` 里）；部分索引改成普通复合索引，`TEXT` 主键/索引列改成 `VARCHAR(191)`，二进制列用 `VARBINARY`/`MEDIUMBLOB`，排序规则 `utf8mb4_bin`（与 SQLite 一样按字节比较）。
+- DML 只有一份，写成两边都能执行的形式：upsert 改为「先 UPDATE，没匹配到再 INSERT」（连接开启 `CLIENT_FOUND_ROWS`，RowsAffected 和 SQLite 一样按匹配行计数）；`'a' || b` 改为 `CONCAT`；派生表加别名；`meta.key` 用反引号；`LIKE` 的转义字符换成 `!`，并对两边做 `LOWER`。
+- 单写者：没有逐个改成 `SELECT … FOR UPDATE`，而是所有写事务经 `sqlite.Begin` 先锁 `st_write_lock` 的唯一一行，门户和协调器的写入跨进程严格串行，原有「事务内读出再写回」的代码不用改；只读事务（门户的 `ledgerRead`）不取这把锁。`TestMySQLWritersAreSerialized` 验证两个连接池并发读改写不丢更新。
+- `+status` 技巧在 MySQL 里是无操作（一元加号被解析器丢弃），保留不影响结果。
+- 迁移：`coordinator copy-db <DSN>` 逐表复制到空库。
+
+测试环境的门户和协调器已于 2026-11-08 迁到 orb VM `st-db` 上的 MySQL 8.0（见 test-env.md 和 validation-v2-mysql.md）。
 
 ## 4. 威胁对照（v2 新增部分）
 
@@ -205,6 +213,6 @@ v1 用 GossipSub 广播 Offer；v2 只有一个协调器，改为每 15 秒经�
 
 ## 6. 下一步
 
-1. MySQL 驱动（§3.2），门户与协调器分机部署。
+1. ~~MySQL 驱动（§3.2），门户与协调器分机部署。~~ 已实现（2026-11-08）。
 2. GUI：基于 `/api`（状态、中继、共享开关、账单）做桌面端。门户网页已就绪（§2.12）。
 3. 门户的支付通道（目前 credit 只能由管理员发放）。

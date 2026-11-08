@@ -3,6 +3,7 @@ module sharetoken
 go 1.26.6
 
 require (
+	github.com/go-sql-driver/mysql v1.10.1
 	github.com/google/go-sev-guest v0.15.0
 	github.com/google/go-tdx-guest v0.3.1
 	github.com/libp2p/go-libp2p v0.51.0
@@ -16,6 +17,7 @@ require (
 
 require (
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
 	filippo.io/keygen v1.0.0 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect

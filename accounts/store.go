@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"sharetoken/internal/sqlite"
 	"sharetoken/p2p"
 )
 
@@ -78,7 +79,7 @@ func (s *Store) now() time.Time {
 }
 
 func (s *Store) tx(fn func(tx *sql.Tx) error) error {
-	tx, err := s.DB.Begin()
+	tx, err := sqlite.Begin(s.DB)
 	if err != nil {
 		return err
 	}
@@ -542,7 +543,7 @@ func mustAffect(res sql.Result, err error) error {
 // UserCount is the number of users whose name contains q ("" for all).
 func (s *Store) UserCount(q string) (int64, error) {
 	var n int64
-	err := s.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE username LIKE ? ESCAPE '\'`, likePattern(q)).Scan(&n)
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE LOWER(username) LIKE ? ESCAPE '!'`, likePattern(q)).Scan(&n)
 	return n, err
 }
 
@@ -558,11 +559,11 @@ type UserRow struct {
 // SearchUsers lists users whose name contains q ("" for all), newest first.
 func (s *Store) SearchUsers(q string, limit, offset int) ([]UserRow, error) {
 	rows, err := s.DB.Query(`SELECT u.id, u.username, u.is_admin, u.disabled, u.created_at,
-		COALESCE((SELECT balance FROM ledger_accounts WHERE account = 'user:' || u.id), 0),
-		COALESCE((SELECT SUM(amount) FROM ledger_holds WHERE owner = 'user:' || u.id AND open = 1), 0),
+		COALESCE((SELECT balance FROM ledger_accounts WHERE account = CONCAT('user:', u.id)), 0),
+		COALESCE((SELECT SUM(amount) FROM ledger_holds WHERE owner = CONCAT('user:', u.id) AND open = 1), 0),
 		(SELECT COUNT(*) FROM devices WHERE user_id = u.id),
 		(SELECT COUNT(*) FROM api_tokens WHERE user_id = u.id AND revoked = 0 AND (expires_at = 0 OR expires_at > ?))
-		FROM users u WHERE u.username LIKE ? ESCAPE '\' ORDER BY u.id DESC LIMIT ? OFFSET ?`,
+		FROM users u WHERE LOWER(u.username) LIKE ? ESCAPE '!' ORDER BY u.id DESC LIMIT ? OFFSET ?`,
 		s.now().UnixNano(), likePattern(q), limit, offset)
 	if err != nil {
 		return nil, err
@@ -582,10 +583,12 @@ func (s *Store) SearchUsers(q string, limit, offset int) ([]UserRow, error) {
 }
 
 // likePattern turns a search string into a LIKE pattern, escaping wildcards
-// so users cannot search with them.
+// so users cannot search with them. The escape character is '!' (a backslash
+// is itself an escape in MySQL string literals); matching is case-insensitive
+// on both databases (LOWER on both sides).
 func likePattern(q string) string {
 	q = strings.ToLower(strings.TrimSpace(q))
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	r := strings.NewReplacer(`!`, `!!`, `%`, `!%`, `_`, `!_`)
 	return "%" + r.Replace(q) + "%"
 }
 

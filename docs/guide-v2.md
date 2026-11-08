@@ -58,7 +58,7 @@ sharetoken up                               # 已在运行时 share 命令会立
 
 ## 2. 运维部署
 
-最小部署：1 台公网机器跑门户 + 协调器（共用 SQLite）+ 一个中继；更多中继放在不同网络位置。
+最小部署：1 台公网机器跑门户 + 协调器（共用 SQLite）+ 一个中继；更多中继放在不同网络位置。门户和协调器要分机，或者需要多个门户实例时，改用 MySQL 8（见 §2.2）。
 
 ```bash
 # 先取两个值：门户签凭证的公钥、协调器的 peer ID（各自首次运行时生成密钥）
@@ -99,11 +99,33 @@ coordinator -db sharetoken.db -fee-bps 500 \
 
 所有运维命令直接读写数据库，可以和运行中的服务同时执行。
 
-`portal-pass.key`（门户签凭证的私钥）和 `portal-tls/` 都要备份；换 pass key 时，先给所有中继加上新公钥（`-portal-key` 可重复），再换门户的密钥，一小时后去掉旧公钥。
+`portal-pass.key`（门户签凭证的私钥，也用来派生管理员两步验证密钥的加密密钥）和 `portal-tls/` 都要备份；换 pass key 时，先给所有中继加上新公钥（`-portal-key` 可重复），再换门户的密钥，一小时后去掉旧公钥。
 
 中继准入参数：`-portal-key`（可重复）、`-allow-peer`（可重复）、`-max-devices-per-user 4`；门户：`-pass-key portal-pass.key`、`serve -pass-ttl 1h`。
 
 中继容量参数（默认值已远高于 libp2p 默认）：`-max-reservations 4096`、`-max-reservations-per-ip 64`、`-max-circuits 4096`（单个目标的并发线路数，协调器每个在线用户占一条）、`-max-conns 8192`。
+
+### 2.2 使用 MySQL
+
+`-db` 写成 `mysql://user@host:port/database` 就用 MySQL 8（InnoDB），其余命令和参数不变。密码放在环境变量 `SHARETOKEN_DB_PASSWORD`（不要写进 URL，否则会出现在进程列表里）；URL 里的其它查询参数作为会话变量传给服务器。
+
+```bash
+# MySQL 上（一次）
+CREATE DATABASE sharetoken CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+CREATE USER 'sharetoken'@'10.0.0.%' IDENTIFIED BY '…';
+GRANT ALL ON sharetoken.* TO 'sharetoken'@'10.0.0.%';
+
+# 门户和协调器各自的机器上
+export SHARETOKEN_DB_PASSWORD=…
+portal      -db mysql://sharetoken@10.0.0.5:3306/sharetoken serve -listen :8092 …
+coordinator -db mysql://sharetoken@10.0.0.5:3306/sharetoken -fee-bps 500 …
+```
+
+- 表结构由门户或协调器启动时自动创建（谁先启动都行）；需要建表、改表的权限（`ALL ON sharetoken.*`）。
+- **从 SQLite 迁过来**：先停掉门户和协调器，再 `coordinator -db sharetoken.db copy-db mysql://sharetoken@host/sharetoken`（目标库必须是空的；逐表复制，约 1 万行/秒），然后 `coordinator -db mysql://… check` 核对账本，最后两边都改用 MySQL 启动。原 SQLite 文件保留作备份。门户签名密钥、TLS 证书、协调器密钥照旧使用，所以用户的证书指纹、中继准入、两步验证都不受影响。
+- 服务器建议：`transaction_isolation = READ-COMMITTED`（客户端每个会话也会设置）、`skip_name_resolve = ON`（否则每个新连接会因反向 DNS 卡住几秒）、`innodb_flush_log_at_trx_commit = 1`（账本要求提交即落盘）、`tmp_table_size = 256M`（账本回放按账户分组，默认 16 MB 会落盘）、`innodb_buffer_pool_size` 至少放得下 `jobs` 表（每个作业约 6 KB 数据 + 索引）。只让门户和协调器所在的机器连 3306。
+- 一致性：每个写事务开始时锁住 `st_write_lock` 表的唯一一行，门户和协调器的写入因此严格串行，和 SQLite 的单写者语义一致（余额是「读出 → 计算 → 写回」，并发写会丢更新）；只读查询不受影响。锁等待最多 10 秒，超时按「数据库忙」处理（门户返回 503，启动时重试）。
+- 测试：`SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/ SHARETOKEN_DB_PASSWORD=… go test ./...` 让所有用内存库的测试改在 MySQL 上跑（每个测试建一个 `sttest_<时间>_<随机>` 库，超过一小时的会在之后的测试中自动删除）；只针对 SQLite 查询计划的测试会跳过。
 
 ### 2.1 门户网页
 

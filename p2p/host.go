@@ -2,6 +2,8 @@ package p2p
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
@@ -92,6 +94,11 @@ const DefaultCallTimeout = 30 * time.Second
 // Call performs one request/response exchange on a fresh stream to p: send a
 // reqType frame, half-close, read one respType frame into resp. Error frames
 // come back as *protocol.Error.
+// ErrNoStream marks a Call that could not open a stream to the peer (no
+// connection and the dial failed): the request was never sent, so retrying
+// it cannot duplicate it.
+var ErrNoStream = errors.New("no stream to peer")
+
 func Call(ctx context.Context, h host.Host, p peer.ID, proto, reqType string, req any, respType string, resp any) error {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -100,7 +107,7 @@ func Call(ctx context.Context, h host.Host, p peer.ID, proto, reqType string, re
 	}
 	s, err := h.NewStream(network.WithAllowLimitedConn(ctx, "sharetoken-ctrl"), p, lproto.ID(proto))
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrNoStream, err)
 	}
 	defer s.Close()
 	if dl, ok := ctx.Deadline(); ok {
