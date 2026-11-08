@@ -3,8 +3,9 @@
 // coordinator. It keeps no accounts and sees no plaintext.
 //
 //	relay -config /etc/sharetoken/relay.yaml          (configs/relay.example.yaml)
-//	relay -listen /ip4/0.0.0.0/tcp/8091 -announce /dns4/relay.example.com/tcp/8091 \
-//	      -portal-key ed25519:<portal pass-key> -allow-peer <coordinator peer id>
+//
+// The file's access.networks lists the deployments the relay serves, each with
+// its portal key and coordinator. Without any, the relay is open.
 //
 // Register the printed address with the portal (portal relay add <addr>);
 // the coordinator then reserves a slot on it and users start measuring it.
@@ -12,6 +13,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -46,9 +48,7 @@ type File struct {
 		MaxConns int      `yaml:"max_conns"`
 	} `yaml:"network"`
 	Access struct {
-		PortalKeys        []string `yaml:"portal_keys"`
-		AllowPeers        []string `yaml:"allow_peers"`
-		MaxDevicesPerUser int      `yaml:"max_devices_per_user"`
+		Networks []NetworkFile `yaml:"networks"`
 	} `yaml:"access"`
 	Limits struct {
 		MaxReservations      int             `yaml:"max_reservations"`
@@ -64,13 +64,21 @@ type File struct {
 	Log config.Log `yaml:"log"`
 }
 
+// NetworkFile is one entry of access.networks.
+type NetworkFile struct {
+	Name              string   `yaml:"name"`
+	PortalKeys        []string `yaml:"portal_keys"`
+	AllowPeers        []string `yaml:"allow_peers"`
+	MaxDevicesPerUser int      `yaml:"max_devices_per_user"`
+	MaxReservations   int      `yaml:"max_reservations"` // 0: only limits.max_reservations
+}
+
 func defaults() File {
 	var f File
 	f.Version = config.Version
 	f.Identity.KeyFile = "relay.key"
 	f.Network.Listen = []string{"/ip4/0.0.0.0/tcp/4001", "/ip4/0.0.0.0/udp/4001/quic-v1", "/ip6/::/tcp/4001", "/ip6/::/udp/4001/quic-v1"}
 	f.Network.MaxConns = 8192
-	f.Access.MaxDevicesPerUser = 4
 	f.Limits.MaxReservations, f.Limits.MaxReservationsPerIP, f.Limits.MaxCircuits = 4096, 64, 4096
 	f.Limits.ReservationTTL, f.Limits.CircuitBuffer = config.D("1h"), 16<<10
 	f.Status.StatsInterval = config.D("5m")
@@ -99,9 +107,6 @@ func load(args []string) (File, bool, error) {
 	fs.IntVar(&f.Limits.MaxReservationsPerIP, "max-reservations-per-ip", f.Limits.MaxReservationsPerIP, "maximum reservations from one IP address")
 	fs.IntVar(&f.Limits.MaxCircuits, "max-circuits", f.Limits.MaxCircuits, "maximum open circuits to one destination peer (the coordinator receives one per online user)")
 	fs.IntVar(&f.Network.MaxConns, "max-conns", f.Network.MaxConns, "connection-manager high watermark")
-	fl.Repeated(&f.Access.PortalKeys, "portal-key", "portal public key (ed25519:<hex>, from `portal pass-key`); reservations then need a pass it signed (repeatable, for key rotation)")
-	fl.Repeated(&f.Access.AllowPeers, "allow-peer", "peer ID that may reserve without a pass: the coordinator (repeatable)")
-	fs.IntVar(&f.Access.MaxDevicesPerUser, "max-devices-per-user", f.Access.MaxDevicesPerUser, "devices of one user that may hold reservations at once")
 	if err := fs.Parse(args); err != nil {
 		return f, false, err
 	}
@@ -114,8 +119,7 @@ func relayConfig(f File) (relay.Config, error) {
 		Listen: f.Network.Listen, Announce: f.Network.Announce,
 		MaxReservations: f.Limits.MaxReservations, MaxReservationsPerIP: f.Limits.MaxReservationsPerIP,
 		MaxCircuits: f.Limits.MaxCircuits, MaxConns: f.Network.MaxConns,
-		MaxDevicesPerAccount: f.Access.MaxDevicesPerUser,
-		ReservationTTL:       f.Limits.ReservationTTL.T(), BufferSize: int(f.Limits.CircuitBuffer),
+		ReservationTTL: f.Limits.ReservationTTL.T(), BufferSize: int(f.Limits.CircuitBuffer),
 	}
 	var errs []error
 	if len(cfg.Listen) == 0 {
@@ -126,24 +130,33 @@ func relayConfig(f File) (relay.Config, error) {
 			errs = append(errs, fmt.Errorf("address %q: %w", a, err))
 		}
 	}
-	for _, k := range f.Access.PortalKeys {
-		pub, err := relaypass.ParseKey(k)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("access.portal_keys: %w", err))
-			continue
+	for _, nf := range f.Access.Networks {
+		n := relay.Network{Name: nf.Name, MaxDevicesPerAccount: nf.MaxDevicesPerUser, MaxReservations: nf.MaxReservations}
+		for _, k := range nf.PortalKeys {
+			pub, err := relaypass.ParseKey(k)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("access.networks %s: portal_keys: %w", nf.Name, err))
+				continue
+			}
+			n.PortalKeys = append(n.PortalKeys, ed25519.PublicKey(pub))
 		}
-		cfg.PortalKeys = append(cfg.PortalKeys, pub)
+		for _, a := range nf.AllowPeers {
+			id, err := peer.Decode(a)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("access.networks %s: allow_peers %s: %w", nf.Name, a, err))
+				continue
+			}
+			n.AllowPeers = append(n.AllowPeers, id)
+		}
+		cfg.Networks = append(cfg.Networks, n)
 	}
-	for _, a := range f.Access.AllowPeers {
-		id, err := peer.Decode(a)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("access.allow_peers %s: %w", a, err))
-			continue
+	if len(errs) == 0 {
+		if err := relay.ValidateNetworks(cfg.Networks); err != nil {
+			errs = append(errs, fmt.Errorf("access.networks: %w", err))
 		}
-		cfg.AllowPeers = append(cfg.AllowPeers, id)
 	}
 	for name, v := range map[string]int{"limits.max_reservations": cfg.MaxReservations, "limits.max_reservations_per_ip": cfg.MaxReservationsPerIP,
-		"limits.max_circuits": cfg.MaxCircuits, "network.max_conns": cfg.MaxConns, "access.max_devices_per_user": cfg.MaxDevicesPerAccount,
+		"limits.max_circuits": cfg.MaxCircuits, "network.max_conns": cfg.MaxConns,
 		"limits.circuit_buffer": cfg.BufferSize} {
 		if v <= 0 {
 			errs = append(errs, fmt.Errorf("%s must be positive", name))
@@ -173,10 +186,13 @@ func main() {
 		log.Fatal(err)
 	}
 	defer closeLog()
-	if len(cfg.PortalKeys) == 0 {
-		log.Print("WARNING: no access.portal_keys: open relay, anyone may reserve; pass the portal's key to admit only registered users")
-	} else if len(cfg.AllowPeers) == 0 {
-		log.Print("WARNING: no access.allow_peers: the coordinator cannot reserve here, so users cannot reach it through this relay")
+	if len(cfg.Networks) == 0 {
+		log.Print("WARNING: no access.networks: open relay, anyone may reserve; list the portal's key to admit only registered users")
+	}
+	for _, n := range cfg.Networks {
+		if len(n.AllowPeers) == 0 {
+			log.Printf("WARNING: network %s has no allow_peers: its coordinator cannot reserve here, so its users cannot reach it through this relay", n.Name)
+		}
 	}
 
 	keys, err := p2p.LoadOrCreateKeys(f.Identity.KeyFile)
@@ -226,9 +242,9 @@ func main() {
 			return
 		case <-tick:
 			st := r.Stats()
-			log.Printf("peers=%d reservations=%d circuits=%d relayed=%dB denied(res/circ)=%d/%d passes(ok/bad)=%d/%d",
+			log.Printf("peers=%d reservations=%d circuits=%d relayed=%dB denied(res/circ)=%d/%d passes(ok/bad)=%d/%d networks=%+v",
 				len(r.Host.Network().Peers()), st.Reservations, st.Circuits, st.BytesRelayed, st.ReservationsDenied, st.CircuitsDenied,
-				st.PassesAccepted, st.PassesRejected)
+				st.PassesAccepted, st.PassesRejected, st.Networks)
 		}
 	}
 }

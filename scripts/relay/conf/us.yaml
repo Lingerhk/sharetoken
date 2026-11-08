@@ -1,4 +1,4 @@
-# relay-us（docs/test-env.md）。部署到 ~/st-test/relay.yaml，启动：./relay -config relay.yaml
+# relay-us：prod 和 dev 共用，属于生产设施，用 scripts/relay/deploy.sh 发布。部署到 ~/st-test/relay.yaml
 version: 1
 identity:
   key_file: relay.key
@@ -15,9 +15,16 @@ network:
     - /dns6/relay-us.sharetoken.app/udp/4001/quic-v1
   max_conns: 8192
 access:
-  portal_keys: [ed25519:0c8928fec72a6b1502eb83e8104cfdc56d740c54d040e18a7eed05edaaeb8dc3]
-  allow_peers: [12D3KooWFAqCYkUS2Kt2KRWQ1mWF82Em4mRbB5nD4V7Fr5PmWfUh]
-  max_devices_per_user: 4
+  networks:
+    - name: prod
+      portal_keys: [ed25519:0c8928fec72a6b1502eb83e8104cfdc56d740c54d040e18a7eed05edaaeb8dc3]
+      allow_peers: [12D3KooWFAqCYkUS2Kt2KRWQ1mWF82Em4mRbB5nD4V7Fr5PmWfUh]
+      max_devices_per_user: 4
+    - name: dev                # 只占有限名额；压测、chaos 不走这里，走实验中继（docs/dev-env.md）
+      portal_keys: [ed25519:5262c7de2eb39f527d515a36082293f1c3426aaaf583883ad71312ad223ed011]
+      allow_peers: [12D3KooWDa9b2HPSjHYhxuVGhKQ1866qAsGTKmgwEB5oY4D7qSYt]
+      max_devices_per_user: 4
+      max_reservations: 32
 limits:
   max_reservations: 4096
   max_reservations_per_ip: 64

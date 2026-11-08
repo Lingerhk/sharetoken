@@ -2,7 +2,7 @@
 
 > 用于 v2 及以后版本的多机实测。本文件**不含任何密钥**：测试账户密码见 `docs/test-env.secrets.md`（已加入 `.gitignore`），第三方 API key 不属于本环境（见 §8）。
 > 最近一次完整部署：2026-11-07（validation-v2-distributed.md 的测试即在此环境上完成）。
-> **2026-11-08 晚起，门户 + 协调器 + MySQL 正式部署在 armbian 上（域名 https://sharetoken.app，见 [prod-env.md](prod-env.md)）；orb VM `st-db` 只用于压测。** st-db 曾承载门户和协调器（见 validation-v2-mysql.md），现在它们已停：**生产与 st-db 共用同一个协调器 key，两边不能同时运行**。压测要用 st-db 时，先 `ssh s0nnet@192.168.6.91 'sudo systemctl stop sharetoken-coordinator sharetoken-portal'`，压完再 `start`；压测客户端的 `portal` 也要指回 st-db。下文 §3–§4 描述的是 st-db 压测拓扑，其中“门户在 st-db”只在压测期间成立。
+> **2026-11-08 晚起，门户 + 协调器 + MySQL 正式部署在 armbian 上（域名 https://sharetoken.app，见 [prod-env.md](prod-env.md)）；orb VM `st-db` 只用于压测。** st-db 曾承载门户和协调器（见 validation-v2-mysql.md），现在它们已停：**压测不再停生产，也不再用生产的中继**：st-db 换成 dev 身份，走实验中继，见 [dev-env.md](dev-env.md)。下文 §3–§4 描述的是 st-db 压测拓扑，其中“门户在 st-db”只在压测期间成立。
 
 ## 1. 拓扑
 

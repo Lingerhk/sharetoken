@@ -23,16 +23,25 @@ network:
   #  - /ip4/203.0.113.7/udp/4001/quic-v1
   max_conns: 8192                # 连接管理器高水位
 
-# 准入控制：谁可以在本中继上占 reservation
+# 准入控制：谁可以在本中继上占 reservation。
+# 一个中继可以同时服务多个网络（prod、dev）。为空 = 开放中继，任何人可占位（启动时告警）
 access:
-  # portal 的 relay-pass 公钥（`portal pass-key` 输出）；可多个，用于轮换。
-  # 为空 = 开放中继，任何人可占位（启动时告警）
-  portal_keys:
-    - ed25519:<portal pass-key hex>
-  # 无需 pass 即可占位的 peer：协调器（`coordinator id` 输出）
-  allow_peers:
-    - <coordinator peer id>
-  max_devices_per_user: 4        # 同一用户同时持有 reservation 的设备数
+  networks:
+    - name: prod
+      # portal 的 relay-pass 公钥（`portal pass-key` 输出）；可多个，用于轮换。不能和其他网络重复
+      portal_keys:
+        - ed25519:<prod portal pass-key hex>
+      # 无需 pass 即可占位的 peer：该网络的协调器（`coordinator id` 输出）。不能和其他网络重复
+      allow_peers:
+        - <prod coordinator peer id>
+      max_devices_per_user: 4    # 该网络同一用户同时持有 reservation 的设备数（各网络的账号互不相干）
+    - name: dev
+      portal_keys:
+        - ed25519:<dev portal pass-key hex>
+      allow_peers:
+        - <dev coordinator peer id>
+      max_devices_per_user: 4
+      max_reservations: 32       # 该网络的设备合计上限（协调器不计），防止挤占其他网络；0 = 只受 limits.max_reservations 限制
 
 limits:
   max_reservations: 4096         # 全局同时持有的 reservation

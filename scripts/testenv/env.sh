@@ -12,10 +12,9 @@ CN=119.29.250.173
 CN2=101.43.2.87; CN2_USER=orcatermuser       # shared Tencent box: QQ holds 127.0.0.1:4001, so the relay uses 4002
 # Relay host names (docs/prod-env.md); relays announce /dns4 + /dns6 of these
 US_DNS=relay-us.sharetoken.app; SG_DNS=relay-sg.sharetoken.app; CN_DNS=relay-cn.sharetoken.app; CN2_DNS=relay-cn2.sharetoken.app
-CONF=$REPO/scripts/testenv/conf               # relay-<us|sg|cn>.yaml, coordinator.yaml, portal.yaml
+CONF=$REPO/scripts/testenv/conf               # coordinator.yaml, portal.yaml of st-db (relays: scripts/relay/)
 ORB=ada-dev; IBOX=srv-01
-PASS_KEY=ed25519:0c8928fec72a6b1502eb83e8104cfdc56d740c54d040e18a7eed05edaaeb8dc3
-COORD_ID=12D3KooWFAqCYkUS2Kt2KRWQ1mWF82Em4mRbB5nD4V7Fr5PmWfUh
+PROD_COORD_ID=12D3KooWFAqCYkUS2Kt2KRWQ1mWF82Em4mRbB5nD4V7Fr5PmWfUh   # st-db must never run with this identity
 PORTAL_PIN=sha256:0e7c55a96cbe62e3f2f68e1f8ec9c34e8fa77c14e58f0ac7caf4dfc5fd59a717
 # Run in ~/st-test on st-db. Settings live in coordinator.yaml / portal.yaml (copied from $CONF);
 # the DB password is in db.pass (0600, database.password_file). DBENV still exports it for
@@ -31,12 +30,14 @@ login() { [ "$1" = "$CN2" ] && echo "$CN2_USER" || echo s0nnet; }
 rsh() { timeout "${T:-60}" ssh $Q -n "$(login "$1")@$1" "$2"; }   # rsh host 'cmd'
 orbsh() { orb run -m $ORB bash -c "$1"; }
 stdbsh() { timeout "${T:-60}" orb run -m $STDB bash -c "$1"; }
-coord_start()  { stdbsh "cd ~/st-test && $DBENV setsid nohup $COORD_CMD >> coord.log 2>&1 < /dev/null & sleep 1"; }
+coord_guard()  { # a coordinator on st-db with production's key would fight production's for the relays
+  [ "$(stdbsh "cd ~/st-test && $COORD_CMD id" 2>/dev/null)" != "$PROD_COORD_ID" ] || { echo "refused: st-db still holds production's coordinator key (docs/dev-env.md)" >&2; return 1; }
+}
+coord_start()  { coord_guard || return 1; stdbsh "cd ~/st-test && $DBENV setsid nohup $COORD_CMD >> coord.log 2>&1 < /dev/null & sleep 1"; }
 portal_start() { stdbsh "cd ~/st-test && $DBENV setsid nohup $PORTAL_CMD >> portal.log 2>&1 < /dev/null & sleep 1"; }
 iboxsh() { printf '%s\n' "$1" | orb run -m $ORB bash -c "timeout ${T:-120} instabox ssh $IBOX -- bash -s"; }  # script on stdin: any quoting works
-relay_start() { # host: ~/st-test/relay.yaml there (push_relay_conf)
-  rsh "$1" "cd ~/st-test && setsid nohup ./relay -config relay.yaml >> relay.log 2>&1 < /dev/null & sleep 1"
-}
-relay_conf() { case $1 in $US) echo us;; $SG) echo sg;; $CN) echo cn;; $CN2) echo cn2;; esac; }
-push_relay_conf() { scp $Q "$CONF/relay-$(relay_conf $1).yaml" "$(login "$1")@$1":st-test/relay.yaml; }  # host
+# Lab relays only: they trust the dev network alone and production never lists them.
+# Production's relays are not operated from here (scripts/relay/deploy.sh).
+lab_relay_kill()  { rsh "$CN2" 'pkill -x relay'; }
+lab_relay_start() { rsh "$CN2" "cd ~/st-test && setsid nohup ./relay -config relay.yaml >> relay.log 2>&1 < /dev/null & sleep 1"; }
 push_stdb_conf() { stdbsh "cp $CONF/coordinator.yaml $CONF/portal.yaml ~/st-test/"; }

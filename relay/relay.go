@@ -15,14 +15,12 @@
 package relay
 
 import (
-	"crypto/ed25519"
 	"fmt"
 	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
 	pbv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/pb"
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	ma "github.com/multiformats/go-multiaddr"
@@ -43,16 +41,10 @@ type Config struct {
 	// address of a cloud VM whose interface only has a private IP.
 	Announce []string
 
-	// PortalKeys are the portal public keys whose relay passes admit a
-	// device to reserve (several during a key rotation). Empty: an open
-	// relay, anyone may reserve.
-	PortalKeys []ed25519.PublicKey
-	// AllowPeers may reserve without a pass: the coordinator.
-	AllowPeers []peer.ID
-	// MaxDevicesPerAccount caps how many devices of one user account hold
-	// reservations at once (default 4).
-	MaxDevicesPerAccount int
-	Now                  func() time.Time // tests
+	// Networks are the deployments this relay serves. Empty: an open relay,
+	// anyone may reserve.
+	Networks []Network
+	Now      func() time.Time // tests
 }
 
 func (c *Config) setDefaults() {
@@ -74,9 +66,6 @@ func (c *Config) setDefaults() {
 	if c.MaxConns == 0 {
 		c.MaxConns = 8192
 	}
-	if c.MaxDevicesPerAccount == 0 {
-		c.MaxDevicesPerAccount = 4
-	}
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -93,6 +82,9 @@ type Stats struct {
 	BytesRelayed        int64 `json:"bytes_relayed"`
 	PassesAccepted      int64 `json:"passes_accepted"`
 	PassesRejected      int64 `json:"passes_rejected"`
+	// Networks splits what can be attributed. Circuits and bytes cannot: the
+	// relay does not know which network a buyer belongs to.
+	Networks []NetworkStats `json:"networks,omitempty"`
 }
 
 // Relay is a running relay.
@@ -105,11 +97,10 @@ type Relay struct {
 // New starts a relay host for keys.
 func New(keys *p2p.Keys, cfg Config) (*Relay, error) {
 	cfg.setDefaults()
-	adm := &admission{keys: cfg.PortalKeys, allow: map[peer.ID]bool{}, maxPerAccount: cfg.MaxDevicesPerAccount,
-		now: cfg.Now, ttl: cfg.ReservationTTL, passes: map[peer.ID]admitted{}, reserved: map[peer.ID]time.Time{}}
-	for _, p := range cfg.AllowPeers {
-		adm.allow[p] = true
+	if err := validateNetworks(cfg.Networks); err != nil {
+		return nil, fmt.Errorf("relay: %w", err)
 	}
+	adm := newAdmission(cfg)
 	r := &Relay{adm: adm}
 	rc := relayv2.Resources{
 		Limit:                  nil, // completions stream for minutes; no per-circuit time or data cap
@@ -153,7 +144,10 @@ func New(keys *p2p.Keys, cfg Config) (*Relay, error) {
 	return r, nil
 }
 
-// Open reports whether the relay admits anyone (no portal keys configured).
+// ValidateNetworks reports a set of networks New would refuse.
+func ValidateNetworks(nets []Network) error { return validateNetworks(nets) }
+
+// Open reports whether the relay admits anyone (no networks configured).
 func (r *Relay) Open() bool { return r.adm.open() }
 
 // Close stops the relay.
@@ -167,6 +161,7 @@ func (r *Relay) Addrs() []string { return p2p.FullAddrs(r.Host) }
 func (r *Relay) Stats() Stats {
 	s := r.stats.snapshot()
 	s.PassesAccepted, s.PassesRejected = r.adm.accepted.Load(), r.adm.rejected.Load()
+	s.Networks = r.adm.networkStats()
 	return s
 }
 
