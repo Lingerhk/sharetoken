@@ -107,6 +107,11 @@ func (s *Server) servePages(mux *http.ServeMux) {
 		http.Redirect(w, r, "/admin/", http.StatusMovedPermanently)
 	})
 	mux.HandleFunc("GET /admin/{$}", page("admin.html"))
+	// Translations; a wildcard matches one path segment, so these stay under i18n/.
+	mux.HandleFunc("GET /static/i18n/{bundle}/{file}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFileFS(w, r, sub, "i18n/"+r.PathValue("bundle")+"/"+r.PathValue("file"))
+	})
 	mux.HandleFunc("GET /static/{file}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("file")
 		if strings.HasSuffix(name, ".html") {

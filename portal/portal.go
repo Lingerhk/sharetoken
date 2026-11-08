@@ -403,6 +403,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/admin/ledger", s.admin(s.handleJournal))
 	mux.Handle("GET /api/v1/admin/accounts", s.admin(s.handleAccounts))
 	s.mailRoutes(mux)
+	s.feedbackRoutes(mux)
 	return withLimits(mux)
 }
 
@@ -720,7 +721,7 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, cu ctxUs
 		s.accountErr(w, err)
 		return
 	}
-	s.notify(cu.user.Username, "ShareToken：你的密码已修改", "你的 ShareToken 账户密码刚刚被修改。\r\n如果不是你本人操作，请立即联系 "+s.supportAddress()+"。\r\n")
+	s.notify(cu.user.Username, "ShareToken: your password was changed", "The password of your ShareToken account was just changed.\r\nIf this wasn't you, contact "+s.supportAddress()+" immediately.\r\n")
 	var revoked int64
 	if req.RevokeOthers {
 		ts, err := s.store.Tokens(cu.user.ID)
@@ -1089,10 +1090,10 @@ func queryLimit(r *http.Request) int {
 	return int(min(max(queryInt(r, "limit", 50), 1), 500))
 }
 
+// readJSON decodes a request body. Unknown fields are ignored, so a client newer
+// than this portal can add an optional field without being refused.
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", "malformed JSON body: "+err.Error())
 		return false
 	}

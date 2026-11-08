@@ -83,7 +83,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>sharetoken</title>
 <body style="font:14px -apple-system,sans-serif;padding:40px;max-width:560px;margin:auto">
-<h2>sharetoken 后台服务无法启动</h2><p>%s</p></body>`, html.EscapeString(p.startErr.Error()))
+<h2>sharetoken: the background service could not start</h2><h2>sharetoken 后台服务无法启动</h2><p>%s</p></body>`, html.EscapeString(p.startErr.Error()))
 		return
 	}
 	p.rp.ServeHTTP(w, r)

@@ -83,6 +83,7 @@ const eventNames = () => events().map(e => e.event);
 
 await connect();
 await cdp('Runtime.enable'); await cdp('Log.enable'); await cdp('Page.enable');
+await cdp('Page.addScriptToEvaluateOnNewDocument', { source: "try { localStorage.setItem('st_lang', 'zh-CN'); } catch (e) {}" }); // these checks read the Chinese source text
 await cdp('Page.navigate', { url: env.DAEMON + '/' });
 
 console.log('built-in portal');
@@ -178,6 +179,18 @@ await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-sche
 await sleep(200);
 await shot('09-dark');
 await cdp('Emulation.setEmulatedMedia', { features: [] });
+
+console.log('feedback');
+await click('#feedback-send');
+await waitFor(`${el('#feedback-result')}.textContent === '请填写反馈内容'`);
+ok(true, 'empty feedback is stopped in the page');
+await fill('#feedback-text', 'it works');
+await click('#feedback-send');
+await waitFor(`${el('#feedback-result')}.textContent.includes('已提交')`);
+ok(await ev(`${el('#feedback-text')}.value`) === '', 'feedback is sent and the box is cleared');
+const sent = await ev(`fetch('/api/feedback/mine').then(r => r.json())`);
+ok(sent.feedback[0].message === 'it works' && sent.feedback[0].source === 'client' && sent.feedback[0].os.includes('/'), 'the portal has it, marked as from the client');
+await shot('10b-feedback');
 
 console.log('reload and logout');
 await cdp('Page.reload'); await waitFor(el('#tiles .tile'));

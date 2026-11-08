@@ -254,6 +254,12 @@ func TestPagesAndSecurityHeaders(t *testing.T) {
 		{"/static/admin.js", "javascript", "/api/v1/admin/", 200},
 		{"/static/index.html", "", "", 404},
 		{"/static/nope.js", "", "", 404},
+		{"/static/i18n.js", "javascript", "const I18N", 200},
+		{"/static/i18n/site/en.json", "application/json", "ShareToken", 200},
+		{"/static/i18n/app/en.json", "application/json", "Log in", 200},
+		{"/static/i18n/app/nope.json", "", "", 404},
+		{"/static/i18n/nope/en.json", "", "", 404},
+		{"/static/i18n/site/..%2f..%2findex.html", "", "", 400}, // no way out of the dictionaries
 		{"/static/", "", "", 404},
 		{"/nope", "", "", 404},
 	} {

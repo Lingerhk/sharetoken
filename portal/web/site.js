@@ -3,7 +3,8 @@
 'use strict';
 document.documentElement.classList.add('js');
 
-document.addEventListener('DOMContentLoaded', () => {
+I18N.ready.then(() => {
+  const tr = I18N.t;
   const $ = id => document.getElementById(id);
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -53,7 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!still) document.querySelectorAll('[data-count]').forEach(el => {
     const end = Number(el.dataset.count), suffix = el.dataset.suffix || '';
     const digits = el.dataset.count.includes('.') ? 2 : 0;
-    const show = v => { el.textContent = v.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) + suffix; };
+    const show = v => { el.textContent = v.toLocaleString(I18N.lang, { minimumFractionDigits: digits, maximumFractionDigits: digits }) + suffix; };
     const ob = new IntersectionObserver(es => {
       if (!es[0].isIntersecting) return;
       ob.disconnect();
@@ -73,7 +74,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const canvas = $('mesh'), ctx = canvas.getContext('2d');
     const LIME = '198,242,78', AMBER = '255,182,72';
     let W = 0, H = 0, nodes = [], route = [], running = false;
-    const LABELS = ['买家', '中继', '卖家'];
+    const LABELS = [tr('买家'), tr('中继'), tr('卖家')];
 
     function layout() {
       const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -89,6 +90,8 @@ document.addEventListener('DOMContentLoaded', () => {
       route = narrow
         ? [[W * .14, H - 100], [W * .5, H - 62], [W * .86, H - 104]]
         : [[W * .6, H * .7], [W * .74, H * .27], [W * .91, H * .62]];
+      // The route stays clear of the hero text, which is on the right in RTL.
+      if (!narrow && document.documentElement.dir === 'rtl') route = route.map(([x, y]) => [W - x, y]);
     }
 
     const LINK = 130;
@@ -130,7 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.fillStyle = `rgb(${rgb})`;
         ctx.beginPath(); ctx.arc(pt[0], pt[1], 5, 0, 7); ctx.fill();
         ctx.fillStyle = 'rgba(238,240,244,.82)';
-        ctx.font = '13px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+        ctx.font = '13px -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif';
         ctx.fillText(LABELS[i], pt[0], pt[1] + 34);
         ctx.font = '11px ui-monospace, Menlo, monospace';
       });
@@ -155,7 +158,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (n.y < 0 || n.y > H) n.vy *= -1;
       }
       drawMesh();
-      const phase = ((t - t0) % PERIOD) / PERIOD, p = phase / .72;  // the rest of the period is a pause
+      const phase = (Math.max(0, t - t0) % PERIOD) / PERIOD, p = phase / .72;  // the rest of the period is a pause
       if (p <= 1 && t - lastGlyph > 70) {
         lastGlyph = t;
         const [x, y] = pointAt(p);
@@ -179,7 +182,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ---- 01 sealed box: a real AES-256-GCM ciphertext of the prompt ----
   (function seal() {
-    const PROMPT = '帮我审查这份合同里的保密条款';
+    const PROMPT = tr('帮我审查这份合同里的保密条款');
     const el = $('seal'), input = $('seal-in'), relay = $('seal-relay'), out = $('seal-out');
     const chips = Array.from($('seal-chips').children), packet = el.querySelector('.packet');
     async function ciphertext() {
@@ -216,8 +219,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ---- 02 receipts: real SHA-256 over whatever the visitor leaves in the chunks ----
   (function receipts() {
-    const WORDS = ['量子隧穿', '是指粒子', '能穿过', '经典力学', '下无法', '越过的势垒'];
-    const FORGED = ['量子隧穿', '是指波子', '不能穿过', '经典力学', '下可以', '越过的势垒'];
+    // One sentence in six chunks, and the same with the second, third and fifth forged.
+    const WORDS = tr('量子隧穿|是指粒子|能穿过|经典力学|下无法|越过的势垒').split('|');
+    const FORGED = tr('量子隧穿|是指波子|不能穿过|经典力学|下可以|越过的势垒').split('|');
     const box = $('chunks'), signedEl = $('hash-signed'), localEl = $('hash-local'), verdict = $('verdict');
     let signed = '', touched = false;
     const chunks = WORDS.map((w, i) => {
@@ -228,7 +232,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return b;
     });
     // A chunk whose forgery reads the same (the first and fourth) is still changed by a marker.
-    function forged(i) { return FORGED[i] === WORDS[i] ? WORDS[i] + '！' : FORGED[i]; }
+    function forged(i) { return FORGED[i] === WORDS[i] ? WORDS[i] + '!' : FORGED[i]; }
     function flip(b, to) {
       const i = Number(b.dataset.i), bad = to === undefined ? !b.classList.contains('bad') : to;
       b.classList.toggle('bad', bad);
@@ -245,7 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const ok = local === signed;
       localEl.className = ok ? 'lime' : 'red';
       verdict.classList.toggle('bad', !ok);
-      verdict.textContent = ok ? '哈希一致 → 买家签 Ack，作业结算' : '哈希不一致 → 买家拒签，可凭证据发起争议';
+      verdict.textContent = ok ? tr('哈希一致 → 买家签 Ack，作业结算') : tr('哈希不一致 → 买家拒签，可凭证据发起争议');
     }
     sha(WORDS.join('')).then(h => {
       signed = h; signedEl.textContent = h;
@@ -279,7 +283,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const t = tiles[Math.floor(Math.random() * tiles.length)];
       const id = t.textContent;
       await sleep(700);
-      t.classList.add('open'); steps[0].classList.add('on'); t.textContent = '已解开';
+      t.classList.add('open'); steps[0].classList.add('on'); t.textContent = tr('已解开');
       for (const s of steps.slice(1)) { await sleep(850); s.classList.add('on'); }
       await sleep(2800);
       t.classList.remove('open'); t.textContent = id;
@@ -294,9 +298,9 @@ document.addEventListener('DOMContentLoaded', () => {
     sw.addEventListener('click', () => {
       const on = sw.getAttribute('aria-checked') !== 'true';
       sw.setAttribute('aria-checked', String(on));
-      verdict.textContent = on ? '看不到' : '能看到';
+      verdict.textContent = on ? tr('看不到') : tr('能看到');
       verdict.className = on ? 'no' : 'yes';
-      why.textContent = on ? '收件钥只存在于机密虚拟机内，节点运营者也读不到内存' : off;
+      why.textContent = on ? tr('收件钥只存在于机密虚拟机内，节点运营者也读不到内存') : off;
       formula.hidden = !on;
     });
   })();
@@ -304,7 +308,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---- placeholders and sign-up ----
   document.querySelectorAll('[data-soon]').forEach(a => a.addEventListener('click', e => {
     e.preventDefault();
-    $('soon-msg').textContent = a.querySelector('b').textContent + ' 版即将上线，敬请期待';
+    $('soon-msg').textContent = tr('{platform} 版即将上线，敬请期待', { platform: a.querySelector('b').textContent });
   }));
 
   // The call-to-action follows the portal's own setting: no sign-up button while registration is closed.
@@ -313,7 +317,7 @@ document.addEventListener('DOMContentLoaded', () => {
     $('cta-register').hidden = false;
     if (info.signup_credit_micros > 0) {
       const note = $('cta-credit');
-      note.textContent = '注册即赠送 ' + (info.signup_credit_micros / 1e6).toLocaleString('zh-CN') + ' credit';
+      note.textContent = tr('注册即赠送 {n} credit', { n: (info.signup_credit_micros / 1e6).toLocaleString(I18N.lang) });
       note.hidden = false;
     }
   }).catch(() => {});

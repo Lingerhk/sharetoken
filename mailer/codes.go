@@ -161,13 +161,13 @@ func (s *Store) VerifyCode(purpose, email, code string) error {
 // ---- messages ----
 
 var verifyHTML = template.Must(template.New("verify").Parse(`<!doctype html>
-<html lang="zh-CN"><body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;color:#1f2933">
+<html lang="en"><body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;color:#1f2933">
 <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:32px">
-<h1 style="font-size:18px;margin:0 0 16px">ShareToken 注册验证码</h1>
-<p style="margin:0 0 16px">你正在用这个邮箱注册 ShareToken，验证码是：</p>
+<h1 style="font-size:18px;margin:0 0 16px">Your ShareToken verification code</h1>
+<p style="margin:0 0 16px">You are signing up for ShareToken with this email address. Your verification code is:</p>
 <p style="font-size:32px;font-weight:600;letter-spacing:6px;margin:0 0 16px">{{.Code}}</p>
-<p style="margin:0 0 8px;color:#52606d">验证码 {{.Minutes}} 分钟内有效。请不要告诉任何人，ShareToken 的工作人员不会向你索要它。</p>
-<p style="margin:0;color:#52606d">如果不是你本人操作，忽略这封邮件即可。</p>
+<p style="margin:0 0 8px;color:#52606d">The code is valid for {{.Minutes}} minutes. Do not share it with anyone. ShareToken staff will never ask you for it.</p>
+<p style="margin:0;color:#52606d">If this wasn't you, you can ignore this email.</p>
 </div></body></html>`))
 
 func verifyMail(email, code string) Message {
@@ -177,8 +177,8 @@ func verifyMail(email, code string) Message {
 	return Message{
 		Kind:    KindVerify,
 		To:      email,
-		Subject: "ShareToken 注册验证码：" + code,
-		Text: fmt.Sprintf("你正在用这个邮箱注册 ShareToken，验证码是：\r\n\r\n    %s\r\n\r\n验证码 %d 分钟内有效。请不要告诉任何人，ShareToken 的工作人员不会向你索要它。\r\n如果不是你本人操作，忽略这封邮件即可。\r\n",
+		Subject: "Your ShareToken verification code: " + code,
+		Text: fmt.Sprintf("You are signing up for ShareToken with this email address. Your verification code is:\r\n\r\n    %s\r\n\r\nThe code is valid for %d minutes. Do not share it with anyone. ShareToken staff will never ask you for it.\r\nIf this wasn't you, you can ignore this email.\r\n",
 			code, minutes),
 		HTML: html.String(),
 	}
@@ -188,8 +188,8 @@ func accountExistsMail(email string) Message {
 	return Message{
 		Kind:    KindNotice,
 		To:      email,
-		Subject: "ShareToken：这个邮箱已经注册过了",
-		Text:    "有人（可能是你）尝试用这个邮箱注册 ShareToken，但它已经有账户了，请直接登录。\r\n如果不是你本人操作，忽略这封邮件即可，你的账户没有变化。\r\n",
+		Subject: "ShareToken: this email is already registered",
+		Text:    "Someone (possibly you) tried to sign up for ShareToken with this email address, but it already has an account. Please log in instead.\r\nIf this wasn't you, you can ignore this email. Your account has not changed.\r\n",
 	}
 }
 

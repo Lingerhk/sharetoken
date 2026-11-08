@@ -78,6 +78,22 @@ CREATE TABLE IF NOT EXISTS relays (
 	detail         TEXT NOT NULL DEFAULT '',
 	rtt_ms         INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+CREATE TABLE IF NOT EXISTS feedback (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id     INTEGER NOT NULL REFERENCES users(id),
+	category    TEXT NOT NULL,
+	message     TEXT NOT NULL,
+	source      TEXT NOT NULL,
+	app_version TEXT NOT NULL DEFAULT '',
+	os          TEXT NOT NULL DEFAULT '',
+	lang        TEXT NOT NULL DEFAULT '',
+	status      TEXT NOT NULL,
+	created_at  INTEGER NOT NULL,
+	handled_at  INTEGER NOT NULL DEFAULT 0,
+	handled_by  TEXT NOT NULL DEFAULT ''
+) STRICT;
+CREATE INDEX IF NOT EXISTS feedback_by_user ON feedback(user_id, id);
+CREATE INDEX IF NOT EXISTS feedback_by_status ON feedback(status, id);
 `
 
 // SchemaMySQL is Schema for MySQL 8 (see internal/sqlite/mysql.go).
@@ -126,6 +142,23 @@ CREATE TABLE IF NOT EXISTS relays (
 	checked_at     BIGINT NOT NULL DEFAULT 0,
 	detail         TEXT NOT NULL DEFAULT (''),
 	rtt_ms         BIGINT NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS feedback (
+	id          BIGINT PRIMARY KEY AUTO_INCREMENT,
+	user_id     BIGINT NOT NULL,
+	category    VARCHAR(16) NOT NULL,
+	message     TEXT NOT NULL,
+	source      VARCHAR(16) NOT NULL,
+	app_version VARCHAR(64) NOT NULL DEFAULT '',
+	os          VARCHAR(64) NOT NULL DEFAULT '',
+	lang        VARCHAR(16) NOT NULL DEFAULT '',
+	status      VARCHAR(16) NOT NULL,
+	created_at  BIGINT NOT NULL,
+	handled_at  BIGINT NOT NULL DEFAULT 0,
+	handled_by  VARCHAR(255) NOT NULL DEFAULT '',
+	KEY feedback_by_user (user_id, id),
+	KEY feedback_by_status (status, id),
+	FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 `
 

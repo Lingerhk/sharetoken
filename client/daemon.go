@@ -16,12 +16,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"sharetoken/internal/cli"
 	"sharetoken/p2p"
+	"sharetoken/portal"
 )
 
 // Daemon is the service behind the desktop app. Unlike a bare Agent, it runs
@@ -682,9 +684,12 @@ func (d *Daemon) Handler() http.Handler {
 		}
 	}
 	mux.HandleFunc("GET /{$}", page("index.html"))
-	for _, f := range []string{"app.js", "app.css"} {
+	for _, f := range []string{"app.js", "app.css", "i18n.js", "favicon.svg"} {
 		mux.HandleFunc("GET /ui/"+f, page(f))
 	}
+	mux.HandleFunc("GET /ui/i18n/client/{file}", func(w http.ResponseWriter, r *http.Request) {
+		page("i18n/client/"+r.PathValue("file"))(w, r)
+	})
 	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.Session()) })
 	mux.HandleFunc("POST /api/portal/probe", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
 		Portal string `json:"portal"`
@@ -748,6 +753,29 @@ func (d *Daemon) Handler() http.Handler {
 	}))
 	// The account pages work without the agent: the portal may be up while
 	// the relays or the coordinator are not.
+	mux.HandleFunc("POST /api/feedback", jsonBody(func(w http.ResponseWriter, r *http.Request, req portal.FeedbackRequest) {
+		d.mu.Lock()
+		pc := d.portal
+		d.mu.Unlock()
+		if pc == nil {
+			writeErrorCode(w, http.StatusUnauthorized, "not_logged_in", "not logged in")
+			return
+		}
+		// The daemon says where this comes from; the page sends only the text.
+		req.Source, req.AppVersion, req.OS = "client", Version, runtime.GOOS+"/"+runtime.GOARCH
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		var out map[string]int64
+		if err := pc.Do(ctx, http.MethodPost, "/api/v1/feedback", req, &out); err != nil {
+			if IsUnauthorized(err) {
+				d.expire(pc.Token, "the portal rejected the login (expired or revoked)")
+			}
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, out)
+	}))
+	mux.HandleFunc("GET /api/feedback/mine", d.fromPortal("/api/v1/feedback"))
 	mux.HandleFunc("GET /api/account", d.fromPortal("/api/v1/me"))
 	mux.HandleFunc("GET /api/jobs", d.fromPortal("/api/v1/jobs"))
 	mux.HandleFunc("GET /api/ledger", d.fromPortal("/api/v1/ledger"))

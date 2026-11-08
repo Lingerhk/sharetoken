@@ -11,7 +11,7 @@ import (
 // copyTables lists every table of the shared database, parents before the
 // tables whose foreign keys point at them.
 var copyTables = []string{
-	"meta", "users", "api_tokens", "devices", "relays",
+	"meta", "users", "api_tokens", "devices", "relays", "feedback",
 	"ledger_accounts", "ledger_holds", "ledger_entries",
 	"jobs", "nodes", "peers", "audits",
 }

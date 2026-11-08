@@ -14,12 +14,13 @@
   }
 
   const mailBadge = h('span', { class: 'nav-count', id: 'mail-unread', hidden: true });
+  const feedbackBadge = h('span', { class: 'nav-count', id: 'feedback-new', hidden: true });
   const nav = h('nav', { class: 'sidenav' },
     h('a', { href: '#/overview' }, '总览'), h('a', { href: '#/users' }, '用户'), h('a', { href: '#/relays' }, '中继'), h('a', { href: '#/jobs' }, '作业'),
-    h('a', { href: '#/nodes' }, '节点'), h('a', { href: '#/audits' }, '审计'), h('a', { href: '#/disputes' }, '争议'), h('a', { href: '#/ledger' }, '账本'), h('a', { href: '#/mail' }, '邮件', mailBadge));
+    h('a', { href: '#/nodes' }, '节点'), h('a', { href: '#/audits' }, '审计'), h('a', { href: '#/disputes' }, '争议'), h('a', { href: '#/ledger' }, '账本'), h('a', { href: '#/mail' }, '邮件', mailBadge), h('a', { href: '#/feedback' }, '反馈', feedbackBadge));
   const main = h('main');
   add(clear(app), 
-    h('header', { class: 'topbar' }, h('span', { class: 'brand' }, 'sharetoken', h('small', null, '管理控制台')), h('span', { class: 'spacer' }),
+    h('header', { class: 'topbar' }, h('span', { class: 'brand' }, h('img', { class: 'brand-logo', src: '/static/favicon.svg', alt: '' }), 'sharetoken', h('small', null, '管理控制台')), h('span', { class: 'spacer' }),
       h('a', { href: '/app/' }, '用户门户'), h('span', { class: 'who' }, me().user.username), h('button', { class: 'small', onclick: ST.logout }, '退出')),
     h('div', { class: 'layout' }, nav, main));
 
@@ -517,7 +518,43 @@
       ], srv.dns))] : null);
   }
 
-  const go = ST.router({ overview, users, relays, jobs, nodes, audits, disputes, ledger, mail }, nav, main, 'overview');
+  // ---- feedback ----
+  function setFeedbackNew(n) { feedbackBadge.hidden = !n; feedbackBadge.textContent = n ? String(n) : ''; }
+  const FEEDBACK_KIND = { bug: '问题', idea: '建议', other: '其他' };
+
+  async function feedback(m) {
+    const st = h('select', { id: 'feedback-status', onchange: () => { all = []; load(); } }, h('option', { value: 'new' }, '待处理'), h('option', { value: 'done' }, '已处理'), h('option', { value: '' }, '全部'));
+    add(m, h('h1', null, '反馈', h('small', null, '用户从门户和客户端提交的内容')), h('div', { class: 'toolbar' }, h('span', { class: 'muted' }, '状态'), st));
+    const card = h('div', { class: 'card' }); add(m, card);
+    let all = [];
+    const origin = f => f.source === 'client' ? ['客户端', f.app_version, f.os].filter(Boolean).join(' · ') : '门户';
+    function render(r) {
+      setFeedbackNew(r.new);
+      add(clear(card), table([
+        { title: '时间', cell: f => ST.time(f.created_at) },
+        { title: '用户', cell: f => userLink(f.username) },
+        { title: '类型', cell: f => FEEDBACK_KIND[f.category] || f.category },
+        { title: '内容', cell: f => h('div', { class: 'feedback-text', dir: 'auto' }, f.message) },
+        { title: '来源', cell: f => h('span', { class: 'muted' }, [origin(f), f.lang].filter(Boolean).join(' · ')) },
+        { title: '状态', cell: f => f.status === 'done' ? [badge('已处理', 'ok'), h('div', { class: 'muted' }, f.handled_by)] : badge('待处理', 'warn') },
+        { title: '', cell: f => h('span', { class: 'row' },
+          f.username.includes('@') ? h('button', { class: 'small', onclick: () => composeMail(f.username, 'Your ShareToken feedback') }, '回复') : null,
+          h('button', { class: 'small', onclick: async () => {
+            try { await api('POST', '/api/v1/admin/feedback/' + f.id + '/status', { status: f.status === 'done' ? 'new' : 'done' }); all = []; await load(); } catch (ex) { fail(ex); }
+          } }, f.status === 'done' ? '重新打开' : '标记已处理')) },
+      ], all, '没有反馈'), r.feedback.length === 50 ? moreButton(load) : null);
+    }
+    async function load() {
+      const before = all.length ? all[all.length - 1].id : 0;
+      const r = await api('GET', '/api/v1/admin/feedback?limit=50&status=' + st.value + (before ? '&before=' + before : ''));
+      all = all.concat(r.feedback);
+      render(r);
+    }
+    await load();
+  }
+  api('GET', '/api/v1/admin/feedback?limit=1&status=new').then(r => setFeedbackNew(r.new)).catch(() => { /* the page itself reports errors */ });
+
+  const go = ST.router({ overview, users, relays, jobs, nodes, audits, disputes, ledger, mail, feedback }, nav, main, 'overview');
   refreshUnread();
   await go();
 })();

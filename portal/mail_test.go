@@ -34,7 +34,7 @@ func mailedCode(t *testing.T, s *Server, to string) string {
 	if err != nil || len(ms) == 0 {
 		t.Fatalf("no code for %s: %v", to, err)
 	}
-	return strings.TrimPrefix(ms[0].Subject, "ShareToken 注册验证码：")
+	return strings.TrimPrefix(ms[0].Subject, "Your ShareToken verification code: ")
 }
 
 func TestRegisterNeedsMailedCode(t *testing.T) {

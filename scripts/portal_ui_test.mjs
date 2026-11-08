@@ -117,6 +117,7 @@ async function login(user, pass) {
 try {
   await connect();
   await cdp('Page.enable'); await cdp('Runtime.enable'); await cdp('Log.enable');
+  await cdp('Page.addScriptToEvaluateOnNewDocument', { source: "try { localStorage.setItem('st_lang', 'zh-CN'); } catch (e) {}" }); // these checks read the Chinese source text
   const origEvents = events;
   setInterval(() => { while (origEvents.length) { const e = origEvents.shift(); if (e.method === 'Runtime.exceptionThrown') consoleErrors.push(e.params.exceptionDetails.text + ' ' + (e.params.exceptionDetails.exception?.description || '')); if (e.method === 'Log.entryAdded' && e.params.entry.level === 'error' && !/Failed to load resource/.test(e.params.entry.text)) consoleErrors.push(e.params.entry.text); } }, 50);
 
@@ -198,6 +199,22 @@ try {
   await assertText(newUser, 'registered and signed in from the page');
   await clickText('.topbar button', '退出'); await sleep(800);
 
+  // ---- feedback ----
+  console.log('feedback');
+  await login('alice', 'alicealice');
+  await waitFor('document.querySelector(".sidenav")');
+  await goto(base + '/app/#/feedback');
+  await waitFor('document.querySelector("#feedback-form")');
+  await evaluate(`document.querySelector('#feedback-send').click()`);
+  await assertText('请填写反馈内容', 'empty feedback is stopped in the page');
+  const HOSTILE = '<img src=x onerror="window.__fb=1">反馈内容';
+  await evaluate(`document.querySelector('#feedback-text').value = ${JSON.stringify(HOSTILE)}; document.querySelector('#feedback-send').click()`);
+  await waitFor(`document.querySelector('#feedback-list td .feedback-text')`);
+  check(await evaluate(`document.querySelector('.feedback-text').textContent`) === HOSTILE && !(await evaluate(`!!document.querySelector('#feedback-list img') || !!window.__fb`)), 'feedback is listed as text, not markup');
+  await assertText('已收到', 'and shows that it was received');
+  await shot('05b-feedback');
+  await clickText('.topbar button', '退出'); await sleep(800);
+
   // ---- admin console ----
   console.log('admin console');
   await goto(base + '/admin/');
@@ -276,6 +293,17 @@ try {
     await shot('09c-admin-jobs');
     await noNull('admin jobs');
   } else console.log('  skip no open dispute seeded');
+
+  // feedback: seen, marked handled, reopened
+  await goto(base + '/admin/#/feedback');
+  await waitFor(`document.querySelector('main .feedback-text')`);
+  check(await evaluate(`document.querySelector('main .feedback-text').textContent`) === HOSTILE && !(await evaluate(`!!document.querySelector('main img') || !!window.__fb`)), 'the admin sees feedback as text');
+  check(await evaluate(`Number(document.querySelector('#feedback-new').textContent) >= 1`), 'the nav counts waiting feedback');
+  await shot('10a-admin-feedback');
+  await clickText('main button', '标记已处理'); await sleep(500);
+  check(!(await text()).includes('反馈内容'), 'a handled message leaves the waiting list');
+  await evaluate(`(() => { const s = document.querySelector('#feedback-status'); s.value = 'done'; s.dispatchEvent(new Event('change')); return true; })()`); await sleep(500);
+  await assertText('反馈内容', 'and is under handled');
 
   // read-only pages render
   for (const [page, label] of [['jobs', '作业'], ['nodes', '节点'], ['audits', '审计'], ['disputes', '争议'], ['ledger', '账本']]) {

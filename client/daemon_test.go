@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -798,7 +799,7 @@ func TestDaemonPortInUse(t *testing.T) {
 func TestDaemonServesApp(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	for path, ct := range map[string]string{"/": "text/html", "/ui/app.js": "javascript", "/ui/app.css": "text/css"} {
+	for path, ct := range map[string]string{"/": "text/html", "/ui/app.js": "javascript", "/ui/app.css": "text/css", "/ui/i18n.js": "javascript", "/ui/i18n/client/en.json": "application/json"} {
 		resp, err := http.Get(d.base + path)
 		if err != nil {
 			t.Fatal(err)
@@ -821,6 +822,8 @@ func TestDaemonServesApp(t *testing.T) {
 	}
 	d.want(404, "", "GET", "/ui/../daemon.go", nil)
 	d.want(404, "", "GET", "/ui/nothing.js", nil)
+	d.want(404, "", "GET", "/ui/i18n/client/nope.json", nil)
+	d.want(400, "", "GET", "/ui/i18n/client/..%2f..%2fapp.js", nil) // no way out of the dictionaries
 }
 
 // Passwords and tokens stay out of the logs.
@@ -967,7 +970,7 @@ func TestDaemonRegisterWithMailedCode(t *testing.T) {
 	if err := e.portal.Store().DB.QueryRow(`SELECT subject FROM mail_outbox WHERE to_addr = ?`, email).Scan(&subject); err != nil {
 		t.Fatal(err)
 	}
-	code := subject[strings.LastIndex(subject, "：")+len("："):]
+	code := subject[strings.LastIndex(subject, ": ")+len(": "):]
 	wrong := "000000"
 	if code == wrong {
 		wrong = "000001"
@@ -979,5 +982,31 @@ func TestDaemonRegisterWithMailedCode(t *testing.T) {
 	reg(201, "", code)
 	if s := d.session(); !s.LoggedIn || s.User != email {
 		t.Fatalf("session: %+v", s)
+	}
+}
+
+// The daemon forwards feedback with the login it holds, and it, not the page,
+// says where the message comes from.
+func TestDaemonFeedback(t *testing.T) {
+	e := newDaemonEnv(t, openPortal(), false)
+	d := e.daemon()
+	body := map[string]string{"category": "bug", "message": "it broke", "lang": "de", "source": "portal", "app_version": "forged"}
+	d.want(401, "not_logged_in", "POST", "/api/feedback", body)
+	d.register(e.url, "fb@example.com")
+	d.want(201, "", "POST", "/api/feedback", body)
+	d.want(400, "bad_request", "POST", "/api/feedback", map[string]string{"category": "bug", "message": "  "})
+
+	var list struct {
+		Feedback []accounts.Feedback `json:"feedback"`
+	}
+	if err := json.Unmarshal(d.want(200, "", "GET", "/api/feedback/mine", nil), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Feedback) != 1 {
+		t.Fatalf("feedback: %+v", list.Feedback)
+	}
+	f := list.Feedback[0]
+	if f.Message != "it broke" || f.Lang != "de" || f.Source != "client" || f.AppVersion != Version || f.OS != runtime.GOOS+"/"+runtime.GOARCH {
+		t.Fatalf("feedback: %+v", f)
 	}
 }

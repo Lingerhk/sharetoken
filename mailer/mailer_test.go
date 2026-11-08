@@ -401,7 +401,7 @@ func TestCodes(t *testing.T) {
 		if !m.Sensitive || m.ExpiresAt == 0 {
 			t.Fatalf("code mail must be sensitive and expire: %+v", m)
 		}
-		return strings.TrimPrefix(m.Subject, "ShareToken 注册验证码：")
+		return strings.TrimPrefix(m.Subject, "Your ShareToken verification code: ")
 	}
 	if err := st.RequestCode(req); err != nil {
 		t.Fatal(err)
