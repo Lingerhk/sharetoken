@@ -17,11 +17,12 @@ import (
 // accounts and coordinator state. The portal and the coordinator both call it,
 // so either may start first.
 func Migrate(db *sql.DB) error {
-	if sqlite.IsMySQL(db) {
-		// One schema version so far: the tables are created complete.
-		return sqlite.Migrate(db, ledger.SchemaMySQL, accounts.SchemaMySQL, SchemaMySQL)
+	mysql := sqlite.IsMySQL(db)
+	schemas := []string{ledger.Schema, accounts.Schema, Schema}
+	if mysql {
+		schemas = []string{ledger.SchemaMySQL, accounts.SchemaMySQL, SchemaMySQL}
 	}
-	if err := sqlite.Migrate(db, ledger.Schema, accounts.Schema, Schema); err != nil {
+	if err := sqlite.Migrate(db, schemas...); err != nil {
 		return err
 	}
 	// v1 databases predate the account and token columns of jobs.
@@ -48,6 +49,9 @@ func Migrate(db *sql.DB) error {
 		if err := sqlite.AddColumn(db, c.table, c.name, c.def); err != nil {
 			return fmt.Errorf("coordinator: migrate %s.%s: %w", c.table, c.name, err)
 		}
+	}
+	if mysql {
+		return nil // SchemaMySQL declares the indexes inside CREATE TABLE
 	}
 	return sqlite.Migrate(db, jobIndexes)
 }

@@ -212,6 +212,9 @@ func addColumnMySQL(db *sql.DB, table, column, def string) error {
 		return nil
 	}
 	_, err := db.Exec(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN `%s` %s", table, column, mysqlColumnDef(def)))
+	if mysqlErrIs(err, 1060) { // duplicate column: another process added it since the check
+		return nil
+	}
 	return err
 }
 
