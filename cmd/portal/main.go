@@ -194,7 +194,9 @@ commands: version, version-policy, serve, check-config, useradd, passwd, grant, 
 		log.Fatal(err)
 	}
 	defer closeLog()
-	log.Print(version.String("portal"))
+	if cmd == "serve" {
+		log.Print(version.String("portal"))
+	}
 	pw, err := config.Secret(f.Database.PasswordEnv, f.Database.PasswordFile, func(m string) { log.Print("WARNING: " + m) })
 	if err != nil {
 		log.Fatalf("database password: %v", err)

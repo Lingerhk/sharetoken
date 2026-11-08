@@ -286,7 +286,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer closeLog()
-	log.Print(version.String("coordinator"))
+	if cmd == "" || cmd == "serve" {
+		log.Print(version.String("coordinator"))
+	}
 	if f.Debug.PprofListen != "" && (cmd == "" || cmd == "serve") {
 		go func() { log.Printf("pprof: %v", http.ListenAndServe(f.Debug.PprofListen, nil)) }()
 	}
