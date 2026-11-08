@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"sharetoken/internal/version"
 )
 
 // MaxFrameSize bounds a single frame so a peer cannot make us allocate
@@ -15,12 +17,21 @@ const MaxFrameSize = 8 << 20
 // Envelope is one frame on a stream: a type tag and a JSON body.
 type Envelope struct {
 	Type string          `json:"type"`
+	Ver  string          `json:"ver,omitempty"` // the sender's version, on the frame that opens a request
 	Body json.RawMessage `json:"body,omitempty"`
 }
 
 // Send writes one frame: a 4-byte big-endian length followed by the JSON
 // envelope, in a single Write so frames never interleave.
-func Send(w io.Writer, typ string, body any) error {
+func Send(w io.Writer, typ string, body any) error { return send(w, typ, "", body) }
+
+// SendRequest is Send for the frame that opens a request: it says which version
+// is asking. Receivers refuse a request without it.
+func SendRequest(w io.Writer, typ string, body any) error {
+	return send(w, typ, version.Version, body)
+}
+
+func send(w io.Writer, typ, ver string, body any) error {
 	var raw json.RawMessage
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -29,7 +40,7 @@ func Send(w io.Writer, typ string, body any) error {
 		}
 		raw = b
 	}
-	payload, err := json.Marshal(Envelope{Type: typ, Body: raw})
+	payload, err := json.Marshal(Envelope{Type: typ, Ver: ver, Body: raw})
 	if err != nil {
 		return err
 	}

@@ -116,5 +116,8 @@
   "反馈已提交，谢谢！": "Feedback gesendet. Danke!",
   "请填写反馈内容": "Bitte geben Sie Ihr Feedback ein",
   "提交太频繁，请稍后再试": "Zu viele Nachrichten. Bitte versuchen Sie es später erneut",
-  "提交时会附带应用版本和操作系统类型。": "App-Version und Betriebssystemtyp werden mit Ihrem Feedback gesendet."
+  "提交时会附带应用版本和操作系统类型。": "App-Version und Betriebssystemtyp werden mit Ihrem Feedback gesendet.",
+  "这个版本已不再受支持，请升级到最新版本后继续使用": "Diese Version wird nicht mehr unterstützt. Aktualisiere auf die neueste Version, um fortzufahren",
+  "有新版本 {version} 可用": "Version {version} ist verfügbar",
+  "版本 {version}": "Version {version}"
 }

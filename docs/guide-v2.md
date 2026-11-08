@@ -143,7 +143,7 @@ coordinator -db mysql://sharetoken@10.0.0.5:3306/sharetoken -fee-bps 500 …
 - 浏览器会话默认 24 小时（`serve -session-ttl`），存放在 HttpOnly cookie 里，页面脚本读不到；在「API Token」页显示为「web session」并标记「当前会话」，可随时吊销。
 - 管理员进入 `/admin/` 用同一个账号；非管理员打开 `/admin/` 只会看到「不是管理员」。
 - 非回环地址默认 HTTPS 自签名证书：浏览器会提示证书不受信任，核对 `portal serve` 打印的指纹后继续（或给门户配 CA 证书 / 放在 Caddy、nginx 后面，后者加 `-behind-tls-proxy` 让 cookie 带 Secure）。
-- 页面只调用本机 `/api/v1`，没有第三方资源，可以在没有外网的内网部署。
+- 页面只调用本机 `/api/v1/v1`，没有第三方资源，可以在没有外网的内网部署。
 - 争议裁决和协调器 `coordinator resolve` 等价：门户进程直接在共用数据库里结算（手续费率取协调器启动时写入 `meta.fee_bps` 的值）。
 - 自动化 UI 测试：`node scripts/portal_ui_test.mjs http://127.0.0.1:8099 ./shots`（需要本机 Chrome；见 validation-v2.md §10）。
 
@@ -155,16 +155,16 @@ coordinator -db mysql://sharetoken@10.0.0.5:3306/sharetoken -fee-bps 500 …
 
 | 方法 路径 | 说明 |
 |---|---|
-| `GET /api/status` | 完整状态：`peer`、`user`、`api`、`coordinator{connected,relayed,via,link{relay,samples,last_ms,avg_ms,min_ms,max_ms,jitter_ms,loss_pct,last_error,updated_at}}`（`link` 为当前中继最近 30 次 ping 的统计，每 10 秒更新，首次 ping 前不出现）、`measured_at`（上次全量测速时间）、`relays[{addr,name,region,rtt_ms,error,coordinator_ok,current,reserved}]`、`share{…配置, running, stats{jobs_served,jobs_failed,earned_micros,active_jobs,announce_error}, reservations}`、`warnings[]` |
-| `GET /api/models` | 网络上的模型汇总 |
-| `GET /api/account` | 门户 `/me` 透传：余额、用量、设备 |
-| `GET /api/jobs?role=buy\|sell&limit=` | 门户作业列表透传 |
-| `GET /api/ledger?limit=&before=` | 门户账单透传 |
-| `POST /api/relays/measure` | 立即重测中继并返回结果 |
-| `GET /api/share` / `PUT /api/share` | 读 / 改共享设置（body 为 `share` 配置对象，校验后立即生效并保存） |
-| `POST /api/share/start` / `stop` | 开关共享 |
-| `POST /api/share/reload` | 从 config.json 重新加载共享设置 |
-| `GET /api/share/detect[?upstream=]` | 列出本地模型服务的模型 |
+| `GET /api/v1/status` | 完整状态：`peer`、`user`、`api`、`coordinator{connected,relayed,via,link{relay,samples,last_ms,avg_ms,min_ms,max_ms,jitter_ms,loss_pct,last_error,updated_at}}`（`link` 为当前中继最近 30 次 ping 的统计，每 10 秒更新，首次 ping 前不出现）、`measured_at`（上次全量测速时间）、`relays[{addr,name,region,rtt_ms,error,coordinator_ok,current,reserved}]`、`share{…配置, running, stats{jobs_served,jobs_failed,earned_micros,active_jobs,announce_error}, reservations}`、`warnings[]` |
+| `GET /api/v1/models` | 网络上的模型汇总 |
+| `GET /api/v1/account` | 门户 `/me` 透传：余额、用量、设备 |
+| `GET /api/v1/jobs?role=buy\|sell&limit=` | 门户作业列表透传 |
+| `GET /api/v1/ledger?limit=&before=` | 门户账单透传 |
+| `POST /api/v1/relays/measure` | 立即重测中继并返回结果 |
+| `GET /api/v1/share` / `PUT /api/v1/share` | 读 / 改共享设置（body 为 `share` 配置对象，校验后立即生效并保存） |
+| `POST /api/v1/share/start` / `stop` | 开关共享 |
+| `POST /api/v1/share/reload` | 从 config.json 重新加载共享设置 |
+| `GET /api/v1/share/detect[?upstream=]` | 列出本地模型服务的模型 |
 | `POST /v1/chat/completions`、`GET /v1/models` | OpenAI 兼容端点（响应头 `X-Sharetoken-Verified/Job/Node/Cost-Micros`） |
 
 `/v1/chat/completions` 的行为要点：

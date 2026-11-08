@@ -71,10 +71,10 @@ $ST share upstream http://127.0.0.1:$MOCK_PORT/v1 > /dev/null
 $ST share add mock-fast -id mock-fast -in 100000 -out 200000 > /dev/null
 $ST share on > /dev/null
 run seller.log $ST up -http 127.0.0.1:$SELLER_API -listen /ip4/127.0.0.1/tcp/0 -nat=false
-for _ in $(seq 1 100); do curl -s http://127.0.0.1:$SELLER_API/api/status | grep -q '"connected": true' && break; sleep 0.2; done
+for _ in $(seq 1 100); do curl -s http://127.0.0.1:$SELLER_API/api/v1/status | grep -q '"connected": true' && break; sleep 0.2; done
 
 run daemon.log env SHARETOKEN_PORTAL="$PORTAL" "$BIN/sharetoken-telemetry" -home "$DIR/desktop" daemon -http 127.0.0.1:$DAEMON_API -listen /ip4/127.0.0.1/tcp/0 -nat=false
-for _ in $(seq 1 50); do curl -s http://127.0.0.1:$DAEMON_API/api/session > /dev/null && break; sleep 0.2; done
+for _ in $(seq 1 50); do curl -s http://127.0.0.1:$DAEMON_API/api/v1/session > /dev/null && break; sleep 0.2; done
 
 cat > env <<ENV
 PORTAL=$PORTAL

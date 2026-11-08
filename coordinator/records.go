@@ -3,6 +3,7 @@ package coordinator
 import (
 	"database/sql"
 	"math"
+	"strings"
 
 	"sharetoken/accounts"
 	"sharetoken/ledger"
@@ -153,10 +154,17 @@ func (e *Engine) recordRelayStatus(st []p2p.RelayStatus) error {
 	now := e.cfg.Now()
 	return e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
 		for _, r := range st {
-			if err := accounts.SetRelayStatus(tx, r.Addr, r.Reserved, r.Err, r.RTT.Milliseconds(), now); err != nil {
+			if err := accounts.SetRelayStatus(tx, r.Addr, r.Reserved, r.Err, r.RTT.Milliseconds(), strings.TrimPrefix(r.Agent, "sharetoken-relay/"), now); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+// RunningVersion reads the version of the coordinator serving this database.
+func RunningVersion(q Querier) (string, error) {
+	var v string
+	err := q.QueryRow("SELECT value FROM meta WHERE `key` = 'coordinator_version'").Scan(&v)
+	return v, err
 }

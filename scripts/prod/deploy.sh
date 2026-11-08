@@ -14,7 +14,24 @@ MAIL_ONLY=0; [ "${1:-}" = "--mail" ] && MAIL_ONLY=1
 MAIL_SERVER_ONLY=0; [ "${1:-}" = "--mail-server" ] && MAIL_SERVER_ONLY=1
 Q="-o LogLevel=ERROR -o ConnectTimeout=10"
 rsh() { ssh $Q "$RUSER@$HOST" "$@"; }
-W=${ST_TESTENV_WORK:-$HOME/st-test}; B=$W/build/arm64; mkdir -p "$B"
+W=${ST_TESTENV_WORK:-$HOME/st-test}
+cd "$REPO"
+V=$(scripts/version.sh); echo "version $V"
+case $V in *-dev*) [ -n "${ST_ALLOW_DEV:-}" ] || { echo "$V is not a release: production only runs releases (tag v$(cat VERSION), or set ST_ALLOW_DEV=1)" >&2; exit 2; };; esac
+
+# Builds programs and uploads them to releases/<version>/ on the server.
+release() {
+  GOOS=linux GOARCH=arm64 scripts/build.sh "$@" >/dev/null
+  rsh "mkdir -p $DIR/releases/$V"
+  local c
+  for c in "$@"; do scp $Q "dist/$c-$V-linux-arm64" "$RUSER@$HOST:$DIR/releases/$V/$c" >/dev/null; done
+  rsh "chmod +x $DIR/releases/$V/*; cd $DIR/releases && ls -1t | tail -n +6 | while read -r old; do rm -rf \"\$old\"; done"
+}
+# Points the program's name at this release; the previous link stays in <name>.prev.
+activate() {
+  local c
+  for c in "$@"; do rsh "cd $DIR && { [ -e $c ] && cp -P $c $c.prev || true; } && ln -sfn releases/$V/$c $c"; done
+}
 
 # Portal and mail server only. The coordinator is left running: trades do not depend on either.
 deploy_mail() {
@@ -25,7 +42,7 @@ deploy_mail() {
   # This account can touch nothing but the mail tables. The portal creates them, so it goes first.
   [ -s "$keys/mail-db.pass" ] || (umask 077; head -c 24 /dev/urandom | base64 | tr -d '/+=' > "$keys/mail-db.pass")
   local mp; mp=$(cat "$keys/mail-db.pass")
-  printf "CREATE USER IF NOT EXISTS 'sharetoken_mail'@'%%' IDENTIFIED BY '%s';\nALTER USER 'sharetoken_mail'@'%%' IDENTIFIED BY '%s';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken.mail_outbox TO 'sharetoken_mail'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken.mail_inbox TO 'sharetoken_mail'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken.mail_status TO 'sharetoken_mail'@'%%';\n" "$mp" "$mp" \
+  printf "CREATE USER IF NOT EXISTS 'sharetoken_mail'@'%%' IDENTIFIED BY '%s';\nALTER USER 'sharetoken_mail'@'%%' IDENTIFIED BY '%s';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken.mail_outbox TO 'sharetoken_mail'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken.mail_inbox TO 'sharetoken_mail'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken.mail_status TO 'sharetoken_mail'@'%%';\nGRANT SELECT ON sharetoken.schema_migrations TO 'sharetoken_mail'@'%%';\n" "$mp" "$mp" \
     | rsh 'cd ~/sharetoken-prod && docker exec -i st-mysql mysql -h127.0.0.1 -uroot -p"$(cat mysql-root.pass)" 2>/dev/null'
   scp $Q "$keys/mail-db.pass" "$RUSER@$HOST:$DIR/mail-db.pass" >/dev/null; rsh "chmod 600 $DIR/mail-db.pass"
 
@@ -52,57 +69,46 @@ H
   rsh "sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/sharetoken-mail.sh && sudo /etc/letsencrypt/renewal-hooks/deploy/sharetoken-mail.sh"
 
   scp $Q "$HERE/sharetoken-mail.service" "$HERE/mail.yaml" "$RUSER@$HOST:$DIR/" >/dev/null
-  rsh "cd $DIR && ./mailserver.new -config mail.yaml check-config >/dev/null && sudo cp sharetoken-mail.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable sharetoken-mail >/dev/null 2>&1; sudo systemctl stop sharetoken-mail 2>/dev/null; mv mailserver.new mailserver; sudo systemctl start sharetoken-mail; sleep 3; systemctl is-active sharetoken-mail"
+  rsh "cd $DIR && releases/$V/mailserver -config mail.yaml check-config >/dev/null && sudo cp sharetoken-mail.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable sharetoken-mail >/dev/null 2>&1; sudo systemctl stop sharetoken-mail 2>/dev/null; true"
+  activate mailserver
+  rsh "sudo systemctl start sharetoken-mail; sleep 3; systemctl is-active sharetoken-mail"
 }
 
 if [ $MAIL_SERVER_ONLY = 1 ]; then
-  echo "== build (linux/arm64)"
-  cd "$REPO"
-  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$B/mailserver" ./cmd/mailserver
-  echo "== upload"
-  scp $Q "$B/mailserver" "$RUSER@$HOST:$DIR/mailserver.new" >/dev/null
+  echo "== build and upload (linux/arm64)"
+  release mailserver
   scp $Q "$HERE/mail.yaml" "$RUSER@$HOST:$DIR/" >/dev/null
   scp $Q "$REPO/scripts/godaddy_ddns.sh" "$RUSER@$HOST:$DIR/ddns.sh"
-  rsh "cd $DIR && chmod +x mailserver.new ddns.sh && $DIR/ddns.sh"
+  rsh "cd $DIR && chmod +x ddns.sh && $DIR/ddns.sh"
   echo "== mail tables (the portal normally creates them; the mail account may not, so this uses the portal's account once)"
-  rsh "cd $DIR && sed -e 's#sharetoken_mail@#sharetoken@#' -e 's#mail-db.pass#db.pass#' mail.yaml > mail-migrate.yaml && ./mailserver.new -config mail-migrate.yaml migrate; rc=\$?; rm -f mail-migrate.yaml; exit \$rc"
+  rsh "cd $DIR && sed -e 's#sharetoken_mail@#sharetoken@#' -e 's#mail-db.pass#db.pass#' mail.yaml > mail-migrate.yaml && releases/$V/mailserver -config mail-migrate.yaml migrate; rc=\$?; rm -f mail-migrate.yaml; exit \$rc"
   echo "== mail server"
   deploy_mail
   exit 0
 fi
 
 if [ $MAIL_ONLY = 1 ]; then
-  echo "== build (linux/arm64)"
-  cd "$REPO"
-  for c in portal mailserver; do
-    GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$B/$c" ./cmd/$c
-  done
-  echo "== upload"
-  scp $Q "$B/portal" "$RUSER@$HOST:$DIR/portal.new" >/dev/null
-  scp $Q "$B/mailserver" "$RUSER@$HOST:$DIR/mailserver.new" >/dev/null
+  echo "== build and upload (linux/arm64)"
+  release portal mailserver
   scp $Q "$HERE/portal.yaml" "$RUSER@$HOST:$DIR/portal.yaml.new" >/dev/null
   scp $Q "$REPO/scripts/godaddy_ddns.sh" "$RUSER@$HOST:$DIR/ddns.sh"
-  rsh "cd $DIR && chmod +x portal.new mailserver.new ddns.sh && ./portal.new -config portal.yaml.new check-config >/dev/null && echo portal config ok"
+  rsh "cd $DIR && chmod +x ddns.sh && releases/$V/portal -config portal.yaml.new check-config >/dev/null && echo portal config ok"
   rsh "cd $DIR && $DIR/ddns.sh"
   echo "== restart portal (keeps portal.prev)"
-  rsh "cd $DIR && cp portal portal.prev && cp portal.yaml portal.yaml.prev && sudo systemctl stop sharetoken-portal && mv portal.new portal && mv portal.yaml.new portal.yaml && sudo systemctl start sharetoken-portal; sleep 3; systemctl is-active sharetoken-portal"
+  rsh "cd $DIR && cp portal.yaml portal.yaml.prev && sudo systemctl stop sharetoken-portal && mv portal.yaml.new portal.yaml"
+  activate portal
+  rsh "sudo systemctl start sharetoken-portal; sleep 3; systemctl is-active sharetoken-portal"
   echo "== mail server"
   deploy_mail
   exit 0
 fi
 
-echo "== build (linux/arm64)"
-cd "$REPO"
-for c in portal coordinator; do
-  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$B/$c" ./cmd/$c
-done
-
-echo "== upload"
+echo "== build and upload (linux/arm64)"
+release portal coordinator mailserver
 rsh "mkdir -p $DIR/backup"
-scp $Q "$B/portal" "$B/coordinator" "$RUSER@$HOST:$DIR/" >/dev/null
 scp $Q "$HERE/portal.yaml" "$HERE/coordinator.yaml" "$RUSER@$HOST:$DIR/"
 scp $Q "$REPO/scripts/godaddy_ddns.sh" "$RUSER@$HOST:$DIR/ddns.sh"
-rsh "chmod +x $DIR/ddns.sh $DIR/portal $DIR/coordinator; cd $DIR && ./portal -config portal.yaml check-config >/dev/null && ./coordinator -config coordinator.yaml check-config >/dev/null && echo configs ok" || true
+rsh "chmod +x $DIR/ddns.sh; cd $DIR && releases/$V/portal -config portal.yaml check-config >/dev/null && releases/$V/coordinator -config coordinator.yaml check-config >/dev/null && echo configs ok"
 
 if [ $BINS_ONLY = 0 ]; then
 echo "== keys (coordinator peer ID and portal pass key are the network's identity: reuse, never regenerate)"
@@ -180,10 +186,9 @@ rsh "( crontab -l 2>/dev/null | grep -v -e sharetoken-prod/ddns.sh -e sharetoken
 fi
 
 echo "== restart services"
-rsh "sudo systemctl restart sharetoken-coordinator sharetoken-portal; sleep 3; systemctl is-active sharetoken-coordinator sharetoken-portal"
+rsh "sudo systemctl stop sharetoken-coordinator sharetoken-portal"
+activate portal coordinator
+rsh "sudo systemctl start sharetoken-portal; sleep 3; sudo systemctl start sharetoken-coordinator; sleep 3; systemctl is-active sharetoken-coordinator sharetoken-portal"
 
 echo "== mail server"
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$B/mailserver" ./cmd/mailserver
-scp $Q "$B/mailserver" "$RUSER@$HOST:$DIR/mailserver.new" >/dev/null
-rsh "chmod +x $DIR/mailserver.new"
 deploy_mail

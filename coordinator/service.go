@@ -177,6 +177,18 @@ func (s *Service) handleCtrl(st network.Stream) {
 		_ = st.Reset()
 		return
 	}
+	if env.Ver == "" {
+		s.sendError(st, env.Type, protocol.Errorf(protocol.CodeBadRequest, "the request does not say the client's version"))
+		return
+	}
+	// Only new business is refused: an old client can still settle, report and
+	// dispute the jobs it already has.
+	if env.Type == protocol.TypeAnnounce || env.Type == protocol.TypeTicketRequest {
+		if err := s.Engine.CheckClient(env.Ver); err != nil {
+			s.sendError(st, env.Type, err)
+			return
+		}
+	}
 
 	var (
 		resp     any

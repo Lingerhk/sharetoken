@@ -21,6 +21,7 @@ const (
 	CodeNotFound          = "not_found"
 	CodeConflict          = "conflict"
 	CodeInternal          = "internal"
+	CodeUpgradeRequired   = "upgrade_required" // this client is older than the network's minimum
 )
 
 // Error is a coded protocol error. Local logic returns it, and it travels

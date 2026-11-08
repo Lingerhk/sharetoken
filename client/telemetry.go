@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"sharetoken/internal/cli"
+	"sharetoken/internal/version"
 )
 
 // builtinTelemetryKey is sharetoken's PostHog project API key. It is embedded on
@@ -30,7 +31,6 @@ const builtinTelemetryKey = "phc_sjtwNCcgiAkXb3c8sMPh3pSiCDUdoAT8RNQSf6GnT2au"
 var (
 	TelemetryKey  = builtinTelemetryKey        // an empty value builds an app that sends nothing
 	TelemetryHost = "https://us.i.posthog.com" // PostHog Cloud (the project is in the US region), or a self-hosted instance
-	Version       = "dev"                      // set by scripts/build-gui.sh; says which code, not which environment (see Env)
 )
 
 // TelemetryFile holds the opt-out and the anonymous install ID. It is separate
@@ -246,7 +246,7 @@ func (t *Telemetry) captureLocked(event string, p telemetryProps) bool {
 			t.log.Debug("saving the install ID", "err", err)
 		}
 	}
-	p.SchemaVersion, p.OS, p.Arch, p.AppVersion = 1, runtime.GOOS, runtime.GOARCH, Version
+	p.SchemaVersion, p.OS, p.Arch, p.AppVersion = 1, runtime.GOOS, runtime.GOARCH, version.Version
 	p.InsertID, p.GeoIPDisable, p.ProcessPersonProfil = randomHex(16), true, false
 	t.queue = append(t.queue, telemetryEvent{Event: event, DistinctID: t.st.InstallID, Properties: p, Timestamp: t.now().UTC().Format(time.RFC3339)})
 	return true

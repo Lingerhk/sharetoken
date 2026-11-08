@@ -124,36 +124,55 @@ func daemonIn(dir string) (string, bool) {
 type probeState int
 
 const (
-	probeNothing probeState = iota // nobody listens
-	probeDaemon                    // a sharetoken daemon of this build type
-	probeOther                     // something else, a client without the app's API, or the other build type's daemon
+	probeNothing      probeState = iota // nobody listens
+	probeDaemon                         // a sharetoken daemon of this build type
+	probeOther                          // something else, a client without the app's API, or the other build type's daemon
+	probeOtherVersion                   // a sharetoken daemon of this build type, but another release
 )
 
 func probe(ctx context.Context, addr string) probeState {
+	st, _ := probeVersion(ctx, addr)
+	return st
+}
+
+// probeVersion says who answers at addr and, for a daemon, which release it is.
+// The app's pages come from the daemon, so a daemon of another release would
+// show this app another release's pages.
+func probeVersion(ctx context.Context, addr string) (probeState, string) {
 	c, err := net.DialTimeout("tcp", addr, time.Second)
 	if err != nil {
-		return probeNothing
+		return probeNothing, ""
 	}
 	c.Close()
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/session", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/v1/session", nil)
 	if err != nil {
-		return probeOther
+		return probeOther, ""
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return probeOther
+		return probeOther, ""
 	}
 	defer resp.Body.Close()
 	var s struct {
-		Env   string `json:"env"`
-		State string `json:"state"`
+		Env     string `json:"env"`
+		State   string `json:"state"`
+		Version string `json:"version"`
 	}
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&s) != nil || s.State == "" || s.Env != Env {
-		return probeOther
+		return probeOther, ""
 	}
-	return probeDaemon
+	if s.Version != version {
+		return probeOtherVersion, s.Version
+	}
+	return probeDaemon, s.Version
+}
+
+// otherVersionError explains a daemon left running by an earlier release. One
+// this app starts ends with it, so this one was started by hand.
+func otherVersionError(addr, running string) error {
+	return fmt.Errorf("the sharetoken service at %s is release %s, and this app is release %s. Stop it (`sharetoken daemon`) and reopen this app", addr, running, version)
 }
 
 // start makes sure a daemon answers at the address. One that already runs is
@@ -162,17 +181,21 @@ func (s *supervisor) start(ctx context.Context) error {
 	// A client on this home comes first, wherever it listens: a second one would
 	// put the same device key on the network twice.
 	if addr, ok := runningClient(s.home); ok {
-		switch probe(ctx, addr) {
+		switch st, running := probeVersion(ctx, addr); st {
 		case probeDaemon:
 			s.addr = addr
 			return nil
+		case probeOtherVersion:
+			return otherVersionError(addr, running)
 		case probeOther:
 			return fmt.Errorf("`sharetoken up` is running on this data directory (%s, at %s). Stop it and reopen this app", s.home, addr)
 		}
 	}
-	switch probe(ctx, s.addr) {
+	switch st, running := probeVersion(ctx, s.addr); st {
 	case probeDaemon:
 		return nil
+	case probeOtherVersion:
+		return otherVersionError(s.addr, running)
 	case probeOther:
 		free, ok := firstFree(ctx, s.spare)
 		if !ok {

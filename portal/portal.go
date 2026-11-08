@@ -32,6 +32,7 @@ import (
 	"sharetoken/accounts"
 	"sharetoken/coordinator"
 	"sharetoken/internal/mysqldb"
+	"sharetoken/internal/version"
 	"sharetoken/ledger"
 	"sharetoken/mailer"
 	"sharetoken/relaypass"
@@ -343,9 +344,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
 	mux.HandleFunc("GET /api/v1/info", s.handleInfo)
 	mux.HandleFunc("GET /api/v1/network", s.handleNetwork)
-	mux.HandleFunc("POST /api/v1/register", s.handleRegister)
-	mux.HandleFunc("POST /api/v1/register/code", s.handleRegisterCode)
-	mux.HandleFunc("POST /api/v1/login", s.handleLogin)
+	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
+	mux.Handle("POST /api/v1/register", s.clientOnly(http.HandlerFunc(s.handleRegister)))
+	mux.HandleFunc("POST /api/v1/register/code", s.handleRegisterCode) // the web sign-up uses it too; the sign-up itself is what is guarded
+	mux.Handle("POST /api/v1/login", s.clientOnly(http.HandlerFunc(s.handleLogin)))
 
 	// Browser sessions (cookie): only for the portal's own pages.
 	mux.HandleFunc("POST /api/v1/web/login", webOnly(s.handleWebLogin))
@@ -353,7 +355,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/web/mfa", webOnly(s.handleWebMFA))
 	mux.HandleFunc("POST /api/v1/web/mfa/setup", webOnly(s.handleWebMFASetup))
 	mux.HandleFunc("POST /api/v1/web/mfa/confirm", webOnly(s.handleWebMFAConfirm))
-	mux.HandleFunc("POST /api/v1/mfa", s.handleMFA)
+	mux.Handle("POST /api/v1/mfa", s.clientOnly(http.HandlerFunc(s.handleMFA)))
 	mux.Handle("POST /api/v1/web/logout", s.auth(s.handleWebLogout))
 
 	mux.Handle("POST /api/v1/logout", s.auth(s.handleLogout))
@@ -363,7 +365,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/tokens", s.auth(s.handleNewToken))
 	mux.Handle("DELETE /api/v1/tokens/{id}", s.auth(s.handleRevokeToken))
 	mux.Handle("GET /api/v1/devices", s.auth(s.handleDevices))
-	mux.Handle("POST /api/v1/devices", s.auth(s.handleBindDevice))
+	mux.Handle("POST /api/v1/devices", s.clientOnly(s.auth(s.handleBindDevice)))
 	mux.Handle("DELETE /api/v1/devices/{peer}", s.auth(s.handleUnbindDevice))
 	mux.Handle("PATCH /api/v1/devices/{peer}", s.auth(s.handleRenameDevice))
 	mux.Handle("GET /api/v1/ledger", s.auth(s.handleLedger))
@@ -371,6 +373,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/jobs", s.auth(s.handleJobs))
 	mux.Handle("GET /api/v1/usage", s.auth(s.handleUsage))
 
+	mux.Handle("GET /api/v1/admin/versions", s.admin(s.handleAdminVersions))
+	mux.Handle("PUT /api/v1/admin/version-policy", s.admin(s.handleSetVersionPolicy))
 	mux.Handle("GET /api/v1/admin/overview", s.admin(s.handleOverview))
 	mux.Handle("GET /api/v1/admin/users", s.admin(s.handleUsers))
 	mux.Handle("GET /api/v1/admin/users/search", s.admin(s.handleSearchUsers))
@@ -419,6 +423,7 @@ func withLimits(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set(ServerVersionHeader, version.Version)
 		securityHeaders(w, r)
 		h.ServeHTTP(w, r)
 	})
@@ -810,6 +815,9 @@ func (s *Server) handleBindDevice(w http.ResponseWriter, r *http.Request, cu ctx
 		return
 	}
 	s.log.Info("device bound", "user", cu.user.Username, "peer", d.Peer, "name", d.Name)
+	if err := s.store.SetDeviceVersion(d.Peer, r.Header.Get(ClientVersionHeader)); err != nil {
+		s.log.Warn("recording a device's version", "err", err)
+	}
 	writeJSON(w, http.StatusOK, d)
 }
 
@@ -906,6 +914,11 @@ func (s *Server) handleRelayPass(w http.ResponseWriter, r *http.Request, cu ctxU
 	p, err := s.IssuePass(cu.user, req.Peer)
 	switch {
 	case err == nil:
+		// Devices that only buy never announce an offer: passes are where
+		// their version shows up, once an hour.
+		if err := s.store.SetDeviceVersion(req.Peer, r.Header.Get(ClientVersionHeader)); err != nil {
+			s.log.Warn("recording a device's version", "err", err)
+		}
 		writeJSON(w, http.StatusOK, p)
 	case errors.Is(err, errNoPasses):
 		writeErr(w, http.StatusNotFound, "passes_disabled", err.Error())

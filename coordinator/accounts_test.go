@@ -37,7 +37,7 @@ func TestUnboundDevicesAreRefused(t *testing.T) {
 	if err := f.eng.UpsertOffer(o); protocol.CodeOf(err) != protocol.CodeUnauthorized {
 		t.Fatalf("offer from an unbound node: want unauthorized, got %v", err)
 	}
-	_, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10})
+	_, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10})
 	if protocol.CodeOf(err) != protocol.CodeUnauthorized {
 		t.Fatalf("ticket for an unbound buyer: want unauthorized, got %v", err)
 	}
@@ -84,7 +84,7 @@ func TestDevicesShareTheirUsersAccount(t *testing.T) {
 
 	// Alice's laptop spends what her node earned, but never buys from her
 	// own node: with only her node online there is no match.
-	_, err = f.eng.IssueTicket(aliceLaptop.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1000})
+	_, err = f.eng.IssueTicket(aliceLaptop.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 1000})
 	if protocol.CodeOf(err) != protocol.CodeNoOffers {
 		t.Fatalf("alice matched her own node: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestDevicesShareTheirUsersAccount(t *testing.T) {
 	if err := st.SetDisabled(bobUser.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.eng.IssueTicket(bob.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeUnauthorized {
+	if _, err := f.eng.IssueTicket(bob.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeUnauthorized {
 		t.Fatalf("disabled user: want unauthorized, got %v", err)
 	}
 	if err := f.eng.UpsertOffer(f.signedOffer(bobNode, "m", priceIn, priceOut, 4)); protocol.CodeOf(err) != protocol.CodeUnauthorized {

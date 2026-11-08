@@ -17,17 +17,16 @@ W=${ST_TESTENV_WORK:-$HOME/st-test}; B=$W/build/arm64; KEYS=$W/dev-keys; mkdir -
 
 echo "== build (linux/arm64)"
 cd "$REPO"
-for c in portal coordinator mailserver; do
-  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$B/$c" ./cmd/$c
-done
+V=$(scripts/version.sh); echo "version $V"
+GOOS=linux GOARCH=arm64 scripts/build.sh portal coordinator mailserver >/dev/null
 
 echo "== upload"
-pi "mkdir -p $DIR/backup"
-scp $Q "$B/portal" "$RUSER@$PI:$DIR/portal.new" >/dev/null
-scp $Q "$B/coordinator" "$RUSER@$PI:$DIR/coordinator.new" >/dev/null
-scp $Q "$B/mailserver" "$RUSER@$PI:$DIR/mailserver.new" >/dev/null
+pi "mkdir -p $DIR/backup $DIR/releases/$V"
+for c in portal coordinator mailserver; do
+  scp $Q "dist/$c-$V-linux-arm64" "$RUSER@$PI:$DIR/releases/$V/$c" >/dev/null
+done
 scp $Q "$HERE/portal.yaml" "$HERE/coordinator.yaml" "$HERE/mail.yaml" "$RUSER@$PI:$DIR/" >/dev/null
-pi "chmod +x $DIR/portal.new $DIR/coordinator.new $DIR/mailserver.new"
+pi "chmod +x $DIR/releases/$V/*; cd $DIR/releases && ls -1t | tail -n +6 | while read -r old; do rm -rf \"\$old\"; done"
 
 if [ $BINS_ONLY = 0 ]; then
   echo "== keys (dev only; the relays' dev network trusts these, so they are never regenerated here)"
@@ -72,7 +71,7 @@ N
 fi
 
 echo "== restart dev services"
-pi "cd $DIR && ./coordinator.new -config coordinator.yaml check-config >/dev/null && ./portal.new -config portal.yaml check-config >/dev/null && sudo systemctl stop sharetoken-dev-portal sharetoken-dev-coordinator; [ -f portal ] && cp portal portal.prev; [ -f coordinator ] && cp coordinator coordinator.prev; mv portal.new portal; mv coordinator.new coordinator; sudo systemctl start sharetoken-dev-coordinator; sleep 3; sudo systemctl start sharetoken-dev-portal; sleep 3; systemctl is-active sharetoken-dev-coordinator sharetoken-dev-portal"
+pi "cd $DIR && releases/$V/coordinator -config coordinator.yaml check-config >/dev/null && releases/$V/portal -config portal.yaml check-config >/dev/null && sudo systemctl stop sharetoken-dev-portal sharetoken-dev-coordinator; [ -e portal ] && cp -P portal portal.prev; [ -e coordinator ] && cp -P coordinator coordinator.prev; ln -sfn releases/$V/portal portal; ln -sfn releases/$V/coordinator coordinator; sudo systemctl start sharetoken-dev-coordinator; sleep 3; sudo systemctl start sharetoken-dev-portal; sleep 3; systemctl is-active sharetoken-dev-coordinator sharetoken-dev-portal"
 
 echo "== mail server (docs/mail.md)"
 # The key is kept on the Mac beside the other dev keys; its public half is in DNS (scripts/mail_dns.py).
@@ -81,8 +80,8 @@ scp $Q "$KEYS/dkim.key" "$RUSER@$PI:$DIR/dkim.key" >/dev/null; pi "chmod 600 $DI
 # The tables exist now that the portal has started. This account can touch nothing but them.
 [ -s "$KEYS/mail-db.pass" ] || (umask 077; head -c 24 /dev/urandom | base64 | tr -d '/+=' > "$KEYS/mail-db.pass")
 MP=$(cat "$KEYS/mail-db.pass")
-printf "CREATE USER IF NOT EXISTS 'sharetoken_mail_dev'@'%%' IDENTIFIED BY '%s';\nALTER USER 'sharetoken_mail_dev'@'%%' IDENTIFIED BY '%s';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken_dev.mail_outbox TO 'sharetoken_mail_dev'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken_dev.mail_inbox TO 'sharetoken_mail_dev'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken_dev.mail_status TO 'sharetoken_mail_dev'@'%%';\n" "$MP" "$MP" \
+printf "CREATE USER IF NOT EXISTS 'sharetoken_mail_dev'@'%%' IDENTIFIED BY '%s';\nALTER USER 'sharetoken_mail_dev'@'%%' IDENTIFIED BY '%s';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken_dev.mail_outbox TO 'sharetoken_mail_dev'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken_dev.mail_inbox TO 'sharetoken_mail_dev'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON sharetoken_dev.mail_status TO 'sharetoken_mail_dev'@'%%';\nGRANT SELECT ON sharetoken_dev.schema_migrations TO 'sharetoken_mail_dev'@'%%';\n" "$MP" "$MP" \
   | ssh $Q "$RUSER@$ARMBIAN" 'cd ~/sharetoken-prod && docker exec -i st-mysql mysql -h127.0.0.1 -uroot -p"$(cat mysql-root.pass)" 2>/dev/null'
 scp $Q "$KEYS/mail-db.pass" "$RUSER@$PI:$DIR/mail-db.pass" >/dev/null; pi "chmod 600 $DIR/mail-db.pass"
 scp $Q "$HERE/sharetoken-dev-mail.service" "$RUSER@$PI:$DIR/" >/dev/null
-pi "sudo cp $DIR/sharetoken-dev-mail.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable sharetoken-dev-mail >/dev/null 2>&1; cd $DIR && ./mailserver.new -config mail.yaml check-config >/dev/null && sudo systemctl stop sharetoken-dev-mail; mv mailserver.new mailserver; sudo systemctl start sharetoken-dev-mail; sleep 3; systemctl is-active sharetoken-dev-mail"
+pi "sudo cp $DIR/sharetoken-dev-mail.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable sharetoken-dev-mail >/dev/null 2>&1; cd $DIR && releases/$V/mailserver -config mail.yaml check-config >/dev/null && sudo systemctl stop sharetoken-dev-mail; [ -e mailserver ] && cp -P mailserver mailserver.prev; ln -sfn releases/$V/mailserver mailserver; sudo systemctl start sharetoken-dev-mail; sleep 3; systemctl is-active sharetoken-dev-mail"

@@ -163,11 +163,12 @@ const portalApi = async (method, path, body, token = config.token) => {
   // The test talks to the self-signed portal directly.
   return fetch(env.PORTAL + path, { method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
 };
-const peer = (await ev(`fetch('/api/session').then(r => r.json()).then(s => s.peer)`));
+const peer = (await ev(`fetch('/api/v1/session').then(r => r.json()).then(s => s.peer)`));
 ok((await portalApi('PATCH', '/api/v1/devices/' + peer, { name: hostile })).ok, 'a device gets a hostile name');
 await waitFor(`${el('#devices-body')}.textContent.includes('<img')`, 25000);
 ok(!(await has('#devices-body img')) && !(await ev('window.__xss === 1')), 'it shows as text, nothing runs');
 
+ok((await ev(`${el('#app-version')}.textContent`)).length > 2, 'the app shows its version');
 console.log('layouts');
 await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 760, deviceScaleFactor: 1, mobile: false });
 await sleep(300);
@@ -188,7 +189,7 @@ await fill('#feedback-text', 'it works');
 await click('#feedback-send');
 await waitFor(`${el('#feedback-result')}.textContent.includes('已提交')`);
 ok(await ev(`${el('#feedback-text')}.value`) === '', 'feedback is sent and the box is cleared');
-const sent = await ev(`fetch('/api/feedback/mine').then(r => r.json())`);
+const sent = await ev(`fetch('/api/v1/feedback/mine').then(r => r.json())`);
 ok(sent.feedback[0].message === 'it works' && sent.feedback[0].source === 'client' && sent.feedback[0].os.includes('/'), 'the portal has it, marked as from the client');
 await shot('10b-feedback');
 
@@ -241,7 +242,7 @@ for (const name of ['sharetoken_signed_in', 'sharetoken_network_joined', 'sharet
 ok(collected.every(c => c.path === '/batch/' && JSON.parse(c.body).api_key === 'phc_test_key'), 'events use the PostHog batch format and the built-in key');
 const raw = collected.map(c => c.body).join('\n');
 const lastConfig = JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8'));
-const sessionNow = await ev(`fetch('/api/session').then(r => r.json())`);
+const sessionNow = await ev(`fetch('/api/v1/session').then(r => r.json())`);
 for (const [what, secret] of [['email', NORMAL], ['password', PASSWORD], ['token', lastConfig.token], ['device id', sessionNow.peer], ['portal address', env.PORTAL], ['device name', hostile]]) {
   ok(!raw.includes(secret), 'events do not contain the ' + what);
 }

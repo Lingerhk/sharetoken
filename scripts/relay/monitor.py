@@ -31,6 +31,7 @@ DEFAULTS = {
     "tcp": "",                  # 本机对外端口（公网域名:端口，顺带验证 DNS），空格分隔
     "watch": "",                # 互相盯的其他中继，这台机器彻底宕机时只有它们能发现
     "watch_severity": "critical",
+    "binary": "relay",          # 已部署的中继（软链到 releases/<版本>/relay）；相对于配置文件所在目录
     "warn_networks": "dev",     # 这些网络丢了协调器只算 warning
     "fail_after": "3",          # 连续失败多少次才告警（每分钟一次）
     "tcp_fail_after": "5",
@@ -114,11 +115,32 @@ def by_network(metrics, name):
     return {labels.get("network", ""): v for labels, v in metrics.get(name, [])}
 
 
+def version_of(metrics):
+    """中继自己报告的版本；老版本没有这项指标时返回 None。"""
+    series = metrics.get("sharetoken_relay_build_info")
+    return series[0][0].get("version") if series else None
+
+
+def deployed_version(cfg):
+    """binary 软链指向 releases/<版本>/relay 时返回版本，否则 None。"""
+    path = os.path.realpath(os.path.join(cfg.get("base", ""), cfg["binary"]))
+    parts = path.split(os.sep)
+    if len(parts) >= 3 and parts[-3] == "releases":
+        return parts[-2]
+    return None
+
+
 def check_relay(metrics, cfg, prev_counters, elapsed):
     """从指标判断中继本身。返回 (结果, 这一轮的计数器)。"""
     results = []
     enabled = value(metrics, "sharetoken_relay_service_enabled", 0) == 1
     results.append(Result("service", enabled, "中继服务未运行，无法预约" if not enabled else "中继服务运行中"))
+
+    running = version_of(metrics)
+    deployed = deployed_version(cfg)
+    if running and deployed:
+        ok = running == deployed
+        results.append(Result("version", ok, "正在运行 %s，但已部署 %s，重启没有生效" % (running, deployed) if not ok else "版本 %s" % running, "warning"))
 
     warn_networks = cfg["warn_networks"].split()
     reserved = by_network(metrics, "sharetoken_relay_network_coordinators_reserved")

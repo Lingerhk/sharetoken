@@ -129,7 +129,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	if err := a.bind(a.ctx); err != nil {
 		return err
 	}
-	h, err := p2p.NewHost(a.keys, p2p.HostConfig{Listen: a.cfg.Listen, NAT: a.cfg.NAT, Options: a.HostOptions})
+	h, err := p2p.NewHost(a.keys, p2p.HostConfig{Program: "client", Listen: a.cfg.Listen, NAT: a.cfg.NAT, Options: a.HostOptions})
 	if err != nil {
 		return err
 	}

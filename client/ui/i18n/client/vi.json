@@ -116,5 +116,8 @@
   "反馈已提交，谢谢！": "Đã gửi góp ý. Cảm ơn bạn!",
   "请填写反馈内容": "Vui lòng nhập nội dung góp ý",
   "提交太频繁，请稍后再试": "Gửi quá thường xuyên. Vui lòng thử lại sau",
-  "提交时会附带应用版本和操作系统类型。": "Phiên bản ứng dụng và loại hệ điều hành được gửi kèm góp ý của bạn."
+  "提交时会附带应用版本和操作系统类型。": "Phiên bản ứng dụng và loại hệ điều hành được gửi kèm góp ý của bạn.",
+  "这个版本已不再受支持，请升级到最新版本后继续使用": "Phiên bản này không còn được hỗ trợ. Hãy nâng cấp lên phiên bản mới nhất để tiếp tục",
+  "有新版本 {version} 可用": "Đã có phiên bản {version}",
+  "版本 {version}": "Phiên bản {version}"
 }

@@ -129,6 +129,7 @@ func New(keys *p2p.Keys, cfg Config) (*Relay, error) {
 		opts = append(opts, libp2p.AddrsFactory(func([]ma.Multiaddr) []ma.Multiaddr { return announce }))
 	}
 	h, err := p2p.NewHost(keys, p2p.HostConfig{
+		Program:  "relay",
 		Listen:   cfg.Listen,
 		MaxConns: cfg.MaxConns,
 		Options: append(opts,

@@ -9,13 +9,13 @@ DO_PORTAL=0
 for a in "$@"; do case $a in --portal) DO_PORTAL=1;; *) echo "unknown option $a" >&2; exit 2;; esac; done
 coord_guard || exit 1
 for c in sharetoken; do
-  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $W/build/arm64/$c ./cmd/$c || exit 1
+  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w $($REPO/scripts/ldflags.sh)" -o $W/build/arm64/$c ./cmd/$c || exit 1
 done
 for c in sharetoken coordinator portal; do
-  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $W/build/amd64/$c ./cmd/$c || exit 1
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w $($REPO/scripts/ldflags.sh)" -o $W/build/amd64/$c ./cmd/$c || exit 1
 done
 for c in sharetoken; do gzip -kf $W/build/amd64/$c; done
-go build -o $W/sharetoken ./cmd/sharetoken || exit 1
+go build -ldflags "$($REPO/scripts/ldflags.sh)" -o $W/sharetoken ./cmd/sharetoken || exit 1
 # CN builds from source (uploads to it are very slow); never ship docs/test_env.txt or secrets
 git ls-files -co --exclude-standard | while IFS= read -r f; do [ ! -f "$f" ] || echo "$f"; done | grep -v -e '^docs/test_env.txt' -e 'secrets' -e '^reports/' -e 'upstream_proxy.json' -e '\.env$' -e '\.key$' > $W/files.txt
 COPYFILE_DISABLE=1 tar czf $W/src.tgz -T $W/files.txt

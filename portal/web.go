@@ -449,12 +449,13 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, _ ctxUser) 
 	// Tell operators which user each node belongs to.
 	type nodeRow struct {
 		coordinator.NodeStats
-		User string `json:"user,omitempty"`
+		User          string `json:"user,omitempty"`
+		ClientVersion string `json:"client_version,omitempty"`
 	}
 	out := make([]nodeRow, 0, len(ns))
 	for _, n := range ns {
 		row := nodeRow{NodeStats: n}
-		_ = s.db.QueryRow(`SELECT u.username FROM devices d JOIN users u ON u.id = d.user_id WHERE d.peer = ?`, n.Node).Scan(&row.User)
+		_ = s.db.QueryRow(`SELECT u.username, d.client_version FROM devices d JOIN users u ON u.id = d.user_id WHERE d.peer = ?`, n.Node).Scan(&row.User, &row.ClientVersion)
 		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": out})

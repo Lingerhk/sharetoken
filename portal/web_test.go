@@ -631,7 +631,7 @@ func TestNetworkShowsRelayLatency(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := accounts.SetRelayStatus(tx, addr, ok, "", rtt, time.Now()); err != nil {
+		if err := accounts.SetRelayStatus(tx, addr, ok, "", rtt, "", time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(); err != nil {

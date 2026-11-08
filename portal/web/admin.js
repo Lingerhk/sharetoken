@@ -16,7 +16,7 @@
   const mailBadge = h('span', { class: 'nav-count', id: 'mail-unread', hidden: true });
   const feedbackBadge = h('span', { class: 'nav-count', id: 'feedback-new', hidden: true });
   const nav = h('nav', { class: 'sidenav' },
-    h('a', { href: '#/overview' }, '总览'), h('a', { href: '#/users' }, '用户'), h('a', { href: '#/relays' }, '中继'), h('a', { href: '#/jobs' }, '作业'),
+    h('a', { href: '#/overview' }, '总览'), h('a', { href: '#/users' }, '用户'), h('a', { href: '#/relays' }, '中继'), h('a', { href: '#/versions' }, '版本'), h('a', { href: '#/jobs' }, '作业'),
     h('a', { href: '#/nodes' }, '节点'), h('a', { href: '#/audits' }, '审计'), h('a', { href: '#/disputes' }, '争议'), h('a', { href: '#/ledger' }, '账本'), h('a', { href: '#/mail' }, '邮件', mailBadge), h('a', { href: '#/feedback' }, '反馈', feedbackBadge));
   const main = h('main');
   add(clear(app), 
@@ -194,6 +194,39 @@
     await load(); return box;
   }
 
+  // ---- versions ----
+  async function versions(m) {
+    const r = await api('GET', '/api/v1/admin/versions');
+    const same = v => !v || v === r.server.version ? 'ok' : 'warn';
+    const service = (name, v) => ({ name, v });
+    add(m, h('h1', null, '版本', h('small', null, '各模块实际运行的版本，以及客户端版本策略')),
+      h('div', { class: 'card' }, h('h2', null, '服务'), table([
+        { title: '模块', cell: x => x.name },
+        { title: '版本', cell: x => x.v ? badge(x.v, same(x.v)) : badge('未上报', 'warn') },
+      ], [service('门户', r.server.version), service('协调器', r.coordinator), service('邮件服务', r.mail)].concat(r.relays.map(x => service('中继 ' + (x.name || x.id), x.version))), ''),
+      h('p', { class: 'muted' }, 'API v' + r.api + ' · 控制协议 ' + r.protocols.ctrl + ' · 推理协议 ' + r.protocols.infer + ' · 数据库 core ' + r.schema.core + ' / mail ' + r.schema.mail)),
+      h('div', { class: 'card' }, h('h2', null, '客户端分布'), table([
+        { title: '版本', cell: x => x.version || '未上报' },
+        { title: '设备数', num: true, cell: x => String(x.devices) },
+      ], r.devices, '还没有设备')));
+    const min = input({ type: 'text', value: r.policy.min_client || '', placeholder: '1.0.0', maxlength: 32 });
+    const rec = input({ type: 'text', value: r.policy.recommended_client || '', placeholder: '1.0.0', maxlength: 32 });
+    const latest = input({ type: 'text', value: r.policy.latest_client || '', placeholder: '1.0.0', maxlength: 32 });
+    const url = input({ type: 'text', value: r.policy.download_url || '', placeholder: 'https://sharetoken.app/#download', maxlength: 256 });
+    const dev = input({ type: 'checkbox' });
+    dev.checked = !!r.policy.allow_dev;
+    add(m, h('div', { class: 'card' }, h('h2', null, '客户端版本策略'),
+      h('p', { class: 'muted' }, '低于最低版本的客户端不能登录、绑定设备、发布报价或买入；已有作业的结算和争议不受影响。'),
+      field('最低版本', min), field('推荐版本', rec), field('最新版本', latest), field('下载地址', url),
+      h('label', { class: 'check' }, dev, '允许开发构建'),
+      h('button', { class: 'primary', onclick: async () => {
+        try {
+          await api('PUT', '/api/v1/admin/version-policy', { min_client: min.value.trim(), recommended_client: rec.value.trim(), latest_client: latest.value.trim(), download_url: url.value.trim(), allow_dev: dev.checked });
+          toast('已保存');
+        } catch (ex) { fail(ex); }
+      } }, '保存')));
+  }
+
   // ---- relays ----
   async function relays(m) {
     const list = h('div', { class: 'card' });
@@ -205,6 +238,7 @@
         { title: '名称 / 地区', cell: x => [x.name || '—', ' ', h('span', { class: 'muted' }, x.region || '')] },
         { title: '地址', cell: x => h('div', null, x.addr.split(',').map(a => h('div', null, h('code', { class: 'mono' }, a)))) },
         { title: '状态', cell: x => [badge(x.enabled ? '启用' : '停用', x.enabled ? 'ok' : ''), ' ', badge(x.coordinator_ok ? '协调器可达' : '不可达', x.coordinator_ok ? 'ok' : 'bad')] },
+        { title: '版本', cell: x => x.version || '—' },
         { title: '延迟', num: true, cell: x => ST.rtt(x.rtt_ms) },
         { title: '检查', cell: x => [ago(x.checked_at), x.detail ? h('div', { class: 'muted' }, x.detail) : null] },
         { title: '', cell: x => h('span', { class: 'row' },
@@ -263,6 +297,7 @@
     const now = Date.now() * 1e6;
     add(m, h('h1', null, '节点', h('small', null, '卖家设备的信誉记录；连续两次审计不符会被暂停撮合')), h('div', { class: 'card' }, table([
       { title: '节点', cell: n => [peer(n.node), n.user ? h('div', null, userLink(n.user)) : h('div', { class: 'muted' }, '未绑定')] },
+      { title: '版本', cell: n => n.client_version || '—' },
       { title: '信誉', num: true, cell: n => String(n.reputation) },
       { title: '成功 / 失败', num: true, cell: n => n.successes + ' / ' + n.failures },
       { title: '争议败诉', num: true, cell: n => String(n.disputes_lost) },
@@ -554,7 +589,7 @@
   }
   api('GET', '/api/v1/admin/feedback?limit=1&status=new').then(r => setFeedbackNew(r.new)).catch(() => { /* the page itself reports errors */ });
 
-  const go = ST.router({ overview, users, relays, jobs, nodes, audits, disputes, ledger, mail, feedback }, nav, main, 'overview');
+  const go = ST.router({ overview, users, relays, versions, jobs, nodes, audits, disputes, ledger, mail, feedback }, nav, main, 'overview');
   refreshUnread();
   await go();
 })();

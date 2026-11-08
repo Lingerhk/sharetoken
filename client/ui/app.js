@@ -47,6 +47,7 @@ I18N.ready.then(() => {
 
   // Messages for the codes the daemon and the portal report.
   const MESSAGES = {
+    upgrade_required: tr('这个版本已不再受支持，请升级到最新版本后继续使用'),
     bad_portal: tr('门户地址格式不对'),
     insecure_portal: tr('拒绝使用其他机器上的明文 HTTP 门户：密码会以明文传输。请使用 https:// 地址'),
     portal_unreachable: tr('连不上 sharetoken 服务器，请检查网络后重试'),
@@ -91,7 +92,7 @@ I18N.ready.then(() => {
     if (!t || !t.available) return null;
     const box = h('input', { type: 'checkbox', id: 'telemetry-toggle', checked: t.enabled, onchange: async () => {
       box.disabled = true;
-      try { t.enabled = (await api('PUT', '/api/telemetry', { enabled: box.checked })).enabled; }
+      try { t.enabled = (await api('PUT', '/api/v1/telemetry', { enabled: box.checked })).enabled; }
       catch (e) { /* the box returns to the saved value below */ }
       box.checked = t.enabled;
       box.disabled = false;
@@ -134,7 +135,7 @@ I18N.ready.then(() => {
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.value.trim())) { auth.error = tr('请填写正确的邮箱地址'); render(); return; }
       sendCode.disabled = true;
       try {
-        const r = await api('POST', '/api/register/code', { pin: p.pin_required || p.known ? p.fingerprint : '', email: email.value.trim() });
+        const r = await api('POST', '/api/v1/register/code', { pin: p.pin_required || p.known ? p.fingerprint : '', email: email.value.trim() });
         let left = r.cooldown_seconds || 60;
         sendCode.textContent = tr('{n} 秒后可重发', { n: left });
         clearInterval(cooldown);
@@ -181,7 +182,7 @@ I18N.ready.then(() => {
       auth.error = '';
       auth.busy = true; render();
       try {
-        auth.probe = await api('POST', '/api/portal/probe', {}); // empty: the daemon uses the built-in portal
+        auth.probe = await api('POST', '/api/v1/portal/probe', {}); // empty: the daemon uses the built-in portal
         auth.confirmed = false;
       } catch (e) { auth.error = message(e); }
       auth.busy = false; render();
@@ -246,7 +247,7 @@ I18N.ready.then(() => {
       if (isLogin) { body.account = account.value.trim(); if (auth.totp) body.totp = totp.value.trim(); }
       else { body.email = email.value.trim(); if (p.email_verification) body.code = mailCode.value.trim(); }
       try {
-        const s = await api('POST', isLogin ? '/api/login' : '/api/register', body);
+        const s = await api('POST', isLogin ? '/api/v1/login' : '/api/v1/register', body);
         password.value = password2.value = totp.value = '';
         showDashboard(s);
         return;
@@ -317,7 +318,7 @@ I18N.ready.then(() => {
         if (!text.value.trim()) { say('bad', tr('请填写反馈内容')); text.focus(); return; }
         send.disabled = true;
         try {
-          await api('POST', '/api/feedback', { category: kind.value, message: text.value, lang: I18N.lang });
+          await api('POST', '/api/v1/feedback', { category: kind.value, message: text.value, lang: I18N.lang });
           text.value = '';
           say('ok', tr('反馈已提交，谢谢！'));
         } catch (ex) {
@@ -346,9 +347,11 @@ I18N.ready.then(() => {
     const devices = section('devices', tr('我的设备'));
     const jobs = section('jobs', tr('最近作业'));
     const feedback = feedbackPanel();
+    const updateBox = h('div', { id: 'update' });
+    const versionLabel = h('p', { class: 'small muted', id: 'app-version' });
     app.replaceChildren(
       h('header', { class: 'topbar' }, h('span', { class: 'brand' }, h('img', { class: 'brand-logo', src: '/ui/favicon.svg', alt: '' }), 'sharetoken'), pill, h('span', { class: 'spacer' }), I18N.picker(), who, logoutBtn),
-      h('main', null, banner, tiles, endpoint.el, network.el, models.el, devices.el, jobs.el, feedback, telemetryToggle(session.telemetry)));
+      h('main', null, updateBox, banner, tiles, endpoint.el, network.el, models.el, devices.el, jobs.el, feedback, telemetryToggle(session.telemetry), versionLabel));
 
     function tile(id, label, value, sub) {
       return h('div', { class: 'tile', id }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), sub ? h('div', { class: 'sub' }, sub) : null);
@@ -416,6 +419,7 @@ I18N.ready.then(() => {
 
     function renderSession(s) {
       current = s;
+      renderUpdate(s);
       who.textContent = s.user || '';
       who.title = s.user || '';
       const [cls, label] = STATE[s.state] || ['', s.state];
@@ -423,6 +427,18 @@ I18N.ready.then(() => {
       pill.textContent = label;
       endpoint.set(s.api, h('div', { class: 'endpoint' }, h('code', { id: 'endpoint-url' }, s.api), copyButton(() => s.api)),
         h('p', { class: 'small muted' }, tr('在支持 OpenAI 协议的工具里把 base URL 改成这个地址即可使用。')));
+    }
+
+    // What a new release means for this client. The link shows its address:
+    // not every platform's window can open it, and then it can be copied.
+    function renderUpdate(s) {
+      const u = s.update || {};
+      versionLabel.textContent = tr('版本 {version}', { version: s.version || '' });
+      if (!u.available) { updateBox.replaceChildren(); return; }
+      const text = u.required ? tr('这个版本已不再受支持，请升级到最新版本后继续使用') : tr('有新版本 {version} 可用', { version: u.latest || '' });
+      const body = [h('span', { id: 'update-text' }, text)];
+      if (u.download_url && /^https:\/\//.test(u.download_url)) body.push(' ', h('a', { id: 'update-link', href: u.download_url, target: '_blank', rel: 'noopener' }, u.download_url));
+      updateBox.replaceChildren(h('div', { class: 'notice ' + (u.required ? 'bad' : 'warn'), id: 'update-notice' }, ...body));
     }
 
     function setBanner(text) {
@@ -436,14 +452,14 @@ I18N.ready.then(() => {
       if (inflight || stopped) return;
       inflight = true;
       try {
-        const s = await api('GET', '/api/session');
+        const s = await api('GET', '/api/v1/session');
         if (stopped) return;
         if (!s.logged_in) { boot(s); return; }
         renderSession(s);
         // Account data: every third tick; the state: every tick.
         if (tick++ % 3 === 0) {
           try {
-            const [me, j] = await Promise.all([api('GET', '/api/account'), api('GET', '/api/jobs?limit=10')]);
+            const [me, j] = await Promise.all([api('GET', '/api/v1/account'), api('GET', '/api/v1/jobs?limit=10')]);
             if (stopped) return;
             renderAccount(me);
             renderJobs(j.jobs);
@@ -455,9 +471,9 @@ I18N.ready.then(() => {
         }
         if (s.state === 'running') {
           try {
-            const st = await api('GET', '/api/status');
+            const st = await api('GET', '/api/v1/status');
             renderNetwork(st);
-            if (tick % 3 === 1) renderModels((await api('GET', '/api/models')).models);
+            if (tick % 3 === 1) renderModels((await api('GET', '/api/v1/models')).models);
           } catch (e) {
             if (e.code === 'not_connected' || e.status === 401) renderNetworkDown(s);
             else models.set(['err', e.message], h('div', { class: 'empty' }, tr('暂时获取不到模型列表')));
@@ -476,7 +492,7 @@ I18N.ready.then(() => {
       logoutBtn.disabled = true;
       stopped = true;
       stopPolling();
-      try { await api('POST', '/api/logout'); }
+      try { await api('POST', '/api/v1/logout'); }
       catch (e) { stopped = false; logoutBtn.disabled = false; setBanner(tr('退出失败：{error}', { error: message(e) })); poll = setInterval(refresh, 5000); return; }
       boot();
     }
@@ -494,7 +510,7 @@ I18N.ready.then(() => {
     let s = known;
     if (!s) {
       for (let i = 0; !s; i++) {
-        try { s = await api('GET', '/api/session'); }
+        try { s = await api('GET', '/api/v1/session'); }
         catch (e) {
           if (i === 0) app.replaceChildren(h('div', { class: 'auth' }, h('div', { class: 'notice bad', id: 'boot-error' }, message(e))));
           await new Promise(r => setTimeout(r, 2000));

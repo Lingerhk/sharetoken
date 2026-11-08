@@ -95,7 +95,7 @@ func (f *fixture) deposit(k *p2p.Keys, micros uint64) {
 
 func (f *fixture) ticket(buyer *p2p.Keys, budget uint64) *protocol.Ticket {
 	f.t.Helper()
-	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: budget})
+	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: budget})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -375,15 +375,15 @@ func TestMatchingPrefersCheaperAndHonorsLimits(t *testing.T) {
 	f.offer(pricey, "m", 3*priceIn, 3*priceOut, 4)
 	f.deposit(buyer, 10_000_000)
 
-	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1000})
+	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 1000})
 	if err != nil || tr.Ticket.Node != cheap.ID() {
 		t.Fatalf("want the cheaper node, got %v %v", tr, err)
 	}
-	tr, err = f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1000, Exclude: []string{cheap.ID()}})
+	tr, err = f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 1000, Exclude: []string{cheap.ID()}})
 	if err != nil || tr.Ticket.Node != pricey.ID() {
 		t.Fatalf("exclusion ignored: %v %v", tr, err)
 	}
-	_, err = f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1000, MaxPriceOut: priceOut, Exclude: []string{cheap.ID()}})
+	_, err = f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 1000, MaxPriceOut: priceOut, Exclude: []string{cheap.ID()}})
 	if protocol.CodeOf(err) != protocol.CodeNoOffers {
 		t.Fatalf("price ceiling ignored: %v", err)
 	}
@@ -394,11 +394,11 @@ func TestRejectsSelfDealingAndOverdraft(t *testing.T) {
 	node := mustKeys(t)
 	f.offer(node, "m", priceIn, priceOut, 4)
 	f.deposit(node, 1_000_000)
-	if _, err := f.eng.IssueTicket(node.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeNoOffers {
+	if _, err := f.eng.IssueTicket(node.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeNoOffers {
 		t.Fatalf("a node must not be matched with itself: %v", err)
 	}
 	broke := mustKeys(t)
-	if _, err := f.eng.IssueTicket(broke.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeInsufficientFunds {
+	if _, err := f.eng.IssueTicket(broke.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeInsufficientFunds {
 		t.Fatalf("want insufficient_funds, got %v", err)
 	}
 }
@@ -409,7 +409,7 @@ func TestConcurrencyLimit(t *testing.T) {
 	f.offer(node, "m", priceIn, priceOut, 1)
 	f.deposit(buyer, 1_000_000)
 	f.ticket(buyer, 100)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 100}); protocol.CodeOf(err) != protocol.CodeCapacity {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 100}); protocol.CodeOf(err) != protocol.CodeCapacity {
 		t.Fatalf("node at capacity must not be matched: %v", err)
 	}
 }
@@ -420,7 +420,7 @@ func TestAnyModelIsAcceptedAndStaleOffersCannotReplaceNewer(t *testing.T) {
 	f.deposit(buyer, 1_000_000)
 	// No allow-list: any open-weight model ID a node offers can be matched.
 	f.offer(other, "any-open-model-v9", 5, 5, 4)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "any-open-model-v9", BudgetMicros: 10}); err != nil {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "any-open-model-v9", BudgetMicros: 10}); err != nil {
 		t.Fatalf("model without allow-list: %v", err)
 	}
 
@@ -450,7 +450,7 @@ func TestMutualAidEarnThenSpend(t *testing.T) {
 	}
 	// Alice never deposited, yet she can now buy from Carol with what she earned.
 	f.offer(carol, "m", priceIn, priceOut, 4)
-	if _, err := f.eng.IssueTicket(alice.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 30_000, Exclude: []string{alice.ID()}}); err != nil {
+	if _, err := f.eng.IssueTicket(alice.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 30_000, Exclude: []string{alice.ID()}}); err != nil {
 		t.Fatalf("earned credits should be spendable: %v", err)
 	}
 	f.booksBalance()
@@ -596,12 +596,12 @@ func TestFailedAuditsSuspendANode(t *testing.T) {
 	if st.SuspendedUntil == 0 {
 		t.Fatalf("two consecutive failed audits must suspend: %+v", st)
 	}
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 100}); protocol.CodeOf(err) != protocol.CodeNoOffers {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 100}); protocol.CodeOf(err) != protocol.CodeNoOffers {
 		t.Fatalf("a suspended node must not be matched: %v", err)
 	}
 	f.now = f.now.Add(2 * time.Hour)
 	f.offer(node, "m", priceIn, priceOut, 4)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 100}); err != nil {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 100}); err != nil {
 		t.Fatalf("suspension must end: %v", err)
 	}
 	if as, _ := f.eng.Audits(10); len(as) != 3 || as[0].JobID != "a3" {
@@ -654,12 +654,12 @@ func TestRequireTEEAndPinnedNodes(t *testing.T) {
 	f.offer(plain, "m", priceIn, priceOut, 4) // much cheaper, not attested
 
 	for range 3 {
-		tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10, RequireTEE: true})
+		tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10, RequireTEE: true})
 		if err != nil || tr.Ticket.Node != tee.ID() {
 			t.Fatalf("require_tee must match only the attested node: %v %v", tr, err)
 		}
 	}
-	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10, Node: plain.ID()})
+	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10, Node: plain.ID()})
 	if err != nil || tr.Ticket.Node != plain.ID() {
 		t.Fatalf("pinned node: %v %v", tr, err)
 	}
@@ -690,7 +690,7 @@ func TestAbandonReleasesTheHoldAtOnce(t *testing.T) {
 	tk := f.ticket(buyer, 100_000)
 
 	// Concurrency 1: the held job blocks the node until it is abandoned.
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeCapacity {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeCapacity {
 		t.Fatalf("busy node matched: %v", err)
 	}
 	if err := f.eng.Abandon(buyer.ID(), protocol.AbandonRequest{Ticket: *tk}); protocol.CodeOf(err) != protocol.CodeForbidden {
@@ -749,7 +749,7 @@ func TestCappedRequestsHoldOnlyTheirWorstCase(t *testing.T) {
 	node, buyer := mustKeys(t), mustKeys(t)
 	f.offer(node, "m", priceIn, priceOut, 100)
 	f.deposit(buyer, 1_000_000)
-	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 200_000, PromptTokens: 20, MaxTokens: 32})
+	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 200_000, PromptTokens: 20, MaxTokens: 32})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -757,12 +757,12 @@ func TestCappedRequestsHoldOnlyTheirWorstCase(t *testing.T) {
 	if tr.Ticket.ReservedMicros != want || f.held(buyer) != int64(want) || want >= 200_000 {
 		t.Fatalf("capped request reserved %d (held %d), want %d", tr.Ticket.ReservedMicros, f.held(buyer), want)
 	}
-	tr2, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 200_000})
+	tr2, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 200_000})
 	if err != nil || tr2.Ticket.ReservedMicros != 200_000 {
 		t.Fatalf("uncapped request reserved %d: %v", tr2.Ticket.ReservedMicros, err)
 	}
 	// The budget stays the ceiling.
-	tr3, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 5, PromptTokens: 20, MaxTokens: 1 << 30})
+	tr3, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 5, PromptTokens: 20, MaxTokens: 1 << 30})
 	if err != nil || tr3.Ticket.ReservedMicros != 5 {
 		t.Fatalf("hold above the budget: %d %v", tr3.Ticket.ReservedMicros, err)
 	}
@@ -779,13 +779,13 @@ func TestTicketsNeverStartedAreReleasedEarly(t *testing.T) {
 	a := f.ticket(buyer, 1000)
 	b := f.ticket(buyer, 1000)
 	// Concurrency 2: both slots are taken.
-	if _, err := f.eng.IssueTicket(mustKeys(t).ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1}); protocol.CodeOf(err) != protocol.CodeCapacity {
+	if _, err := f.eng.IssueTicket(mustKeys(t).ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 1}); protocol.CodeOf(err) != protocol.CodeCapacity {
 		t.Fatalf("full node matched: %v", err)
 	}
 	// Two stale unused tickets: the buyer gets no third one.
 	f.now = f.now.Add(20 * time.Second)
 	f.offer(node, "m", priceIn, priceOut, 10)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1000}); protocol.CodeOf(err) != protocol.CodeBusy {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 1000}); protocol.CodeOf(err) != protocol.CodeBusy {
 		t.Fatalf("third ticket with two unused: want busy, got %v", err)
 	}
 	if err := f.eng.MarkStarted(buyer.ID(), *a); protocol.CodeOf(err) != protocol.CodeForbidden {
@@ -822,11 +822,11 @@ func TestOfflineNodesAreNotMatched(t *testing.T) {
 	f.offer(a, "m", priceIn, priceOut, 4)
 	f.offer(b, "m", priceIn/2, priceOut/2, 4) // cheaper, but offline
 	f.deposit(buyer, 1_000_000)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 100}); protocol.CodeOf(err) != protocol.CodeNoOffers {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 100}); protocol.CodeOf(err) != protocol.CodeNoOffers {
 		t.Fatalf("all nodes offline: want no_offers, got %v", err)
 	}
 	online[a.ID()] = true
-	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 100})
+	tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 100})
 	if err != nil || tr.Ticket.Node != a.ID() {
 		t.Fatalf("want the online node, got %v %v", tr, err)
 	}
@@ -840,11 +840,11 @@ func TestFailedTicketsDoNotLockOutTheBuyer(t *testing.T) {
 	f.offer(node, "m", priceIn, priceOut, 100)
 	f.deposit(buyer, 1_000_000)
 	issue := func() error {
-		_, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10})
+		_, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10})
 		return err
 	}
 	for i := 0; i < 8; i++ { // 4x the limit, each reported as failed
-		tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10})
+		tr, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10})
 		if err != nil {
 			t.Fatalf("ticket %d: %v", i, err)
 		}
@@ -873,7 +873,7 @@ func TestTicketsOfOfflineNodesAreNotStale(t *testing.T) {
 	}
 	f.now = f.now.Add(11 * time.Second)
 	f.offer(node, "m", priceIn, priceOut, 100)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
 		t.Fatalf("two unused tickets of an online node: want busy, got %v", err)
 	}
 	// The node drops off (its relay died): its tickets prove nothing about the buyer.
@@ -881,7 +881,7 @@ func TestTicketsOfOfflineNodesAreNotStale(t *testing.T) {
 	other := mustKeys(t)
 	online[other.ID()] = true
 	f.offer(other, "m", priceIn, priceOut, 100)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); err != nil {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); err != nil {
 		t.Fatalf("tickets of an offline node locked the buyer out: %v", err)
 	}
 }
@@ -892,7 +892,7 @@ func TestWarmUpAsksBuyersToRetry(t *testing.T) {
 	f := newFixture(t, Config{WarmUp: 30 * time.Second})
 	buyer := mustKeys(t)
 	f.deposit(buyer, 1_000_000)
-	req := protocol.TicketRequest{Model: "m", BudgetMicros: 10}
+	req := protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}
 	if _, err := f.eng.IssueTicket(buyer.ID(), req); protocol.CodeOf(err) != protocol.CodeCapacity {
 		t.Fatalf("during warm-up: want capacity, got %v", err)
 	}
@@ -901,7 +901,7 @@ func TestWarmUpAsksBuyersToRetry(t *testing.T) {
 		t.Fatalf("after failovers: want no_offers, got %v", err)
 	}
 	f.now = f.now.Add(31 * time.Second)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeNoOffers {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeNoOffers {
 		t.Fatalf("after warm-up: want no_offers, got %v", err)
 	}
 }
@@ -920,11 +920,11 @@ func TestTicketsBeforeAReconnectAreNotStale(t *testing.T) {
 	f.ticket(buyer, 10)
 	f.now = f.now.Add(11 * time.Second)
 	f.offer(node, "m", priceIn, priceOut, 100)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
 		t.Fatalf("connected throughout: want busy, got %v", err)
 	}
 	since[buyer.ID()] = f.now.Add(-time.Second) // the device just reconnected
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); err != nil {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); err != nil {
 		t.Fatalf("tickets issued before the reconnect locked the buyer out: %v", err)
 	}
 }
@@ -1000,11 +1000,11 @@ func TestTicketsBeforeANodeReconnectAreNotStale(t *testing.T) {
 	f.ticket(buyer, 10)
 	f.now = f.now.Add(11 * time.Second)
 	f.offer(node, "m", priceIn, priceOut, 100)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
 		t.Fatalf("both connected throughout: want busy, got %v", err)
 	}
 	since[node.ID()] = f.now.Add(-time.Second) // the node just reconnected through another relay
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); err != nil {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); err != nil {
 		t.Fatalf("tickets issued before the node's reconnect locked the buyer out: %v", err)
 	}
 }
@@ -1041,7 +1041,7 @@ func TestUnstartedJobOfAReconnectedNodeIsNotReleasedEarly(t *testing.T) {
 	// The kept job no longer takes the node's only slot (a node that
 	// restarted lost it for good).
 	f.offer(node, "m", priceIn, priceOut, 1)
-	r, err := f.eng.IssueTicket(buyer2.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1000, Node: node.ID()})
+	r, err := f.eng.IssueTicket(buyer2.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 1000, Node: node.ID()})
 	if err != nil {
 		t.Fatalf("slot still taken by the kept job: %v", err)
 	}
@@ -1061,7 +1061,7 @@ func TestUnstartedJobOfAReconnectedNodeIsNotReleasedEarly(t *testing.T) {
 	unreported := mustKeys(t)
 	since[unreported.ID()] = f.now.Add(-time.Hour)
 	f.offer(unreported, "m", priceIn, priceOut, 1)
-	resp, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 1000, Node: unreported.ID()})
+	resp, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 1000, Node: unreported.ID()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1177,11 +1177,11 @@ func TestStaleTicketDefaults(t *testing.T) {
 	}
 	f.now = f.now.Add(14 * time.Second)
 	f.offer(node, "m", priceIn, priceOut, 100)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); err != nil {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); err != nil {
 		t.Fatalf("5 tickets 14 s old are not stale yet: %v", err)
 	}
 	f.now = f.now.Add(2 * time.Second) // the first five are now 16 s old
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); protocol.CodeOf(err) != protocol.CodeBusy {
 		t.Fatalf("5 stale tickets: want busy, got %v", err)
 	}
 }
@@ -1197,7 +1197,7 @@ func TestFourStaleTicketsAreAllowedByDefault(t *testing.T) {
 	}
 	f.now = f.now.Add(16 * time.Second)
 	f.offer(node, "m", priceIn, priceOut, 100)
-	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 10}); err != nil {
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); err != nil {
 		t.Fatalf("4 stale tickets: %v", err)
 	}
 }

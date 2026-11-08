@@ -33,6 +33,7 @@ import (
 
 	"sharetoken/internal/config"
 	"sharetoken/internal/mysqldb"
+	"sharetoken/internal/version"
 	"sharetoken/mailer"
 )
 
@@ -162,6 +163,9 @@ func main() {
 		log.Fatalf("configuration:\n%v", err)
 	}
 	switch cmd {
+	case "version":
+		fmt.Println(version.String("mailserver"))
+		return
 	case "check-config":
 		_ = yaml.NewEncoder(os.Stdout).Encode(f)
 		return
@@ -225,6 +229,10 @@ func main() {
 		fmt.Printf("queued as %d; see the admin console or the server's log\n", id)
 		return
 	case "serve":
+		if err := mysqldb.CheckSchema(db, "mail", mysqldb.Latest(mailer.Migrations)); err != nil {
+			log.Fatal(err)
+		}
+		log.Print(version.String("mailserver"))
 	default:
 		log.Fatalf("unknown command %q", cmd)
 	}

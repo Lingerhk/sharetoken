@@ -99,8 +99,8 @@ curl -s 127.0.0.1:4211 | python3 -c 'import json,sys;s=json.load(sys.stdin)["sta
 echo; echo "   models on the network (two sellers; carol is cheaper):"
 SHARETOKEN_HOME="$S/bob" "$BIN/sharetoken" models | sed 's/^/   /'
 
-ALICE=$(curl -s http://127.0.0.1:9787/api/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["peer"])')
-CAROL=$(curl -s http://127.0.0.1:9789/api/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["peer"])')
+ALICE=$(curl -s http://127.0.0.1:9787/api/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["peer"])')
+CAROL=$(curl -s http://127.0.0.1:9789/api/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["peer"])')
 names() { sed -E "s/$ALICE/<alice>/g; s/$CAROL/<carol>/g"; }
 
 PROMPT="In one short sentence: what is a sealed box in cryptography?"
@@ -123,10 +123,10 @@ curl -s -m 120 http://127.0.0.1:9787/v1/chat/completions -H 'Content-Type: appli
   -d '{"model":"gemma-4-e4b","messages":[{"role":"user","content":"Say hi."}],"max_tokens":50}' | head -c 300; echo
 
 echo; echo "== 6. Kill the relay bob uses for the coordinator; bob switches and keeps working"
-VIA=$(curl -s http://127.0.0.1:9788/api/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["coordinator"]["via"])')
+VIA=$(curl -s http://127.0.0.1:9788/api/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["coordinator"]["via"])')
 if [ "$VIA" = "$RA" ]; then kill $RELAY_A; echo "   killed relay-a"; else kill $RELAY_B; echo "   killed relay-b"; fi
 for _ in $(seq 1 60); do
-  NOW=$(curl -s http://127.0.0.1:9788/api/status | python3 -c 'import json,sys;s=json.load(sys.stdin)["coordinator"];print(s["via"] if s["connected"] else "")')
+  NOW=$(curl -s http://127.0.0.1:9788/api/v1/status | python3 -c 'import json,sys;s=json.load(sys.stdin)["coordinator"];print(s["via"] if s["connected"] else "")')
   [ -n "$NOW" ] && [ "$NOW" != "$VIA" ] && break; sleep 0.5; done
 SHARETOKEN_HOME="$S/bob" "$BIN/sharetoken" status | grep -E "coordinator|link:|NAME|relay-" | strip | sed 's/^/   /'
 curl -s -m 600 -D headers2.txt http://127.0.0.1:9788/v1/chat/completions -H 'Content-Type: application/json' \

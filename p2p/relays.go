@@ -168,6 +168,7 @@ type RelayStatus struct {
 	Expires  time.Time     `json:"expires,omitzero"`
 	Err      string        `json:"error,omitempty"`
 	RTT      time.Duration `json:"rtt_ns,omitempty"` // latest ping of a reserved relay; 0 before the first
+	Agent    string        `json:"agent,omitempty"`  // what the relay says it runs (libp2p identify), e.g. sharetoken-relay/1.2.3
 }
 
 type reservation struct {
@@ -387,6 +388,9 @@ func (r *Reserver) Status() []RelayStatus {
 		st := RelayStatus{Addr: rs.addr, Reserved: rs.rsv != nil}
 		if rs.rsv != nil {
 			st.Expires, st.RTT = rs.rsv.Expiration, rs.rtt
+		}
+		if v, err := r.h.Peerstore().Get(rs.info.ID, "AgentVersion"); err == nil {
+			st.Agent, _ = v.(string)
 		}
 		if rs.err != nil && rs.rsv == nil {
 			st.Err = rs.err.Error()

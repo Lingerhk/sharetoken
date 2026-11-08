@@ -7,6 +7,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"sharetoken/internal/version"
 )
 
 // ServerConfig ties the worker and the SMTP server of cmd/mailserver together.
@@ -57,7 +59,7 @@ func Run(ctx context.Context, c ServerConfig) error {
 }
 
 func (c *ServerConfig) heartbeat(ctx context.Context) {
-	st := ServerStatus{Hostname: c.Hostname, Domain: c.Domain, Delivery: c.Delivery, DKIMSelector: c.Selector, StartedAt: time.Now().Unix()}
+	st := ServerStatus{Version: version.Version, Hostname: c.Hostname, Domain: c.Domain, Delivery: c.Delivery, DKIMSelector: c.Selector, StartedAt: time.Now().Unix()}
 	if c.Inbound != nil {
 		st.Mailboxes, st.SMTPListen = c.Inbound.cfg.Mailboxes, c.Listener.Addr().String()
 	}

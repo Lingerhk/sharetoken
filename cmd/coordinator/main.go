@@ -42,6 +42,7 @@ import (
 	"sharetoken/internal/cli"
 	"sharetoken/internal/config"
 	"sharetoken/internal/mysqldb"
+	"sharetoken/internal/version"
 	"sharetoken/node"
 	"sharetoken/p2p"
 	"sharetoken/tokens"
@@ -272,6 +273,10 @@ func main() {
 	if len(args) > 0 {
 		cmd = args[0]
 	}
+	if cmd == "version" {
+		fmt.Println(version.String("coordinator"))
+		return
+	}
 	if cmd == "check-config" {
 		_ = yaml.NewEncoder(os.Stdout).Encode(f)
 		return
@@ -281,6 +286,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer closeLog()
+	log.Print(version.String("coordinator"))
 	if f.Debug.PprofListen != "" && (cmd == "" || cmd == "serve") {
 		go func() { log.Printf("pprof: %v", http.ListenAndServe(f.Debug.PprofListen, nil)) }()
 	}
@@ -325,7 +331,7 @@ func main() {
 		cfg.Attestation = &coordinator.Attestation{Verifier: cli.TEEVerifier(f.TEE.OnlineCheck), Policy: p}
 	}
 
-	h, err := p2p.NewHost(keys, p2p.HostConfig{Listen: f.Network.Listen, DialOnly: len(f.Network.Listen) == 0, MaxConns: f.Network.MaxConns})
+	h, err := p2p.NewHost(keys, p2p.HostConfig{Program: "coordinator", Listen: f.Network.Listen, DialOnly: len(f.Network.Listen) == 0, MaxConns: f.Network.MaxConns})
 	if err != nil {
 		log.Fatal(err)
 	}

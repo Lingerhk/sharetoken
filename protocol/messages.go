@@ -15,11 +15,13 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"errors"
+	"slices"
 	"time"
 
 	"sharetoken/attest"
 	"sharetoken/box"
 	"sharetoken/internal/canon"
+	"sharetoken/internal/version"
 	"sharetoken/receipt"
 )
 
@@ -28,6 +30,25 @@ const (
 	InferProtocol = "/sharetoken/infer/1.0.0"
 	CtrlProtocol  = "/sharetoken/ctrl/1.0.0"
 )
+
+// InferVersion is the buyer <-> node protocol this build prefers. It is agreed
+// per job: the node's offer and the buyer's request list what each speaks, and
+// the ticket names one that both do.
+const InferVersion = 1
+
+// SupportedInferVersions lists the infer protocol versions this build speaks.
+var SupportedInferVersions = []uint32{InferVersion}
+
+// BestInferVersion returns the highest version in both lists, or 0.
+func BestInferVersion(a, b []uint32) uint32 {
+	var best uint32
+	for _, v := range a {
+		if v > best && slices.Contains(b, v) {
+			best = v
+		}
+	}
+	return best
+}
 
 // Versions double as signing domains.
 const (
@@ -81,6 +102,8 @@ type Offer struct {
 	IssuedAt       int64         `json:"issued_at"` // unix nanos
 	ExpiresAt      int64         `json:"expires_at"`
 	Quote          *attest.Quote `json:"quote,omitempty"` // optional TEE quote binding ReceiptKey and BoxPub
+	ClientVersion  string        `json:"client_version"`  // the node's release
+	InferVersions  []uint32      `json:"infer_versions"`  // infer protocol versions the node speaks
 	Sig            []byte        `json:"sig"`
 }
 
@@ -98,12 +121,23 @@ func (o *Offer) signingBytes() []byte {
 	if q := o.Quote; q != nil {
 		e.String(q.Backend).Bytes(q.Evidence)
 	}
+	e.String(o.ClientVersion).U64(uint64(len(o.InferVersions)))
+	for _, v := range o.InferVersions {
+		e.U64(uint64(v))
+	}
 	return e.Sum()
 }
 
-// Sign signs the offer with the node's libp2p identity key.
+// Sign signs the offer with the node's libp2p identity key. Unless already set,
+// the offer says what this build is and speaks.
 func (o *Offer) Sign(priv ed25519.PrivateKey) {
 	o.Version = OfferVersion
+	if o.ClientVersion == "" {
+		o.ClientVersion = version.Version
+	}
+	if len(o.InferVersions) == 0 {
+		o.InferVersions = SupportedInferVersions
+	}
 	o.Sig = ed25519.Sign(priv, o.signingBytes())
 }
 
@@ -123,6 +157,9 @@ func (o *Offer) VerifySignature() error {
 	}
 	if len(o.Models) == 0 {
 		return errors.New("offer: no models")
+	}
+	if o.ClientVersion == "" || len(o.InferVersions) == 0 {
+		return errors.New("offer: no client or protocol version")
 	}
 	seen := make(map[string]bool, len(o.Models))
 	for _, m := range o.Models {
@@ -183,6 +220,7 @@ type Ticket struct {
 	IssuedAt       int64    `json:"issued_at"`  // unix nanos
 	ExpiresAt      int64    `json:"expires_at"` // the node must accept the job before this
 	Coordinator    string   `json:"coordinator"`
+	InferVersion   uint32   `json:"infer_version"` // the infer protocol version buyer and node use for this job
 	Sig            []byte   `json:"sig"`
 }
 
@@ -201,6 +239,7 @@ func (t *Ticket) signingBytes() []byte {
 		I64(t.IssuedAt).
 		I64(t.ExpiresAt).
 		String(t.Coordinator).
+		U64(uint64(t.InferVersion)).
 		Sum()
 }
 
@@ -247,13 +286,14 @@ func AckBytes(r *receipt.Receipt) []byte {
 
 // TicketRequest asks the coordinator to match a node.
 type TicketRequest struct {
-	Model        string   `json:"model"`
-	BudgetMicros uint64   `json:"budget"`
-	MaxPriceIn   uint64   `json:"max_price_in,omitempty"` // 0 = no limit
-	MaxPriceOut  uint64   `json:"max_price_out,omitempty"`
-	Exclude      []string `json:"exclude,omitempty"`     // nodes to skip after a failover
-	Node         string   `json:"node,omitempty"`        // only this node (audits, pinned nodes)
-	RequireTEE   bool     `json:"require_tee,omitempty"` // only nodes whose quote the coordinator verified
+	InferVersions []uint32 `json:"infer_versions"` // infer protocol versions the buyer speaks; required
+	Model         string   `json:"model"`
+	BudgetMicros  uint64   `json:"budget"`
+	MaxPriceIn    uint64   `json:"max_price_in,omitempty"` // 0 = no limit
+	MaxPriceOut   uint64   `json:"max_price_out,omitempty"`
+	Exclude       []string `json:"exclude,omitempty"`     // nodes to skip after a failover
+	Node          string   `json:"node,omitempty"`        // only this node (audits, pinned nodes)
+	RequireTEE    bool     `json:"require_tee,omitempty"` // only nodes whose quote the coordinator verified
 	// Optional: the buyer's prompt estimate (EstimatePromptTokens) and the
 	// request's max_tokens. With both set, the hold is sized to the worst-case
 	// cost at the matched node's price instead of the whole budget, so a

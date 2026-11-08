@@ -50,10 +50,10 @@ func runFakeDaemon(mode string) {
 			addr = os.Args[i+1]
 		}
 	}
-	http.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/v1/session", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Seen-Origin", r.Header.Get("Origin"))
 		w.Header().Set("X-Seen-Host", r.Host)
-		io.WriteString(w, `{"env":"`+Env+`","state":"logged_out"}`)
+		io.WriteString(w, `{"env":"`+Env+`","state":"logged_out","version":"`+version+`"}`)
 	})
 	println(http.ListenAndServe(addr, nil))
 }
@@ -94,7 +94,9 @@ func TestStartsAndStopsDaemon(t *testing.T) {
 // A daemon that runs already (from an earlier window, or started by hand) is
 // used and left running.
 func TestAttachesToRunningDaemon(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"env":"`+Env+`","state":"running"}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"env":"`+Env+`","state":"running","version":"`+version+`"}`)
+	}))
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	s := testSupervisor(t, addr, "fail") // would fail if it were started
@@ -145,9 +147,25 @@ func writeRunFile(t *testing.T, home, addr string, pid int) {
 	}
 }
 
+// A daemon left running by another release is not used: its pages would not be
+// this app's.
+func TestRefusesDaemonOfAnotherRelease(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"env":"`+Env+`","state":"running","version":"0.0.1"}`)
+	}))
+	defer srv.Close()
+	s := testSupervisor(t, strings.TrimPrefix(srv.URL, "http://"), "fail")
+	err := s.start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "0.0.1") || s.started {
+		t.Fatalf("started %v, err %v", s.started, err)
+	}
+}
+
 // A daemon that moved to a spare port is found again by the next window.
 func TestAttachesToDaemonOnThisHomeAtAnyPort(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"env":"`+Env+`","state":"running"}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"env":"`+Env+`","state":"running","version":"`+version+`"}`)
+	}))
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	s := testSupervisor(t, freeAddr(t), "fail") // would fail if it were started
@@ -278,7 +296,7 @@ func TestProxyForwards(t *testing.T) {
 	defer daemon.Close()
 	addr := strings.TrimPrefix(daemon.URL, "http://")
 	p := newProxy(&supervisor{addr: addr}, nil, nil)
-	req := httptest.NewRequest("POST", "wails://wails/api/login?x=1", strings.NewReader(`{"a":1}`))
+	req := httptest.NewRequest("POST", "wails://wails/api/v1/login?x=1", strings.NewReader(`{"a":1}`))
 	req.Header.Set("Origin", "wails://wails")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -294,7 +312,7 @@ func TestProxyForwards(t *testing.T) {
 func TestProxyDaemonDown(t *testing.T) {
 	p := newProxy(&supervisor{addr: "127.0.0.1:1"}, nil, nil)
 	w := httptest.NewRecorder()
-	p.ServeHTTP(w, httptest.NewRequest("GET", "/api/session", nil))
+	p.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/session", nil))
 	if w.Code != 502 || !strings.Contains(w.Body.String(), "daemon_down") {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}

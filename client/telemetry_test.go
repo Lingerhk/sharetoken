@@ -98,13 +98,13 @@ func TestTelemetryEventsCarryNothingPersonal(t *testing.T) {
 	ph.waitFor(t, eventDailyActive)
 	ph.waitFor(t, eventHourlyActive)
 
-	d.want(401, "bad_credentials", "POST", "/api/login", map[string]string{"portal": e.url, "account": "victim@example.com", "password": "secret-wrong-pw"})
+	d.want(401, "bad_credentials", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "victim@example.com", "password": "secret-wrong-pw"})
 	ph.waitFor(t, eventSignInFailed)
 	s := d.register(e.url, "alice@example.com")
 	ph.waitFor(t, eventSignedIn)
 	ph.waitFor(t, eventNetworkJoinFail) // this portal has no coordinator
 	token := d.savedConfig().Token
-	d.want(200, "", "POST", "/api/logout", nil)
+	d.want(200, "", "POST", "/api/v1/logout", nil)
 	ph.waitFor(t, eventSignedOut)
 
 	ph.mu.Lock()
@@ -148,11 +148,10 @@ func TestTelemetryEventsCarryNothingPersonal(t *testing.T) {
 // dev build runs may reach the real project, whatever its version. A prod build
 // uses it.
 func TestTelemetryBuiltinKeyOnlyInProdBuilds(t *testing.T) {
-	defer func(v, e, k string) { Version, Env, TelemetryKey = v, e, k }(Version, Env, TelemetryKey)
+	defer func(e, k string) { Env, TelemetryKey = e, k }(Env, TelemetryKey)
 	if Env != EnvDev || TelemetryKey != builtinTelemetryKey {
 		t.Fatalf("defaults: %q %q", Env, TelemetryKey)
 	}
-	Version = "v1.2.3" // a dev build from scripts/build-gui.sh has a version too
 	if newTelemetry(t.TempDir(), TelemetryKey, "https://example.com", nil) != nil {
 		t.Fatal("a development build uses the real key")
 	}
@@ -184,8 +183,8 @@ func TestTelemetryDevBuildSendsNothing(t *testing.T) {
 		t.Fatalf("session: %+v", s)
 	}
 	td.register(e.url, "a@example.com")
-	td.want(200, "", "PUT", "/api/telemetry", map[string]bool{"enabled": true})
-	td.want(200, "", "POST", "/api/logout", nil)
+	td.want(200, "", "PUT", "/api/v1/telemetry", map[string]bool{"enabled": true})
+	td.want(200, "", "POST", "/api/v1/logout", nil)
 	time.Sleep(100 * time.Millisecond)
 	if n := ph.names(); len(n) != 0 {
 		t.Fatalf("sent %v", n)
@@ -225,13 +224,13 @@ func TestTelemetryOptOut(t *testing.T) {
 	}
 	ph.waitFor(t, eventDailyActive)
 	first := ph.events[0].DistinctID
-	d.want(200, "", "PUT", "/api/telemetry", map[string]bool{"enabled": false})
+	d.want(200, "", "PUT", "/api/v1/telemetry", map[string]bool{"enabled": false})
 	if d.session().Telemetry.Enabled {
 		t.Fatal("still enabled")
 	}
 	sent := len(ph.names())
 	d.register(e.url, "a@example.com")
-	d.want(200, "", "POST", "/api/logout", nil)
+	d.want(200, "", "POST", "/api/v1/logout", nil)
 	d.closeOnce()
 	data, err := os.ReadFile(filepath.Join(home, TelemetryFile))
 	if err != nil || strings.Contains(string(data), "install:") {
@@ -249,7 +248,7 @@ func TestTelemetryOptOut(t *testing.T) {
 	if n := len(ph.names()); n != sent {
 		t.Fatalf("%d events after opting out", n-sent)
 	}
-	d2.want(200, "", "PUT", "/api/telemetry", map[string]bool{"enabled": true})
+	d2.want(200, "", "PUT", "/api/v1/telemetry", map[string]bool{"enabled": true})
 	ph.waitForAfter(t, sent, d2)
 	if got := ph.lastID(); got == first {
 		t.Fatal("opting in again kept the old ID")
@@ -258,7 +257,7 @@ func TestTelemetryOptOut(t *testing.T) {
 
 func (f *fakePostHog) waitForAfter(t *testing.T, n int, d *testDaemon) {
 	t.Helper()
-	d.want(401, "bad_credentials", "POST", "/api/login", map[string]string{"portal": d.portalForTest, "account": "x@example.com", "password": "wrong password"})
+	d.want(401, "bad_credentials", "POST", "/api/v1/login", map[string]string{"portal": d.portalForTest, "account": "x@example.com", "password": "wrong password"})
 	for deadline := time.Now().Add(5 * time.Second); len(f.names()) <= n; time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("no event after opting in again")

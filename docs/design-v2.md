@@ -35,7 +35,7 @@
 
 ### 2.1 钱属于用户，不属于 peer
 
-- v1：一个 peer ID 一个账户。v2：门户把设备的 peer ID **绑定**到用户，协调器在每个经认证的 libp2p 流上把 peer 解析成 `user:<id>` 账户（`accounts.DeviceAccount`）。一个用户可以有多台设备，卖出赚到的钱任何一台都能花。
+- 门户把设备的 peer ID **绑定**到用户，协调器在每个经认证的 libp2p 流上把 peer 解析成 `user:<id>` 账户（`accounts.DeviceAccount`）。一个用户可以有多台设备，卖出赚到的钱任何一台都能花。
 - 作业表新增 `buyer_acct`、`node_acct`、`prompt_tokens`、`completion_tokens`：付款方和收款方在**签 Ticket 时**固定下来，之后解绑设备也不会改变这一单的去向。
 - 撮合排除**同一用户**的所有设备，防止自买自卖刷手续费和信誉。
 - 未绑定或已禁用用户的设备：公告 Offer、申请 Ticket、查余额都返回 `unauthorized`。测试与本地演示可用 `-open-accounts` 让每个 peer 自成一个账户。

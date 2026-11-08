@@ -34,6 +34,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"sharetoken/internal/config"
+	"sharetoken/internal/version"
 	"sharetoken/p2p"
 	"sharetoken/relay"
 	"sharetoken/relaypass"
@@ -175,6 +176,10 @@ func relayConfig(f File) (relay.Config, error) {
 }
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "version" || os.Args[1] == "-version") {
+		fmt.Println(version.String("relay"))
+		return
+	}
 	f, check, err := load(os.Args[1:])
 	if err != nil {
 		log.Fatal(err)
@@ -192,6 +197,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer closeLog()
+	log.Print(version.String("relay"))
 	if len(cfg.Networks) == 0 {
 		log.Print("WARNING: no access.networks: open relay, anyone may reserve; list the portal's key to admit only registered users")
 	}
@@ -274,7 +280,7 @@ func statusHandler(r *relay.Relay) http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"peer": r.Host.ID(), "addrs": r.Addrs(), "peers": len(r.Host.Network().Peers()), "stats": r.Stats(),
+			"version": version.Version, "peer": r.Host.ID(), "addrs": r.Addrs(), "peers": len(r.Host.Network().Peers()), "stats": r.Stats(),
 		})
 	})
 	return mux

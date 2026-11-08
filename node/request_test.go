@@ -76,7 +76,7 @@ func TestCheckTicket(t *testing.T) {
 	models := map[string]ModelConfig{"m": {ID: "m", UpstreamModel: "u", PriceInMicros: 10, PriceOutMicros: 20}}
 
 	base := func() protocol.Ticket {
-		return protocol.Ticket{
+		return protocol.Ticket{InferVersion: protocol.InferVersion,
 			JobID: "j", Model: "m", Node: self.ID(), NodeBoxPub: self.Box.Public(), NodeReceiptKey: self.ReceiptKey(),
 			Buyer: buyer.ID(), PriceInMicros: 10, PriceOutMicros: 20, ReservedMicros: 100,
 			ExpiresAt: now.Add(time.Minute).UnixNano(), Coordinator: coord.ID(),

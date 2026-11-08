@@ -268,6 +268,10 @@ func (s *Service) handleInfer(st network.Stream) {
 		_ = st.Reset()
 		return
 	}
+	if env.Ver == "" {
+		fail(st, protocol.Errorf(protocol.CodeBadRequest, "the request does not say the client's version"))
+		return
+	}
 	var req protocol.InferRequest
 	if err := env.Decode(protocol.TypeInfer, &req); err != nil {
 		fail(st, protocol.Errorf(protocol.CodeBadRequest, "malformed infer request"))

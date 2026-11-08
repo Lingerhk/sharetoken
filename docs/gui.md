@@ -1,6 +1,6 @@
 # 桌面客户端（macOS / Linux / Windows）
 
-第一版范围：邮箱注册、登录、退出，查看账户和网络的基本信息。共享模型的设置仍用命令行（`/api/share` 已可用，界面以后加）。
+第一版范围：邮箱注册、登录、退出，查看账户和网络的基本信息。共享模型的设置仍用命令行（`/api/v1/share` 已可用，界面以后加）。
 
 ## 构建类型
 
@@ -28,7 +28,7 @@
 sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（client/daemon.go）
   ┌────────────┐  同源 fetch   ┌───────┐  HTTP   ┌──────────────────────────┐
   │ 系统 WebView│ ───────────▶ │ 代理   │ ──────▶ │ /            页面（client/ui）│
-  └────────────┘              └───────┘ 127.0.0.1│ /api/…       见下表        │
+  └────────────┘              └───────┘ 127.0.0.1│ /api/v1/…       见下表        │
                                                  │ /v1/…、其余 /api → Agent   │
                                                  └──────────────────────────┘
                                                      │ HTTPS              │ libp2p
@@ -50,12 +50,12 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（client/daem
 
 | 接口 | 说明 |
 |---|---|
-| `GET /api/session` | `{state, logged_in, portal, user, device, peer, api, error}`。`state`：`logged_out`、`expired`（门户拒绝了 token，已自动退出）、`starting`、`retrying`（`error` 是原因）、`running`。未登录时 `portal` 是内置地址（见下），`user` 是上次用的值，用于预填 |
-| `POST /api/portal/probe` | `{}`（`portal` 可省略，省略即内置地址）→ `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, signup_credit_micros}`。发送密码前调用 |
-| `POST /api/register` | `{pin, email, password, device}` → 201 + session |
-| `POST /api/login` | `{pin, account, password, totp, device}` → 200 + session。`account` 可以是邮箱或老用户名；管理员先得到 401 `mfa_required`，带 `totp` 重发 |
-| `POST /api/logout` | 停 Agent、吊销 token（门户不可达时跳过）、从 config.json 删除 token，其他设置保留 |
-| `GET /api/account`、`/api/jobs`、`/api/ledger` | 门户透传，不依赖 Agent。门户返回 401 时会话转为 `expired` |
+| `GET /api/v1/session` | `{state, logged_in, portal, user, device, peer, api, error}`。`state`：`logged_out`、`expired`（门户拒绝了 token，已自动退出）、`starting`、`retrying`（`error` 是原因）、`running`。未登录时 `portal` 是内置地址（见下），`user` 是上次用的值，用于预填 |
+| `POST /api/v1/portal/probe` | `{}`（`portal` 可省略，省略即内置地址）→ `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, signup_credit_micros}`。发送密码前调用 |
+| `POST /api/v1/register` | `{pin, email, password, device}` → 201 + session |
+| `POST /api/v1/login` | `{pin, account, password, totp, device}` → 200 + session。`account` 可以是邮箱或老用户名；管理员先得到 401 `mfa_required`，带 `totp` 重发 |
+| `POST /api/v1/logout` | 停 Agent、吊销 token（门户不可达时跳过）、从 config.json 删除 token，其他设置保留 |
+| `GET /api/v1/account`、`/api/v1/jobs`、`/api/v1/ledger` | 门户透传，不依赖 Agent。门户返回 401 时会话转为 `expired` |
 | 其余 `/api/*` 和 `/v1/*` | 同 `sharetoken up`（[guide-v2.md §3](guide-v2.md)）。未登录 401 `not_logged_in`，还没连上网络 503 `not_connected` |
 
 **门户地址是内置的**：`client.DefaultPortal = https://sharetoken.app`，登录页不再要求输入地址，打开后自动连接；连不上时显示原因和“重试”按钮。请求体里省略 `portal`（或为空）就用内置地址。测试网/预发布用运行时环境变量 `SHARETOKEN_PORTAL=https://…`（daemon 和 CLI 都认；CLI 没有 `-portal` 参数），或构建时 `-ldflags "-X sharetoken/client.DefaultPortal=…"`。已登录的账户继续用登录时保存的门户。`go test` 的 `TestMain` 把它指到不可达的 `127.0.0.1:1`，测试不会碰到正式门户。
@@ -70,7 +70,7 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（client/daem
 
 ### 邮箱验证码
 
-门户开启 `accounts.email_verification` 后，注册必须先取验证码，用户名注册同时关闭，详见 [mail.md](mail.md)。`/api/portal/probe` 返回 `email_verification`，界面据此显示验证码输入框；`POST /api/register/code {pin, email}` 发送验证码，`POST /api/register` 增加 `code` 字段。
+门户开启 `accounts.email_verification` 后，注册必须先取验证码，用户名注册同时关闭，详见 [mail.md](mail.md)。`/api/v1/portal/probe` 返回 `email_verification`，界面据此显示验证码输入框；`POST /api/v1/register/code {pin, email}` 发送验证码，`POST /api/v1/register` 增加 `code` 字段。
 
 ## 安全
 
@@ -78,12 +78,12 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（client/daem
 |---|---|
 | 门户证书 | 发送密码前先探测。自签名证书必须由用户核对指纹并确认；确认后固定（pin），之后变化时拒绝并显示警告。其他机器上的明文 HTTP 直接拒绝（`-allow-http` 仅供测试网） |
 | token | 只在 daemon 和 config.json（0600）里；API 不返回；页面拿不到。密码只转发给门户，不落盘、不进日志 |
-| 恶意网页 | 校验 Host（防 DNS rebinding）。`/api/` 只接受无 Origin 或同源请求，`/v1/` 同 `up` 只放行本地来源。JSON 接口要求 `Content-Type: application/json` |
+| 恶意网页 | 校验 Host（防 DNS rebinding）。`/api/v1/` 只接受无 Origin 或同源请求，`/v1/` 同 `up` 只放行本地来源。JSON 接口要求 `Content-Type: application/json` |
 | 页面 XSS | CSP 禁止内联脚本和外部资源；DOM 只用 `textContent` 构建 |
 | 换账号 | 设备密钥属于一个账户。换账号登录时旧密钥改名为 `device.key.retired-<时间>` 并生成新密钥；钱在账户上，不受影响 |
 
 **已知未解决：**
-- 本地 API 对本机其他进程没有认证（和 `up` 相同）。多用户 Linux 上别的用户可以调用 `/v1` 花你的 credit，或者调 `/api/logout`。要解决需要引入本地 secret（如 0600 文件 + 会话 cookie）。
+- 本地 API 对本机其他进程没有认证（和 `up` 相同）。多用户 Linux 上别的用户可以调用 `/v1` 花你的 credit，或者调 `/api/v1/logout`。要解决需要引入本地 secret（如 0600 文件 + 会话 cookie）。
 - token 明文存于 config.json（0600；Windows 上是只给本人、SYSTEM、Administrators 的 ACL），和 CLI 相同，没有进系统钥匙串。
 
 ## 匿名使用统计
@@ -91,8 +91,8 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（client/daem
 做法参考 cmux 的 PostHog 接入（`Sources/PostHogAnalytics.swift`、`coderouter/src/telemetry.rs`），只在 `sharetoken daemon` 里发送，`sharetoken up` 和服务端程序不发。
 
 - **内置 key：** sharetoken 自己的 PostHog 项目 key 硬编码在 `client/telemetry.go`（US 区域），不需要配置文件。这种 key 只能写入事件，不能读数据。`TELEMETRY_KEY` 可在构建时替换，`TELEMETRY_OFF=1` 构建完全不发送的版本（没有开关），`TELEMETRY_HOST` 可指向自建 PostHog（只接受 https 或本机地址）。cmux 里那个 key 属于上游 Manaflow 的项目，不能用在这里。
-- **只有正式构建才发送：** 内置 key 只在 `scripts/build-gui.sh` 这类设置了版本号的构建中生效。`go test`、`go run`、普通 `go build` 和 dev 构建都不发送，只有 prod 构建才发送，也不显示开关。`gui_stack.sh` 用假 key 和假收集器，`gui_shell_test.sh` 设置了 `SHARETOKEN_TELEMETRY=0`。
-- **用户开关：** 默认开启，登录页和主界面都有复选框（`GET`/`PUT /api/telemetry`），状态存在 `telemetry.json`。关闭时清空队列、删除安装 ID。`SHARETOKEN_TELEMETRY=0` 或 `DO_NOT_TRACK=1` 强制关闭并隐藏开关。文件损坏时按关闭处理。
+- **只有正式构建才发送：** 内置 key 只在 prod 构建中生效。`go test`、`go run`、普通 `go build` 和 dev 构建都不发送，也不显示开关。`gui_stack.sh` 用假 key 和假收集器，`gui_shell_test.sh` 设置了 `SHARETOKEN_TELEMETRY=0`。
+- **用户开关：** 默认开启，登录页和主界面都有复选框（`GET`/`PUT /api/v1/telemetry`），状态存在 `telemetry.json`。关闭时清空队列、删除安装 ID。`SHARETOKEN_TELEMETRY=0` 或 `DO_NOT_TRACK=1` 强制关闭并隐藏开关。文件损坏时按关闭处理。
 - **发送方式：** `POST <host>/batch/`，尽力而为：不阻塞调用方，失败即丢弃，不重试，退出时最多等 2 秒。
 
 | 事件 | 附加字段 | 时机 |
@@ -111,9 +111,9 @@ PostHog 服务端仍能看到请求来源 IP：事件设置了 `$geoip_disable`�
 ## 构建
 
 ```bash
-scripts/build-gui.sh dev    # 必须指定 dev 或 prod。macOS: dist/sharetoken-dev.app 和 zip；Linux: dist/sharetoken-dev-linux-<arch>/ 和 tar.gz
+scripts/build-gui.sh dev    # 必须指定 dev 或 prod。macOS: dist/sharetoken-dev.app 和 sharetoken-dev-<版本>-macos-<arch>.zip；Linux: dist/sharetoken-dev-<版本>-linux-<arch>/ 和 tar.gz
 scripts/build-gui.sh prod   # 正式版：dist/sharetoken-prod.app 等
-scripts/build-gui.sh dev windows arm64   # 任何系统上都能构建：dist/sharetoken-dev-windows-<arch>/ 和 zip（默认 amd64）
+scripts/build-gui.sh dev windows arm64   # 任何系统上都能构建：dist/sharetoken-dev-<版本>-windows-<arch>/ 和 zip（默认 amd64）
 ```
 
 - macOS、Linux 版需要 cgo，**只能在目标系统上构建**（不能从 macOS 交叉编译 Linux 版）。Windows 版不需要 cgo，可以交叉编译；运行需要 WebView2 Runtime，也没有代码签名。Windows 调试环境和平台差异见 [windows-env.md](windows-env.md)。

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sharetoken/internal/version"
 	"slices"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 
 // Status is the agent's state, for the CLI and a GUI.
 type Status struct {
+	Version     string            `json:"version"`
 	Peer        string            `json:"peer"`
 	User        string            `json:"user"`
 	Portal      string            `json:"portal"`
@@ -69,7 +71,7 @@ func (a *Agent) Status() Status {
 	defer a.mu.Unlock()
 	st := Status{
 		Peer: a.keys.ID(), User: a.cfg.User, Portal: a.cfg.Portal, Started: a.started,
-		API: "http://" + a.addr + "/v1", MeasuredAt: a.measured, Buy: a.cfg.Buy,
+		Version: version.Version, API: "http://" + a.addr + "/v1", MeasuredAt: a.measured, Buy: a.cfg.Buy,
 		Coordinator: CoordinatorStatus{Peer: a.coord.String(), Via: a.current, Link: a.link.Quality()},
 		Share:       ShareStatus{ShareConfig: a.cfg.Share},
 	}
@@ -111,27 +113,27 @@ func (a *Agent) Status() Status {
 func (a *Agent) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", a.proxy.Handler())
-	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, a.Status()) })
-	mux.HandleFunc("GET /api/models", a.handleModels)
-	mux.HandleFunc("GET /api/account", a.portalPassthrough("/api/v1/me"))
-	mux.HandleFunc("GET /api/jobs", a.portalPassthrough("/api/v1/jobs"))
-	mux.HandleFunc("GET /api/ledger", a.portalPassthrough("/api/v1/ledger"))
-	mux.HandleFunc("POST /api/relays/measure", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, a.Status()) })
+	mux.HandleFunc("GET /api/v1/models", a.handleModels)
+	mux.HandleFunc("GET /api/v1/account", a.portalPassthrough("/api/v1/me"))
+	mux.HandleFunc("GET /api/v1/jobs", a.portalPassthrough("/api/v1/jobs"))
+	mux.HandleFunc("GET /api/v1/ledger", a.portalPassthrough("/api/v1/ledger"))
+	mux.HandleFunc("POST /api/v1/relays/measure", func(w http.ResponseWriter, r *http.Request) {
 		a.Remeasure(r.Context())
 		writeJSON(w, http.StatusOK, a.Status().Relays)
 	})
-	mux.HandleFunc("GET /api/share", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, a.Status().Share) })
-	mux.HandleFunc("PUT /api/share", a.handleSetShare)
-	mux.HandleFunc("POST /api/share/start", a.handleToggleShare(true))
-	mux.HandleFunc("POST /api/share/stop", a.handleToggleShare(false))
-	mux.HandleFunc("POST /api/share/reload", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/share", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, a.Status().Share) })
+	mux.HandleFunc("PUT /api/v1/share", a.handleSetShare)
+	mux.HandleFunc("POST /api/v1/share/start", a.handleToggleShare(true))
+	mux.HandleFunc("POST /api/v1/share/stop", a.handleToggleShare(false))
+	mux.HandleFunc("POST /api/v1/share/reload", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.ReloadShare(); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, a.Status().Share)
 	})
-	mux.HandleFunc("GET /api/share/detect", a.handleDetect)
+	mux.HandleFunc("GET /api/v1/share/detect", a.handleDetect)
 	return guardOrigin(mux)
 }
 

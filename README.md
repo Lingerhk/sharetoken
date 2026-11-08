@@ -32,6 +32,7 @@
 |---|---|
 | [docs/design-v2.md](docs/design-v2.md) | v2 架构：四个角色、用户账户、经中继访问协调器、中继选择、共用 MySQL 数据库 |
 | [docs/guide-v2.md](docs/guide-v2.md) | 用户命令、运维部署、本地管理 API（GUI）、门户 HTTP API |
+| [docs/versioning.md](docs/versioning.md) | 版本号、接口版本、升级规则和版本策略 |
 | [docs/gui.md](docs/gui.md) | 桌面客户端（macOS / Linux / Windows）：结构、本地 API、邮箱账号、构建和测试 |
 | [docs/windows-env.md](docs/windows-env.md) | Windows 调试虚拟机：连接、构建、测试方法和平台差异 |
 | [docs/validation-v2.md](docs/validation-v2.md) | 自动化测试、本机演示、三机跨公网实测 |

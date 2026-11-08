@@ -18,6 +18,7 @@ import (
 	"sharetoken/accounts"
 	"sharetoken/coordinator"
 	"sharetoken/internal/cli"
+	"sharetoken/internal/version"
 	"sharetoken/p2p"
 	"sharetoken/portal"
 	"sharetoken/relaypass"
@@ -133,6 +134,8 @@ func (p *PortalClient) Do(ctx context.Context, method, path string, body, out an
 	if p.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+p.Token)
 	}
+	req.Header.Set("User-Agent", userAgent())
+	req.Header.Set(portal.ClientVersionHeader, version.Version)
 	resp, err := p.HTTP.Do(req)
 	if err != nil {
 		return err

@@ -31,6 +31,7 @@ import (
 
 	"sharetoken/client"
 	"sharetoken/internal/cli"
+	"sharetoken/internal/version"
 	"sharetoken/node"
 	"sharetoken/p2p"
 	"sharetoken/protocol"
@@ -78,7 +79,7 @@ func main() {
 	}
 	cmd, args := flag.Arg(0), flag.Args()[1:]
 	if cmd == "version" { // before LoadConfig: it must not touch the state directory
-		fmt.Printf("sharetoken %s\nenv %s\nportal %s\nhome %s\nlocal api %s\n", client.Version, client.Env, client.PortalAddr(), *home, client.DefaultHTTP())
+		fmt.Printf("%s\napi v%d\nenv %s\nportal %s\nhome %s\nlocal api %s\n", version.String("client"), version.API, client.Env, client.PortalAddr(), *home, client.DefaultHTTP())
 		return
 	}
 	cfg, err := client.LoadConfig(*home)
@@ -451,7 +452,7 @@ func (c *cmdCtx) daemon(method, path string, body, out any) error {
 
 func (c *cmdCtx) status([]string) error {
 	var st client.Status
-	if err := c.daemon(http.MethodGet, "/api/status", nil, &st); err != nil {
+	if err := c.daemon(http.MethodGet, "/api/v1/status", nil, &st); err != nil {
 		return err
 	}
 	fmt.Printf("user %s, device %s\n", st.User, st.Peer)
@@ -596,14 +597,14 @@ func (c *cmdCtx) relays(args []string) error {
 	_ = fs.Parse(args)
 	if *measure {
 		var rs []client.RelayView
-		if err := c.daemon(http.MethodPost, "/api/relays/measure", nil, &rs); err != nil {
+		if err := c.daemon(http.MethodPost, "/api/v1/relays/measure", nil, &rs); err != nil {
 			return err
 		}
 		printRelays(rs)
 		return nil
 	}
 	var st client.Status
-	if err := c.daemon(http.MethodGet, "/api/status", nil, &st); err != nil {
+	if err := c.daemon(http.MethodGet, "/api/v1/status", nil, &st); err != nil {
 		return err
 	}
 	if !st.MeasuredAt.IsZero() {
@@ -621,7 +622,7 @@ func (c *cmdCtx) models([]string) error {
 	var out struct {
 		Models []protocol.ModelSummary `json:"models"`
 	}
-	if err := c.daemon(http.MethodGet, "/api/models", nil, &out); err != nil {
+	if err := c.daemon(http.MethodGet, "/api/v1/models", nil, &out); err != nil {
 		return err
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
@@ -711,7 +712,7 @@ func (c *cmdCtx) share(args []string) error {
 		return err
 	}
 	// Apply to a running client, if any.
-	if err := c.daemon(http.MethodPost, "/api/share/reload", nil, nil); err != nil && !strings.Contains(err.Error(), "not running") {
+	if err := c.daemon(http.MethodPost, "/api/v1/share/reload", nil, nil); err != nil && !strings.Contains(err.Error(), "not running") {
 		return fmt.Errorf("saved, but the running client refused it: %w", err)
 	}
 	return c.showShare()

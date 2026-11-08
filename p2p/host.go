@@ -14,6 +14,7 @@ import (
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 
+	"sharetoken/internal/version"
 	"sharetoken/protocol"
 )
 
@@ -33,11 +34,15 @@ type HostConfig struct {
 	// coordinator, relays). 0 keeps libp2p's defaults (trim above 192).
 	MaxConns int
 	Options  []libp2p.Option // extra libp2p options
+	Program  string          // what this host runs, announced in libp2p's identify exchange: relay, coordinator, client
 }
 
 // NewHost starts a libp2p host for k.
 func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 	opts := []libp2p.Option{libp2p.Identity(k.Libp2p)}
+	if cfg.Program != "" {
+		opts = append(opts, libp2p.UserAgent(version.UserAgent(cfg.Program)))
+	}
 	if cfg.DialOnly {
 		// NoListenAddrs also drops the relay transport, which would leave
 		// this host unable to dial /p2p-circuit addresses: an auditor could
@@ -113,7 +118,7 @@ func Call(ctx context.Context, h host.Host, p peer.ID, proto, reqType string, re
 	if dl, ok := ctx.Deadline(); ok {
 		_ = s.SetDeadline(dl)
 	}
-	if err := protocol.Send(s, reqType, req); err != nil {
+	if err := protocol.SendRequest(s, reqType, req); err != nil {
 		_ = s.Reset()
 		return err
 	}

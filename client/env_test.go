@@ -82,7 +82,7 @@ func TestOldConfigIsDeleted(t *testing.T) {
 // Another build type's directory is refused and left exactly as it is.
 func TestOtherBuildTypesConfigIsRefused(t *testing.T) {
 	home := t.TempDir()
-	writeState(t, home, `{"env":"prod","portal":"https://sharetoken.app","token":"secret"}`)
+	writeState(t, home, `{"version":1,"env":"prod","portal":"https://sharetoken.app","token":"secret"}`)
 	_, err := LoadConfig(home)
 	if err == nil || !strings.Contains(err.Error(), "prod") {
 		t.Fatalf("want a refusal, got %v", err)

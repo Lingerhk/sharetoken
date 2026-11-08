@@ -79,7 +79,7 @@ func (u *daemonUser) waitRunning() client.Session {
 	var s client.Session
 	waitFor(u.t, 30*time.Second, "the agent joining the network", func() bool {
 		s = client.Session{}
-		u.call("GET", "/api/session", nil, &s)
+		u.call("GET", "/api/v1/session", nil, &s)
 		return s.State == client.StateRunning
 	})
 	return s
@@ -97,14 +97,14 @@ func TestDaemonFullFlow(t *testing.T) {
 	u := n.startDaemon(home)
 
 	var s client.Session
-	if st := u.call("GET", "/api/session", nil, &s); st != 200 || s.State != client.StateLoggedOut {
+	if st := u.call("GET", "/api/v1/session", nil, &s); st != 200 || s.State != client.StateLoggedOut {
 		t.Fatalf("logged out: %d %+v", st, s)
 	}
 	var probe client.PortalProbe
-	if st := u.call("POST", "/api/portal/probe", map[string]string{"portal": n.url}, &probe); st != 200 || !probe.RegistrationOpen || probe.SignupCredit != 5_000_000 {
+	if st := u.call("POST", "/api/v1/portal/probe", map[string]string{"portal": n.url}, &probe); st != 200 || !probe.RegistrationOpen || probe.SignupCredit != 5_000_000 {
 		t.Fatalf("probe: %d %+v", st, probe)
 	}
-	if st := u.call("POST", "/api/register", map[string]string{"portal": n.url, "email": "Buyer@Example.com", "password": "correct horse", "device": "buyer-mac"}, &s); st != 201 {
+	if st := u.call("POST", "/api/v1/register", map[string]string{"portal": n.url, "email": "Buyer@Example.com", "password": "correct horse", "device": "buyer-mac"}, &s); st != 201 {
 		t.Fatalf("register: %d", st)
 	}
 	if s.User != "buyer@example.com" {
@@ -113,14 +113,14 @@ func TestDaemonFullFlow(t *testing.T) {
 	s = u.waitRunning()
 
 	var st client.Status
-	if code := u.call("GET", "/api/status", nil, &st); code != 200 {
+	if code := u.call("GET", "/api/v1/status", nil, &st); code != 200 {
 		t.Fatalf("status: %d", code)
 	}
 	if st.User != "buyer@example.com" || st.API != u.base+"/v1" || len(st.Relays) != 2 || st.Peer != s.Peer {
 		t.Fatalf("status: %+v", st)
 	}
 	waitFor(t, 20*time.Second, "a path to the coordinator", func() bool {
-		u.call("GET", "/api/status", nil, &st)
+		u.call("GET", "/api/v1/status", nil, &st)
 		return st.Coordinator.Connected && st.Coordinator.Via != ""
 	})
 
@@ -128,14 +128,14 @@ func TestDaemonFullFlow(t *testing.T) {
 		Models []protocol.ModelSummary `json:"models"`
 	}
 	waitFor(t, 20*time.Second, "the seller's model on the list", func() bool {
-		return u.call("GET", "/api/models", nil, &models) == 200 && len(models.Models) == 1
+		return u.call("GET", "/api/v1/models", nil, &models) == 200 && len(models.Models) == 1
 	})
 	if models.Models[0].Model != model || models.Models[0].Nodes != 1 || models.Models[0].MinPriceIn != 100_000 {
 		t.Fatalf("models: %+v", models)
 	}
 
 	var me portal.Me
-	if code := u.call("GET", "/api/account", nil, &me); code != 200 || me.Balance.AvailableMicros != 5_000_000 || len(me.Devices) != 1 || me.Devices[0].Name != "buyer-mac" {
+	if code := u.call("GET", "/api/v1/account", nil, &me); code != 200 || me.Balance.AvailableMicros != 5_000_000 || len(me.Devices) != 1 || me.Devices[0].Name != "buyer-mac" {
 		t.Fatalf("account: %d %+v", code, me)
 	}
 
@@ -157,8 +157,8 @@ func TestDaemonFullFlow(t *testing.T) {
 				Status string `json:"status"`
 			} `json:"jobs"`
 		}
-		u.call("GET", "/api/jobs?limit=5", nil, &jobs)
-		u.call("GET", "/api/account", nil, &me)
+		u.call("GET", "/api/v1/jobs?limit=5", nil, &jobs)
+		u.call("GET", "/api/v1/account", nil, &me)
 		return len(jobs.Jobs) == 1 && jobs.Jobs[0].Role == "buy" && jobs.Jobs[0].Model == model && jobs.Jobs[0].Status == "final" &&
 			me.Balance.AvailableMicros < 5_000_000 && me.Usage.Bought.Jobs == 1
 	})
@@ -168,10 +168,10 @@ func TestDaemonFullFlow(t *testing.T) {
 
 	// Measuring relays and the sharing settings go to the agent.
 	var relays []client.RelayView
-	if code := u.call("POST", "/api/relays/measure", nil, &relays); code != 200 || len(relays) != 2 {
+	if code := u.call("POST", "/api/v1/relays/measure", nil, &relays); code != 200 || len(relays) != 2 {
 		t.Fatalf("measure: %d %+v", code, relays)
 	}
-	if code := u.call("GET", "/api/share", nil, nil); code != 200 {
+	if code := u.call("GET", "/api/v1/share", nil, nil); code != 200 {
 		t.Fatalf("share: %d", code)
 	}
 
@@ -189,7 +189,7 @@ func TestDaemonFullFlow(t *testing.T) {
 	}
 
 	// Logging out stops buying.
-	if code := u.call("POST", "/api/logout", struct{}{}, &s); code != 200 || s.LoggedIn {
+	if code := u.call("POST", "/api/v1/logout", struct{}{}, &s); code != 200 || s.LoggedIn {
 		t.Fatalf("logout: %d %+v", code, s)
 	}
 	resp, err = http.Post(u.base+"/v1/chat/completions", "application/json", strings.NewReader(body))
@@ -200,12 +200,12 @@ func TestDaemonFullFlow(t *testing.T) {
 	if resp.StatusCode != 401 {
 		t.Fatalf("chat after logout: %d", resp.StatusCode)
 	}
-	if code := u.call("GET", "/api/status", nil, nil); code != 401 {
+	if code := u.call("GET", "/api/v1/status", nil, nil); code != 401 {
 		t.Fatalf("status after logout: %d", code)
 	}
 
 	// Logging in again brings it all back, on the same device.
-	if code := u.call("POST", "/api/login", map[string]string{"portal": n.url, "account": "buyer@example.com", "password": "correct horse"}, &s); code != 200 {
+	if code := u.call("POST", "/api/v1/login", map[string]string{"portal": n.url, "account": "buyer@example.com", "password": "correct horse"}, &s); code != 200 {
 		t.Fatalf("login: %d", code)
 	}
 	if s = u.waitRunning(); s.Peer != peer {
@@ -228,17 +228,17 @@ func TestDaemonJoinsWhenNetworkReturns(t *testing.T) {
 	u := n.startDaemon(t.TempDir())
 	front.networkDown.Store(true)
 	var s client.Session
-	if code := u.call("POST", "/api/register", map[string]string{"portal": front.url, "email": "late@example.com", "password": "correct horse"}, &s); code != 201 {
+	if code := u.call("POST", "/api/v1/register", map[string]string{"portal": front.url, "email": "late@example.com", "password": "correct horse"}, &s); code != 201 {
 		t.Fatalf("register: %d", code)
 	}
 	waitFor(t, 10*time.Second, "the first failed attempt", func() bool {
-		u.call("GET", "/api/session", nil, &s)
+		u.call("GET", "/api/v1/session", nil, &s)
 		return s.State == client.StateRetrying && s.Error != ""
 	})
-	if code := u.call("GET", "/api/account", nil, nil); code != 200 {
+	if code := u.call("GET", "/api/v1/account", nil, nil); code != 200 {
 		t.Fatalf("account with the network down: %d", code)
 	}
-	if code := u.call("GET", "/api/status", nil, nil); code != 503 {
+	if code := u.call("GET", "/api/v1/status", nil, nil); code != 503 {
 		t.Fatalf("status with the network down: %d", code)
 	}
 	front.networkDown.Store(false)

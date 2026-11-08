@@ -581,6 +581,7 @@ func (s *Store) DeleteInbound(id int64) error {
 
 // ServerStatus is what a running mail server reports about itself.
 type ServerStatus struct {
+	Version      string      `json:"version,omitempty"`
 	Hostname     string      `json:"hostname"`
 	Domain       string      `json:"domain"`
 	SMTPListen   string      `json:"smtp_listen"`
@@ -622,6 +623,19 @@ func (s *Store) writeStatus(st ServerStatus) error {
 	}
 	_, err = s.DB.Exec(`INSERT INTO mail_status (name, value, updated_at) VALUES ('server', ?, ?)`, string(b), now)
 	return err
+}
+
+// ServerVersion reads the version the mail server last reported.
+func (s *Store) ServerVersion() (string, error) {
+	var value string
+	if err := s.DB.QueryRow(`SELECT value FROM mail_status WHERE name = 'server'`).Scan(&value); err != nil {
+		return "", err
+	}
+	var st ServerStatus
+	if err := json.Unmarshal([]byte(value), &st); err != nil {
+		return "", err
+	}
+	return st.Version, nil
 }
 
 // Overview is the mail section's dashboard.

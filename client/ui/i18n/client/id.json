@@ -116,5 +116,8 @@
   "反馈已提交，谢谢！": "Masukan terkirim. Terima kasih!",
   "请填写反馈内容": "Harap tulis masukan Anda",
   "提交太频繁，请稍后再试": "Terlalu sering mengirim. Coba lagi nanti",
-  "提交时会附带应用版本和操作系统类型。": "Versi aplikasi dan jenis sistem operasi dikirim bersama masukan Anda."
+  "提交时会附带应用版本和操作系统类型。": "Versi aplikasi dan jenis sistem operasi dikirim bersama masukan Anda.",
+  "这个版本已不再受支持，请升级到最新版本后继续使用": "Versi ini tidak lagi didukung. Tingkatkan ke versi terbaru untuk melanjutkan",
+  "有新版本 {version} 可用": "Versi {version} tersedia",
+  "版本 {version}": "Versi {version}"
 }

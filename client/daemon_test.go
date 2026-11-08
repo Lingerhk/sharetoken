@@ -20,9 +20,10 @@ import (
 	"time"
 
 	"sharetoken/accounts"
-	"sharetoken/internal/secfile"
 	"sharetoken/internal/mysqldb"
+	"sharetoken/internal/secfile"
 	"sharetoken/internal/totp"
+	"sharetoken/internal/version"
 	"sharetoken/portal"
 )
 
@@ -167,7 +168,7 @@ func (d *testDaemon) want(status int, code, method, path string, body any) []byt
 func (d *testDaemon) session() Session {
 	d.t.Helper()
 	var s Session
-	if err := json.Unmarshal(d.want(200, "", "GET", "/api/session", nil), &s); err != nil {
+	if err := json.Unmarshal(d.want(200, "", "GET", "/api/v1/session", nil), &s); err != nil {
 		d.t.Fatal(err)
 	}
 	return s
@@ -193,7 +194,7 @@ func (d *testDaemon) waitState(want ...string) Session {
 func (d *testDaemon) register(portalURL, email string) Session {
 	d.t.Helper()
 	var s Session
-	data := d.want(201, "", "POST", "/api/register", map[string]string{"portal": portalURL, "email": email, "password": testPassword, "device": "test-box"})
+	data := d.want(201, "", "POST", "/api/v1/register", map[string]string{"portal": portalURL, "email": email, "password": testPassword, "device": "test-box"})
 	if err := json.Unmarshal(data, &s); err != nil {
 		d.t.Fatal(err)
 	}
@@ -217,14 +218,14 @@ func TestDaemonLoggedOut(t *testing.T) {
 	if s.State != StateLoggedOut || s.LoggedIn || s.User != "" || !strings.HasSuffix(s.API, "/v1") {
 		t.Fatalf("session: %+v", s)
 	}
-	d.want(401, "not_logged_in", "GET", "/api/account", nil)
-	d.want(401, "not_logged_in", "GET", "/api/jobs", nil)
-	d.want(401, "not_logged_in", "GET", "/api/ledger", nil)
-	d.want(401, "not_logged_in", "GET", "/api/status", nil)
-	d.want(401, "not_logged_in", "GET", "/api/models", nil)
+	d.want(401, "not_logged_in", "GET", "/api/v1/account", nil)
+	d.want(401, "not_logged_in", "GET", "/api/v1/jobs", nil)
+	d.want(401, "not_logged_in", "GET", "/api/v1/ledger", nil)
+	d.want(401, "not_logged_in", "GET", "/api/v1/status", nil)
+	d.want(401, "not_logged_in", "GET", "/api/v1/models", nil)
 	d.want(401, "not_logged_in", "POST", "/v1/chat/completions", map[string]string{})
-	d.want(401, "not_logged_in", "POST", "/api/share/start", nil)
-	d.want(200, "", "POST", "/api/logout", nil) // nothing to do, not an error
+	d.want(401, "not_logged_in", "POST", "/api/v1/share/start", nil)
+	d.want(200, "", "POST", "/api/v1/logout", nil) // nothing to do, not an error
 }
 
 // The whole sign-up: email and password in, a bound device and a usable
@@ -248,25 +249,25 @@ func TestDaemonRegisterWithEmail(t *testing.T) {
 	if !s.LoggedIn || s.Error == "" {
 		t.Fatalf("session: %+v", s)
 	}
-	d.want(503, "not_connected", "GET", "/api/status", nil)
+	d.want(503, "not_connected", "GET", "/api/v1/status", nil)
 	var me portal.Me
-	if err := json.Unmarshal(d.want(200, "", "GET", "/api/account", nil), &me); err != nil {
+	if err := json.Unmarshal(d.want(200, "", "GET", "/api/v1/account", nil), &me); err != nil {
 		t.Fatal(err)
 	}
 	if me.User.Username != s.User || me.Balance.AvailableMicros != 5_000_000 || len(me.Devices) != 1 || me.Devices[0].Peer != s.Peer || me.Devices[0].Name != "test-box" {
 		t.Fatalf("me: %+v", me)
 	}
-	d.want(200, "", "GET", "/api/jobs?limit=5", nil)
-	d.want(200, "", "GET", "/api/ledger", nil)
+	d.want(200, "", "GET", "/api/v1/jobs?limit=5", nil)
+	d.want(200, "", "GET", "/api/v1/ledger", nil)
 
 	// The token never leaves the daemon.
-	for _, path := range []string{"/api/session", "/api/account"} {
+	for _, path := range []string{"/api/v1/session", "/api/v1/account"} {
 		if _, data := d.call("GET", path, nil); bytes.Contains(data, []byte(cfg.Token)) || bytes.Contains(data, []byte(`"token"`)) {
 			t.Fatalf("%s leaks the token: %s", path, data)
 		}
 	}
 	// A second login without logging out is refused.
-	d.want(409, "already_logged_in", "POST", "/api/login", map[string]string{"portal": e.url, "account": s.User, "password": testPassword})
+	d.want(409, "already_logged_in", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": s.User, "password": testPassword})
 }
 
 // Every way a sign-up can be refused comes back with a code the app handles.
@@ -275,7 +276,7 @@ func TestDaemonRegisterErrors(t *testing.T) {
 	d := e.daemon()
 	reg := func(status int, code, portalURL, email, password string) {
 		t.Helper()
-		d.want(status, code, "POST", "/api/register", map[string]string{"portal": portalURL, "email": email, "password": password})
+		d.want(status, code, "POST", "/api/v1/register", map[string]string{"portal": portalURL, "email": email, "password": password})
 		if s := d.session(); s.LoggedIn {
 			t.Fatalf("logged in after a failed sign-up: %+v", s)
 		}
@@ -301,25 +302,25 @@ func TestDaemonRegisterErrors(t *testing.T) {
 	other := e.daemon()
 	other.register(e.url, "taken@example.com")
 	reg(409, "exists", e.url, "Taken@Example.com", testPassword)
-	d.want(400, "bad_request", "POST", "/api/register", json.RawMessage(`{"portal":`+"3"+`}`))
+	d.want(400, "bad_request", "POST", "/api/v1/register", json.RawMessage(`{"portal":`+"3"+`}`))
 }
 
 func TestDaemonRegistrationClosed(t *testing.T) {
 	e := newDaemonEnv(t, portal.Config{}, false)
 	d := e.daemon()
 	var p PortalProbe
-	if err := json.Unmarshal(d.want(200, "", "POST", "/api/portal/probe", map[string]string{"portal": e.url}), &p); err != nil {
+	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/portal/probe", map[string]string{"portal": e.url}), &p); err != nil {
 		t.Fatal(err)
 	}
 	if p.RegistrationOpen {
 		t.Fatal("probe says registration is open")
 	}
-	d.want(403, "registration_closed", "POST", "/api/register", map[string]string{"portal": e.url, "email": "a@example.com", "password": testPassword})
+	d.want(403, "registration_closed", "POST", "/api/v1/register", map[string]string{"portal": e.url, "email": "a@example.com", "password": testPassword})
 	// An account an administrator made still logs in, by username.
 	if _, err := e.portal.CreateUser("bob", testPassword, false); err != nil {
 		t.Fatal(err)
 	}
-	d.want(200, "", "POST", "/api/login", map[string]string{"portal": e.url, "account": "bob", "password": testPassword})
+	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "bob", "password": testPassword})
 	if s := d.session(); s.User != "bob" || !s.LoggedIn {
 		t.Fatalf("session: %+v", s)
 	}
@@ -329,14 +330,14 @@ func TestDaemonLogin(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
 	d.register(e.url, "alice@example.com")
-	d.want(200, "", "POST", "/api/logout", nil)
-	d.want(401, "bad_credentials", "POST", "/api/login", map[string]string{"portal": e.url, "account": "alice@example.com", "password": "wrong password"})
-	d.want(401, "bad_credentials", "POST", "/api/login", map[string]string{"portal": e.url, "account": "nobody@example.com", "password": testPassword})
-	d.want(400, "bad_request", "POST", "/api/login", map[string]string{"portal": e.url, "account": "  ", "password": testPassword})
+	d.want(200, "", "POST", "/api/v1/logout", nil)
+	d.want(401, "bad_credentials", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "alice@example.com", "password": "wrong password"})
+	d.want(401, "bad_credentials", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "nobody@example.com", "password": testPassword})
+	d.want(400, "bad_request", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "  ", "password": testPassword})
 	// Case does not matter, and the same device stays bound.
-	d.want(200, "", "POST", "/api/login", map[string]string{"portal": e.url, "account": "ALICE@example.com", "password": testPassword})
+	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "ALICE@example.com", "password": testPassword})
 	var me portal.Me
-	if err := json.Unmarshal(d.want(200, "", "GET", "/api/account", nil), &me); err != nil {
+	if err := json.Unmarshal(d.want(200, "", "GET", "/api/v1/account", nil), &me); err != nil {
 		t.Fatal(err)
 	}
 	if me.User.Username != "alice@example.com" || len(me.Devices) != 1 {
@@ -349,12 +350,12 @@ func TestDaemonLoginThrottled(t *testing.T) {
 	d := e.daemon()
 	var last int
 	for range 12 {
-		last, _ = d.call("POST", "/api/login", map[string]string{"portal": e.url, "account": "victim@example.com", "password": "wrong password"})
+		last, _ = d.call("POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "victim@example.com", "password": "wrong password"})
 	}
 	if last != 429 {
 		t.Fatalf("last status %d, want 429", last)
 	}
-	d.want(429, "throttled", "POST", "/api/login", map[string]string{"portal": e.url, "account": "victim@example.com", "password": "wrong password"})
+	d.want(429, "throttled", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "victim@example.com", "password": "wrong password"})
 }
 
 // An administrator's login asks for the second factor without logging in.
@@ -366,17 +367,17 @@ func TestDaemonAdminTwoFactor(t *testing.T) {
 	}
 	d := e.daemon()
 	login := map[string]string{"portal": e.url, "account": "root", "password": testPassword}
-	d.want(401, "mfa_setup_required", "POST", "/api/login", login)
+	d.want(401, "mfa_setup_required", "POST", "/api/v1/login", login)
 
 	secret := enrollAdmin(t, e, "root")
-	d.want(401, "mfa_required", "POST", "/api/login", login)
+	d.want(401, "mfa_required", "POST", "/api/v1/login", login)
 	if d.session().LoggedIn {
 		t.Fatal("logged in without the code")
 	}
 	login["totp"] = wrongCode(totp.Code(secret, now))
-	d.want(401, "bad_code", "POST", "/api/login", login)
+	d.want(401, "bad_code", "POST", "/api/v1/login", login)
 	login["totp"] = totp.Code(secret, time.Now())
-	d.want(200, "", "POST", "/api/login", login)
+	d.want(200, "", "POST", "/api/v1/login", login)
 	if !d.session().LoggedIn {
 		t.Fatal("not logged in with the right code")
 	}
@@ -435,7 +436,7 @@ func TestDaemonSelfSignedPortal(t *testing.T) {
 	home := t.TempDir()
 	d := e.daemonIn(home)
 	var p PortalProbe
-	if err := json.Unmarshal(d.want(200, "", "POST", "/api/portal/probe", map[string]string{"portal": e.url + "/"}), &p); err != nil {
+	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/portal/probe", map[string]string{"portal": e.url + "/"}), &p); err != nil {
 		t.Fatal(err)
 	}
 	if p.Trusted || !p.PinRequired || p.Known || p.PinChanged || !p.HTTPS || !strings.HasPrefix(p.Fingerprint, "sha256:") || p.Portal != e.url || !p.RegistrationOpen || p.SignupCredit != 5_000_000 {
@@ -443,28 +444,28 @@ func TestDaemonSelfSignedPortal(t *testing.T) {
 	}
 	before := e.logins.Load()
 	reg := map[string]string{"portal": e.url, "email": "a@example.com", "password": testPassword}
-	d.want(400, "pin_required", "POST", "/api/register", reg)
+	d.want(400, "pin_required", "POST", "/api/v1/register", reg)
 	reg["pin"] = "sha256:" + strings.Repeat("0", 64)
-	d.want(502, "pin_mismatch", "POST", "/api/register", reg)
+	d.want(502, "pin_mismatch", "POST", "/api/v1/register", reg)
 	if n := e.logins.Load(); n != before {
 		t.Fatalf("the password was sent to an unconfirmed portal (%d requests)", n-before)
 	}
 	reg["pin"] = strings.ToUpper(p.Fingerprint[:6]) + p.Fingerprint[6:] // any case
-	d.want(201, "", "POST", "/api/register", reg)
+	d.want(201, "", "POST", "/api/v1/register", reg)
 	if c := d.savedConfig(); !strings.EqualFold(c.PortalPin, p.Fingerprint) {
 		t.Fatalf("pin not saved: %+v", c)
 	}
-	d.want(200, "", "GET", "/api/account", nil)
-	d.want(200, "", "POST", "/api/logout", nil)
+	d.want(200, "", "GET", "/api/v1/account", nil)
+	d.want(200, "", "POST", "/api/v1/logout", nil)
 
 	// The saved pin carries over: known, no confirmation asked.
-	if err := json.Unmarshal(d.want(200, "", "POST", "/api/portal/probe", map[string]string{"portal": e.url}), &p); err != nil {
+	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/portal/probe", map[string]string{"portal": e.url}), &p); err != nil {
 		t.Fatal(err)
 	}
 	if !p.Known || p.PinRequired || p.PinChanged {
 		t.Fatalf("second probe: %+v", p)
 	}
-	d.want(200, "", "POST", "/api/login", map[string]string{"portal": e.url, "account": "a@example.com", "password": testPassword})
+	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "a@example.com", "password": testPassword})
 	d.Close()
 
 	// The pin survives a restart of the daemon, and the session with it.
@@ -472,8 +473,8 @@ func TestDaemonSelfSignedPortal(t *testing.T) {
 	if s := d2.session(); !s.LoggedIn || s.User != "a@example.com" {
 		t.Fatalf("after restart: %+v", s)
 	}
-	d2.want(200, "", "GET", "/api/account", nil)
-	d2.want(200, "", "POST", "/api/logout", nil)
+	d2.want(200, "", "GET", "/api/v1/account", nil)
+	d2.want(200, "", "POST", "/api/v1/logout", nil)
 
 	// Someone else answers at that address now.
 	c := d2.savedConfig()
@@ -483,14 +484,14 @@ func TestDaemonSelfSignedPortal(t *testing.T) {
 	}
 	d2.Close()
 	d3 := e.daemonIn(home)
-	if err := json.Unmarshal(d3.want(200, "", "POST", "/api/portal/probe", map[string]string{"portal": e.url}), &p); err != nil {
+	if err := json.Unmarshal(d3.want(200, "", "POST", "/api/v1/portal/probe", map[string]string{"portal": e.url}), &p); err != nil {
 		t.Fatal(err)
 	}
 	if !p.PinChanged || !p.PinRequired || p.Known {
 		t.Fatalf("probe after a certificate change: %+v", p)
 	}
 	before = e.logins.Load()
-	d3.want(502, "pin_mismatch", "POST", "/api/login", map[string]string{"portal": e.url, "account": "a@example.com", "password": testPassword})
+	d3.want(502, "pin_mismatch", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "a@example.com", "password": testPassword})
 	if e.logins.Load() != before {
 		t.Fatal("the password was sent despite the changed certificate")
 	}
@@ -499,13 +500,13 @@ func TestDaemonSelfSignedPortal(t *testing.T) {
 func TestDaemonProbeErrors(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	d.want(502, "portal_unreachable", "POST", "/api/portal/probe", map[string]string{"portal": " "}) // blank: the built-in address (TestMain: nothing listens there)
-	d.want(400, "insecure_portal", "POST", "/api/portal/probe", map[string]string{"portal": "http://203.0.113.7"})
-	d.want(502, "portal_unreachable", "POST", "/api/portal/probe", map[string]string{"portal": "https://127.0.0.1:1"})
-	d.want(502, "portal_unreachable", "POST", "/api/portal/probe", map[string]string{"portal": "http://127.0.0.1:1"})
+	d.want(502, "portal_unreachable", "POST", "/api/v1/portal/probe", map[string]string{"portal": " "}) // blank: the built-in address (TestMain: nothing listens there)
+	d.want(400, "insecure_portal", "POST", "/api/v1/portal/probe", map[string]string{"portal": "http://203.0.113.7"})
+	d.want(502, "portal_unreachable", "POST", "/api/v1/portal/probe", map[string]string{"portal": "https://127.0.0.1:1"})
+	d.want(502, "portal_unreachable", "POST", "/api/v1/portal/probe", map[string]string{"portal": "http://127.0.0.1:1"})
 	notPortal := httptest.NewServer(http.NotFoundHandler())
 	defer notPortal.Close()
-	d.want(502, "not_a_portal", "POST", "/api/portal/probe", map[string]string{"portal": notPortal.URL})
+	d.want(502, "not_a_portal", "POST", "/api/v1/portal/probe", map[string]string{"portal": notPortal.URL})
 	// -allow-http lets a test network through: the address is tried, not refused.
 	d.AllowHTTP = true
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -544,7 +545,7 @@ func TestDaemonLogout(t *testing.T) {
 	if err := func() error { c := d.savedConfig(); c.Buy.BudgetMicros = 123; return SaveConfig(d.home, c) }(); err != nil {
 		t.Fatal(err)
 	}
-	d.want(200, "", "POST", "/api/logout", nil)
+	d.want(200, "", "POST", "/api/v1/logout", nil)
 	after := d.session()
 	if after.LoggedIn || after.State != StateLoggedOut || after.User != s.User || after.Portal != PortalAddr() || after.Peer != "" {
 		t.Fatalf("session: %+v", after)
@@ -556,8 +557,8 @@ func TestDaemonLogout(t *testing.T) {
 	if _, err := NewPortalClient(e.url, token, "").Me(context.Background()); !IsUnauthorized(err) {
 		t.Fatalf("the token still works at the portal: %v", err)
 	}
-	d.want(401, "not_logged_in", "GET", "/api/account", nil)
-	d.want(200, "", "POST", "/api/logout", nil)
+	d.want(401, "not_logged_in", "GET", "/api/v1/account", nil)
+	d.want(200, "", "POST", "/api/v1/logout", nil)
 }
 
 // With the portal gone, logging out still works locally.
@@ -566,11 +567,11 @@ func TestDaemonLogoutPortalDown(t *testing.T) {
 	d := e.daemon()
 	d.register(e.url, "alice@example.com")
 	e.srv.Close()
-	d.want(502, "portal_unreachable", "GET", "/api/account", nil)
+	d.want(502, "portal_unreachable", "GET", "/api/v1/account", nil)
 	if s := d.session(); !s.LoggedIn {
 		t.Fatalf("an unreachable portal must not log the user out: %+v", s)
 	}
-	d.want(200, "", "POST", "/api/logout", nil)
+	d.want(200, "", "POST", "/api/v1/logout", nil)
 	if d.savedConfig().Token != "" {
 		t.Fatal("token kept")
 	}
@@ -594,7 +595,7 @@ func TestDaemonTokenRevoked(t *testing.T) {
 		}
 	}
 	revokeAll()
-	d.want(401, "unauthorized", "GET", "/api/account", nil)
+	d.want(401, "unauthorized", "GET", "/api/v1/account", nil)
 	got := d.waitState(StateExpired)
 	if got.LoggedIn || got.Error == "" || got.User != s.User {
 		t.Fatalf("session: %+v", got)
@@ -602,11 +603,11 @@ func TestDaemonTokenRevoked(t *testing.T) {
 	if d.savedConfig().Token != "" {
 		t.Fatal("rejected token kept")
 	}
-	d.want(200, "", "POST", "/api/login", map[string]string{"portal": e.url, "account": s.User, "password": testPassword})
+	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": s.User, "password": testPassword})
 	if st := d.session(); !st.LoggedIn || st.Error != "" {
 		t.Fatalf("session after new login: %+v", st)
 	}
-	d.want(200, "", "GET", "/api/account", nil)
+	d.want(200, "", "GET", "/api/v1/account", nil)
 
 	// A reply about the old token, arriving late, must not end the new login.
 	d.expire("st_old", "late")
@@ -620,7 +621,7 @@ func TestDaemonTokenRevoked(t *testing.T) {
 	if got := d2.session(); got.State == StateRunning {
 		t.Fatalf("session: %+v", got)
 	}
-	d2.want(401, "unauthorized", "GET", "/api/account", nil)
+	d2.want(401, "unauthorized", "GET", "/api/v1/account", nil)
 	d2.waitState(StateExpired)
 }
 
@@ -633,9 +634,9 @@ func TestDaemonUserDisabled(t *testing.T) {
 	if err := e.portal.Store().SetDisabled(u.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	d.call("GET", "/api/account", nil)
+	d.call("GET", "/api/v1/account", nil)
 	d.waitState(StateExpired)
-	d.want(401, "bad_credentials", "POST", "/api/login", map[string]string{"portal": e.url, "account": s.User, "password": testPassword})
+	d.want(401, "bad_credentials", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": s.User, "password": testPassword})
 }
 
 // Someone else signs in on this machine: their account gets its own device key.
@@ -643,7 +644,7 @@ func TestDaemonSwitchAccounts(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
 	alice := d.register(e.url, "alice@example.com")
-	d.want(200, "", "POST", "/api/logout", nil)
+	d.want(200, "", "POST", "/api/v1/logout", nil)
 	bob := d.register(e.url, "bob@example.com")
 	if bob.Peer == "" || bob.Peer == alice.Peer {
 		t.Fatalf("peers: %s %s", alice.Peer, bob.Peer)
@@ -670,9 +671,9 @@ func TestDaemonSwitchAccounts(t *testing.T) {
 		t.Fatalf("alice's devices: %+v", ds)
 	}
 	// And back: alice can sign in here again.
-	d.want(200, "", "POST", "/api/logout", nil)
-	d.want(200, "", "POST", "/api/login", map[string]string{"portal": e.url, "account": "alice@example.com", "password": testPassword})
-	d.want(200, "", "GET", "/api/account", nil)
+	d.want(200, "", "POST", "/api/v1/logout", nil)
+	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "alice@example.com", "password": testPassword})
+	d.want(200, "", "GET", "/api/v1/account", nil)
 }
 
 // A failed binding leaves nobody logged in and no token behind.
@@ -689,7 +690,7 @@ func TestDaemonBindFailureRevokesToken(t *testing.T) {
 	}))
 	defer front.Close()
 	d := e.daemon()
-	d.want(500, "bind_failed", "POST", "/api/register", map[string]string{"portal": front.URL, "email": "a@example.com", "password": testPassword})
+	d.want(500, "bind_failed", "POST", "/api/v1/register", map[string]string{"portal": front.URL, "email": "a@example.com", "password": testPassword})
 	if s := d.session(); s.LoggedIn {
 		t.Fatalf("session: %+v", s)
 	}
@@ -709,7 +710,7 @@ func TestDaemonBindFailureRevokesToken(t *testing.T) {
 	}
 	// The account exists; logging in finishes the job.
 	bindFails.Store(false)
-	d.want(200, "", "POST", "/api/login", map[string]string{"portal": front.URL, "account": "a@example.com", "password": testPassword})
+	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": front.URL, "account": "a@example.com", "password": testPassword})
 }
 
 // Web pages get nothing from this API; the desktop shell and CLI tools do.
@@ -723,29 +724,29 @@ func TestDaemonRequestGuards(t *testing.T) {
 		}
 	}
 	login := map[string]string{"portal": e.url, "account": "x@example.com", "password": "wrong password"}
-	check(403, "POST", "/api/login", login, "Origin", "https://evil.example.com")
-	check(403, "POST", "/api/logout", nil, "Origin", "https://evil.example.com")
-	check(403, "POST", "/api/login", login, "Origin", "null")
-	check(403, "GET", "/api/session", nil, "Origin", "http://evil.localhost.example.com")
-	check(401, "POST", "/api/login", login, "Origin", d.base)
-	check(401, "POST", "/api/login", login) // CLI tools and the desktop shell send no Origin
+	check(403, "POST", "/api/v1/login", login, "Origin", "https://evil.example.com")
+	check(403, "POST", "/api/v1/logout", nil, "Origin", "https://evil.example.com")
+	check(403, "POST", "/api/v1/login", login, "Origin", "null")
+	check(403, "GET", "/api/v1/session", nil, "Origin", "http://evil.localhost.example.com")
+	check(401, "POST", "/api/v1/login", login, "Origin", d.base)
+	check(401, "POST", "/api/v1/login", login) // CLI tools and the desktop shell send no Origin
 	for _, o := range []string{"http://localhost:3000", "http://127.0.0.1:3000", "chrome-extension://abc", "wails://wails"} {
-		check(403, "POST", "/api/login", login, "Origin", o)
-		check(403, "POST", "/api/logout", nil, "Origin", o)
-		check(403, "GET", "/api/account", nil, "Origin", o)
+		check(403, "POST", "/api/v1/login", login, "Origin", o)
+		check(403, "POST", "/api/v1/logout", nil, "Origin", o)
+		check(403, "GET", "/api/v1/account", nil, "Origin", o)
 		// The OpenAI endpoint stays open to local tools, as on `sharetoken up`.
 		check(401, "POST", "/v1/chat/completions", map[string]string{}, "Origin", o)
 	}
 
 	// DNS rebinding: a same-origin request, by the browser's reckoning.
-	check(403, "GET", "/api/session", nil, "Host", "evil.example.com")
-	check(403, "GET", "/api/session", nil, "Host", "evil.example.com:9787")
+	check(403, "GET", "/api/v1/session", nil, "Host", "evil.example.com")
+	check(403, "GET", "/api/v1/session", nil, "Host", "evil.example.com:9787")
 	check(403, "GET", "/", nil, "Host", "127.0.0.1.evil.example.com")
-	check(200, "GET", "/api/session", nil, "Host", "localhost:9787")
-	check(200, "GET", "/api/session", nil, "Host", "[::1]:9787")
+	check(200, "GET", "/api/v1/session", nil, "Host", "localhost:9787")
+	check(200, "GET", "/api/v1/session", nil, "Host", "[::1]:9787")
 
 	// What a cross-site form could send.
-	req, _ := http.NewRequest("POST", d.base+"/api/login", strings.NewReader(`{"portal":"x"}`))
+	req, _ := http.NewRequest("POST", d.base+"/api/v1/login", strings.NewReader(`{"portal":"x"}`))
 	req.Header.Set("Content-Type", "text/plain")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -757,7 +758,7 @@ func TestDaemonRequestGuards(t *testing.T) {
 	}
 	// Oversized and malformed bodies.
 	big := strings.NewReader(`{"portal":"` + strings.Repeat("x", 1<<20) + `"}`)
-	resp, err = http.Post(d.base+"/api/login", "application/json", big)
+	resp, err = http.Post(d.base+"/api/v1/login", "application/json", big)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -767,8 +768,8 @@ func TestDaemonRequestGuards(t *testing.T) {
 	}
 	// The wrong method on a sign-in route does nothing (it falls through to the
 	// agent's routes, and there is no agent).
-	check(401, "GET", "/api/login", nil)
-	check(401, "PUT", "/api/session", map[string]string{})
+	check(401, "GET", "/api/v1/login", nil)
+	check(401, "PUT", "/api/v1/session", map[string]string{})
 }
 
 // The API listens on loopback only.
@@ -837,8 +838,8 @@ func TestDaemonLogsNoSecrets(t *testing.T) {
 	d.register(e.url, "alice@example.com")
 	token := d.savedConfig().Token
 	d.waitState(StateRetrying)
-	d.want(200, "", "POST", "/api/logout", nil)
-	d.want(401, "bad_credentials", "POST", "/api/login", map[string]string{"portal": e.url, "account": "alice@example.com", "password": "another-secret-pw"})
+	d.want(200, "", "POST", "/api/v1/logout", nil)
+	d.want(401, "bad_credentials", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "alice@example.com", "password": "another-secret-pw"})
 	d.Close()
 	logs := buf.String()
 	if !strings.Contains(logs, "signed in") {
@@ -877,7 +878,7 @@ func TestDaemonConcurrentSignIn(t *testing.T) {
 	var ok, conflict atomic.Int64
 	for range 6 {
 		wg.Go(func() {
-			status, data := d.call("POST", "/api/register", map[string]string{"portal": e.url, "email": "race@example.com", "password": testPassword})
+			status, data := d.call("POST", "/api/v1/register", map[string]string{"portal": e.url, "email": "race@example.com", "password": testPassword})
 			switch status {
 			case 201:
 				ok.Add(1)
@@ -895,12 +896,12 @@ func TestDaemonConcurrentSignIn(t *testing.T) {
 	for i := range 4 {
 		wg.Go(func() {
 			for range 5 {
-				d.call("GET", "/api/session", nil)
-				d.call("GET", "/api/account", nil)
-				d.call("GET", "/api/status", nil)
+				d.call("GET", "/api/v1/session", nil)
+				d.call("GET", "/api/v1/account", nil)
+				d.call("GET", "/api/v1/status", nil)
 				if i == 0 {
-					d.call("POST", "/api/logout", nil)
-					d.call("POST", "/api/login", map[string]string{"portal": e.url, "account": "race@example.com", "password": testPassword})
+					d.call("POST", "/api/v1/logout", nil)
+					d.call("POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "race@example.com", "password": testPassword})
 				}
 			}
 		})
@@ -927,10 +928,10 @@ func TestDaemonBuiltInPortal(t *testing.T) {
 		t.Fatalf("logged-out session: %+v", s)
 	}
 	var p PortalProbe
-	if err := json.Unmarshal(d.want(200, "", "POST", "/api/portal/probe", map[string]string{}), &p); err != nil || p.Portal != e.url {
+	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/portal/probe", map[string]string{}), &p); err != nil || p.Portal != e.url {
 		t.Fatalf("probe without an address: %+v %v", p, err)
 	}
-	d.want(201, "", "POST", "/api/register", map[string]string{"email": "builtin@example.com", "password": testPassword, "device": "test-box"})
+	d.want(201, "", "POST", "/api/v1/register", map[string]string{"email": "builtin@example.com", "password": testPassword, "device": "test-box"})
 	if c := d.savedConfig(); c.Portal != e.url {
 		t.Fatalf("saved portal = %q, want the built-in %q", c.Portal, e.url)
 	}
@@ -945,7 +946,7 @@ func TestDaemonRegisterWithMailedCode(t *testing.T) {
 	e := newDaemonEnv(t, cfg, false)
 	d := e.daemon()
 	var p PortalProbe
-	if err := json.Unmarshal(d.want(200, "", "POST", "/api/portal/probe", map[string]string{"portal": e.url}), &p); err != nil {
+	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/portal/probe", map[string]string{"portal": e.url}), &p); err != nil {
 		t.Fatal(err)
 	}
 	if !p.EmailVerification || p.SupportEmail != "support@sharetoken.test" {
@@ -954,18 +955,18 @@ func TestDaemonRegisterWithMailedCode(t *testing.T) {
 	const email = "code@example.com"
 	reg := func(status int, code, mailCode string) {
 		t.Helper()
-		d.want(status, code, "POST", "/api/register", map[string]string{"portal": e.url, "email": email, "password": testPassword, "code": mailCode})
+		d.want(status, code, "POST", "/api/v1/register", map[string]string{"portal": e.url, "email": email, "password": testPassword, "code": mailCode})
 	}
 	reg(400, "bad_code", "")
-	d.want(400, "bad_request", "POST", "/api/register/code", map[string]string{"portal": e.url, "email": ""})
+	d.want(400, "bad_request", "POST", "/api/v1/register/code", map[string]string{"portal": e.url, "email": ""})
 	var sent CodeSent
-	if err := json.Unmarshal(d.want(200, "", "POST", "/api/register/code", map[string]string{"portal": e.url, "email": email}), &sent); err != nil {
+	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/register/code", map[string]string{"portal": e.url, "email": email}), &sent); err != nil {
 		t.Fatal(err)
 	}
 	if sent.CooldownSeconds <= 0 {
 		t.Fatalf("%+v", sent)
 	}
-	d.want(429, "code_cooldown", "POST", "/api/register/code", map[string]string{"portal": e.url, "email": email})
+	d.want(429, "code_cooldown", "POST", "/api/v1/register/code", map[string]string{"portal": e.url, "email": email})
 	var subject string
 	if err := e.portal.Store().DB.QueryRow(`SELECT subject FROM mail_outbox WHERE to_addr = ?`, email).Scan(&subject); err != nil {
 		t.Fatal(err)
@@ -991,22 +992,22 @@ func TestDaemonFeedback(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
 	body := map[string]string{"category": "bug", "message": "it broke", "lang": "de", "source": "portal", "app_version": "forged"}
-	d.want(401, "not_logged_in", "POST", "/api/feedback", body)
+	d.want(401, "not_logged_in", "POST", "/api/v1/feedback", body)
 	d.register(e.url, "fb@example.com")
-	d.want(201, "", "POST", "/api/feedback", body)
-	d.want(400, "bad_request", "POST", "/api/feedback", map[string]string{"category": "bug", "message": "  "})
+	d.want(201, "", "POST", "/api/v1/feedback", body)
+	d.want(400, "bad_request", "POST", "/api/v1/feedback", map[string]string{"category": "bug", "message": "  "})
 
 	var list struct {
 		Feedback []accounts.Feedback `json:"feedback"`
 	}
-	if err := json.Unmarshal(d.want(200, "", "GET", "/api/feedback/mine", nil), &list); err != nil {
+	if err := json.Unmarshal(d.want(200, "", "GET", "/api/v1/feedback/mine", nil), &list); err != nil {
 		t.Fatal(err)
 	}
 	if len(list.Feedback) != 1 {
 		t.Fatalf("feedback: %+v", list.Feedback)
 	}
 	f := list.Feedback[0]
-	if f.Message != "it broke" || f.Lang != "de" || f.Source != "client" || f.AppVersion != Version || f.OS != runtime.GOOS+"/"+runtime.GOARCH {
+	if f.Message != "it broke" || f.Lang != "de" || f.Source != "client" || f.AppVersion != version.Version || f.OS != runtime.GOOS+"/"+runtime.GOARCH {
 		t.Fatalf("feedback: %+v", f)
 	}
 }

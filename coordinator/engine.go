@@ -45,6 +45,7 @@ import (
 	"sharetoken/evidence"
 	"sharetoken/internal/canon"
 	"sharetoken/internal/mysqldb"
+	"sharetoken/internal/version"
 	"sharetoken/ledger"
 	"sharetoken/protocol"
 	"sharetoken/receipt"
@@ -214,11 +215,13 @@ type offerEntry struct {
 
 // Engine is the coordinator's state machine. It is safe for concurrent use.
 type Engine struct {
-	self  string
-	priv  ed25519.PrivateKey
-	cfg   Config
-	db    *sql.DB
-	log   *slog.Logger
+	self string
+	priv ed25519.PrivateKey
+	cfg  Config
+	db   *sql.DB
+	log  *slog.Logger
+
+	policy *accounts.PolicyCache
 
 	mu     sync.Mutex // serializes transactions; guards offers
 	offers map[string]*offerEntry
@@ -239,7 +242,7 @@ func NewEngine(self string, priv ed25519.PrivateKey, cfg Config) (*Engine, error
 		return nil, errors.New("coordinator: no database")
 	}
 	e := &Engine{
-		self: self, priv: priv, cfg: cfg, db: db, log: cfg.Log,
+		self: self, priv: priv, cfg: cfg, db: db, log: cfg.Log, policy: &accounts.PolicyCache{DB: db, TTL: 30 * time.Second},
 		offers: make(map[string]*offerEntry), teeCache: make(map[[32]byte]string), started: cfg.Now(),
 	}
 	if err := Migrate(db); err != nil {
@@ -282,14 +285,25 @@ func NewEngine(self string, priv ed25519.PrivateKey, cfg Config) (*Engine, error
 func (e *Engine) RecordFeeRate() error {
 	return e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
 		v := strconv.FormatInt(e.cfg.FeeBps, 10)
-		return upsert(tx, "UPDATE meta SET value = ? WHERE `key` = 'fee_bps'", []any{v},
-			"INSERT INTO meta (`key`, value) VALUES ('fee_bps', ?)", []any{v})
+		if err := upsert(tx, "UPDATE meta SET value = ? WHERE `key` = 'fee_bps'", []any{v},
+			"INSERT INTO meta (`key`, value) VALUES ('fee_bps', ?)", []any{v}); err != nil {
+			return err
+		}
+		return upsert(tx, "UPDATE meta SET value = ? WHERE `key` = 'coordinator_version'", []any{version.Version},
+			"INSERT INTO meta (`key`, value) VALUES ('coordinator_version', ?)", []any{version.Version})
 	})
 }
 
-// Close releases the database if the engine opened it.
-func (e *Engine) Close() {
+// CheckClient refuses a client version the network's policy does not serve.
+func (e *Engine) CheckClient(v string) error {
+	if why := e.policy.Get(e.cfg.Now()).Refuses(v); why != "" {
+		return protocol.Errorf(protocol.CodeUpgradeRequired, "%s", why)
+	}
+	return nil
 }
+
+// Close stops the engine. The database belongs to the caller.
+func (e *Engine) Close() {}
 
 // Now is the engine's clock.
 func (e *Engine) Now() time.Time { return e.cfg.Now() }
@@ -367,6 +381,9 @@ func (e *Engine) UpsertOffer(o *protocol.Offer) error {
 			return nil
 		}
 		e.offers[o.Node] = &offerEntry{offer: *o, acct: acct, tee: tee}
+		if err := accounts.SetDeviceVersionTx(tx, o.Node, o.ClientVersion); err != nil {
+			return err
+		}
 		return accounts.TouchDevice(tx, o.Node, now, 5*time.Minute)
 	})
 }
@@ -518,6 +535,8 @@ type candidate struct {
 	acct  string
 	price protocol.ModelPrice
 	stats *NodeStats
+
+	inferVersion uint32
 }
 
 // IssueTicket matches buyer to a node for req.Model, reserves req.BudgetMicros
@@ -525,6 +544,9 @@ type candidate struct {
 func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protocol.TicketResponse, error) {
 	if req.Model == "" {
 		return nil, protocol.Errorf(protocol.CodeBadRequest, "model is required")
+	}
+	if len(req.InferVersions) == 0 {
+		return nil, protocol.Errorf(protocol.CodeBadRequest, "infer_versions is required")
 	}
 	if req.BudgetMicros < e.cfg.MinBudgetMicros || req.BudgetMicros > math.MaxInt64 {
 		return nil, protocol.Errorf(protocol.CodeBadRequest, "budget must be between %d and %d micros", e.cfg.MinBudgetMicros, int64(math.MaxInt64))
@@ -575,6 +597,10 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			if e.cfg.NodeOnline != nil && !e.cfg.NodeOnline(node) {
 				continue
 			}
+			inferVersion := protocol.BestInferVersion(o.InferVersions, req.InferVersions)
+			if inferVersion == 0 { // buyer and node have no protocol in common
+				continue
+			}
 			p, ok := o.Price(req.Model)
 			if !ok || (req.MaxPriceIn > 0 && p.PriceInMicros > req.MaxPriceIn) || (req.MaxPriceOut > 0 && p.PriceOutMicros > req.MaxPriceOut) {
 				continue
@@ -590,7 +616,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 				full++
 				continue
 			}
-			cands = append(cands, candidate{offer: o, acct: oe.acct, price: p, stats: st})
+			cands = append(cands, candidate{offer: o, acct: oe.acct, price: p, stats: st, inferVersion: inferVersion})
 		}
 		if len(cands) == 0 && full > 0 {
 			return protocol.Errorf(protocol.CodeCapacity, "all %d nodes offering %q are at capacity", full, req.Model)
@@ -624,6 +650,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			return err
 		}
 		t := protocol.Ticket{
+			InferVersion:   best.inferVersion,
 			JobID:          jobID,
 			Model:          req.Model,
 			Node:           best.offer.Node,

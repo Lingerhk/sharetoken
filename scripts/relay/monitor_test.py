@@ -283,5 +283,22 @@ class TestChecks(Base):
         self.assertNotIn("bad", m)
 
 
+class VersionTest(unittest.TestCase):
+    def test_running_and_deployed(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        os.makedirs(os.path.join(d, "releases", "1.2.3"))
+        open(os.path.join(d, "releases", "1.2.3", "relay"), "w").close()
+        os.symlink(os.path.join("releases", "1.2.3", "relay"), os.path.join(d, "relay"))
+        cfg = dict(monitor.DEFAULTS, base=d)
+        self.assertEqual(monitor.deployed_version(cfg), "1.2.3")
+        metrics = monitor.parse_metrics(HEALTHY + 'sharetoken_relay_build_info{version="1.2.2"} 1\n')
+        self.assertEqual(monitor.version_of(metrics), "1.2.2")
+        by_id = {r.id: r for r in monitor.check_relay(metrics, cfg, {}, 60)[0]}
+        self.assertFalse(by_id["version"].ok)
+        metrics = monitor.parse_metrics(HEALTHY + 'sharetoken_relay_build_info{version="1.2.3"} 1\n')
+        self.assertTrue({r.id: r for r in monitor.check_relay(metrics, cfg, {}, 60)[0]}["version"].ok)
+
+
 if __name__ == "__main__":
     unittest.main()

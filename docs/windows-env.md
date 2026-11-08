@@ -43,8 +43,8 @@ Host st-win
 在 Mac 上交叉编译（Windows 版窗口壳不需要 cgo），再传到虚拟机：
 
 ```bash
-scripts/build-gui.sh dev windows arm64     # 产物 dist/sharetoken-dev-windows-arm64/
-scp dist/sharetoken-dev-windows-arm64/*.exe st-win:C:/Users/adadmin/st/app/
+scripts/build-gui.sh dev windows arm64     # 产物 dist/sharetoken-dev-<版本>-windows-arm64/
+scp dist/sharetoken-dev-*-windows-arm64/*.exe st-win:C:/Users/adadmin/st/app/
 ```
 
 调试用 dev 构建，它不发送统计。调试 prod 构建时一定带 `TELEMETRY_OFF=1`，否则会向真实统计项目发送事件。

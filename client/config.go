@@ -26,7 +26,11 @@ import (
 )
 
 // Config is the client's settings file (config.json in the home directory).
+// ConfigVersion is the format of config.json this build reads and writes.
+const ConfigVersion = 1
+
 type Config struct {
+	Version    int    `json:"version"`               // format of this file (ConfigVersion)
 	Env        string `json:"env"`                   // build type that wrote this file (see LoadConfig)
 	Portal     string `json:"portal"`                // portal base URL
 	PortalPin  string `json:"portal_pin,omitempty"`  // fingerprint of the portal's self-signed certificate
@@ -186,12 +190,13 @@ func LoadConfig(home string) (Config, error) {
 	if err := json.Unmarshal(data, &file); err != nil {
 		return c, fmt.Errorf("%s: %w", filepath.Join(home, ConfigFile), err)
 	}
-	switch file.Env {
-	case Env:
-	case "":
-		slog.Warn("deleting the old configuration in this directory; sign in again", "home", home)
+	switch {
+	case file.Version > ConfigVersion:
+		return c, fmt.Errorf("%s was written by a newer client (format %d, this one reads %d): install the current client", filepath.Join(home, ConfigFile), file.Version, ConfigVersion)
+	case file.Version < ConfigVersion:
+		slog.Warn("deleting a configuration of an unsupported format; sign in again", "home", home, "format", file.Version)
 		return DefaultConfig(), removeOldState(home)
-	default:
+	case file.Env != Env:
 		return c, fmt.Errorf("%s belongs to a %s client, and this is a %s client: use another directory", filepath.Join(home, ConfigFile), file.Env, Env)
 	}
 	if err := json.Unmarshal(data, &c); err != nil {
@@ -201,7 +206,7 @@ func LoadConfig(home string) (Config, error) {
 	return c, nil
 }
 
-// removeOldState deletes what a client of before the build types left behind.
+// removeOldState deletes the state of a format this client does not read.
 // The usage-statistics file stays: it may hold the user's opt-out.
 func removeOldState(home string) error {
 	var errs []error
@@ -218,7 +223,7 @@ func SaveConfig(home string, c Config) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
-	c.Env = Env
+	c.Version, c.Env = ConfigVersion, Env
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err

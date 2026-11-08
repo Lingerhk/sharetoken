@@ -191,6 +191,8 @@ func statusFor(err error) int {
 		return http.StatusForbidden // e.g. the user account was disabled
 	case protocol.CodeNoOffers, protocol.CodeCapacity:
 		return http.StatusServiceUnavailable
+	case protocol.CodeUpgradeRequired:
+		return http.StatusUpgradeRequired
 	default:
 		return http.StatusBadGateway
 	}

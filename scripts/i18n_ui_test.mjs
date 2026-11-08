@@ -189,8 +189,8 @@ ok((await ev('document.body.innerText')).includes('管理控制台') || (await e
 // ---- the desktop client, signed in ----
 await size(1040, 760);
 await go(`${daemon}/?lang=en`);
-const probe = await ev(`fetch('/api/portal/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => r.json())`);
-const reg = await ev(`fetch('/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ pin: probe.fingerprint, email: `i18n${Date.now()}@example.com`, password: 'translated-pass' }))} }).then(r => r.status)`);
+const probe = await ev(`fetch('/api/v1/portal/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => r.json())`);
+const reg = await ev(`fetch('/api/v1/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ pin: probe.fingerprint, email: `i18n${Date.now()}@example.com`, password: 'translated-pass' }))} }).then(r => r.status)`);
 ok(reg === 201, `client registers (HTTP ${reg})`);
 for (const lang of LANGS) {
   await go(`${daemon}/?lang=${lang}`);
@@ -200,7 +200,7 @@ for (const lang of LANGS) {
   await inspect(lang, 'client');
   await shot(`client-${lang}`);
 }
-await ev(`fetch('/api/logout', { method: 'POST' })`);
+await ev(`fetch('/api/v1/logout', { method: 'POST' })`);
 
 for (const p of problems) ok(false, p);
 console.log(`\n${passed} checks passed, ${failures.length} failed`);

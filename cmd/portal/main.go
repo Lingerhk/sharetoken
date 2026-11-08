@@ -43,9 +43,11 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"sharetoken/accounts"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/config"
 	"sharetoken/internal/mysqldb"
+	"sharetoken/internal/version"
 	"sharetoken/p2p"
 	"sharetoken/portal"
 	"sharetoken/relaypass"
@@ -164,7 +166,7 @@ func main() {
 	flag.StringVar(&f.Keys.PassKeyFile, "pass-key", f.Keys.PassKeyFile, "key that signs relay passes (created with mode 0600 if missing; relays trust its public key: `portal pass-key`)")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, `usage: portal [-config portal.yaml] [-db file] <command>
-commands: serve, check-config, useradd, passwd, grant, users, user, disable, enable, mfa-reset, relay, overview, pass-key`)
+commands: version, version-policy, serve, check-config, useradd, passwd, grant, users, user, disable, enable, mfa-reset, relay, overview, pass-key`)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -173,6 +175,10 @@ commands: serve, check-config, useradd, passwd, grant, users, user, disable, ena
 		os.Exit(2)
 	}
 	cmd, args := flag.Arg(0), flag.Args()[1:]
+	if cmd == "version" {
+		fmt.Println(version.String("portal"))
+		return
+	}
 	if cmd == "serve" {
 		serveFlags(&f, args)
 	}
@@ -188,6 +194,7 @@ commands: serve, check-config, useradd, passwd, grant, users, user, disable, ena
 		log.Fatal(err)
 	}
 	defer closeLog()
+	log.Print(version.String("portal"))
 	pw, err := config.Secret(f.Database.PasswordEnv, f.Database.PasswordFile, func(m string) { log.Print("WARNING: " + m) })
 	if err != nil {
 		log.Fatalf("database password: %v", err)
@@ -364,6 +371,24 @@ func admin(p *portal.Server, cmd string, args []string) error {
 		return u.ID, nil
 	}
 	switch cmd {
+	case "version-policy":
+		cur, err := accounts.LoadVersionPolicy(st.DB)
+		if err != nil {
+			return err
+		}
+		if len(args) > 0 && args[0] == "set" {
+			fs := flag.NewFlagSet("version-policy set", flag.ExitOnError)
+			fs.StringVar(&cur.MinClient, "min", cur.MinClient, "older clients are refused new business")
+			fs.StringVar(&cur.RecommendedClient, "recommended", cur.RecommendedClient, "older clients are told to upgrade")
+			fs.StringVar(&cur.LatestClient, "latest", cur.LatestClient, "the newest release")
+			fs.StringVar(&cur.DownloadURL, "download-url", cur.DownloadURL, "where to get it")
+			fs.BoolVar(&cur.AllowDev, "allow-dev", cur.AllowDev, "serve builds that are not releases")
+			_ = fs.Parse(args[1:])
+			if err := accounts.SaveVersionPolicy(st.DB, cur); err != nil {
+				return err
+			}
+		}
+		return json.NewEncoder(os.Stdout).Encode(cur)
 	case "useradd":
 		fs := flag.NewFlagSet("useradd", flag.ExitOnError)
 		isAdmin := fs.Bool("admin", false, "grant admin rights")

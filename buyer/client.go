@@ -282,15 +282,16 @@ func (c *Client) requestTicketOnce(ctx context.Context, req ChatRequest, exclude
 	var tr protocol.TicketResponse
 	err := c.call(ctx, protocol.TypeTicketRequest,
 		protocol.TicketRequest{
-			Model:        req.Model,
-			BudgetMicros: req.BudgetMicros,
-			MaxTokens:    req.MaxTokens,
-			PromptTokens: promptEst(req),
-			MaxPriceIn:   req.MaxPriceIn,
-			MaxPriceOut:  req.MaxPriceOut,
-			Exclude:      exclude,
-			Node:         req.Node,
-			RequireTEE:   req.RequireTEE,
+			InferVersions: protocol.SupportedInferVersions,
+			Model:         req.Model,
+			BudgetMicros:  req.BudgetMicros,
+			MaxTokens:     req.MaxTokens,
+			PromptTokens:  promptEst(req),
+			MaxPriceIn:    req.MaxPriceIn,
+			MaxPriceOut:   req.MaxPriceOut,
+			Exclude:       exclude,
+			Node:          req.Node,
+			RequireTEE:    req.RequireTEE,
 		}, protocol.TypeTicket, &tr)
 	return &tr, err
 }
@@ -300,6 +301,9 @@ func (c *Client) requestTicketOnce(ctx context.Context, req ChatRequest, exclude
 // client has an attestation policy. It returns the attested image label.
 func (c *Client) verifyTicket(tr *protocol.TicketResponse, req ChatRequest) (string, error) {
 	t, o := &tr.Ticket, &tr.Offer
+	if !slices.Contains(protocol.SupportedInferVersions, t.InferVersion) {
+		return "", errors.New("buyer: the ticket names a protocol version this client does not speak")
+	}
 	if err := t.Verify(c.coordinator.ID.String()); err != nil {
 		return "", err
 	}
@@ -394,7 +398,7 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, body []byte, on
 	if tr.request, err = box.SealFrom(tr.jobKey, t.NodeBoxPub, body, protocol.RequestAAD(t)); err != nil {
 		return nil, false, err
 	}
-	if err := protocol.Send(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: tr.jobKey.Public(), Sealed: tr.request}); err != nil {
+	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: tr.jobKey.Public(), Sealed: tr.request}); err != nil {
 		return nil, false, err
 	}
 
@@ -561,7 +565,7 @@ func (c *Client) SubmitEvidence(ctx context.Context, ev *protocol.Evidence, chun
 	if dl, ok := ctx.Deadline(); ok {
 		_ = st.SetDeadline(dl)
 	}
-	if err := protocol.Send(st, protocol.TypeEvidence, ev); err != nil {
+	if err := protocol.SendRequest(st, protocol.TypeEvidence, ev); err != nil {
 		_ = st.Reset()
 		return nil, err
 	}

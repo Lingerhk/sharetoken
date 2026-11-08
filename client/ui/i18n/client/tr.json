@@ -116,5 +116,8 @@
   "反馈已提交，谢谢！": "Geri bildiriminiz gönderildi. Teşekkürler!",
   "请填写反馈内容": "Lütfen geri bildiriminizi yazın",
   "提交太频繁，请稍后再试": "Çok sık gönderim yapıldı. Lütfen daha sonra tekrar deneyin",
-  "提交时会附带应用版本和操作系统类型。": "Geri bildiriminizle birlikte uygulama sürümü ve işletim sistemi türü gönderilir."
+  "提交时会附带应用版本和操作系统类型。": "Geri bildiriminizle birlikte uygulama sürümü ve işletim sistemi türü gönderilir.",
+  "这个版本已不再受支持，请升级到最新版本后继续使用": "Bu sürüm artık desteklenmiyor. Devam etmek için en son sürüme yükseltin",
+  "有新版本 {version} 可用": "{version} sürümü kullanılabilir",
+  "版本 {version}": "Sürüm {version}"
 }

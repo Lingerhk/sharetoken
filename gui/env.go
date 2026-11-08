@@ -11,6 +11,10 @@ import (
 // dev. The prefix lets the build script find the value in a finished binary.
 var buildType = buildTypePrefix + "dev"
 
+// version is this app's release, set like buildType with "-X main.version=1.2.3".
+// It must equal the daemon's: both come from one build (scripts/build-gui.sh).
+var version = "dev"
+
 const buildTypePrefix = "sharetoken-build-type="
 
 // Env is what this shell was built for: envDev or envProd.

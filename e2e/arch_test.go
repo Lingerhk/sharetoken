@@ -20,6 +20,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/control"
 	lnet "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	libp2pproto "github.com/libp2p/go-libp2p/core/protocol"
 	circuit "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	ma "github.com/multiformats/go-multiaddr"
 
@@ -222,9 +223,9 @@ func chat(t *testing.T, a *client.Agent) (string, http.Header) {
 func (n *network) me(a *client.Agent) *portal.Me {
 	n.t.Helper()
 	var st client.Status
-	getJSON(n.t, "http://"+a.Addr()+"/api/status", &st)
+	getJSON(n.t, "http://"+a.Addr()+"/api/v1/status", &st)
 	var me portal.Me
-	getJSON(n.t, "http://"+a.Addr()+"/api/account", &me)
+	getJSON(n.t, "http://"+a.Addr()+"/api/v1/account", &me)
 	return &me
 }
 
@@ -382,7 +383,7 @@ func TestUnboundAndDisabledUsersAreRefused(t *testing.T) {
 	h.Peerstore().AddAddrs(n.coordH, p2p.CircuitAddrs(ri), time.Minute)
 	var tr protocol.TicketResponse
 	err = p2p.Call(n.ctx, h, n.coordH, protocol.CtrlProtocol, protocol.TypeTicketRequest,
-		protocol.TicketRequest{Model: model, BudgetMicros: 10}, protocol.TypeTicket, &tr)
+		protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: model, BudgetMicros: 10}, protocol.TypeTicket, &tr)
 	if protocol.CodeOf(err) != protocol.CodeUnauthorized {
 		t.Fatalf("unbound peer: want unauthorized, got %v", err)
 	}
@@ -709,5 +710,31 @@ func TestFailedCoordinatorCallTriggersFailover(t *testing.T) {
 	}
 	if st := bob.Status(); st.Coordinator.Via == via || !st.Coordinator.Connected {
 		t.Fatalf("bob still on the dead relay: %+v", st.Coordinator)
+	}
+}
+
+// A request that does not say its version is refused, and the coordinator's
+// replies keep their protocol code.
+func TestRequestsMustCarryAVersion(t *testing.T) {
+	m := newMarket(t)
+	h, _ := newHost(t)
+	if err := h.Connect(m.ctx, m.info); err != nil {
+		t.Fatal(err)
+	}
+	st, err := h.NewStream(lnet.WithAllowLimitedConn(m.ctx, "test"), m.info.ID, libp2pproto.ID(protocol.CtrlProtocol))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := protocol.Send(st, protocol.TypeBalance, nil); err != nil {
+		t.Fatal(err)
+	}
+	env, err := protocol.Recv(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b protocol.BalanceResponse
+	if err := env.Decode(protocol.TypeBalance, &b); protocol.CodeOf(err) != protocol.CodeBadRequest {
+		t.Fatalf("got %v", err)
 	}
 }

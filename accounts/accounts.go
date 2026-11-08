@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS devices (
 	name         VARCHAR(255) NOT NULL,
 	created_at   BIGINT NOT NULL,
 	last_seen_at BIGINT NOT NULL DEFAULT 0,
+	client_version VARCHAR(64) NOT NULL DEFAULT '',
 	KEY devices_by_user (user_id),
 	FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -78,7 +79,8 @@ CREATE TABLE IF NOT EXISTS relays (
 	coordinator_ok BIGINT NOT NULL DEFAULT 0,
 	checked_at     BIGINT NOT NULL DEFAULT 0,
 	detail         TEXT NOT NULL DEFAULT (''),
-	rtt_ms         BIGINT NOT NULL DEFAULT 0
+	rtt_ms         BIGINT NOT NULL DEFAULT 0,
+	version        VARCHAR(64) NOT NULL DEFAULT ''
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE TABLE IF NOT EXISTS feedback (
 	id          BIGINT PRIMARY KEY AUTO_INCREMENT,

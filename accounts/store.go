@@ -40,10 +40,11 @@ type Token struct {
 
 // Device is a peer ID bound to a user.
 type Device struct {
-	Peer       string `json:"peer"`
-	Name       string `json:"name"`
-	CreatedAt  int64  `json:"created_at"`
-	LastSeenAt int64  `json:"last_seen_at,omitempty"`
+	Peer          string `json:"peer"`
+	Name          string `json:"name"`
+	CreatedAt     int64  `json:"created_at"`
+	LastSeenAt    int64  `json:"last_seen_at,omitempty"`
+	ClientVersion string `json:"client_version,omitempty"`
 }
 
 // Relay is a registered relay.
@@ -56,7 +57,8 @@ type Relay struct {
 	CoordinatorOK bool   `json:"coordinator_ok"` // the coordinator holds a reservation on it
 	CheckedAt     int64  `json:"checked_at,omitempty"`
 	Detail        string `json:"detail,omitempty"`
-	RTTMillis     int64  `json:"rtt_ms,omitempty"` // coordinator → relay round trip, 0 when unknown
+	RTTMillis     int64  `json:"rtt_ms,omitempty"`  // coordinator → relay round trip, 0 when unknown
+	Version       string `json:"version,omitempty"` // the release the relay says it runs
 }
 
 // Store reads and writes the user-management tables.
@@ -378,15 +380,15 @@ func (s *Store) BindDevice(u *User, peer, name string, unixNano int64, sig []byt
 			}
 		}
 		d = &Device{}
-		return tx.QueryRow(`SELECT peer, name, created_at, last_seen_at FROM devices WHERE peer = ?`, peer).
-			Scan(&d.Peer, &d.Name, &d.CreatedAt, &d.LastSeenAt)
+		return tx.QueryRow(`SELECT peer, name, created_at, last_seen_at, client_version FROM devices WHERE peer = ?`, peer).
+			Scan(&d.Peer, &d.Name, &d.CreatedAt, &d.LastSeenAt, &d.ClientVersion)
 	})
 	return d, err
 }
 
 // Devices lists a user's devices.
 func (s *Store) Devices(userID int64) ([]Device, error) {
-	rows, err := s.DB.Query(`SELECT peer, name, created_at, last_seen_at FROM devices WHERE user_id = ? ORDER BY created_at`, userID)
+	rows, err := s.DB.Query(`SELECT peer, name, created_at, last_seen_at, client_version FROM devices WHERE user_id = ? ORDER BY created_at`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -394,7 +396,7 @@ func (s *Store) Devices(userID int64) ([]Device, error) {
 	out := []Device{}
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.Peer, &d.Name, &d.CreatedAt, &d.LastSeenAt); err != nil {
+		if err := rows.Scan(&d.Peer, &d.Name, &d.CreatedAt, &d.LastSeenAt, &d.ClientVersion); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -453,12 +455,12 @@ func (s *Store) AddRelay(addr, name, region string) (*Relay, error) {
 	return r, err
 }
 
-const relayColumns = `id, addr, name, region, enabled, coordinator_ok, checked_at, detail, rtt_ms`
+const relayColumns = `id, addr, name, region, enabled, coordinator_ok, checked_at, detail, rtt_ms, version`
 
 func scanRelay(row interface{ Scan(...any) error }) (*Relay, error) {
 	var r Relay
 	var enabled, ok int
-	if err := row.Scan(&r.ID, &r.Addr, &r.Name, &r.Region, &enabled, &ok, &r.CheckedAt, &r.Detail, &r.RTTMillis); err != nil {
+	if err := row.Scan(&r.ID, &r.Addr, &r.Name, &r.Region, &enabled, &ok, &r.CheckedAt, &r.Detail, &r.RTTMillis, &r.Version); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -510,12 +512,12 @@ func (s *Store) RemoveRelay(id int64) error {
 // SetRelayStatus records whether the coordinator holds a reservation on the
 // relay at addr and its latest round trip to it in milliseconds (0: not
 // measured). The coordinator calls this.
-func SetRelayStatus(tx *sql.Tx, addr string, ok bool, detail string, rttMillis int64, at time.Time) error {
+func SetRelayStatus(tx *sql.Tx, addr string, ok bool, detail string, rttMillis int64, ver string, at time.Time) error {
 	if len(detail) > 256 {
 		detail = detail[:256]
 	}
-	_, err := tx.Exec(`UPDATE relays SET coordinator_ok = ?, detail = ?, checked_at = ?, rtt_ms = ? WHERE addr = ?`,
-		boolInt(ok), detail, at.UnixNano(), max(rttMillis, 0), addr)
+	_, err := tx.Exec(`UPDATE relays SET coordinator_ok = ?, detail = ?, checked_at = ?, rtt_ms = ?, version = CASE WHEN ? = '' THEN version ELSE ? END WHERE addr = ?`,
+		boolInt(ok), detail, at.UnixNano(), max(rttMillis, 0), ver, ver, addr)
 	return err
 }
 

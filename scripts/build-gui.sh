@@ -3,11 +3,14 @@
 #   scripts/build-gui.sh <dev|prod>                        for this machine
 #   scripts/build-gui.sh <dev|prod> windows [amd64|arm64]  from any system, no cgo
 #
-#   macOS:   dist/sharetoken-<env>.app (not signed or notarized), and a zip of it
-#   Linux:   dist/sharetoken-<env>-linux-<arch>/ with a launcher entry, and a tar.gz of it
-#   Windows: dist/sharetoken-<env>-windows-<arch>/ (not code-signed), and a zip of it
+#   macOS:   dist/sharetoken-<env>.app (not signed or notarized), and sharetoken-<env>-<version>-macos-<arch>.zip
+#   Linux:   dist/sharetoken-<env>-<version>-linux-<arch>/ with a launcher entry, and a tar.gz of it
+#   Windows: dist/sharetoken-<env>-<version>-windows-<arch>/ (not code-signed), and a zip of it
+#   dist/SHA256SUMS-<version> lists the archives.
 #
-# Programs: sharetoken-<env> (CLI and daemon), sharetoken-gui-<env> (window).
+# Programs: sharetoken-<env> (CLI and daemon), sharetoken-gui-<env> (window). Their
+# names carry no version: the window finds the daemon by name, and a user's PATH
+# keeps working across upgrades. The version is inside them and in the archive's name.
 #
 # The build type decides the portal, the state directory and the local port
 # (client/env.go, gui/env.go), so a dev and a prod app can live on one machine:
@@ -30,16 +33,17 @@ esac
 if [ "$ENV" = prod ]; then NAME=sharetoken; BUNDLE_ID=app.sharetoken.desktop
 else NAME="sharetoken DEV"; BUNDLE_ID=app.sharetoken.desktop.dev; fi
 OUT=dist
-VERSION=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}
+VERSION=$(scripts/version.sh)
+NUMERIC=${VERSION%%-*}  # macOS and Windows metadata take only numbers
 STAMP=sharetoken-build-type=$ENV
-LDFLAGS="-s -w -X sharetoken/client.Version=$VERSION -X sharetoken/client.buildType=$STAMP"
+LDFLAGS="-s -w $(scripts/ldflags.sh) -X sharetoken/client.buildType=$STAMP"
 [ -n "${TELEMETRY_OFF:-}" ] && LDFLAGS="$LDFLAGS -X sharetoken/client.TelemetryKey="
 [ -n "${TELEMETRY_KEY:-}" ] && LDFLAGS="$LDFLAGS -X sharetoken/client.TelemetryKey=$TELEMETRY_KEY"
 [ -n "${TELEMETRY_HOST:-}" ] && LDFLAGS="$LDFLAGS -X sharetoken/client.TelemetryHost=$TELEMETRY_HOST"
-SHELL_LDFLAGS="-s -w -X main.buildType=$STAMP"
+SHELL_LDFLAGS="-s -w -X main.buildType=$STAMP -X main.version=$VERSION"
 
 fill() { # template: the packaging files name the build type with @ENV@ and so on
-  sed -e "s/@ENV@/$ENV/g" -e "s/@NAME@/$NAME/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" -e "s/@VERSION@/$VERSION/g" "$1"
+  sed -e "s/@ENV@/$ENV/g" -e "s/@NAME@/$NAME/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" -e "s/@VERSION@/$NUMERIC/g" "$1"
 }
 build_shell() { # output path, extra tags
   (cd gui && CGO_ENABLED=1 go build -trimpath -tags "desktop,production$2" -ldflags "$SHELL_LDFLAGS" -o "../$1" .)
@@ -51,7 +55,12 @@ verify() { # programs
   local f
   for f in "$@"; do
     LC_ALL=C grep -aq "$STAMP" "$f" || { echo "$f is not a $ENV build" >&2; exit 1; }
+    LC_ALL=C grep -aq "$VERSION" "$f" || { echo "$f does not carry version $VERSION" >&2; exit 1; }
   done
+}
+
+sums() { # archive: added to the release's checksum file
+  (cd "$OUT" && shasum -a 256 "$1" >> "SHA256SUMS-$VERSION.tmp" && sort -u -k2 "SHA256SUMS-$VERSION.tmp" > "SHA256SUMS-$VERSION" && rm "SHA256SUMS-$VERSION.tmp")
 }
 
 case "${1:-$(uname -s)}" in
@@ -60,7 +69,7 @@ windows)
   # icon and the manifest (DPI awareness, common controls v6 for its dialogs);
   # go build links it by its name, and it must not outlive this build.
   ARCH=${2:-amd64}
-  BASE=sharetoken-$ENV-windows-$ARCH
+  BASE=sharetoken-$ENV-$VERSION-windows-$ARCH
   DIR=$OUT/$BASE
   rm -rf "$DIR"
   mkdir -p "$DIR"
@@ -70,6 +79,7 @@ windows)
   (cd gui && CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -tags desktop,production -ldflags "$SHELL_LDFLAGS -H windowsgui" -o "../$DIR/sharetoken-gui-$ENV.exe" .)
   verify "$DIR/sharetoken-$ENV.exe" "$DIR/sharetoken-gui-$ENV.exe"
   (cd "$OUT" && rm -f "$BASE.zip" && zip -qr "$BASE.zip" "$BASE")
+  sums "$BASE.zip"
   echo "built $DIR"
   ;;
 Darwin)
@@ -91,14 +101,16 @@ Darwin)
   # copies still need a Developer ID signature and notarization to open without
   # a Gatekeeper warning.
   codesign --force --deep --sign - "$APP" 2>/dev/null
-  (cd "$OUT" && rm -f "sharetoken-$ENV-macos-$(uname -m).zip" && ditto -c -k --keepParent "sharetoken-$ENV.app" "sharetoken-$ENV-macos-$(uname -m).zip")
+  ZIP=sharetoken-$ENV-$VERSION-macos-$(uname -m).zip
+  (cd "$OUT" && rm -f "$ZIP" && ditto -c -k --keepParent "sharetoken-$ENV.app" "$ZIP")
+  sums "$ZIP"
   echo "built $APP"
   ;;
 Linux)
   # webkit2gtk 4.1 (Ubuntu 24.04+, Debian 12+); older systems only have 4.0.
   TAG=""
   pkg-config --exists webkit2gtk-4.1 && TAG=",webkit2_41"
-  BASE=sharetoken-$ENV-linux-$(uname -m)
+  BASE=sharetoken-$ENV-$VERSION-linux-$(uname -m)
   DIR=$OUT/$BASE
   rm -rf "$DIR"
   mkdir -p "$DIR"
@@ -110,6 +122,7 @@ Linux)
   fill gui/packaging/install-linux.sh > "$DIR/install-linux.sh"
   chmod +x "$DIR/install-linux.sh"
   tar -C "$OUT" -czf "$DIR.tar.gz" "$BASE"
+  sums "$BASE.tar.gz"
   echo "built $DIR"
   ;;
 *)

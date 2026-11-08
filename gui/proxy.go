@@ -31,7 +31,7 @@ const selftestPath = "/__selftest"
 const selftestJS = `(async () => {
   let r;
   try {
-    const resp = await fetch('/api/portal/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portal: 'ftp://body-reached-the-daemon' }) });
+    const resp = await fetch('/api/v1/portal/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portal: 'ftp://body-reached-the-daemon' }) });
     const data = await resp.json();
     const pageRan = !!document.querySelector('#app > *');
     r = (resp.status === 400 && data.error.code === 'bad_portal' && pageRan) ? 'ok' : 'unexpected reply ' + resp.status + ' ' + JSON.stringify(data) + ' pageRan=' + pageRan;

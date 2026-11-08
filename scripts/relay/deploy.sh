@@ -2,7 +2,8 @@
 # 发布中继（docs/dev-env.md）。在 Mac 上运行，一次发布明确点名的中继，失败就停，不会继续下一台。
 #   scripts/relay/deploy.sh lab-cn2 lab-stdb          # 实验中继：只有 dev 用
 #   scripts/relay/deploy.sh --prod sg                 # 生产在用的中继（us sg eu cn）：必须带 --prod，逐台来
-# 每台先用新二进制校验新配置，通过才替换并重启；旧版留在 relay.prev、relay.yaml.prev。
+# 每台先用新二进制校验新配置，通过才切换并重启。二进制放在 releases/<版本>/relay，relay 是指向它的软链；
+# 上一版的软链留在 relay.prev，配置留在 relay.yaml.prev。
 # 装了 systemd 服务（install-service.sh）的用 systemctl 重启，lab-stdb 和还没装的新中继用 nohup。
 # 重启会断开该中继上的连接，在途请求会失败；中继的改动先在实验中继上验证。
 set -euo pipefail
@@ -20,15 +21,18 @@ for r in "$@"; do
   esac
 done
 cd "$REPO"
+V=$(scripts/version.sh); LD="-s -w $(scripts/ldflags.sh)"
+case $V in *-dev*) [ $PROD = 0 ] || [ -n "${ST_ALLOW_DEV:-}" ] || { echo "$V is not a release: production relays only run releases (tag v$(cat VERSION), or set ST_ALLOW_DEV=1)" >&2; exit 2; };; esac
+echo "version $V"
 
-build_amd64() { [ -n "${BUILT:-}" ] || { GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$B/relay" ./cmd/relay; gzip -kf "$B/relay"; BUILT=1; }; }
+build_amd64() { [ -n "${BUILT:-}" ] || { cp "$(GOOS=linux GOARCH=amd64 scripts/build.sh relay)" "$B/relay"; gzip -kf "$B/relay"; BUILT=1; }; }
 # CN and CN2 have very slow uploads from here: build on CN, from source without secrets.
 build_on_cn() {
   [ -z "${CN_BUILT:-}" ] || return 0
   git ls-files -co --exclude-standard | while IFS= read -r f; do [ ! -f "$f" ] || echo "$f"; done | grep -v -e '^docs/test_env.txt' -e 'secrets' -e '^reports/' -e 'upstream_proxy.json' -e '\.env$' -e '\.key$' > "$W/files.txt"
   COPYFILE_DISABLE=1 tar czf "$W/src.tgz" -T "$W/files.txt"
   scp $Q "$W/src.tgz" "s0nnet@$CN:sharetoken-v2/src-new.tgz"
-  timeout 600 ssh $Q -n "s0nnet@$CN" 'cd ~/sharetoken-v2 && rm -rf src2 && mkdir src2 && tar xzf src-new.tgz -C src2 2>/dev/null && cd src2 && export PATH=$HOME/sharetoken-sim/go/bin:$PATH GOPROXY=https://goproxy.cn GOFLAGS=-mod=mod && CGO_ENABLED=0 go build -trimpath -o ~/st-test/relay.new ./cmd/relay'
+  timeout 600 ssh $Q -n "s0nnet@$CN" "cd ~/sharetoken-v2 && rm -rf src2 && mkdir src2 && tar xzf src-new.tgz -C src2 2>/dev/null && cd src2 && export PATH=\$HOME/sharetoken-sim/go/bin:\$PATH GOPROXY=https://goproxy.cn GOFLAGS=-mod=mod && CGO_ENABLED=0 go build -trimpath -ldflags \"$LD\" -o ~/st-test/relay.new ./cmd/relay"
   CN_BUILT=1
 }
 # CN2 fetches CN's build over the domestic link; the HTTP server holds only that binary and lives for this copy.
@@ -39,7 +43,7 @@ copy_cn_to_cn2() {
   ssh $Q -n "s0nnet@$CN" "rm -rf ~/st-test/serve; pkill -f 'http[.]server $SERVE_PORT'" || true
 }
 
-SWAP='cd "$RDIR" && ./relay.new -config relay.yaml.new -check-config >/dev/null && { [ -f relay.yaml ] && cp relay.yaml relay.yaml.prev || true; [ -f relay ] && cp relay relay.prev || true; if [ -f /etc/systemd/system/sharetoken-relay.service ]; then mv relay.new relay; mv relay.yaml.new relay.yaml; sudo -n systemctl restart sharetoken-relay; else for p in $(pgrep -x relay); do [ "$(readlink /proc/$p/cwd)" = "$RDIR" ] && kill $p; done; sleep 2; mv relay.new relay; mv relay.yaml.new relay.yaml; setsid nohup ./relay -config relay.yaml >> relay.log 2>&1 < /dev/null & fi; } ; sleep 4; curl -s -m 3 "127.0.0.1:$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(\"  up: peers=%s networks=%s\" % (d[\"peers\"], [(n[\"name\"], n[\"reservations\"]) for n in d[\"stats\"][\"networks\"]]))"'
+SWAP='cd "$RDIR" && ./relay.new -config relay.yaml.new -check-config >/dev/null && { [ -f relay.yaml ] && cp relay.yaml relay.yaml.prev || true; [ -e relay ] && cp -P relay relay.prev || true; mkdir -p "releases/$V" && mv relay.new "releases/$V/relay"; ls -1t releases | tail -n +6 | while read -r old; do rm -rf "releases/$old"; done; if [ -f /etc/systemd/system/sharetoken-relay.service ]; then ln -sfn "releases/$V/relay" relay; mv relay.yaml.new relay.yaml; sudo -n systemctl restart sharetoken-relay; else for p in $(pgrep -x relay); do [ "$(readlink /proc/$p/cwd)" = "$RDIR" ] && kill $p; done; sleep 2; ln -sfn "releases/$V/relay" relay; mv relay.yaml.new relay.yaml; setsid nohup ./relay -config relay.yaml >> relay.log 2>&1 < /dev/null & fi; } ; sleep 4; curl -s -m 3 "127.0.0.1:$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(\"  up: version=%s peers=%s networks=%s\" % (d[\"version\"], d[\"peers\"], [(n[\"name\"], n[\"reservations\"]) for n in d[\"stats\"][\"networks\"]]))"'
 
 for r in "$@"; do
   echo "== $r"
@@ -50,21 +54,21 @@ for r in "$@"; do
       build_amd64
       scp $Q "$B/relay.gz" "s0nnet@$h:st-test/relay.gz"
       scp $Q "$conf" "s0nnet@$h:st-test/relay.yaml.new"
-      ssh $Q -n "s0nnet@$h" "cd ~/st-test && gunzip -c relay.gz > relay.new && chmod +x relay.new; export RDIR=\$HOME/st-test STATUS=8093; $SWAP"
+      ssh $Q -n "s0nnet@$h" "cd ~/st-test && gunzip -c relay.gz > relay.new && chmod +x relay.new; export V=$V RDIR=\$HOME/st-test STATUS=8093; $SWAP"
       ;;
     cn)
       build_on_cn
       scp $Q "$conf" "s0nnet@$CN:st-test/relay.yaml.new"
-      ssh $Q -n "s0nnet@$CN" "export RDIR=\$HOME/st-test STATUS=8093; $SWAP"
+      ssh $Q -n "s0nnet@$CN" "export V=$V RDIR=\$HOME/st-test STATUS=8093; $SWAP"
       ;;
     lab-cn2)
       build_on_cn; copy_cn_to_cn2
       scp $Q "$conf" "orcatermuser@$CN2:st-test/relay.yaml.new"
-      ssh $Q -n "orcatermuser@$CN2" "export RDIR=\$HOME/st-test STATUS=8093; $SWAP"
+      ssh $Q -n "orcatermuser@$CN2" "export V=$V RDIR=\$HOME/st-test STATUS=8093; $SWAP"
       ;;
     lab-stdb)
       build_amd64
-      orb run -m st-db bash -c "mkdir -p ~/st-test/relay-lab && cp '$B/relay' ~/st-test/relay-lab/relay.new && chmod +x ~/st-test/relay-lab/relay.new && cp '$conf' ~/st-test/relay-lab/relay.yaml.new; export RDIR=\$HOME/st-test/relay-lab STATUS=8094; $SWAP" </dev/null
+      orb run -m st-db bash -c "mkdir -p ~/st-test/relay-lab && cp '$B/relay' ~/st-test/relay-lab/relay.new && chmod +x ~/st-test/relay-lab/relay.new && cp '$conf' ~/st-test/relay-lab/relay.yaml.new; export V=$V RDIR=\$HOME/st-test/relay-lab STATUS=8094; $SWAP" </dev/null
       ;;
   esac
 done

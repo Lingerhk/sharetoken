@@ -411,7 +411,7 @@ func sendInfer(t *testing.T, h host.Host, tk protocol.Ticket) error {
 	defer st.Close()
 	jobKey, _ := box.GenerateIdentity()
 	sealed, _ := box.SealFrom(jobKey, tk.NodeBoxPub, []byte(body), protocol.RequestAAD(&tk))
-	if err := protocol.Send(st, protocol.TypeInfer, protocol.InferRequest{Ticket: tk, BuyerBoxPub: jobKey.Public(), Sealed: sealed}); err != nil {
+	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: tk, BuyerBoxPub: jobKey.Public(), Sealed: sealed}); err != nil {
 		return err
 	}
 	env, err := protocol.Recv(st)
@@ -529,7 +529,7 @@ func TestNoShowTicketFreesTheNodeSoon(t *testing.T) {
 	// The node serves 2 at once (default); take both slots without connecting.
 	_, _, noShow := m.addBuyer(5_000_000)
 	for i := 0; i < 2; i++ {
-		if _, err := m.coord.Engine.IssueTicket(noShow.ID(), protocol.TicketRequest{Model: model, BudgetMicros: 1000}); err != nil {
+		if _, err := m.coord.Engine.IssueTicket(noShow.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: model, BudgetMicros: 1000}); err != nil {
 			t.Fatal(err)
 		}
 	}

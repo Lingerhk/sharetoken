@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
+	"slices"
 	"time"
 
 	"sharetoken/protocol"
@@ -98,6 +99,8 @@ func checkTicket(t *protocol.Ticket, remote string, id identity, models map[stri
 		return bad(err.Error())
 	}
 	switch {
+	case !slices.Contains(protocol.SupportedInferVersions, t.InferVersion):
+		return bad("this node does not speak the ticket's protocol version")
 	case t.Node != id.self:
 		return bad("ticket is for another node")
 	case t.Buyer != remote:

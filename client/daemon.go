@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"sharetoken/internal/cli"
+	"sharetoken/internal/version"
 	"sharetoken/p2p"
 	"sharetoken/portal"
 )
@@ -65,6 +66,9 @@ type Daemon struct {
 	agentAPI http.Handler
 	cancel   context.CancelFunc // ends the current run
 	done     chan struct{}      // closed when the current start-up attempts end
+	update   Update
+
+	stopUpdates context.CancelFunc
 }
 
 // Session states.
@@ -91,6 +95,11 @@ type Session struct {
 	Error  string `json:"error,omitempty"` // why the state is retrying or expired
 	// Telemetry is the usage-statistics setting.
 	Telemetry TelemetryState `json:"telemetry"`
+	// Version and APIVersion say what this daemon is: the desktop shell only
+	// uses a daemon of its own release.
+	Version    string `json:"version"`
+	APIVersion int    `json:"api_version"`
+	Update     Update `json:"update"`
 }
 
 // NewDaemon prepares a daemon with its state in home.
@@ -151,6 +160,9 @@ func (d *Daemon) Start() error {
 	d.mu.Unlock()
 	d.telemetry = newTelemetry(d.home, cmp.Or(d.TelemetryKey, TelemetryKey), cmp.Or(d.TelemetryHost, TelemetryHost), d.telemetryStatus)
 	d.telemetry.start()
+	uctx, stopUpdates := context.WithCancel(context.Background())
+	d.stopUpdates = stopUpdates
+	d.bg.Go(func() { d.watchUpdates(uctx) })
 	if cfg.Portal != "" && cfg.Token != "" {
 		if keys, err := p2p.LoadOrCreateKeys(filepath.Join(d.home, KeyFile)); err == nil {
 			d.mu.Lock()
@@ -167,6 +179,9 @@ func (d *Daemon) Close() {
 	d.authMu.Lock()
 	d.stopRun()
 	d.authMu.Unlock()
+	if d.stopUpdates != nil {
+		d.stopUpdates()
+	}
 	d.bg.Wait()
 	d.telemetry.Close()
 	if d.srv != nil {
@@ -191,7 +206,7 @@ func (d *Daemon) telemetryStatus() (string, bool) {
 func (d *Daemon) Session() Session {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	s := Session{Env: Env, State: d.state, LoggedIn: d.portal != nil, Portal: d.cfg.Portal, User: d.cfg.User, API: "http://" + d.addr + "/v1", Error: d.lastErr, Telemetry: d.telemetry.State()}
+	s := Session{Env: Env, State: d.state, LoggedIn: d.portal != nil, Portal: d.cfg.Portal, User: d.cfg.User, API: "http://" + d.addr + "/v1", Error: d.lastErr, Telemetry: d.telemetry.State(), Version: version.Version, APIVersion: version.API, Update: d.update}
 	if !s.LoggedIn || s.Portal == "" {
 		s.Portal = PortalAddr() // the sign-in page does not ask for it
 	}
@@ -377,7 +392,7 @@ type PortalProbe struct {
 	PinRequired      bool   `json:"pin_required"`
 	RegistrationOpen bool   `json:"registration_open"`
 	SignupCredit     uint64 `json:"signup_credit_micros"`
-	// EmailVerification: registering needs a code from POST /api/register/code.
+	// EmailVerification: registering needs a code from POST /api/v1/register/code.
 	EmailVerification bool   `json:"email_verification"`
 	SupportEmail      string `json:"support_email,omitempty"`
 }
@@ -690,8 +705,8 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("GET /ui/i18n/client/{file}", func(w http.ResponseWriter, r *http.Request) {
 		page("i18n/client/"+r.PathValue("file"))(w, r)
 	})
-	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.Session()) })
-	mux.HandleFunc("POST /api/portal/probe", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
+	mux.HandleFunc("GET /api/v1/session", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.Session()) })
+	mux.HandleFunc("POST /api/v1/portal/probe", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
 		Portal string `json:"portal"`
 	}) {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -720,7 +735,7 @@ func (d *Daemon) Handler() http.Handler {
 			writeJSON(w, status, d.Session())
 		})
 	}
-	mux.HandleFunc("POST /api/register/code", jsonBody(func(w http.ResponseWriter, r *http.Request, req signInRequest) {
+	mux.HandleFunc("POST /api/v1/register/code", jsonBody(func(w http.ResponseWriter, r *http.Request, req signInRequest) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		sent, err := d.requestCode(ctx, req)
@@ -730,9 +745,9 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, sent)
 	}))
-	mux.HandleFunc("POST /api/register", signIn(true))
-	mux.HandleFunc("POST /api/login", signIn(false))
-	mux.HandleFunc("POST /api/logout", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/register", signIn(true))
+	mux.HandleFunc("POST /api/v1/login", signIn(false))
+	mux.HandleFunc("POST /api/v1/logout", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		if err := d.logout(ctx); err != nil {
@@ -741,8 +756,8 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, d.Session())
 	})
-	mux.HandleFunc("GET /api/telemetry", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.telemetry.State()) })
-	mux.HandleFunc("PUT /api/telemetry", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
+	mux.HandleFunc("GET /api/v1/telemetry", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.telemetry.State()) })
+	mux.HandleFunc("PUT /api/v1/telemetry", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
 		Enabled bool `json:"enabled"`
 	}) {
 		if err := d.telemetry.SetEnabled(req.Enabled); err != nil {
@@ -753,7 +768,7 @@ func (d *Daemon) Handler() http.Handler {
 	}))
 	// The account pages work without the agent: the portal may be up while
 	// the relays or the coordinator are not.
-	mux.HandleFunc("POST /api/feedback", jsonBody(func(w http.ResponseWriter, r *http.Request, req portal.FeedbackRequest) {
+	mux.HandleFunc("POST /api/v1/feedback", jsonBody(func(w http.ResponseWriter, r *http.Request, req portal.FeedbackRequest) {
 		d.mu.Lock()
 		pc := d.portal
 		d.mu.Unlock()
@@ -762,7 +777,7 @@ func (d *Daemon) Handler() http.Handler {
 			return
 		}
 		// The daemon says where this comes from; the page sends only the text.
-		req.Source, req.AppVersion, req.OS = "client", Version, runtime.GOOS+"/"+runtime.GOARCH
+		req.Source, req.AppVersion, req.OS = "client", version.Version, runtime.GOOS+"/"+runtime.GOARCH
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 		var out map[string]int64
@@ -775,11 +790,11 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusCreated, out)
 	}))
-	mux.HandleFunc("GET /api/feedback/mine", d.fromPortal("/api/v1/feedback"))
-	mux.HandleFunc("GET /api/account", d.fromPortal("/api/v1/me"))
-	mux.HandleFunc("GET /api/jobs", d.fromPortal("/api/v1/jobs"))
-	mux.HandleFunc("GET /api/ledger", d.fromPortal("/api/v1/ledger"))
-	mux.HandleFunc("/api/", d.toAgent)
+	mux.HandleFunc("GET /api/v1/feedback/mine", d.fromPortal("/api/v1/feedback"))
+	mux.HandleFunc("GET /api/v1/account", d.fromPortal("/api/v1/me"))
+	mux.HandleFunc("GET /api/v1/jobs", d.fromPortal("/api/v1/jobs"))
+	mux.HandleFunc("GET /api/v1/ledger", d.fromPortal("/api/v1/ledger"))
+	mux.HandleFunc("/api/v1/", d.toAgent)
 	mux.HandleFunc("/v1/", d.toAgent)
 	return guardHost(guardAPIOrigin(guardOrigin(mux)))
 }
@@ -790,7 +805,7 @@ func (d *Daemon) Handler() http.Handler {
 // endpoint, stay out.
 func guardAPIOrigin(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if o := r.Header.Get("Origin"); o != "" && strings.HasPrefix(r.URL.Path, "/api/") && o != "http://"+r.Host {
+		if o := r.Header.Get("Origin"); o != "" && strings.HasPrefix(r.URL.Path, "/api/v1/") && o != "http://"+r.Host {
 			writeErrorCode(w, http.StatusForbidden, "bad_origin", "the management API is only for the sharetoken app")
 			return
 		}

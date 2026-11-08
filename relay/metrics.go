@@ -1,6 +1,10 @@
 package relay
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"github.com/prometheus/client_golang/prometheus"
+
+	"sharetoken/internal/version"
+)
 
 // Collector exports the relay's state as sharetoken_relay_* metrics, read from
 // Stats on every scrape. scripts/relay/monitor.py alerts on these names.
@@ -23,6 +27,7 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 	counter := func(name, help string, v int64) { emit(prometheus.CounterValue, name, help, float64(v)) }
 
 	emit(prometheus.GaugeValue, "info", "Always 1; the label carries the relay's peer ID.", 1, "peer_id", r.Host.ID().String())
+	emit(prometheus.GaugeValue, "build_info", "Always 1; the label carries the relay's release.", 1, "version", version.Version)
 	enabled := 0.0
 	if st.ServiceEnabled {
 		enabled = 1
