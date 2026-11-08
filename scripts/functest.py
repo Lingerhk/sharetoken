@@ -167,6 +167,11 @@ def main():
     ok(r.returncode == 0, "the client logs in and binds its device", r.stdout)
     r = subprocess.run([bin_, "-home", sh, "login", "-user", seller, "-device", "functest-seller"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     ok(r.returncode == 0, "the seller logs in", r.stdout)
+    # Their own ports: `share` talks to the client at the configured address.
+    for home, port in ((sh, CFG["seller"]), (bh, CFG["api"])):
+        c = json.load(open(os.path.join(home, "config.json")))
+        c["http"] = "127.0.0.1:%d" % port
+        json.dump(c, open(os.path.join(home, "config.json"), "w"))
     conf = json.load(open(os.path.join(bh, "config.json")))
     ok(conf.get("version") == 1 and conf.get("env") == ENV, "config.json carries its format version", conf.get("version"))
 

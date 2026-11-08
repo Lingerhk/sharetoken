@@ -27,6 +27,7 @@ wait_for() { for _ in $(seq 1 150); do grep -q "$2" "$1" 2>/dev/null && return 0
 
 export SHARETOKEN_DB_PASSWORD=
 DSN=$("$ROOT/scripts/local-mysql.sh" new-db st_gui_stack)
+echo "$DSN" > dsn
 COORD=(-key coord.key -db "$DSN")
 PASSKEY=$("$BIN/portal" -db "$DSN" pass-key)
 COORD_ID=$("$BIN/coordinator" "${COORD[@]}" id)

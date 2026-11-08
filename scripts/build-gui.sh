@@ -60,7 +60,7 @@ verify() { # programs
 }
 
 sums() { # archive: added to the release's checksum file
-  (cd "$OUT" && shasum -a 256 "$1" >> "SHA256SUMS-$VERSION.tmp" && sort -u -k2 "SHA256SUMS-$VERSION.tmp" > "SHA256SUMS-$VERSION" && rm "SHA256SUMS-$VERSION.tmp")
+  (cd "$OUT" && { cat "SHA256SUMS-$VERSION" 2>/dev/null; shasum -a 256 "$1"; } | sort -u -k2 > "SHA256SUMS-$VERSION.tmp" && mv "SHA256SUMS-$VERSION.tmp" "SHA256SUMS-$VERSION")
 }
 
 case "${1:-$(uname -s)}" in

@@ -49,7 +49,7 @@ curl -s 127.0.0.1:8093/metrics | grep ^sharetoken_relay
 ## 部署
 
 ```
-scripts/relay/deploy.sh lab-cn2                   # 先更新中继，/metrics 随新版本上线
+scripts/relay/deploy.sh lab-cn2                   # 先更新中继，/metrics 随新版本上线（build_info 是中继的版本，和已部署的软链不一致时告警）
 scripts/relay/deploy-monitor.sh lab-cn2           # 装监控：不重启中继
 scripts/relay/deploy-monitor.sh --prod us sg eu cn   # 生产中继要带 --prod
 ```

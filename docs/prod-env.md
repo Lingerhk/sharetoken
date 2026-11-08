@@ -3,7 +3,7 @@
 维护说明：本文只记录公开信息（域名、IP、端口、记录）。登录凭据、API token、密钥不要写入本文，
 统一放在被 `.gitignore` 忽略的文件中（`config.env`、`docs/test-env.secrets.md`）。
 
-最后更新：2026-11-08（晚：门户 + 协调器上线 armbian）
+最后更新：2026-11-09（发布 1.0.0，数据库清空重建）
 
 ## 域名
 
@@ -66,7 +66,8 @@
 | DDNS | armbian 的 cron 每 10 分钟跑 `~/sharetoken-prod/ddns.sh`（即 `scripts/godaddy_ddns.sh`），日志 `ddns.log`。token 在 `~/.config/sharetoken/ddns.env`（0600）。IP 变了才写 GoDaddy |
 | 备份 | cron 每天 03:17 `backup.sh`：`mysqldump` 到 `~/sharetoken-prod/backup/`，保留 7 份 |
 | 参考模型 | 协调器的争议裁决要 Mac 上的 `upstream_proxy`（公司采购的 API）：`scripts/testenv/tunnels.sh` 建反向隧道到 armbian 的 127.0.0.1:11434/11436。隧道不在时只影响争议裁决，交易照常 |
-| 管理员 | `root`（初始密码在 `docs/test-env.secrets.md`，首次登录后绑 MFA 并改密）。运维命令：`cd ~/sharetoken-prod; ./portal -config portal.yaml users|overview|relay ls|grant …`，`./coordinator -config coordinator.yaml nodes|relays|disputes|check` |
+| 版本 | 当前 1.0.0。程序是指向 `releases/<版本>/` 的软链，上一版留在 `<程序>.prev`，客户端版本策略 `min 1.0.0`、`allow_dev=false`，见 [versioning.md](versioning.md) |
+| 管理员 | `root`（2026-11-09 库清空后新建，初始密码在 Mac 的 `~/st-test/prod-keys/admin.pass` 和 `docs/test-env.secrets.md`，还没有绑两步验证：首次网页登录时绑定并改密）。运维命令：`cd ~/sharetoken-prod; ./portal -config portal.yaml users|overview|relay ls|grant …`，`./coordinator -config coordinator.yaml nodes|relays|disputes|check` |
 
 路由器：WAN :80、:443、:25 → 192.168.6.91 同端口（已配置；25 给邮件服务，见 [mail.md](mail.md)）。中继和协调器之间是协调器主动出站，不需要映射 4001。
 
@@ -88,12 +89,16 @@ IP 变化后最长约 10 分钟（cron）+ 10 分钟（TTL）生效，期间 htt
 
 ```bash
 scripts/prod/deploy.sh          # 首次或全量：编译 arm64、Docker MySQL、systemd、DDNS、nginx + 证书、cron，最后重启服务
-scripts/prod/deploy.sh --bins   # 日常发版：只更新二进制与 yaml 并重启
+scripts/prod/deploy.sh --bins   # 日常发版：构建带版本的二进制，放到 releases/<版本>/，切换软链并重启
 ```
 
 脚本可重复运行（不会覆盖已有的 key、密码、证书、数据库）。需要先把 `coordinator.key`、`portal-pass.key` 放在 Mac 的 `~/st-test/prod-keys/`（首次从原协调器机器复制）。
 st-db 上目前还是生产的协调器 key，`scripts/testenv` 会拒绝在这种状态下启动它；压测要先换成 dev 身份（见 [dev-env.md](dev-env.md)），不再需要停生产。
-全新库的初始化（只做一次）：`SHARETOKEN_PASSWORD=… ./portal -config portal.yaml useradd -admin root`，再 `relay add` 登记各中继（地址见 `portal relay ls` 于 st-db 的旧库，或 `scripts/relay/conf/*.yaml`）。
+生产只部署正式版本：脚本拒绝 `-dev` 构建，发版前先打 tag（见 [versioning.md](versioning.md)）。回滚：`cd ~/sharetoken-prod && sudo systemctl stop sharetoken-portal && mv portal.prev portal && sudo systemctl start sharetoken-portal`，协调器和邮件服务相同。
+
+全新库的初始化（只做一次）：`SHARETOKEN_PASSWORD=… ./portal -config portal.yaml useradd -admin root`，再 `relay add` 登记各中继（地址在 `scripts/relay/conf/*.yaml`，peer ID 见 `curl 127.0.0.1:8093`），最后设版本策略：`./portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -latest 1.0.0 -download-url https://sharetoken.app/#download -allow-dev=false`。
+
+部署后的功能测试：`scripts/functest.py prod`（真实客户端 + mock 模型，几个请求，不是压测；会留下 `functest-*` 账号）。
 
 ## 变更方法（GoDaddy API）
 
@@ -127,4 +132,4 @@ dig +short AAAA relay-us.sharetoken.app @ns51.domaincontrol.com
   - 腾讯云安全组只放行了 22、80、443/tcp。需要放行 **4002/tcp 和 4002/udp**（QUIC），中继才能对外服务。
   - 从 Mac 上传很慢（约 6 KB/s），二进制要在机器上从源码编译（Go 用阿里云镜像，GOPROXY=goproxy.cn）。
 - 稳定后把中继记录的 TTL 从 600 调大（`@`/`www` 因为 DDNS 要保持 600）。
-- 生产库目前是**全新的**（只迁了 key、管理员和 3 个中继）：测试期的用户、余额和压测流水都留在 st-db 的 MySQL 里，没有带过来。
+- 生产库 2026-11-09 清空重建：只有管理员 `root` 和 4 个中继，没有用户、余额和历史作业。清空前的导出在 armbian 的 `~/sharetoken-prod/backup/sharetoken-2026-11-09.sql.gz`（当时只有 `root`、`probe` 和几封邮件）。

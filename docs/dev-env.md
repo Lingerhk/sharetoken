@@ -23,13 +23,14 @@
 | 隧道 | Pi 的 `dbtunnel.key` 在 armbian 的 `authorized_keys` 里限制为 `command="/usr/bin/false",restrict,port-forwarding,permitopen="127.0.0.1:3306"`，只能转发到 MySQL，不能执行命令。生产容器不用改端口绑定 |
 | 协调器 peer ID | `12D3KooWDa9b2HPSjHYhxuVGhKQ1866qAsGTKmgwEB5oY4D7qSYt` |
 | 门户 pass 公钥 | `ed25519:5262c7de2eb39f527d515a36082293f1c3426aaaf583883ad71312ad223ed011` |
-| 管理员 | `root`，密码在 Mac 的 `~/st-test/dev-keys/admin.pass`，首次登录网页要绑两步验证 |
+| 版本 | 程序是指向 `releases/<版本>/` 的软链，上一版留在 `<程序>.prev`；版本策略 `min 1.0.0`、`allow_dev=true`，可以部署 `-dev` 构建，见 [versioning.md](versioning.md) |
+| 管理员 | `root`（2026-11-09 库清空后重建），密码在 Mac 的 `~/st-test/dev-keys/admin.pass`，首次登录网页要绑两步验证 |
 | 注册 | 开放，必须有邮箱验证码（[mail.md](mail.md)）；模型只有 mock。关闭时改 `scripts/dev/portal.yaml` 的 `open_registration` |
 | 邮件 | systemd `sharetoken-dev-mail`，发件人 `team-dev@`；收信只有局域网可达 |
 | 门户入口 | `http.trusted_proxies` 只信任 armbian 传来的 `X-Real-IP`；systemd `IPAddressAllow` 限制 8092 端口只有 armbian 和本机能访问。**armbian 到 Pi 这段是明文**，登录密码和 token 会以明文经过局域网，所以 dev 不要用和生产相同的密码 |
 | 模型 | 只用 mock（`scripts/mock_upstream.py`），不放公司采购的 API：dev 在公网上，额度可能被消耗 |
 
-部署：`scripts/dev/deploy.sh`（全部）、`scripts/dev/deploy.sh --bins`（只更新二进制和配置）。不碰中继和生产服务。
+部署：`scripts/dev/deploy.sh`（全部）、`scripts/dev/deploy.sh --bins`（只更新二进制和配置）。不碰中继和生产服务。部署后跑 `scripts/functest.py dev` 做功能测试。
 
 **注意：** dev 和生产共用 MySQL 实例（内存上限 600 MB），所以 dev 上不要跑压测，否则会拖累生产。
 
@@ -54,7 +55,7 @@ scripts/relay/deploy.sh --prod sg           # 生产在用的中继，必须带 
 
 dev 门户登记了 relay-sg、relay-us、relay-eu、relay-cn 和 lab-cn2。压测和 chaos 前，先在 dev 门户 `relay disable` 四个共用中继，让 dev 流量只走实验中继，结束后再 `enable`。
 
-us、sg、eu、cn、lab-cn2 由 systemd 管理（`sharetoken-relay` 服务，崩溃和开机后自动拉起，日志在 journal），由 `scripts/relay/install-service.sh` 安装；lab-stdb 仍是手动启动。上线新中继：先 `deploy.sh`，再 `install-service.sh`，最后 `deploy-monitor.sh`。回滚：把 `relay.prev`、`relay.yaml.prev` 复制回去，再 `sudo systemctl restart sharetoken-relay`。
+us、sg、eu、cn、lab-cn2 由 systemd 管理（`sharetoken-relay` 服务，崩溃和开机后自动拉起，日志在 journal），由 `scripts/relay/install-service.sh` 安装；lab-stdb 仍是手动启动。上线新中继：先 `deploy.sh`，再 `install-service.sh`，最后 `deploy-monitor.sh`。回滚：`mv relay.prev relay`（软链，指向上一个 `releases/<版本>/relay`），`cp relay.yaml.prev relay.yaml`，再 `sudo systemctl restart sharetoken-relay`。
 
 共用时的隔离：
 - **账号：** 设备配额按“网络 + 账号”计算，两个网络的 `user:3` 互不影响。
