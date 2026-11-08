@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,6 +29,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.yaml.in/yaml/v3"
 
 	"sharetoken/internal/config"
@@ -102,7 +105,7 @@ func load(args []string) (File, bool, error) {
 	fs.StringVar(&f.Identity.KeyFile, "key", f.Identity.KeyFile, "identity seed file (created with mode 0600 if missing); keep it: the address users know includes the peer ID")
 	fl.List(&f.Network.Listen, "listen", "comma-separated listen multiaddrs (IPv6 is skipped on hosts without it)")
 	fl.List(&f.Network.Announce, "announce", "comma-separated public multiaddrs to advertise instead of the interface addresses (/dns4/<name>/..., or /ip4/ behind 1:1 NAT)")
-	fs.StringVar(&f.Status.Listen, "status", f.Status.Listen, "serve JSON stats at http://<addr>/ (e.g. 127.0.0.1:8093; keep it private)")
+	fs.StringVar(&f.Status.Listen, "status", f.Status.Listen, "serve JSON stats at http://<addr>/ and Prometheus metrics at /metrics; a loopback address such as 127.0.0.1:8093")
 	fs.IntVar(&f.Limits.MaxReservations, "max-reservations", f.Limits.MaxReservations, "maximum reservations held at once")
 	fs.IntVar(&f.Limits.MaxReservationsPerIP, "max-reservations-per-ip", f.Limits.MaxReservationsPerIP, "maximum reservations from one IP address")
 	fs.IntVar(&f.Limits.MaxCircuits, "max-circuits", f.Limits.MaxCircuits, "maximum open circuits to one destination peer (the coordinator receives one per online user)")
@@ -165,6 +168,9 @@ func relayConfig(f File) (relay.Config, error) {
 	if cfg.ReservationTTL < time.Minute {
 		errs = append(errs, errors.New("limits.reservation_ttl must be at least 1m"))
 	}
+	if f.Status.Listen != "" && !isLoopback(f.Status.Listen) {
+		errs = append(errs, fmt.Errorf("status.listen %q must be a loopback address such as 127.0.0.1:8093: stats and metrics have no authentication", f.Status.Listen))
+	}
 	return cfg, errors.Join(errs...)
 }
 
@@ -217,12 +223,7 @@ func main() {
 	}
 
 	if f.Status.Listen != "" {
-		srv := &http.Server{Addr: f.Status.Listen, ReadHeaderTimeout: 5 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"peer": keys.ID(), "addrs": r.Addrs(), "peers": len(r.Host.Network().Peers()), "stats": r.Stats(),
-			})
-		})}
+		srv := &http.Server{Addr: f.Status.Listen, ReadHeaderTimeout: 5 * time.Second, Handler: statusHandler(r)}
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Printf("status server: %v", err)
@@ -247,6 +248,36 @@ func main() {
 				st.PassesAccepted, st.PassesRejected, st.Networks)
 		}
 	}
+}
+
+// isLoopback reports whether a host:port listen address only accepts local connections.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// statusHandler serves Prometheus metrics at /metrics and JSON stats elsewhere.
+// The metrics are the relay's own (sharetoken_relay_*) plus what the default
+// registry holds: libp2p's swarm metrics and the Go and process collectors.
+func statusHandler(r *relay.Relay) http.Handler {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(r.Collector())
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(prometheus.Gatherers{reg, prometheus.DefaultGatherer}, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"peer": r.Host.ID(), "addrs": r.Addrs(), "peers": len(r.Host.Network().Peers()), "stats": r.Stats(),
+		})
+	})
+	return mux
 }
 
 // registerAddr is the relay's address for `portal relay add`: for IPv4 and

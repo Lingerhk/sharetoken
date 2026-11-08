@@ -82,6 +82,9 @@ type Stats struct {
 	BytesRelayed        int64 `json:"bytes_relayed"`
 	PassesAccepted      int64 `json:"passes_accepted"`
 	PassesRejected      int64 `json:"passes_rejected"`
+	// ServiceEnabled is whether the circuit relay service is running. The host
+	// can be up with the service off, and then nobody can reserve.
+	ServiceEnabled bool `json:"service_enabled"`
 	// Networks splits what can be attributed. Circuits and bytes cannot: the
 	// relay does not know which network a buyer belongs to.
 	Networks []NetworkStats `json:"networks,omitempty"`
@@ -92,6 +95,7 @@ type Relay struct {
 	Host  host.Host
 	stats stats
 	adm   *admission
+	cfg   Config
 }
 
 // New starts a relay host for keys.
@@ -101,7 +105,7 @@ func New(keys *p2p.Keys, cfg Config) (*Relay, error) {
 		return nil, fmt.Errorf("relay: %w", err)
 	}
 	adm := newAdmission(cfg)
-	r := &Relay{adm: adm}
+	r := &Relay{adm: adm, cfg: cfg}
 	rc := relayv2.Resources{
 		Limit:                  nil, // completions stream for minutes; no per-circuit time or data cap
 		ReservationTTL:         cfg.ReservationTTL,
@@ -168,16 +172,18 @@ func (r *Relay) Stats() Stats {
 // stats implements relayv2.MetricsTracer with plain counters.
 type stats struct {
 	reservations, granted, rDenied, circuits, opened, cDenied, bytes atomic.Int64
+	enabled                                                          atomic.Bool
 }
 
 func (s *stats) snapshot() Stats {
 	return Stats{
 		Reservations: s.reservations.Load(), ReservationsGranted: s.granted.Load(), ReservationsDenied: s.rDenied.Load(),
 		Circuits: s.circuits.Load(), CircuitsOpened: s.opened.Load(), CircuitsDenied: s.cDenied.Load(), BytesRelayed: s.bytes.Load(),
+		ServiceEnabled: s.enabled.Load(),
 	}
 }
 
-func (s *stats) RelayStatus(bool)               {}
+func (s *stats) RelayStatus(enabled bool)       { s.enabled.Store(enabled) }
 func (s *stats) ConnectionOpened()              { s.circuits.Add(1); s.opened.Add(1) }
 func (s *stats) ConnectionClosed(time.Duration) { s.circuits.Add(-1) }
 func (s *stats) BytesTransferred(n int)         { s.bytes.Add(int64(n)) }

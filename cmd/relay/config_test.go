@@ -80,3 +80,17 @@ func TestNetworksMustBeDistinct(t *testing.T) {
 		}
 	}
 }
+
+// Stats and metrics have no authentication, so they never leave the machine.
+func TestStatusListenMustBeLoopback(t *testing.T) {
+	for addr, ok := range map[string]bool{
+		"": true, "127.0.0.1:8093": true, "[::1]:8093": true, "localhost:8093": true,
+		"0.0.0.0:8093": false, ":8093": false, "[::]:8093": false, "192.168.1.5:8093": false, "127.0.0.1": false,
+	} {
+		f := defaults()
+		f.Status.Listen = addr
+		if _, err := relayConfig(f); (err == nil) != ok {
+			t.Errorf("%q: ok=%v, got %v", addr, ok, err)
+		}
+	}
+}

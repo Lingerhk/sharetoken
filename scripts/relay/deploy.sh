@@ -1,7 +1,7 @@
 #!/bin/bash
 # 发布中继（docs/dev-env.md）。在 Mac 上运行，一次发布明确点名的中继，失败就停，不会继续下一台。
 #   scripts/relay/deploy.sh lab-cn2 lab-stdb          # 实验中继：只有 dev 用
-#   scripts/relay/deploy.sh --prod sg                 # 生产在用的中继（us sg cn）：必须带 --prod，逐台来
+#   scripts/relay/deploy.sh --prod sg                 # 生产在用的中继（us sg eu cn）：必须带 --prod，逐台来
 # 每台先用新二进制校验新配置，通过才替换并重启；旧版留在 relay.prev、relay.yaml.prev。
 # 重启会断开该中继上的连接，在途请求会失败；中继的改动先在实验中继上验证。
 set -euo pipefail
@@ -13,9 +13,9 @@ PROD=0; [ "${1:-}" = "--prod" ] && { PROD=1; shift; }
 [ $# -gt 0 ] || { sed -n 2,6p "$0"; exit 2; }
 for r in "$@"; do
   case $r in
-    us|sg|cn) [ $PROD = 1 ] || { echo "$r carries production: pass --prod" >&2; exit 2; };;
+    us|sg|eu|cn) [ $PROD = 1 ] || { echo "$r carries production: pass --prod" >&2; exit 2; };;
     lab-cn2|lab-stdb) ;;
-    *) echo "unknown relay $r (us sg cn lab-cn2 lab-stdb)" >&2; exit 2;;
+    *) echo "unknown relay $r (us sg eu cn lab-cn2 lab-stdb)" >&2; exit 2;;
   esac
 done
 cd "$REPO"
@@ -44,8 +44,8 @@ for r in "$@"; do
   echo "== $r"
   conf=$HERE/conf/$r.yaml
   case $r in
-    us|sg)
-      h=$([ $r = us ] && echo 165.227.115.27 || echo 201.79.122.100)
+    us|sg|eu)
+      case $r in us) h=165.227.115.27;; sg) h=201.79.122.100;; eu) h=164.92.157.227;; esac
       build_amd64
       scp $Q "$B/relay.gz" "s0nnet@$h:st-test/relay.gz"
       scp $Q "$conf" "s0nnet@$h:st-test/relay.yaml.new"

@@ -17,6 +17,7 @@
 |---|---|---|---|---|
 | US | relay-us.sharetoken.app | 165.227.115.27 | 2604:a880:800:14:0:3:d0f4:b000 | 600 |
 | SG | relay-sg.sharetoken.app | 201.79.122.100 | 2400:6180:0:d2:0:3:50d5:3000 | 600 |
+| EU | relay-eu.sharetoken.app | 164.92.157.227 | 2a03:b0c0:2:f0:0:2:4191:8001 | 600 |
 | CN | relay-cn.sharetoken.app | 119.29.250.173 | 无（暂未开通） | 600 |
 | CN 2 | relay-cn2.sharetoken.app | 101.43.2.87 | 无（暂未开通） | 600 |
 
@@ -33,6 +34,8 @@
 | AAAA | relay-us | 2604:a880:800:14:0:3:d0f4:b000 | 600 | 本次新增 |
 | A | relay-sg | 201.79.122.100 | 600 | 本次新增 |
 | AAAA | relay-sg | 2400:6180:0:d2:0:3:50d5:3000 | 600 | 本次新增 |
+| A | relay-eu | 164.92.157.227 | 600 | 2026-11-09 新增 |
+| AAAA | relay-eu | 2a03:b0c0:2:f0:0:2:4191:8001 | 600 | 2026-11-09 新增 |
 | A | relay-cn | 119.29.250.173 | 600 | 本次新增 |
 | A | relay-cn2 | 101.43.2.87 | 600 | 本次新增 |
 | A | @ | armbian 的公网 IPv4（动态，当前 27.125.141.245） | 600 | **DDNS 维护**（`scripts/godaddy_ddns.sh`） |
@@ -41,14 +44,14 @@
 | CNAME | _domainconnect | _domainconnect.gd.domaincontrol.com | 3600 | GoDaddy 默认，未改动 |
 | TXT | _dmarc | GoDaddy 默认 DMARC | 3600 | GoDaddy 默认，未改动 |
 
-中继由 prod 和 dev 共用（2026-11-08 起），只用 `scripts/relay/deploy.sh --prod <us|sg|cn>` 逐台发布，见 [dev-env.md](dev-env.md)。
+中继由 prod 和 dev 共用（2026-11-08 起），只用 `scripts/relay/deploy.sh --prod <us|sg|eu|cn>` 逐台发布，见 [dev-env.md](dev-env.md)。指标和监控告警见 [relay-monitor.md](relay-monitor.md)。
 
 ## 门户与协调器（armbian）
 
 ```
  用户 / 浏览器 ──https://sharetoken.app──> 家庭路由器 WAN :80/:443 ──> armbian 192.168.6.91
                                                 nginx（Let's Encrypt，终结 TLS）──> 门户 127.0.0.1:8092
- 协调器：无监听端口，只在 3 个中继上预约（出站连接）；MySQL：Docker 容器 st-mysql，127.0.0.1:3306
+ 协调器：无监听端口，只在 4 个中继上预约（出站连接）；MySQL：Docker 容器 st-mysql，127.0.0.1:3306
 ```
 
 | 项 | 说明 |

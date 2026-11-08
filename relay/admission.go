@@ -250,6 +250,11 @@ type NetworkStats struct {
 	Reservations       int    `json:"reservations"` // held now, its coordinator's included
 	PassesAccepted     int64  `json:"passes_accepted"`
 	ReservationsDenied int64  `json:"reservations_denied"` // over this network's limits
+	// Coordinators counts the allow-listed peers holding a live reservation. At
+	// zero, this network's users cannot reach their coordinator through this relay.
+	Coordinators         int `json:"coordinators"`
+	CoordinatorsExpected int `json:"coordinators_expected"` // allow_peers configured
+	MaxReservations      int `json:"max_reservations"`      // 0: only the relay's global limit
 }
 
 func (a *admission) networkStats() []NetworkStats {
@@ -257,17 +262,21 @@ func (a *admission) networkStats() []NetworkStats {
 		return nil
 	}
 	now := a.now()
-	held := map[*tenant]int{}
+	held, coordinators := map[*tenant]int{}, map[*tenant]int{}
 	a.mu.Lock()
 	for p, h := range a.reserved {
 		if now.Before(h.until) && a.h != nil && a.h.Network().Connectedness(p) == network.Connected {
 			held[h.tenant]++
+			if h.account == "" {
+				coordinators[h.tenant]++
+			}
 		}
 	}
 	a.mu.Unlock()
 	out := make([]NetworkStats, 0, len(a.tenants))
 	for _, t := range a.tenants {
-		out = append(out, NetworkStats{Name: t.Name, Reservations: held[t], PassesAccepted: t.accepted.Load(), ReservationsDenied: t.denied.Load()})
+		out = append(out, NetworkStats{Name: t.Name, Reservations: held[t], PassesAccepted: t.accepted.Load(), ReservationsDenied: t.denied.Load(),
+			Coordinators: coordinators[t], CoordinatorsExpected: len(t.AllowPeers), MaxReservations: t.MaxReservations})
 	}
 	return out
 }

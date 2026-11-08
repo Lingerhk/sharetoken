@@ -43,7 +43,7 @@
 | limits.max_circuits | F | 4096 |
 | limits.reservation_ttl | H `relay.Config.ReservationTTL` | 1h |
 | limits.circuit_buffer | H `relay.Config.BufferSize` | 16KiB |
-| status.listen | F `-status` | 空 |
+| status.listen | F `-status` | 空；`/` 是 JSON，`/metrics` 是 Prometheus 指标，只接受回环地址 |
 | status.stats_interval | H main.go 5m ticker | 5m |
 | log.* | 新增 | info/text/stderr |
 

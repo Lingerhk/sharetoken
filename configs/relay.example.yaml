@@ -52,7 +52,7 @@ limits:
 
 # 运维
 status:
-  listen: ""                     # JSON 统计，如 127.0.0.1:8093；务必只在内网/回环
+  listen: ""                     # 如 127.0.0.1:8093，/ 是 JSON 统计，/metrics 是 Prometheus 指标；没有认证，只接受回环地址
   stats_interval: 5m             # [新增，原硬编码] 周期性统计日志间隔，0 关闭
 
 log:                             # [新增] 三个服务端统一
