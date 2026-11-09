@@ -1,16 +1,43 @@
 [Unit]
-Description=sharetoken coordinator
+Description=sharetoken prod coordinator
 After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
-User=s0nnet
-WorkingDirectory=/home/s0nnet/sharetoken-prod
+User=st-coord
+Group=st-coord
+# 配置和机密在 /etc/sharetoken/coordinator（root:st-coord 0750）；协调器不写磁盘
+WorkingDirectory=/etc/sharetoken/coordinator
 ExecStartPre=/bin/bash -c 'for i in $(seq 60); do (echo > /dev/tcp/127.0.0.1/3306) 2>/dev/null && exit 0; sleep 2; done; exit 1'
-ExecStart=/home/s0nnet/sharetoken-prod/coordinator -config coordinator.yaml
+ExecStart=/srv/sharetoken/coordinator -config /etc/sharetoken/coordinator/coordinator.yaml
 Restart=always
 RestartSec=5
 LimitNOFILE=65536
+CapabilityBoundingSet=
+# libp2p 枚举网卡要 AF_NETLINK
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# 加固：只读的系统，看不到 /home，没有任何 capability，只允许普通服务的系统调用
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+MemoryMax=600M
 
 [Install]
 WantedBy=multi-user.target

@@ -1,8 +1,8 @@
-# 生产邮件服务（armbian）。部署到 ~/sharetoken-prod/mail.yaml。team-dev@、support-dev@ 也在这里收：MX 只有一个，dev 邮件的退信和回复会到这里。
+# 生产邮件服务（armbian）。装到 /etc/sharetoken/mail/mail.yaml，以 st-mail 运行。team-dev@、support-dev@ 也在这里收：MX 只有一个，dev 邮件的退信和回复会到这里。
 version: 1
 database:
   dsn: mysql://sharetoken_mail@127.0.0.1:3306/sharetoken
-  password_file: mail-db.pass
+  password_file: /etc/sharetoken/mail/db.pass
   max_open_conns: 8
   max_idle_conns: 2
   conn_max_lifetime: 30m
@@ -13,7 +13,7 @@ domain: sharetoken.app
 from: "ShareToken <team@sharetoken.app>"
 dkim:
   selector: st1
-  key_file: dkim.key
+  key_file: /etc/sharetoken/mail/dkim.key
 delivery:
   mode: direct
   workers: 4
@@ -33,8 +33,8 @@ smtp:
   max_conns_per_ip: 4
   max_per_ip_hour: 60
   tls:
-    cert_file: mail-tls/fullchain.pem
-    key_file: mail-tls/privkey.pem
+    cert_file: /etc/sharetoken/mail/tls/fullchain.pem
+    key_file: /etc/sharetoken/mail/tls/privkey.pem
 log:
   level: info
   format: text

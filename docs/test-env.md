@@ -19,7 +19,7 @@
 | 主机 | 地址 | 规格 | 角色 | 目录 |
 |---|---|---|---|---|
 | **orb VM** `st-db`（压测用） | 192.168.139.91（OrbStack NAT，IP 可能变，用 `orb run -m st-db`） | x86_64，**限 4 CPU / 8 GB**（cgroup：`nproc`/`free` 显示的是宿主值，`/sys/fs/cgroup/cpu.max`、`memory.max` 才是限额），Ubuntu 24.04 | MySQL 8.0（只听 127.0.0.1）+ 门户 :8092（HTTPS 自签名）+ 协调器 | `~/st-test` |
-| **armbian（生产）** | 192.168.6.91（LAN）、192.168.8.91（ZeroTier）；公网 27.125.141.245（动态，路由器映射 80/443） | aarch64 4 核 2 GB，eMMC | **生产**门户 + 协调器 + Docker MySQL + nginx（Let's Encrypt） | `~/sharetoken-prod` |
+| **armbian（生产）** | 192.168.6.91（LAN）、192.168.8.91（ZeroTier）；公网 27.125.141.245（动态，路由器映射 80/443） | aarch64 4 核 2 GB，eMMC | **生产**门户 + 协调器 + Docker MySQL + nginx（Let's Encrypt） | `/srv/sharetoken`、`/etc/sharetoken`（见 prod-env.md） |
 | **US** | 165.227.115.27 / 2604:a880:800:14:0:3:d0f4:b000 | x86_64 1 核 453 MB，Ubuntu | relay-us :4001；用户 uma（只买） | `~/st-test` |
 | **SG** | 201.79.122.100 / 2400:6180:0:d2:0:3:50d5:3000 | x86_64 1 核 453 MB，Ubuntu | relay-sg :4001；用户 sam（卖 mock-fast + 买） | `~/st-test` |
 | **CN**（TECS） | 119.29.250.173（**无公网 IPv6**） | x86_64 2 核 2 GB，CentOS 7，与 frps/blog 等共用 | relay-cn **:8091**；用户 carol（卖 mock-fast + 买） | `~/st-test`（源码编译在 `~/sharetoken-v2/src2`） |

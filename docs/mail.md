@@ -22,7 +22,7 @@
 | 反馈地址 | `support@sharetoken.app` | `support-dev@sharetoken.app` |
 | DKIM 选择器 | `st1` | `stdev1` |
 | 配置 | `scripts/prod/mail.yaml` | `scripts/dev/mail.yaml` |
-| 密钥 | Mac `~/st-test/prod-keys/{dkim.key,mail-db.pass}` | Mac `~/st-test/dev-keys/{dkim.key,mail-db.pass}` |
+| 密钥 | Mac `~/st-test/prod-keys/{dkim.key,mail-db.pass}`；服务器 `/etc/sharetoken/mail/{dkim.key,db.pass}`（st-mail 0600），证书由 certbot 钩子复制到 `/etc/sharetoken/mail/tls/` | Mac `~/st-test/dev-keys/{dkim.key,mail-db.pass}`；Pi `/etc/sharetoken-dev/mail/` |
 | 互联网收信 | 路由器 WAN:25 → 192.168.6.91:25（规则 `smtp-armbian-mail`） | 只有局域网可达 |
 
 MX 和公网 IP 都只有一个，所以外部发给 `team-dev@`、`support-dev@` 的邮件（比如 dev 邮件的退信）进的是 **prod** 的收件箱，后台可按收件地址区分。
@@ -47,7 +47,7 @@ scripts/prod/deploy.sh --mail         # prod：门户 + 邮件服务，协调器
 | `TXT st1._domainkey`、`stdev1._domainkey` | DKIM 公钥 |
 | `TXT _dmarc` | GoDaddy 默认（`p=quarantine`），未改动 |
 
-检查：`./mailserver -config mail.yaml dns`，或后台“服务状态”页（每 10 分钟自动检查一次）。IP 变化后 SPF 最多滞后约 20 分钟，因为用的是 `~all`，且 DKIM 不依赖 IP，DMARC 仍能通过。
+检查：`st-mailserver dns`（服务器上的包装脚本，以 st-mail 运行），或后台“服务状态”页（每 10 分钟自动检查一次）。IP 变化后 SPF 最多滞后约 20 分钟，因为用的是 `~all`，且 DKIM 不依赖 IP，DMARC 仍能通过。
 
 ## 发信可靠性：已知问题
 
@@ -92,4 +92,4 @@ scripts/test.sh -race ./mailer ./portal ./client     # 真实 SMTP 往返、DKIM
 node scripts/mail_ui_test.mjs                # 无头 Chrome + 真实进程：注册、恶意邮件、后台全流程
 ```
 
-外部验证：`./mailserver -config mail.yaml send-test check-auth@verifier.port25.com`，报告会回信到发件地址，同时验证了互联网收信。
+外部验证：`st-mailserver send-test check-auth@verifier.port25.com`，报告会回信到发件地址，同时验证了互联网收信。

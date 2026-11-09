@@ -4,15 +4,41 @@ After=network-online.target sharetoken-dev-dbtunnel.service sharetoken-dev-coord
 Wants=network-online.target sharetoken-dev-dbtunnel.service
 
 [Service]
-User=s0nnet
-WorkingDirectory=/home/s0nnet/sharetoken-dev
+User=st-portal
+Group=st-portal
+# 配置和机密在 /etc/sharetoken-dev/portal（root:st-portal 0750）；唯一可写目录是 /var/lib/sharetoken-dev/portal（下载区）
+WorkingDirectory=/etc/sharetoken-dev/portal
+StateDirectory=sharetoken-dev/portal
 Environment=GOMEMLIMIT=100MiB
 ExecStartPre=/bin/bash -c 'for i in $(seq 60); do (echo > /dev/tcp/127.0.0.1/3306) 2>/dev/null && exit 0; sleep 2; done; exit 1'
-ExecStart=/home/s0nnet/sharetoken-dev/portal -config portal.yaml serve
+ExecStart=/srv/sharetoken-dev/portal -config /etc/sharetoken-dev/portal/portal.yaml serve
 Restart=always
 RestartSec=5
 LimitNOFILE=8192
-# Plain HTTP on the LAN: only armbian (nginx) and this machine (MySQL tunnel, CLI) may talk to it.
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# 加固：只读的系统，看不到 /home，没有任何 capability，只允许普通服务的系统调用
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+# Plain HTTP on the LAN: only armbian (nginx) and this machine may talk to it.
 IPAddressDeny=any
 IPAddressAllow=localhost 192.168.6.91
 MemoryHigh=150M

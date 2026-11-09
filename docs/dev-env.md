@@ -17,9 +17,9 @@
 | 项 | 说明 |
 |---|---|
 | 域名 | `dev.sharetoken.app` 是 `sharetoken.app` 的 CNAME，公网 IP 变化时自动跟随，不用改 DDNS |
-| 主机 | 树莓派 3B（1 GB，`ssh s0nnet@192.168.6.148`），目录 `~/sharetoken-dev`；机器上还有桌面环境、VLC 等 |
-| 服务 | systemd `sharetoken-dev-dbtunnel`、`sharetoken-dev-coordinator`、`sharetoken-dev-portal`，单元里写了内存上限，但 Pi 的启动参数带 `cgroup_disable=memory`，**上限实际不生效**，只有 `GOMEMLIMIT` 这个软限制（实测两个进程共约 50 MB） |
-| 数据库 | 和生产**同一个 MySQL 实例**，独立的库和账号，账号只能访问 `sharetoken_dev`。生产的 `backup.sh` 不备份这个库 |
+| 主机 | 树莓派 3B（1 GB，`ssh s0nnet@192.168.6.148`）；机器上还有桌面环境、VLC 等。布局同生产（`scripts/ops/st-host-setup.sh dev`）：二进制 `/srv/sharetoken-dev/`，配置和机密 `/etc/sharetoken-dev/{portal,coordinator,mail,dbtunnel}/`，下载区 `/var/lib/sharetoken-dev/portal/downloads`；`~/sharetoken-dev` 只是部署暂存目录。运维命令 `st-portal …`、`st-coordinator …`、`st-mailserver …` |
+| 服务 | systemd `sharetoken-dev-dbtunnel`（用户 `st-dbtunnel`）、`sharetoken-dev-coordinator`（`st-coord`）、`sharetoken-dev-portal`（`st-portal`）、`sharetoken-dev-mail`（`st-mail`），单元加固同生产；单元里写了内存上限，但 Pi 的启动参数带 `cgroup_disable=memory`，**上限实际不生效**，只有 `GOMEMLIMIT` 这个软限制（实测两个进程共约 50 MB） |
+| 数据库 | 和生产**同一个 MySQL 实例**，独立的库 `sharetoken_dev`，账号按进程分开：`sharetoken_dev_portal`、`sharetoken_dev_coord`、`sharetoken_mail_dev`（密码在 Mac `~/st-test/dev-keys/{portal,coord,mail}-db.pass`）；旧的 `sharetoken_dev` 账号仍在但不再使用。生产的备份不包含这个库 |
 | 隧道 | Pi 的 `dbtunnel.key` 在 armbian 的 `authorized_keys` 里限制为 `command="/usr/bin/false",restrict,port-forwarding,permitopen="127.0.0.1:3306"`，只能转发到 MySQL，不能执行命令。生产容器不用改端口绑定 |
 | 协调器 peer ID | `12D3KooWDa9b2HPSjHYhxuVGhKQ1866qAsGTKmgwEB5oY4D7qSYt` |
 | 门户 pass 公钥 | `ed25519:5262c7de2eb39f527d515a36082293f1c3426aaaf583883ad71312ad223ed011` |

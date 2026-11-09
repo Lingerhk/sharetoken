@@ -1,16 +1,43 @@
 [Unit]
-Description=sharetoken portal
+Description=sharetoken prod portal
 After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
-User=s0nnet
-WorkingDirectory=/home/s0nnet/sharetoken-prod
+User=st-portal
+Group=st-portal
+# 配置和机密在 /etc/sharetoken/portal（root:st-portal 0750）；唯一可写目录是 /var/lib/sharetoken/portal（下载区）
+WorkingDirectory=/etc/sharetoken/portal
+StateDirectory=sharetoken/portal
 ExecStartPre=/bin/bash -c 'for i in $(seq 60); do (echo > /dev/tcp/127.0.0.1/3306) 2>/dev/null && exit 0; sleep 2; done; exit 1'
-ExecStart=/home/s0nnet/sharetoken-prod/portal -config portal.yaml serve
+ExecStart=/srv/sharetoken/portal -config /etc/sharetoken/portal/portal.yaml serve
 Restart=always
 RestartSec=5
 LimitNOFILE=65536
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# 加固：只读的系统，看不到 /home，没有任何 capability，只允许普通服务的系统调用
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+MemoryMax=400M
 
 [Install]
 WantedBy=multi-user.target

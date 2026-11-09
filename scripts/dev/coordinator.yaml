@@ -1,11 +1,11 @@
-# dev 协调器（树莓派）。部署到 ~/sharetoken-dev/coordinator.yaml。
+# dev 协调器（树莓派）。装到 /etc/sharetoken-dev/coordinator/coordinator.yaml，以 st-coord 运行。
 version: 1
 identity:
-  key_file: coordinator.key       # dev 专用，绝不和生产混用；peer ID 在 scripts/relay/conf/*.yaml 的 dev 网络里
+  key_file: /etc/sharetoken-dev/coordinator/coordinator.key       # dev 专用，绝不和生产混用；peer ID 在 scripts/relay/conf/*.yaml 的 dev 网络里
 database:
   # armbian 上生产 MySQL 实例里的独立库和账号，经 SSH 隧道到达（sharetoken-dev-dbtunnel.service）
-  dsn: mysql://sharetoken_dev@127.0.0.1:3306/sharetoken_dev
-  password_file: db.pass
+  dsn: mysql://sharetoken_dev_coord@127.0.0.1:3306/sharetoken_dev
+  password_file: /etc/sharetoken-dev/coordinator/db.pass
   max_open_conns: 8
   max_idle_conns: 2
   conn_max_lifetime: 30m

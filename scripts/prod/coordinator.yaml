@@ -1,10 +1,10 @@
-# 生产协调器（armbian）。部署到 ~/sharetoken-prod/coordinator.yaml。
+# 生产协调器（armbian）。装到 /etc/sharetoken/coordinator/coordinator.yaml，以 st-coord 运行。
 version: 1
 identity:
-  key_file: coordinator.key       # peer ID 12D3KooWFAqCYkUS2Kt2KRWQ1mWF82Em4mRbB5nD4V7Fr5PmWfUh，中继按它放行
+  key_file: /etc/sharetoken/coordinator/coordinator.key       # peer ID 12D3KooWFAqCYkUS2Kt2KRWQ1mWF82Em4mRbB5nD4V7Fr5PmWfUh，中继按它放行
 database:
-  dsn: mysql://sharetoken@127.0.0.1:3306/sharetoken
-  password_file: db.pass
+  dsn: mysql://sharetoken_coord@127.0.0.1:3306/sharetoken
+  password_file: /etc/sharetoken/coordinator/db.pass
   max_open_conns: 16
   max_idle_conns: 4
   conn_max_lifetime: 30m

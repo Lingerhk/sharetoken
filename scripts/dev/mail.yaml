@@ -1,8 +1,8 @@
-# dev 邮件服务（树莓派）。部署到 ~/sharetoken-dev/mail.yaml。发件人 team-dev@，收信只在局域网可达（路由器 25 端口映射给 armbian）。
+# dev 邮件服务（树莓派）。装到 /etc/sharetoken-dev/mail/mail.yaml，以 st-mail 运行。发件人 team-dev@，收信只在局域网可达（路由器 25 端口映射给 armbian）。
 version: 1
 database:
   dsn: mysql://sharetoken_mail_dev@127.0.0.1:3306/sharetoken_dev
-  password_file: mail-db.pass
+  password_file: /etc/sharetoken-dev/mail/db.pass
   max_open_conns: 4
   max_idle_conns: 1
   conn_max_lifetime: 30m
@@ -13,7 +13,7 @@ domain: sharetoken.app
 from: "ShareToken Dev <team-dev@sharetoken.app>"
 dkim:
   selector: stdev1
-  key_file: dkim.key
+  key_file: /etc/sharetoken-dev/mail/dkim.key
 delivery:
   mode: direct
   workers: 2

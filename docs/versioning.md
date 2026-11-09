@@ -80,7 +80,7 @@ dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 script
 dist/SHA256SUMS-1.0.0
 ```
 
-**安装包的发布：** `scripts/publish-packages.sh <版本> <user@host> <目录> [--with-dev-cli]` 在 Mac 上构建 12 个包（桌面安装包和命令行包，三个系统、两种架构），上传并在服务器上校验后整体替换门户的 `downloads` 目录（`downloads.dir`），门户在 `/downloads/` 提供下载。dev 和 prod 门户展示的都是正式版的包：dev 部署时加上 `--with-dev-cli`，多传 6 个 `sharetoken-cli-dev-*` 供测试，`GET /api/v1/downloads` 不列出它们，只能按文件名下载。
+**安装包的发布：** `scripts/publish-packages.sh <版本> <user@host> <目录> [--with-dev-cli] [--owner st-portal]` 在 Mac 上构建 12 个包（桌面安装包和命令行包，三个系统、两种架构），上传并在服务器上校验后整体替换门户的 `downloads` 目录（`downloads.dir`，服务器上是 `/var/lib/sharetoken[-dev]/portal/downloads`，归 `st-portal`，`--owner` 让脚本经 sudo 以该属主安装），门户在 `/downloads/` 提供下载。dev 和 prod 门户展示的都是正式版的包：dev 部署时加上 `--with-dev-cli`，多传 6 个 `sharetoken-cli-dev-*` 供测试，`GET /api/v1/downloads` 不列出它们，只能按文件名下载。
 
 
 可执行文件名不带版本（`sharetoken`、`sharetoken-gui`，dev 构建是 `sharetoken-dev`、`sharetoken-gui-dev`）：GUI 按固定名字查找 daemon，用户的 PATH 也不用变。

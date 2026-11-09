@@ -50,13 +50,17 @@ def ssh(cmd, host=None, stdin=None):
 
 
 def portal_cmd(args, password=None):
+    # st-portal (scripts/ops/st-host-setup.sh) runs the portal as its service user; sudo carries the variable.
     env = "SHARETOKEN_PASSWORD=%s " % password if password else ""
-    return ssh("cd ~/%s && %s./portal -config portal.yaml %s" % (CFG["dir"], env, args))
+    return ssh("sudo %sst-portal %s" % (env, args))
 
 
 def sql(q):
-    cmd = "cd ~/sharetoken-prod && docker exec st-mysql mysql -h127.0.0.1 -uroot -p\"$(cat mysql-root.pass)\" -N --default-character-set=utf8mb4 %s -e %s 2>/dev/null"
-    return ssh(cmd % (CFG["db"], json.dumps(q).replace("$", "\\$").replace("`", "\\`")), host="s0nnet@192.168.6.91").strip()
+    # MySQL root through the root-only helper (its password is never on a command line); the old way until armbian is migrated.
+    cmd = ("if sudo -n test -x /usr/local/sbin/st-mysql-root; then sudo /usr/local/sbin/st-mysql-root -N --default-character-set=utf8mb4 %s -e %s; "
+           "else cd ~/sharetoken-prod && docker exec st-mysql mysql -h127.0.0.1 -uroot -p\"$(cat mysql-root.pass)\" -N --default-character-set=utf8mb4 %s -e %s 2>/dev/null; fi")
+    qq = json.dumps(q).replace("$", "\\$").replace("`", "\\`")
+    return ssh(cmd % (CFG["db"], qq, CFG["db"], qq), host="s0nnet@192.168.6.91").strip()
 
 
 def call(method, url, body=None, headers=None, opener=None):
