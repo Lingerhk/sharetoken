@@ -16,7 +16,7 @@ var i18nBundles = map[string]struct {
 	dir   string // holds i18n/<bundle>/<lang>.json
 	files []string
 }{
-	"site":   {"web", []string{"web/index.html", "web/site.js", "web/docs.html", "web/docs.js"}},
+	"site":   {"web", []string{"web/index.html", "web/site.js", "web/docs.html", "web/docs.js", "web/changelog.html", "web/changelog.js"}},
 	"app":    {"web", []string{"web/app.html", "web/common.js", "web/user.js"}},
 	"client": {"../client/ui", []string{"../client/ui/index.html", "../client/ui/app.js"}},
 }

@@ -244,6 +244,10 @@ func TestPagesAndSecurityHeaders(t *testing.T) {
 		{"/", "text/html", "site.js", 200},
 		{"/app/", "text/html", "user.js", 200},
 		{"/login", "text/html", "user.js", 200}, // the client follows the redirect to /app/
+		{"/changelog/", "text/html", "changelog.js", 200},
+		{"/changelog", "text/html", "changelog.js", 200}, // redirects to /changelog/
+		{"/static/changelog.js", "javascript", "THEME.toggle", 200},
+		{"/static/changelog.html", "", "", 404},
 		{"/static/site.css", "text/css", ":root", 200},
 		{"/static/site.js", "javascript", "/api/v1/info", 200},
 		{"/static/favicon.svg", "image/svg", "<svg", 200},

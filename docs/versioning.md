@@ -11,7 +11,7 @@
 - **注入：** `scripts/ldflags.sh` 写入 `internal/version`，GUI 外壳是独立 module，用 `main.version`。
 - **查看：** `portal|coordinator|mailserver|relay|sharetoken version`，启动日志第一行，门户 `GET /api/v1/version`，管理后台“版本”页。
 
-发版：改 `VERSION`，提交，`git tag v1.2.3`，再构建。生产部署脚本拒绝 `-dev` 版本。
+发版：改 `VERSION`，在更新日志页（`portal/web/changelog.html`，网址 `/changelog/`）最上面加这个版本的功能并补齐翻译，提交，`git tag v1.2.3`，再构建。生产部署脚本拒绝 `-dev` 版本。
 
 ## 接口版本
 

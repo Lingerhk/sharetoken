@@ -111,6 +111,10 @@ func (s *Server) servePages(mux *http.ServeMux) {
 	mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/docs/", http.StatusMovedPermanently)
 	})
+	mux.HandleFunc("GET /changelog", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/changelog/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /changelog/{$}", page("changelog.html"))
 	mux.HandleFunc("GET /docs/{$}", page("docs.html"))
 	mux.HandleFunc("GET /docs/{page}", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := fs.Stat(sub, "docs/en/"+r.PathValue("page")+".md"); err == nil {
