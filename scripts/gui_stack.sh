@@ -9,7 +9,10 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CMD=${1:?start or stop}; DIR=${2:?directory}
-PORTAL_PORT=18092; RELAY_PORT=14201; MOCK_PORT=18434; SELLER_API=19788; DAEMON_API=19787
+# $GUI_STACK_OFFSET shifts the ports and names the database apart, so two of these
+# can run at once; the UI tests that assume the default ports need offset 0.
+OFF=${GUI_STACK_OFFSET:-0}
+PORTAL_PORT=$((18092+OFF)); RELAY_PORT=$((14201+OFF)); MOCK_PORT=$((18434+OFF)); SELLER_API=$((19788+OFF)); DAEMON_API=$((19787+OFF))
 
 if [ "$CMD" = stop ]; then
   [ -f "$DIR/pids" ] && while read -r p; do kill "$p" 2>/dev/null || true; done < "$DIR/pids"
@@ -26,7 +29,7 @@ run() { local log=$1; shift; "$@" > "$log" 2>&1 & echo $! >> pids; }
 wait_for() { for _ in $(seq 1 150); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 0.2; done; echo "timed out waiting for $2 in $1" >&2; tail -5 "$1" >&2; exit 1; }
 
 export SHARETOKEN_DB_PASSWORD=
-DSN=$("$ROOT/scripts/local-mysql.sh" new-db st_gui_stack)
+DSN=$("$ROOT/scripts/local-mysql.sh" new-db "st_gui_stack${OFF#0}")
 echo "$DSN" > dsn
 COORD=(-key coord.key -db "$DSN")
 PASSKEY=$("$BIN/portal" -db "$DSN" pass-key)

@@ -72,6 +72,8 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
 dist/sharetoken-prod-1.0.0-macos-arm64.zip        scripts/build-gui.sh prod
 dist/sharetoken-prod-1.0.0-windows-amd64.zip      scripts/build-gui.sh prod windows amd64
 dist/sharetoken-prod-1.0.0-linux-arm64.tar.gz     scripts/build-gui.sh prod（在 Linux 上）
+dist/sharetoken-cli-prod-1.0.0-linux-amd64.tar.gz scripts/build-cli.sh prod linux amd64（all 构建三个系统、两种架构）
+dist/sharetoken-cli-prod-1.0.0-windows-amd64.zip  scripts/build-cli.sh prod windows amd64
 dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 scripts/build.sh relay
 dist/SHA256SUMS-1.0.0
 ```

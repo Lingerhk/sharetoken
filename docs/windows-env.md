@@ -88,7 +88,7 @@ Start-ScheduledTask -TaskName st-gui
 
 ## 用完暂停
 
-测试结束后暂停虚拟机：Fusion 菜单“虚拟机 › Suspend”。启动用 `open` 打开 `.vmwarevm` 目录，由 Fusion 启动。这台机器加密，`vmrun` 的 start、suspend 都要密码，用不了。
+测试结束后暂停虚拟机：Fusion 菜单“虚拟机 › Suspend”，或窗口工具栏的 Suspend 按钮。启动用 `open` 打开 `.vmwarevm` 目录，由 Fusion 启动。这台机器加密，`vmrun` 的 start、suspend 都要密码，用不了。
 
 ## 端到端测试
 

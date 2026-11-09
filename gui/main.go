@@ -125,6 +125,7 @@ func main() {
 		// With a tray, closing the window leaves the app and its daemon running;
 		// the menu's Quit ends them.
 		HideWindowOnClose: useTray,
+		OnBeforeClose:     onBeforeClose,
 		StartHidden:       selftest,
 		AssetServer:       &assetserver.Options{Handler: handler},
 		OnDomReady: func(ctx context.Context) {

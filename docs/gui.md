@@ -46,7 +46,7 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（client/daem
 
 ## 菜单栏和托盘
 
-macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘，关窗口仍是退出。
+macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘，关窗口仍是退出，daemon 一起停止。
 
 | 操作 | 结果 |
 |---|---|
@@ -61,6 +61,7 @@ macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘，关
 - Windows 11 默认把新图标收进 `^` 溢出区，用户可以拖到任务栏上。
 - 图标由 `go run packaging/gen_tray_icons.go` 生成（在 `gui/` 下运行）。macOS 是模板图，由系统配色；Windows 是彩色 ICO。
 - 实现：macOS 直接用 AppKit（`tray_darwin.m`），常见的 Go 托盘库和 Wails 都定义了 `AppDelegate`，链接时冲突。Windows 用 `fyne.io/systray`，运行在单独的线程上。
+- **Linux 的退出：** Wails 在 goroutine 里调用 `gtk_main_quit`，GTK 不是线程安全的，信号偶尔丢失：窗口没了，进程和 daemon 还在。`quit_linux.go` 用 `OnBeforeClose` 把这个调用排到 GTK 线程。
 - **Windows 的焦点保护：** Wails 收到 `WM_SETFOCUS` 就调用 WebView2 的 `MoveFocus`，失败时直接 `os.Exit(1)`。窗口最小化或隐藏时它可能失败，所以 `tray_windows.go` 在窗口过程前拦下这种状态的消息，打开窗口也不走 Wails 的 `WindowShow`。升级 Wails 时要重新跑 `tray` 自检。
 
 ## 本地 API（daemon 新增）
@@ -139,6 +140,22 @@ scripts/build-gui.sh dev windows arm64   # 任何系统上都能构建：dist/sh
 - Linux 构建依赖（Ubuntu 24.04）：`build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev`；运行依赖 WebKitGTK。脚本检测到 4.1 时加 `webkit2_41` 标签，只有 4.0 的旧系统不加。Linux 包里的 `install-linux.sh` 安装到 `~/.local` 并添加应用菜单项。
 - macOS 版只有 ad-hoc 签名：本机可运行，分发给别人需要 Developer ID 签名和公证，否则会被 Gatekeeper 拦下。
 - 日志：窗口启动的 daemon 写到数据目录的 `daemon.log`（prod 是 `~/.sharetoken`，dev 是 `~/.sharetoken-dev`；Windows 在 `%USERPROFILE%` 下）。
+
+## 命令行版
+
+三个系统都提供不带窗口的命令行包，给服务器和不装桌面的用户。程序和桌面包里的 `sharetoken-<env>` 是同一个，名字也相同。
+
+```bash
+scripts/build-cli.sh dev               # 本机系统
+scripts/build-cli.sh prod linux amd64  # macos、linux、windows，amd64、arm64；不需要 cgo，任何系统都能构建
+scripts/build-cli.sh prod all          # 全部 6 个包
+```
+
+产物是 `dist/sharetoken-cli-<env>-<版本>-<系统>-<架构>.tar.gz`（Windows 是 `.zip`），列入 `dist/SHA256SUMS-<版本>`，里面有程序和 `README.txt`。macOS 程序只有链接器的 ad-hoc 签名，Windows 程序没有代码签名，下载后的提示和桌面版相同。
+
+全流程测试：`scripts/gui_stack.sh start DIR && . DIR/env && PORTAL=$PORTAL PIN=$PIN scripts/cli_test.sh <sharetoken-dev 程序>`（注册、运行、查询、经网络购买推理、停止、登录、退出）。
+
+Ubuntu 上的测试环境见 [linux-env.md](linux-env.md)。
 
 也可以不用窗口：`sharetoken-prod daemon` 后用浏览器打开 `http://127.0.0.1:9787/`（dev：`sharetoken-dev daemon`，端口 9887）。
 

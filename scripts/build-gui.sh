@@ -36,10 +36,7 @@ OUT=dist
 VERSION=$(scripts/version.sh)
 NUMERIC=${VERSION%%-*}  # macOS and Windows metadata take only numbers
 STAMP=sharetoken-build-type=$ENV
-LDFLAGS="-s -w $(scripts/ldflags.sh) -X sharetoken/client.buildType=$STAMP"
-[ -n "${TELEMETRY_OFF:-}" ] && LDFLAGS="$LDFLAGS -X sharetoken/client.TelemetryKey="
-[ -n "${TELEMETRY_KEY:-}" ] && LDFLAGS="$LDFLAGS -X sharetoken/client.TelemetryKey=$TELEMETRY_KEY"
-[ -n "${TELEMETRY_HOST:-}" ] && LDFLAGS="$LDFLAGS -X sharetoken/client.TelemetryHost=$TELEMETRY_HOST"
+LDFLAGS=$(scripts/client_ldflags.sh "$ENV")
 SHELL_LDFLAGS="-s -w -X main.buildType=$STAMP -X main.version=$VERSION"
 
 fill() { # template: the packaging files name the build type with @ENV@ and so on
@@ -101,7 +98,7 @@ Darwin)
   # copies still need a Developer ID signature and notarization to open without
   # a Gatekeeper warning.
   codesign --force --deep --sign - "$APP" 2>/dev/null
-  ZIP=sharetoken-$ENV-$VERSION-macos-$(uname -m).zip
+  ZIP=sharetoken-$ENV-$VERSION-macos-$(go env GOARCH).zip
   (cd "$OUT" && rm -f "$ZIP" && ditto -c -k --keepParent "sharetoken-$ENV.app" "$ZIP")
   sums "$ZIP"
   echo "built $APP"
@@ -110,7 +107,7 @@ Linux)
   # webkit2gtk 4.1 (Ubuntu 24.04+, Debian 12+); older systems only have 4.0.
   TAG=""
   pkg-config --exists webkit2gtk-4.1 && TAG=",webkit2_41"
-  BASE=sharetoken-$ENV-$VERSION-linux-$(uname -m)
+  BASE=sharetoken-$ENV-$VERSION-linux-$(go env GOARCH)
   DIR=$OUT/$BASE
   rm -rf "$DIR"
   mkdir -p "$DIR"
