@@ -178,6 +178,7 @@
 | 禁用用户继续交易 | 协调器每次请求都查用户状态；token 立即失效 | `accounts.DeviceAccount` |
 | 网页会话被窃取 / 跨站请求伪造 / 注入脚本 | HttpOnly + SameSite cookie；自定义头 + Origin 校验；严格 CSP、无内联代码 | `portal/web.go`（§2.12） |
 | 管理员口令泄露 / 被猜中 | 管理员强制 TOTP 两步验证；无二步的 token 进不了 `/admin/*`；错码限流、challenge 限次、防重放；密钥加密存放 | `portal/mfa.go`、`internal/totp`（§2.12） |
+| 陌生 peer 用超大帧或海量流耗尽中继 / 协调器内存 | 帧按实际到达的数据增长，不按声明长度预分配；流处理器先向 libp2p 资源管理器预留帧大小，超出每流 16 MiB、每 peer 和全局（RAM 的 1/8）限额即拒绝；只含几个字段的帧（凭证、ack）上限 64 KiB；枢纽进程的资源管理器不再是 `InfiniteLimits`，只把随用户数增长的计数（全局连接/流/fd、circuit 与 ping 等内建服务）按 `max_conns` 放宽，全局内存上限为 RAM 的 1/4；用户端沿用 libp2p 默认限额，仅把每 peer 并发 ping 从 3 提到 8，免得测速与链路监控重叠时把中继误判为不可达 | `protocol.RecvStream`、`p2p.HubLimits`、`p2p.ClientLimits` |
 
 ## 5. 诚实的边界
 

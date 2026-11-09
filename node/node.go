@@ -271,7 +271,7 @@ func (s *Service) handleInfer(st network.Stream) {
 	remote := st.Conn().RemotePeer().String()
 	_ = st.SetDeadline(time.Now().Add(requestTimeout))
 
-	env, err := protocol.Recv(st)
+	env, err := protocol.RecvStream(st, protocol.MaxFrameSize)
 	if err != nil {
 		_ = st.Reset()
 		return
@@ -419,7 +419,7 @@ func (s *Service) handleInfer(st network.Stream) {
 	// without one the payout waits out the dispute window.
 	_ = st.SetDeadline(time.Now().Add(ackTimeout))
 	var ack []byte
-	if env, err := protocol.Recv(st); err == nil {
+	if env, err := protocol.RecvStream(st, protocol.MaxSmallFrame); err == nil {
 		switch env.Type {
 		case protocol.TypeAck:
 			var a protocol.Ack

@@ -172,7 +172,7 @@ func (s *Service) handleCtrl(st network.Stream) {
 	defer st.Close()
 	_ = st.SetDeadline(time.Now().Add(ctrlTimeout))
 	remote := st.Conn().RemotePeer().String()
-	env, err := protocol.Recv(st)
+	env, err := protocol.RecvStream(st, protocol.MaxFrameSize)
 	if err != nil {
 		_ = st.Reset()
 		return
@@ -330,7 +330,7 @@ func (s *Service) handleEvidence(st network.Stream, remote string, env *protocol
 		return
 	}
 	for i := uint64(0); i < ev.Chunks; i++ {
-		cenv, err := protocol.Recv(st)
+		cenv, err := protocol.RecvStream(st, protocol.MaxFrameSize)
 		if err != nil {
 			_ = st.Reset()
 			return

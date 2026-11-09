@@ -11,8 +11,15 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	lproto "github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/p2p/host/autonat"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
+	circuitproto "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/proto"
+	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
+	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
+	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
+	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
+	"github.com/pbnjay/memory"
 
 	"sharetoken/internal/version"
 	"sharetoken/protocol"
@@ -54,19 +61,96 @@ func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 	if cfg.NAT {
 		opts = append(opts, libp2p.NATPortMap(), libp2p.EnableHolePunching())
 	}
+	limits := ClientLimits()
 	if cfg.MaxConns > 0 {
 		cm, err := connmgr.NewConnManager(cfg.MaxConns*3/4, cfg.MaxConns)
 		if err != nil {
 			return nil, err
 		}
-		rm, err := rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(rcmgr.InfiniteLimits))
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, libp2p.ConnectionManager(cm), libp2p.ResourceManager(rm))
+		opts = append(opts, libp2p.ConnectionManager(cm))
+		limits = HubLimits(cfg.MaxConns)
 	}
+	rm, err := rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(limits))
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, libp2p.ResourceManager(rm))
 	opts = append(opts, cfg.Options...)
 	return libp2p.New(opts...)
+}
+
+// ClientLimits are the resource manager limits of a user host: libp2p's
+// defaults scaled to the machine, except that a peer may have several pings
+// in flight. libp2p allows three; a measurement of all relays, the link
+// monitor's ping and a reservation's ping can overlap on the same relay, and
+// a client that refuses its own ping stream would call the relay unreachable
+// (it says "cannot reserve outbound stream: resource limit exceeded").
+func ClientLimits() rcmgr.ConcreteLimitConfig {
+	scaling := rcmgr.DefaultLimits
+	libp2p.SetDefaultServiceLimits(&scaling)
+	pingPeer := rcmgr.ResourceLimits{Streams: 16, StreamsInbound: 8, StreamsOutbound: 8}
+	partial := rcmgr.PartialLimitConfig{
+		ServicePeer:  map[string]rcmgr.ResourceLimits{ping.ServiceName: pingPeer},
+		ProtocolPeer: map[lproto.ID]rcmgr.ResourceLimits{ping.ID: pingPeer},
+	}
+	return partial.Build(scaling.AutoScale())
+}
+
+// HubLimits are the resource manager limits of a host that serves many peers
+// (a relay, the coordinator). libp2p's defaults, scaled to this machine's
+// memory and file descriptors, stay in force per peer, per connection and per
+// stream: a stream may hold 16 MiB, a peer a few hundred streams and some
+// tens of MiB, and so on. That is what bounds a flood of large frames (see
+// protocol.RecvStream). Raised to fit maxConns are only the counts that grow
+// with the number of users, which the scaled defaults put in the hundreds:
+// system-wide connections, streams and descriptors, the transient scope
+// (connections still shaking hands), and the circuit relay protocols and
+// service, since every relayed connection is one long-lived hop stream on the
+// relay and one stop stream on the coordinator, and the bundled services
+// (ping, identify, autonat, hole punching). The system memory limit is a
+// quarter of RAM (libp2p's default is an eighth): the aggregate cap on what
+// all peers can hold, legitimate buffers included.
+func HubLimits(maxConns int) rcmgr.ConcreteLimitConfig {
+	scaled := ClientLimits()
+	conns := rcmgr.LimitVal(maxConns)
+	streams := rcmgr.LimitVal(4 * maxConns)
+	transient := rcmgr.LimitVal(max(maxConns/8, 64))
+	mem := rcmgr.DefaultLimit64
+	if total := memory.TotalMemory(); total > 0 {
+		mem = rcmgr.LimitVal64(total / 4)
+	}
+	// The bundled libp2p services and protocols: their default limits are a
+	// few dozen streams plus a handful per GiB, sized for an ordinary node,
+	// while here every user pings its relay every 10 s and reconnects en
+	// masse after a restart. Streams scale with the users; memory stays under
+	// the system cap.
+	perUsers := rcmgr.ResourceLimits{
+		Streams: 2 * conns, StreamsInbound: conns, StreamsOutbound: conns,
+		Memory: mem,
+	}
+	services := map[string]rcmgr.ResourceLimits{}
+	for _, name := range []string{relayv2.ServiceName, identify.ServiceName, ping.ServiceName, autonat.ServiceName, holepunch.ServiceName} {
+		services[name] = perUsers
+	}
+	protocols := map[lproto.ID]rcmgr.ResourceLimits{}
+	for _, id := range []lproto.ID{circuitproto.ProtoIDv2Hop, circuitproto.ProtoIDv2Stop, identify.ID, identify.IDPush, ping.ID, autonat.AutoNATProto, holepunch.Protocol} {
+		protocols[id] = perUsers
+	}
+	partial := rcmgr.PartialLimitConfig{
+		System: rcmgr.ResourceLimits{
+			Conns: conns, ConnsInbound: conns, ConnsOutbound: conns,
+			Streams: 2 * streams, StreamsInbound: streams, StreamsOutbound: streams,
+			FD: conns, Memory: mem,
+		},
+		Transient: rcmgr.ResourceLimits{
+			Conns: transient, ConnsInbound: transient, ConnsOutbound: transient,
+			Streams: 2 * transient, StreamsInbound: transient, StreamsOutbound: transient,
+			FD: transient,
+		},
+		Service:  services,
+		Protocol: protocols,
+	}
+	return partial.Build(scaled)
 }
 
 // AddrStrings returns h's current addresses, for embedding in a signed offer.

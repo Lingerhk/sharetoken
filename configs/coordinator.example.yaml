@@ -24,7 +24,7 @@ database:
 
 network:
   listen: []                     # 默认空：只拨出，经中继可达，不需要公网地址
-  max_conns: 8192                # 每个在线用户占一条中继连接
+  max_conns: 8192                # 每个在线用户占一条中继连接；libp2p 资源管理器的全局连接/流数按它放宽，其余限额（每流 16 MiB、每 peer 流数、全局内存 = RAM/8）保留
   # 除数据库中登记的中继外，额外占位的中继（完整 multiaddr，以 /p2p/<id> 结尾）
   relays: []
   relay_sync: 15s                # [新增] 中继列表/状态同步间隔

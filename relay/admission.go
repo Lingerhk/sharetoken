@@ -211,7 +211,7 @@ func (a *admission) verify(p *relaypass.Pass, remote string, now time.Time) (*te
 func (a *admission) handlePass(s network.Stream) {
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
-	env, err := protocol.Recv(s)
+	env, err := protocol.RecvStream(s, protocol.MaxSmallFrame)
 	if err != nil {
 		_ = s.Reset()
 		return

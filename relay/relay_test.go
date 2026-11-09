@@ -3,11 +3,13 @@ package relay
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/binary"
 	"testing"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	lproto "github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 
 	"sharetoken/p2p"
@@ -235,5 +237,38 @@ func TestRelayWithoutKeysIsOpen(t *testing.T) {
 	h, _ := newHost(t)
 	if _, err := client.Reserve(ctx, h, peer.AddrInfo{ID: r.Host.ID(), Addrs: r.Host.Addrs()}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A pass frame is a few hundred bytes; a peer that announces a large one is
+// cut off before it can send it.
+func TestRelayRefusesOversizedPassFrame(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	portalPub, _, _ := ed25519.GenerateKey(nil)
+	rk, _ := p2p.NewKeys()
+	r, err := New(rk, Config{Listen: []string{"/ip4/127.0.0.1/tcp/0"}, Networks: []Network{{Name: "prod", PortalKeys: []ed25519.PublicKey{portalPub}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	dev, _ := newHost(t)
+	if err := dev.Connect(ctx, peer.AddrInfo{ID: r.Host.ID(), Addrs: r.Host.Addrs()}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := dev.NewStream(ctx, r.Host.ID(), lproto.ID(relaypass.Protocol))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(10 * time.Second))
+	// A 1 MiB frame: the relay must reset the stream without reading it.
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], 1<<20)
+	if _, err := s.Write(hdr[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := protocol.Recv(s); err == nil {
+		t.Fatal("the relay answered an oversized pass frame")
 	}
 }
