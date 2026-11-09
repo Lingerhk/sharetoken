@@ -6,7 +6,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import time
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -89,7 +88,7 @@ class Base(unittest.TestCase):
         self.ini = os.path.join(self.dir, "monitor.ini")
         with open(self.ini, "w", encoding="utf-8") as f:
             f.write("[monitor]\nname = relay-t\nurl = http://127.0.0.1:%d/metrics\npushover_url = http://127.0.0.1:%d/push\n"
-                    "summary_hour_utc =\ndisk_used_pct = 101\nmemory_available_pct = 0\n" % (self.fake.port, self.fake.port))
+                    "disk_used_pct = 101\nmemory_available_pct = 0\n" % (self.fake.port, self.fake.port))
         with open(os.path.join(self.dir, "pushover.env"), "w", encoding="utf-8") as f:
             f.write("# comment\nPUSHOVER_TOKEN=tok\nPUSHOVER_USER='usr'\n")
         self.cfg = monitor.load_config(self.ini)
@@ -227,12 +226,9 @@ class TestAlerts(Base):
         self.assertTrue(ok)
         self.assertEqual(len(self.fake.pushes[0]["message"]), monitor.PUSH_MAX_CHARS)
 
-    def test_summary_once_a_day(self):
-        self.cfg["summary_hour_utc"] = str(time.gmtime().tm_hour)
+    def test_healthy_relay_stays_silent(self):
         self.rounds(3)
-        self.assertEqual(len(self.fake.pushes), 1)
-        self.assertIn("连接 7", self.fake.pushes[0]["message"])
-        self.assertEqual(self.fake.pushes[0]["priority"], "-1")
+        self.assertEqual(self.fake.pushes, [])
 
 
 class TestChecks(Base):

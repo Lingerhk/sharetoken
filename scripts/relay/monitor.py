@@ -43,7 +43,6 @@ DEFAULTS = {
     "reservations_denied_per_min": "60",
     "circuits_denied_per_min": "60",
     "passes_rejected_per_min": "30",
-    "summary_hour_utc": "1",    # 每天发一条摘要，没收到说明监控本身出了问题；空表示不发
     "pushover_file": "pushover.env",
     "pushover_url": "https://api.pushover.net/1/messages.json",
     "state_file": "monitor.state",
@@ -275,24 +274,6 @@ def note_restart(state, metrics):
     state["started"] = started
 
 
-def summary(cfg, metrics, state, now):
-    if metrics is None:
-        return "指标不可用"
-    lines = []
-    started = value(metrics, "process_start_time_seconds")
-    if started:
-        lines.append("已运行 %.1f 天" % ((now - started) / 86400.0))
-    lines.append("连接 %d，预约 %d，电路 %d，累计转发 %.1f MB" % (
-        value(metrics, "sharetoken_relay_connections", 0), value(metrics, "sharetoken_relay_reservations", 0),
-        value(metrics, "sharetoken_relay_circuits", 0), value(metrics, "sharetoken_relay_relayed_bytes_total", 0) / 1e6))
-    coord = by_network(metrics, "sharetoken_relay_network_coordinators_reserved")
-    if coord:
-        lines.append("协调器预约：" + "，".join("%s=%d" % kv for kv in sorted(coord.items())))
-    failing = sorted(state.get("checks", {}))
-    lines.append("未恢复：" + ("，".join(failing) if failing else "无"))
-    return "\n".join(lines)
-
-
 def read_pushover(cfg):
     """pushover.env：PUSHOVER_TOKEN=… 和 PUSHOVER_USER=…。没有或不全时返回 None。"""
     creds = {}
@@ -409,12 +390,6 @@ def run_locked(cfg):
             for id_, _, _ in alerts:
                 state["checks"][id_].update(alerted=True, last=now)
             state["outbox"] = []
-
-    hour = cfg["summary_hour_utc"].strip()
-    day = time.strftime("%Y-%m-%d", time.gmtime(now))
-    if hour and time.gmtime(now).tm_hour == int(hour) and state.get("summary_day") != day:
-        if push(cfg, "%s：每日摘要" % cfg["name"], summary(cfg, metrics, state, now), -1):
-            state["summary_day"] = day
 
     save_state(cfg, state)
     return 0
