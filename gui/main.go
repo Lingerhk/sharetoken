@@ -14,10 +14,13 @@ import (
 	"os"
 	goruntime "runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
+	"github.com/wailsapp/wails/v2/pkg/menu/keys"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -55,43 +58,109 @@ func fitToScreen(ctx context.Context) {
 	}
 }
 
+// langReportJS tells the shell which language the page chose, for the tray's text.
+const langReportJS = `fetch('` + shellLangPath + `?l=' + encodeURIComponent(document.documentElement.lang));`
+
+func errText(e *error) string {
+	if e == nil {
+		return "the test did not finish"
+	}
+	return fmt.Sprint(*e)
+}
+
 func main() {
 	sup := newSupervisor()
-	startErr := sup.start(context.Background())
-	if startErr != nil {
-		log.Printf("sharetoken-gui: %v", startErr)
-	}
-	defer sup.stop()
+	// The daemon is started once Wails holds the single-instance lock (OnStartup),
+	// so a second start of the app leaves without touching anything. The window's
+	// first request may arrive before that, and waits.
+	start := sync.OnceValue(func() error {
+		err := sup.start(context.Background())
+		if err != nil {
+			log.Printf("sharetoken-gui: %v", err)
+		}
+		return err
+	})
 
 	// $SHARETOKEN_GUI_SELFTEST=1: run a request through the window's whole path
 	// without showing it, report, and quit (scripts/gui_shell_test.sh).
-	selftest := os.Getenv("SHARETOKEN_GUI_SELFTEST") != ""
+	// =tray: run through the tray and the window, which shows (scripts/gui_tray_test.sh).
+	mode := os.Getenv("SHARETOKEN_GUI_SELFTEST")
+	trayCheck := mode == "tray"
+	selftest := mode != "" && !trayCheck
+	useTray := trayAvailable && !selftest
+	var trayCheckErr atomic.Pointer[error]
+
 	result := make(chan string, 1)
-	handler := newProxy(sup, startErr, result)
+	var appCtx atomic.Pointer[context.Context]
+	showWindow := func() {
+		if ctx := appCtx.Load(); ctx != nil {
+			nativeShowWindow(*ctx)
+		}
+	}
+	tray := newTrayController(start, func() string { return sup.addr }, nativeTraySet)
+	handler := newProxy(sup, start, result, tray.setLang)
 
 	var m *menu.Menu
 	if goruntime.GOOS != "windows" { // Wails draws these roles as blank menus on Windows, where WebView2 handles the keys itself
 		m = menu.NewMenu()
 		m.Append(menu.AppMenu())
+		if useTray { // only here is closing different from quitting
+			m.AddSubmenu("File").AddText("Close Window", keys.CmdOrCtrl("w"), func(*menu.CallbackData) {
+				if ctx := appCtx.Load(); ctx != nil {
+					runtime.Hide(*ctx) // what closing does
+				}
+			})
+		}
 		m.Append(menu.EditMenu()) // without it, copy and paste do not work on macOS
+		m.Append(menu.WindowMenu())
 	}
 
-	err := wails.Run(&options.App{
-		Title:       windowTitle(),
-		Width:       windowWidth,
-		Height:      windowHeight,
-		MinWidth:    480,
-		MinHeight:   minWindowHeight,
-		Menu:        m,
-		StartHidden: selftest,
-		AssetServer: &assetserver.Options{Handler: handler},
+	app := &options.App{
+		Title:     windowTitle(),
+		Width:     windowWidth,
+		Height:    windowHeight,
+		MinWidth:  480,
+		MinHeight: minWindowHeight,
+		Menu:      m,
+		// With a tray, closing the window leaves the app and its daemon running;
+		// the menu's Quit ends them.
+		HideWindowOnClose: useTray,
+		StartHidden:       selftest,
+		AssetServer:       &assetserver.Options{Handler: handler},
 		OnDomReady: func(ctx context.Context) {
 			if selftest {
 				runtime.WindowExecJS(ctx, selftestJS)
 			}
+			if useTray {
+				runtime.WindowExecJS(ctx, langReportJS)
+			}
 		},
 		OnStartup: func(ctx context.Context) {
+			appCtx.Store(&ctx)
 			fitToScreen(ctx)
+			go start()
+			if useTray {
+				nativeTrayStart(windowTitle(), showWindow, func() { runtime.Quit(ctx) })
+				go tray.run(ctx)
+			}
+			if trayCheck {
+				go func() {
+					t := &trayTest{ctx: ctx, sup: sup}
+					err := t.run(start, tray.langReported, func(lang string) {
+						runtime.WindowExecJS(ctx, "fetch('"+shellLangPath+"?l="+lang+"');")
+					})
+					trayCheckErr.Store(&err)
+					if err != nil {
+						runtime.Quit(ctx)
+						return
+					}
+					nativeTrayClick("quit")
+					time.Sleep(15 * time.Second)
+					e := fmt.Errorf("the menu's Quit did not end the app")
+					trayCheckErr.Store(&e)
+					runtime.Quit(ctx)
+				}()
+			}
 			if selftest {
 				go func() {
 					select {
@@ -104,13 +173,30 @@ func main() {
 				}()
 			}
 		},
-	})
+	}
+	if useTray {
+		app.SingleInstanceLock = &options.SingleInstanceLock{
+			UniqueId:               singleInstanceID(sup.home),
+			OnSecondInstanceLaunch: func(options.SecondInstanceData) { showWindow() },
+		}
+	}
+	err := wails.Run(app)
+	if useTray {
+		nativeTrayStop()
+	}
+	_ = start() // one still in progress must finish before it can be stopped
+	sup.stop()
 	if err != nil {
-		sup.stop()
 		log.Fatalf("sharetoken-gui: %v", err)
 	}
 	if selftest && !strings.HasPrefix(handler.lastResult(), "ok") {
-		sup.stop()
 		os.Exit(1)
+	}
+	if trayCheck {
+		if e := trayCheckErr.Load(); e == nil || *e != nil {
+			fmt.Println("selftest: failed:", errText(e))
+			os.Exit(1)
+		}
+		fmt.Println("selftest: ok")
 	}
 }

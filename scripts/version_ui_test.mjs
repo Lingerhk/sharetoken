@@ -82,7 +82,7 @@ const PASSWORD = 'version-ui-password';
 
 await connect();
 await cdp('Page.enable'); await cdp('Runtime.enable'); await cdp('Log.enable');
-await cdp('Emulation.setLocaleOverride', { locale: 'zh-CN' });
+await cdp('Page.addScriptToEvaluateOnNewDocument', { source: "try { localStorage.setItem('st_lang', 'zh-CN'); } catch (e) {}" }); // these checks read the Chinese source text
 
 console.log('admin console');
 portalCmd(['useradd', '-admin', 'verroot'], { SHARETOKEN_PASSWORD: PASSWORD });

@@ -44,6 +44,25 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（client/daem
 - 默认端口 9787 被无关程序占用时（比如另一个数据目录上的 `sharetoken up`），daemon 改用 9788–9797 中第一个空闲端口，页面上显示实际地址。`config.json` 里写了其他端口时不换，直接报错。同一数据目录上已有 `sharetoken up` 时也报错，否则同一把设备密钥会同时在线两次。
 - 窗口启动的 daemon 由它持有 stdin（`-stop-on-stdin-eof`）：窗口退出或崩溃时管道关闭，daemon 正常收尾后退出。
 
+## 菜单栏和托盘
+
+macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘，关窗口仍是退出。
+
+| 操作 | 结果 |
+|---|---|
+| 关闭窗口（红色按钮、X、macOS 的 Cmd+W） | 只隐藏窗口。应用和 daemon 继续运行，共享和本地 API 不中断 |
+| Windows 左键点图标 | 打开窗口（最小化时恢复） |
+| macOS 点图标、Windows 右键点图标 | 菜单：状态行（不可点）、打开、退出 |
+| 菜单里的退出、macOS 的 Cmd+Q | 退出应用；daemon 如果是这个应用启动的，一起停止 |
+| 再次启动程序 | 同一数据目录只保留一个实例：第二个进程唤回窗口后退出。dev 和 prod、不同数据目录互不影响 |
+
+- 状态行每 3 秒从 `GET /api/v1/session` 更新，如 `Connected · a@example.com`、`Not signed in`、`The background service is not running`。
+- 菜单文字跟随页面语言：窗口每次加载页面都把语言报给窗口壳（`/__shell/lang`，不到 daemon）。文字在 `gui/tray_text.go`，测试会检查它和页面的语言列表、相同词条的译文是否一致。
+- Windows 11 默认把新图标收进 `^` 溢出区，用户可以拖到任务栏上。
+- 图标由 `go run packaging/gen_tray_icons.go` 生成（在 `gui/` 下运行）。macOS 是模板图，由系统配色；Windows 是彩色 ICO。
+- 实现：macOS 直接用 AppKit（`tray_darwin.m`），常见的 Go 托盘库和 Wails 都定义了 `AppDelegate`，链接时冲突。Windows 用 `fyne.io/systray`，运行在单独的线程上。
+- **Windows 的焦点保护：** Wails 收到 `WM_SETFOCUS` 就调用 WebView2 的 `MoveFocus`，失败时直接 `os.Exit(1)`。窗口最小化或隐藏时它可能失败，所以 `tray_windows.go` 在窗口过程前拦下这种状态的消息，打开窗口也不走 Wails 的 `WindowShow`。升级 Wails 时要重新跑 `tray` 自检。
+
 ## 本地 API（daemon 新增）
 
 错误统一为 `{"error":{"code","message"}}`，界面按 `code` 显示。
@@ -133,4 +152,5 @@ scripts/build-gui.sh dev windows arm64   # 任何系统上都能构建：dist/sh
 | 使用统计 | `go test -race -run Telemetry ./client` | 用假收集器验证事件格式、不含个人信息、无 key 时不发送、开关和环境变量、每日/每小时去重、收集器宕机或挂起时不影响使用 |
 | 窗口壳 | `cd gui && go test -tags desktop,production .`（Linux 再加 `webkit2_41`） | 启动、连接、停止 daemon，端口冲突，转发 |
 | 界面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走全部界面流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon） |
-| 真实 WebView | `scripts/gui_shell_test.sh <程序目录>` | 不显示窗口，用系统 WebView 加载页面并 POST 到真实 daemon，验证退出时 daemon 一起停 |
+| 真实 WebView | `scripts/gui_shell_test.sh <dev\|prod> <程序目录>` | 不显示窗口，用系统 WebView 加载页面并 POST 到真实 daemon，验证退出时 daemon 一起停 |
+| 菜单栏和托盘 | `scripts/gui_tray_test.sh <dev\|prod> <程序目录>`（macOS；Windows 见 [windows-env.md](windows-env.md)） | 窗口和图标会显示约 15 秒。经系统路径操作真实的图标、菜单和窗口：关闭、打开、最小化恢复、快速连点、语言跟随、再次启动、退出后 daemon 停止 |

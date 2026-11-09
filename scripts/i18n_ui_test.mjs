@@ -106,6 +106,17 @@ await cdp('Page.enable'); await cdp('Runtime.enable'); await cdp('Log.enable');
 await fetch(`${daemon}/api/v1/logout`, { method: 'POST' });
 
 // ---- the landing page and the logged-out portal and client ----
+// Nothing chosen yet: English, whatever the browser's language is.
+const userAgent = await ev('navigator.userAgent');
+await cdp('Emulation.setUserAgentOverride', { userAgent, acceptLanguage: 'de-DE' });
+for (const url of [`${portal}/`, `${portal}/app/`, `${daemon}/`]) {
+  await go(url);
+  await sleep(300);
+  ok(await ev('navigator.language') === 'de-DE', `${url}: the browser says German`);
+  ok(await ev('document.documentElement.lang') === 'en', `${url}: English by default, not the browser's language`);
+}
+await cdp('Emulation.setUserAgentOverride', { userAgent, acceptLanguage: 'en-US' });
+
 for (const lang of LANGS) {
   await size(1280, 900);
   await go(`${portal}/?lang=${lang}`);

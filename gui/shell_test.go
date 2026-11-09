@@ -295,7 +295,7 @@ func TestProxyForwards(t *testing.T) {
 	}))
 	defer daemon.Close()
 	addr := strings.TrimPrefix(daemon.URL, "http://")
-	p := newProxy(&supervisor{addr: addr}, nil, nil)
+	p := newProxy(&supervisor{addr: addr}, started, nil, nil)
 	req := httptest.NewRequest("POST", "wails://wails/api/v1/login?x=1", strings.NewReader(`{"a":1}`))
 	req.Header.Set("Origin", "wails://wails")
 	req.Header.Set("Content-Type", "application/json")
@@ -310,7 +310,7 @@ func TestProxyForwards(t *testing.T) {
 }
 
 func TestProxyDaemonDown(t *testing.T) {
-	p := newProxy(&supervisor{addr: "127.0.0.1:1"}, nil, nil)
+	p := newProxy(&supervisor{addr: "127.0.0.1:1"}, started, nil, nil)
 	w := httptest.NewRecorder()
 	p.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/session", nil))
 	if w.Code != 502 || !strings.Contains(w.Body.String(), "daemon_down") {
@@ -319,13 +319,15 @@ func TestProxyDaemonDown(t *testing.T) {
 }
 
 func TestProxyShowsStartError(t *testing.T) {
-	p := newProxy(&supervisor{addr: "127.0.0.1:1"}, errString("port <in use>"), nil)
+	p := newProxy(&supervisor{addr: "127.0.0.1:1"}, func() error { return errString("port <in use>") }, nil, nil)
 	w := httptest.NewRecorder()
 	p.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != 503 || !strings.Contains(w.Body.String(), "port &lt;in use&gt;") {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
 }
+
+func started() error { return nil }
 
 type errString string
 

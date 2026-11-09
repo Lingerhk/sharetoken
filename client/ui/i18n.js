@@ -40,7 +40,6 @@ const I18N = (() => {
     if (asked) { store(asked); return asked; }
     const saved = match(stored());
     if (saved) return saved;
-    for (const l of navigator.languages || [navigator.language]) { const m = match(l); if (m) return m; }
     return FALLBACK;
   }
 

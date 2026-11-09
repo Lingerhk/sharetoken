@@ -78,6 +78,17 @@ Start-ScheduledTask -TaskName st-gui
 - `start.cmd` 里设置 `SHARETOKEN_HOME`，并用 `start "" sharetoken-gui-dev.exe` 启动。
 - 窗口壳链接了 `-H windowsgui`，只有把输出重定向到文件才能拿到 stdout。自检的结果就是这样读取的：`SHARETOKEN_GUI_SELFTEST=1` 时运行 `sharetoken-gui-dev.exe > out.txt`。
 - 脚本 `scripts/gui_shell_test.sh` 是 bash 写的，不能在虚拟机上运行，要按它的步骤手工做。
+- 托盘自检：`SHARETOKEN_GUI_SELFTEST=tray`，并用独立的 `SHARETOKEN_HOME`（`config.json` 写私有端口），运行 `sharetoken-gui-dev.exe > out.txt 2>&1`。通过时输出 `selftest: ok`，退出码 0。窗口会显示。
+- 用 PowerShell 操作真实控件时注意：传给 `FindWindow` 的 `$null` 会变成空字符串，要写 `[NullString]::Value`。托盘按钮的 UIA 名称前有一个空格，任务栏按钮是 `sharetoken-gui-dev - 1 个运行窗口`。托盘菜单是 Win32 菜单（类名 `#32768`），UIA 查不到菜单项名称。不要盲点坐标：溢出区没展开时，右键会落到桌面菜单上。
+- `Start-Process` 启动的程序会继承脚本的输出句柄，脚本的输出文件要每次换名。
+
+## 时钟
+
+虚拟机暂停恢复后时钟可能不同步，慢得多时登录会失败：`bind_failed`、`device signature is too old or from the future`。在 Mac 上执行 `ssh st-win "Set-Date -Date ([datetime]'$(date -u +%FT%TZ)')"` 校正。
+
+## 用完暂停
+
+测试结束后暂停虚拟机：Fusion 菜单“虚拟机 › Suspend”。启动用 `open` 打开 `.vmwarevm` 目录，由 Fusion 启动。这台机器加密，`vmrun` 的 start、suspend 都要密码，用不了。
 
 ## 端到端测试
 
@@ -98,7 +109,7 @@ ssh -N -R 127.0.0.1:18092:127.0.0.1:18092 -R 127.0.0.1:14201:127.0.0.1:14201 st-
 | 停止 daemon | Windows 不能发 SIGTERM。窗口壳持有 daemon 的 stdin，关闭后 daemon 正常退出（`-stop-on-stdin-eof`），各平台相同。窗口壳崩溃时管道关闭，daemon 也会退出 |
 | 控制台窗口 | daemon 是控制台程序，用 `CREATE_NO_WINDOW` 启动，避免弹黑框 |
 | 程序名 | `findBinary` 找 `sharetoken.exe`，不检查可执行位 |
-| 菜单 | Wails 在 Windows 上把菜单角色画成空白菜单，所以不设菜单。复制粘贴由 WebView2 处理 |
+| 菜单 | Wails 在 Windows 上把菜单角色画成空白菜单，所以不设窗口菜单。复制粘贴由 WebView2 处理。托盘菜单是另一回事，见 [gui.md](gui.md) |
 | 图标和 manifest | `go-winres` 在构建时生成 `gui/rsrc_windows_*.syso`，构建后删除。没有它就没有图标和 DPI 感知 |
 | 页面来源 | WebView2 的 origin 是 `http://wails.localhost`（macOS 是 `wails://wails`）。代理会去掉 Origin，daemon 不受影响 |
 
