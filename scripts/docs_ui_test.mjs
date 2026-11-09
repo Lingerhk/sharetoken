@@ -136,7 +136,14 @@ const PORT = '9787';
 section('download section');
 const FRONT = `document.querySelector('#tab-cli') && document.querySelector('#panel-cli .platform.real')`;
 await go('/', FRONT);
-ok(await ev(`${el('#tab-cli')}.getAttribute('aria-selected') === 'true'`), 'opens on the command line while no desktop package exists');
+const hasDesktop = manifest.packages.some(p => p.kind === 'desktop'); // a live portal has them; the test's own package set starts without
+if (hasDesktop) {
+  ok(await ev(`${el('#tab-desktop')}.getAttribute('aria-selected') === 'true'`) && await count('#panel-desktop .arch-link') === 6, 'opens on the desktop installers');
+  ok(await ev(`[...document.querySelectorAll('#panel-desktop .arch-link')].every(a => /\\.(dmg|exe|deb)$/.test(a.getAttribute('download')))`), 'which are real installers');
+  await click('#tab-cli');
+} else {
+  ok(await ev(`${el('#tab-cli')}.getAttribute('aria-selected') === 'true'`), 'opens on the command line while no desktop package exists');
+}
 ok(await visible('#panel-cli') && !(await visible('#panel-desktop .platform')), 'only the command-line panel shows');
 ok(await count('#panel-cli .platform.real') === 3, 'three systems are offered');
 ok(await count('#panel-cli .arch-link') === 6, 'with two architectures each');
@@ -145,8 +152,10 @@ ok(names === 'macOS,Windows,Linux', 'macOS, Windows and Linux: ' + names);
 await shot('download-cli');
 await click('#tab-desktop');
 ok(await visible('#panel-desktop .platform') && !(await visible('#panel-cli .platform')), 'the desktop tab switches panels');
-await click('#panel-desktop .platform');
-ok((await text('#soon-msg')).includes('macOS'), 'a desktop placeholder says it is coming');
+if (!hasDesktop) {
+  await click('#panel-desktop .platform');
+  ok((await text('#soon-msg')).includes('macOS'), 'a desktop placeholder says it is coming');
+}
 await ev(`${el('#tab-desktop')}.focus()`);
 await key('ArrowRight');
 ok(await ev(`document.activeElement.id === 'tab-cli'`) && await visible('#panel-cli .platform'), 'the arrow keys move between tabs');
@@ -160,7 +169,7 @@ for (const l of live ? links.slice(0, 1) : links) {
 ok(await ev(`[...document.querySelectorAll('#panel-cli .arch-link .arch-name')].some(e => e.textContent === 'Apple Silicon')`), 'macOS architectures have their everyday names');
 const sumsHref = await ev(`${el('#dl-meta a')}.href`);
 ok((await ev(`fetch(${q(sumsHref)}).then(r => r.status)`)) === 200 && (await text('#dl-meta')).includes(VERSION), 'the version and checksum file are shown');
-await click(`.platform[data-os=linux] .os-guide`);
+await click(`#panel-cli .platform[data-os=linux] .os-guide`);
 await waitFor(DOC_READY);
 await sleep(200);
 ok((await ev('location.pathname')) === '/docs/install' && (await ev(`${el('.os-tabs [aria-checked=true]')}.dataset.os`)) === 'linux', 'a system\'s install guide opens with that system chosen');

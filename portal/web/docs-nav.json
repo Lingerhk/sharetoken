@@ -4,8 +4,8 @@
     {"slug": "quickstart", "title": {"en": "Quick start", "zh-CN": "快速开始"}}
   ]},
   {"title": {"en": "Install", "zh-CN": "安装"}, "pages": [
-    {"slug": "install", "title": {"en": "Install the command-line client", "zh-CN": "安装命令行版"}},
     {"slug": "desktop", "title": {"en": "Desktop app", "zh-CN": "桌面应用"}},
+    {"slug": "install", "title": {"en": "Install the command-line client", "zh-CN": "安装命令行版"}},
     {"slug": "update", "title": {"en": "Update and uninstall", "zh-CN": "升级和卸载"}}
   ]},
   {"title": {"en": "Use", "zh-CN": "使用"}, "pages": [
