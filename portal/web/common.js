@@ -197,7 +197,7 @@ const ST = (() => {
     } }, h('span', { class: 'when-open' }, icon('collapse', 20)), h('span', { class: 'when-collapsed' }, icon('expand', 20)), h('span', { class: 'nav-label' }, tr('收起侧边栏')));
     const sidebar = h('aside', { class: 'sidebar' },
       h('div', { class: 'side-head' }, h('img', { class: 'side-logo', src: '/static/favicon.svg', alt: '' }),
-        h('div', { class: 'side-brand' }, h('b', null, 'sharetoken'), h('small', null, o.title))),
+        h('div', { class: 'side-brand' }, h('b', null, 'ShareToken'), h('small', null, o.title))),
       nav, h('div', { class: 'side-foot' }, themeButton('side-btn'), collapse));
 
     const place = h('b');
@@ -355,7 +355,7 @@ const ST = (() => {
           } finally { submit.disabled = false; }
         }
       }, h('div', { class: 'field' }, userLabel, withIcon('user', user)), codeField, field(tr('密码'), withIcon('lock', pass)), err, submit);
-      clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, opts.title || 'sharetoken'), tabs, form, hint,
+      clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, opts.title || 'ShareToken'), tabs, form, hint,
         h('p', { class: 'muted' }, h('a', { href: '/' }, tr('← 返回官网'))))));
       if (opts.allowRegister && location.hash === '#register') setMode('register');
       user.focus();

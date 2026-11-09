@@ -8,7 +8,7 @@
 
   await ST.loadInfo().catch(fail);
   while (!(await ST.loadMe())) {
-    await ST.renderLogin(app, { title: 'sharetoken', allowRegister: state.info && state.info.registration_open });
+    await ST.renderLogin(app, { title: 'ShareToken', allowRegister: state.info && state.info.registration_open });
   }
   const me = () => state.me;
 

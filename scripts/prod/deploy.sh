@@ -26,13 +26,20 @@ release() {
   GOOS=linux GOARCH=arm64 scripts/build.sh "$@" >/dev/null
   rsh "mkdir -p $DIR/releases/$V"
   local c
-  for c in "$@"; do scp $Q "dist/$c-$V-linux-arm64" "$RUSER@$HOST:$DIR/releases/$V/$c" >/dev/null; done
+  # Through a new name: until launch every release is 1.0.0, so this may be the program that is running.
+  # What it replaces stays as <name>.prev in the same directory.
+  for c in "$@"; do
+    scp $Q "dist/$c-$V-linux-arm64" "$RUSER@$HOST:$DIR/releases/$V/$c.new" >/dev/null
+    rsh "cd $DIR/releases/$V && { [ ! -e $c ] || mv -f $c $c.prev; } && mv $c.new $c"
+  done
   rsh "chmod +x $DIR/releases/$V/*; cd $DIR/releases && ls -1t | tail -n +6 | while read -r old; do rm -rf \"\$old\"; done"
 }
 # Points the program's name at this release; the previous link stays in <name>.prev.
 activate() {
   local c
-  for c in "$@"; do rsh "cd $DIR && { [ -e $c ] && cp -P $c $c.prev || true; } && ln -sfn releases/$V/$c $c"; done
+  for c in "$@"; do
+    rsh "cd $DIR && if [ \"\$(readlink $c)\" = releases/$V/$c ]; then ln -sfn releases/$V/$c.prev $c.prev; elif [ -e $c ]; then cp -P $c $c.prev; fi; ln -sfn releases/$V/$c $c"
+  done
 }
 
 # Portal and mail server only. The coordinator is left running: trades do not depend on either.
