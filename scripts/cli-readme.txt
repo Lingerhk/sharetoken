@@ -1,6 +1,6 @@
-sharetoken command-line client @VERSION@ (@ENV@ build)
+ShareToken command-line client @VERSION@@LABEL@
 
-Buy and share open-weight model inference on the sharetoken network, with no
+Buy and share open-weight model inference on the ShareToken network, with no
 desktop app and no window system.
 
   @EXE@ register -email you@example.com     create an account and bind this device

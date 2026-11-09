@@ -108,7 +108,7 @@ const setLang = async l => { await ev(`localStorage.setItem('st_lang', ${q(l)})`
 
 // ---- package sets ----
 const SET_ARCH = ['amd64', 'arm64'], SET_OS = { macos: 'tar.gz', linux: 'tar.gz', windows: 'zip' };
-function layout(env, version, withDesktop) {
+function layout(version, withDesktop) {
   for (const f of readdirSync(downloadsDir)) rmSync(join(downloadsDir, f), { recursive: true });
   let sums = '';
   const put = name => {
@@ -116,8 +116,11 @@ function layout(env, version, withDesktop) {
     writeFileSync(join(downloadsDir, name), body);
     sums += `${createHash('sha256').update(body).digest('hex')}  ${name}\n`;
   };
-  for (const [os, ext] of Object.entries(SET_OS)) for (const a of SET_ARCH) put(`sharetoken-cli-${env}-${version}-${os}-${a}.${ext}`);
-  if (withDesktop) put(`sharetoken-${env}-${version}-macos-arm64.zip`);
+  for (const [os, ext] of Object.entries(SET_OS)) for (const a of SET_ARCH) put(`sharetoken-cli-${version}-${os}-${a}.${ext}`);
+  // Dev packages are for testing: served by name, never listed.
+  for (const a of SET_ARCH) put(`sharetoken-cli-dev-${version}-linux-${a}.tar.gz`);
+  if (withDesktop) put(`sharetoken-${version}-macos-arm64.dmg`);
+  if (withDesktop === 'all') { put(`sharetoken-${version}-windows-amd64.exe`); put(`sharetoken-${version}-linux-amd64.deb`); }
   writeFileSync(join(downloadsDir, 'SHA256SUMS-' + version), sums);
 }
 function emptyDownloads() { for (const f of readdirSync(downloadsDir)) rmSync(join(downloadsDir, f), { recursive: true }); }
@@ -125,10 +128,9 @@ function emptyDownloads() { for (const f of readdirSync(downloadsDir)) rmSync(jo
 const manifest = await (await fetch(base + '/api/v1/downloads')).json().catch(() => ({ packages: [] }));
 const live = !downloadsDir;
 const VERSION = live ? manifest.version : '9.9.9';
-if (!live) layout('dev', VERSION, false);
-const expectEnv = live ? manifest.env : 'dev';
-const EXE = expectEnv === 'dev' ? 'sharetoken-dev' : 'sharetoken-prod';
-const PORT = expectEnv === 'dev' ? '9887' : '9787';
+if (!live) layout(VERSION, false);
+const EXE = 'sharetoken';
+const PORT = '9787';
 
 // ---- the download section ----
 section('download section');
@@ -174,11 +176,11 @@ if (!live) {
   ok(await count('#panel-cli [data-soon]') === 3 && await ev(`${el('#dl-meta')}.hidden`), 'no packages: the command-line tab shows placeholders, no version');
   await click('#panel-cli .platform');
   ok((await text('#soon-msg')).includes('macOS'), 'no packages: a placeholder says it is coming');
-  layout('dev', VERSION, true);
+  layout(VERSION, true);
   await go('/', `document.querySelector('#panel-desktop .platform.real')`);
   ok(await ev(`${el('#tab-desktop')}.getAttribute('aria-selected') === 'true'`), 'a desktop package: opens on the desktop tab');
   ok(await count('#panel-desktop .platform.real') === 1 && await count('#panel-desktop .arch-link') === 1, 'only the system that has a package becomes a link');
-  layout('dev', VERSION, false);
+  layout(VERSION, false);
   assertClean('package sets');
 }
 
@@ -335,7 +337,7 @@ section('code blocks');
 await go('/docs/quickstart?os=linux');
 const blockBtn = `#doc .os-block:not([hidden]) .code .copy`;
 const code = await ev(`${el('#doc .os-block:not([hidden]) .code code')}.textContent`);
-ok(code.includes(`sharetoken-cli-${expectEnv}-${VERSION}-linux-$ARCH.tar.gz`), 'commands name this portal\'s real package');
+ok(code.includes(`sharetoken-cli-${VERSION}-linux-$ARCH.tar.gz`), 'commands name this portal\'s real package');
 ok(code.includes(new URL(base).origin), 'and this portal\'s address');
 ok(code.includes(EXE) && !code.includes('{{'), 'and this network\'s program name');
 ok((await ev(`document.getElementById('doc').innerText`)).includes(`127.0.0.1:${PORT}/v1`), 'and its local port');
@@ -362,13 +364,21 @@ if (!live) {
   await go('/docs/install?os=macos');
   ok((await text('#doc [data-downloads]')).includes('暂时没有'), 'no packages: the table says so');
   ok((await ev(`document.getElementById('doc').innerText`)).includes('<version>'), 'and commands show a placeholder version');
-  layout('prod', VERSION, false);
+  layout(VERSION, 'all');
   await go('/docs/quickstart?os=macos');
   const prod = await ev(`document.getElementById('doc').innerText`);
-  ok(prod.includes('sharetoken-prod version') && prod.includes('127.0.0.1:9787') && !prod.includes('sharetoken-dev'), 'a prod portal shows prod commands');
-  layout('dev', VERSION, false);
+  ok(prod.includes('sharetoken version') && prod.includes('127.0.0.1:9787') && !prod.includes('sharetoken-dev') && !prod.includes('sharetoken-prod'), 'commands name the released program');
   await go('/docs/config?os=macos');
-  ok((await ev(`document.getElementById('doc').innerText`)).includes('~/.sharetoken-dev'), 'a dev portal shows the dev data directory');
+  ok((await ev(`document.getElementById('doc').innerText`)).includes('~/.sharetoken') && !(await ev(`document.getElementById('doc').innerText`)).includes('sharetoken-dev'), 'and its data directory');
+  for (const [o, ext] of [['macos', 'dmg'], ['windows', 'exe'], ['linux', 'deb']]) {
+    await go('/docs/desktop?os=' + o);
+    ok((await text('#doc [data-downloads="desktop"]')).includes(`sharetoken-${VERSION}-${o}-`) && (await text('#doc [data-downloads="desktop"]')).includes('.' + ext), `the desktop guide offers the ${o} installer`);
+  }
+  await go('/', `document.querySelector('#panel-desktop .platform.real')`);
+  ok(await count('#panel-desktop .platform.real') === 3 && await ev(`!document.getElementById('panel-desktop').hidden`), 'the landing page opens on the desktop installers');
+  ok(await ev(`[...document.querySelectorAll('#panel-desktop .os-guide')].every(a => a.getAttribute('href').startsWith('/docs/desktop'))`), 'and links to the desktop guide');
+  ok(!(await ev(`fetch('/api/v1/downloads').then(r => r.text())`)).includes('-dev-'), 'dev packages are not listed');
+  layout(VERSION, false);
 }
 assertClean('downloads');
 

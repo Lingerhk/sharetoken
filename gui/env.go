@@ -48,7 +48,10 @@ func current() profile { return profiles[Env] }
 
 // daemonName is the file name of the daemon of this build type.
 func daemonName() string {
-	name := "sharetoken-" + Env
+	name := "sharetoken"
+	if Env != envProd {
+		name += "-" + Env
+	}
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
@@ -58,7 +61,7 @@ func daemonName() string {
 // windowTitle tells a dev window from the real thing.
 func windowTitle() string {
 	if Env == envProd {
-		return "sharetoken"
+		return "ShareToken"
 	}
-	return "sharetoken DEV"
+	return "ShareToken DEV"
 }

@@ -2,37 +2,50 @@
 
 The desktop app gives you a graphical interface to register, sign in, and check your account and network status. Settings for sharing models still use the command line for now.
 
-> [!NOTE]
-> The [download section](/#download) is the source of truth for which versions you can download. A version marked "coming soon" cannot be downloaded yet. In the meantime, use the [graphical interface without the app](#browser-ui) below.
-
 ## Install {#install}
 
+::: downloads desktop
+:::
+
 ::: macos
-1. Unzip `sharetoken-{{env}}-<version>-macos-<arch>.zip` to get `sharetoken-{{env}}.app`.
-2. Drag it to the "Applications" folder.
-3. If the first launch says the developer cannot be verified, open "System Settings > Privacy & Security" and click "Open Anyway" at the bottom of the page. The app is not yet notarized by Apple.
+1. Open the downloaded `.dmg` and drag ShareToken to the "Applications" folder. Apple Silicon and Intel have different packages. To check yours, open the Apple menu at the top left and click "About This Mac".
+2. If the first launch says the developer cannot be verified, open "System Settings > Privacy & Security" and click "Open Anyway" at the bottom of the page. The app is not yet notarized by Apple.
 :::
 
 ::: linux
-Requires WebKitGTK. On Ubuntu 24.04:
+The package works on Ubuntu 22.04 or later and Debian 12 or later. Install it with `apt`, which also installs the WebKitGTK it needs:
 
 ```bash
-sudo apt install libgtk-3-0t64 libwebkit2gtk-4.1-0
+sudo apt install ./sharetoken-{{version}}-linux-<arch>.deb
 ```
 
-After unpacking, run the install script. It installs the program to `~/.local` and adds an application menu entry:
+Replace `<arch>` with the `amd64` or `arm64` you downloaded. You can then open ShareToken from the application menu. On other distributions, use the [command-line edition](/docs/install) with the [graphical interface without the app](#browser-ui) below.
+:::
+
+::: windows
+1. Run the downloaded installer. If SmartScreen blocks it, click "More info" and then "Run anyway". The app is not yet code-signed.
+2. Follow the prompts. It installs for the current user only, needs no administrator rights, and adds shortcuts to the Start menu and the desktop.
+3. WebView2 Runtime is required. Windows 11 includes it. If Windows 10 does not have it, install it from the Microsoft website.
+:::
+
+## Upgrade and uninstall {#upgrade}
+
+To upgrade, download the new version and install it as you did the first time. It replaces the old version. Uninstalling does not delete the state directory `{{home}}`, so your account and device key stay. To remove everything, delete that directory as well.
+
+::: macos
+To uninstall, quit the app and move ShareToken from the "Applications" folder to the Trash.
+:::
+
+::: linux
+To uninstall:
 
 ```bash
-tar -xzf sharetoken-{{env}}-<version>-linux-<arch>.tar.gz
-cd sharetoken-{{env}}-<version>-linux-<arch>
-./install-linux.sh
+sudo apt remove sharetoken
 ```
 :::
 
 ::: windows
-1. Unzip `sharetoken-{{env}}-<version>-windows-<arch>.zip` to a permanent directory.
-2. Run `sharetoken-gui-{{env}}.exe`. If SmartScreen blocks it, click "More info" and then "Run anyway". The app is not yet code-signed.
-3. WebView2 Runtime is required. Windows 11 includes it. If Windows 10 does not have it, install it from the Microsoft website.
+To uninstall, open "Settings > Apps > Installed apps", find ShareToken and click "Uninstall".
 :::
 
 ## Window and background service {#behaviour}
@@ -71,6 +84,24 @@ Then open `http://127.0.0.1:{{port}}/` in a browser to register and sign in on t
 ## Use with the command line {#with-cli}
 
 The desktop app and the command-line edition share the state directory `{{home}}`. While the app is running, commands such as `{{exe}} status`, `{{exe}} models` and `{{exe}} share add` act on it directly. Do not run `{{exe}} up` on the same state directory. The same device key would be online twice, and the client would exit with an error.
+
+::: macos
+`{{exe}}` is inside the app. To use it by this name in a terminal, add it to PATH first:
+
+```bash
+echo 'export PATH="/Applications/ShareToken.app/Contents/MacOS:$PATH"' >> ~/.zshrc
+```
+
+Then open a new terminal.
+:::
+
+::: linux
+The package has already placed `{{exe}}` in `/usr/bin`, so you can use it directly.
+:::
+
+::: windows
+The installer has already added `{{exe}}` to the current user's PATH. Open a new terminal to use it.
+:::
 
 ## Usage statistics {#telemetry}
 

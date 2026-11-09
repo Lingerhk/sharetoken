@@ -38,6 +38,8 @@
 
 `scripts/build-gui.sh dev [windows [arch]]` 构建的程序内置 dev 门户，数据在 `~/.sharetoken-dev`，可以和 prod 版同时运行，见 [gui.md](gui.md)。
 
+dev 门户的文档和下载区展示的是**正式版**内容，从那里下载的客户端连接 `https://sharetoken.app`。要连 dev 网络，按文件名下载 `https://dev.sharetoken.app/downloads/sharetoken-cli-dev-<版本>-<系统>-<架构>.tar.gz`（Windows 是 `.zip`），或者自己构建。
+
 ## 中继
 
 中继由 prod 和 dev 共用，属于**生产设施**。配置在 `scripts/relay/conf/`，发布只用 `scripts/relay/deploy.sh`：

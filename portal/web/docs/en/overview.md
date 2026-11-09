@@ -21,6 +21,7 @@ Both editions use the same program and the same state directory. You only need o
 ## Where to start {#start}
 
 ::: cards
+[Desktop app](/docs/desktop) Download the installer, then register and sign in with a graphical interface.
 [Quick start](/docs/quickstart) Full steps for every system, from download to your first model call.
 [Install the command-line client](/docs/install) Pick the architecture, verify the package, set up PATH.
 [Call models](/docs/use-models) Examples for curl, PowerShell, Python and Node.js.

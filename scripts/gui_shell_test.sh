@@ -4,7 +4,7 @@
 # reports the result and quits. No window is shown (hidden on macOS; a virtual
 # X display on Linux), and no account or network is involved.
 #
-#   scripts/gui_shell_test.sh <dev|prod> <dir with sharetoken-<env> and sharetoken-gui-<env>>
+#   scripts/gui_shell_test.sh <dev|prod> <dir with the programs of that build (sharetoken and sharetoken-gui, or sharetoken-dev and sharetoken-gui-dev)>
 set -euo pipefail
 ENV=$1
 BIN=$(cd "$2" && pwd)
@@ -13,7 +13,8 @@ trap 'rm -rf "$HOME_DIR"' EXIT
 printf '{"version":1,"env":"%s","http":"127.0.0.1:%s"}\n' "$ENV" "${GUI_TEST_PORT:-19799}" > "$HOME_DIR/config.json"
 # The binaries are release builds: keep this test out of the real statistics.
 export SHARETOKEN_HOME=$HOME_DIR SHARETOKEN_GUI_SELFTEST=1 SHARETOKEN_TELEMETRY=0
-RUN=("$BIN/sharetoken-gui-$ENV")
+SUFFIX=-$ENV; [ "$ENV" = prod ] && SUFFIX=
+RUN=("$BIN/sharetoken-gui$SUFFIX")
 if [ "$(uname -s)" = Linux ] && [ -z "${DISPLAY:-}" ]; then RUN=(xvfb-run -a "${RUN[@]}"); fi
 set +e
 OUT=$("${RUN[@]}" 2>&1)

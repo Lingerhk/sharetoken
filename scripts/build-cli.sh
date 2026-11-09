@@ -5,10 +5,12 @@
 #   scripts/build-cli.sh <dev|prod> <macos|linux|windows> [amd64|arm64]
 #   scripts/build-cli.sh <dev|prod> all                  three systems, two architectures
 #
-# Each makes dist/sharetoken-cli-<env>-<version>-<os>-<arch>.tar.gz (.zip for
-# Windows), listed in dist/SHA256SUMS-<version>. It holds sharetoken-<env>, the
-# same program as in the desktop app's package and under the same name, so a
-# user's scripts and PATH work with either, and a README.
+# Each makes dist/sharetoken-cli-<version>-<os>-<arch>.tar.gz (.zip for Windows),
+# listed in dist/SHA256SUMS-<version>. It holds the program sharetoken, the same
+# program as in the desktop app's package and under the same name, so a user's
+# scripts and PATH work with either, and a README. Only dev builds carry their
+# type in these names (sharetoken-cli-dev-…, sharetoken-dev), so they can live
+# next to the real thing.
 #
 # See scripts/client_ldflags.sh for usage statistics. macOS programs carry only
 # the linker's ad-hoc signature: a downloaded one needs a Developer ID signature
@@ -24,14 +26,16 @@ esac
 OUT=dist
 VERSION=$(scripts/version.sh)
 STAMP=sharetoken-build-type=$ENV
+SUFFIX=-$ENV; [ "$ENV" = prod ] && SUFFIX=
+LABEL=" ($ENV build)"; [ "$ENV" = prod ] && LABEL=
 LDFLAGS=$(scripts/client_ldflags.sh "$ENV")
 mkdir -p "$OUT"
 
 build() { # go's system name, architecture
-  local goos=$1 arch=$2 os=$1 exe=sharetoken-$ENV base dir archive
+  local goos=$1 arch=$2 os=$1 exe=sharetoken$SUFFIX base dir archive
   if [ "$goos" = darwin ]; then os=macos; fi
   if [ "$goos" = windows ]; then exe=$exe.exe; fi
-  base=sharetoken-cli-$ENV-$VERSION-$os-$arch
+  base=sharetoken-cli$SUFFIX-$VERSION-$os-$arch
   dir=$OUT/$base
   rm -rf "$dir"
   mkdir -p "$dir"
@@ -39,7 +43,7 @@ build() { # go's system name, architecture
   # -X says nothing when it misses its variable; see scripts/build-gui.sh.
   LC_ALL=C grep -aq "$STAMP" "$dir/$exe" || { echo "$exe is not a $ENV build" >&2; exit 1; }
   LC_ALL=C grep -aq "$VERSION" "$dir/$exe" || { echo "$exe does not carry version $VERSION" >&2; exit 1; }
-  sed -e "s/@EXE@/$exe/g" -e "s/@VERSION@/$VERSION/g" -e "s/@ENV@/$ENV/g" scripts/cli-readme.txt > "$dir/README.txt"
+  sed -e "s/@EXE@/$exe/g" -e "s/@VERSION@/$VERSION/g" -e "s/@LABEL@/$LABEL/g" scripts/cli-readme.txt > "$dir/README.txt"
   if [ "$goos" = windows ]; then
     archive=$base.zip
     (cd "$OUT" && rm -f "$archive" && zip -qr "$archive" "$base")

@@ -171,7 +171,7 @@
   "普通节点的运营者能读到 prompt，需要排除运营者时可以选 TEE 节点（AMD SEV-SNP / Intel TDX）。": "一般節點的營運者能讀到 prompt，需要排除營運者時可以選 TEE 節點（AMD SEV-SNP / Intel TDX）。",
   "客户端": "用戶端",
   "命令行客户端，支持 macOS、Linux 和 Windows。": "命令列用戶端，支援 macOS、Linux 和 Windows。",
-  "带图形界面的桌面应用，支持 macOS、Linux 和 Windows，安装包即将上线。": "帶圖形介面的桌面應用程式，支援 macOS、Linux 和 Windows，安裝包即將上線。",
+  "带图形界面的桌面应用，提供 macOS、Linux 和 Windows 安装包。": "帶圖形介面的桌面應用，提供 macOS、Linux 和 Windows 安裝包。",
   "网站、用户页面和桌面客户端支持 20 种语言。": "網站、使用者頁面和桌面用戶端支援 20 種語言。",
   "账户和网站": "帳戶和網站",
   "邮箱注册和登录，在用户页面管理 API token、设备、credit 和账单。": "以電子郵件註冊和登入，在使用者頁面管理 API token、裝置、credit 和帳單。",

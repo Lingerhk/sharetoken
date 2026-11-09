@@ -171,7 +171,7 @@
   "普通节点的运营者能读到 prompt，需要排除运营者时可以选 TEE 节点（AMD SEV-SNP / Intel TDX）。": "Sıradan düğümlerin operatörleri prompt'ları okuyabilir. Operatörü dışarıda bırakmak için TEE düğümlerini seçin (AMD SEV-SNP / Intel TDX).",
   "客户端": "İstemci",
   "命令行客户端，支持 macOS、Linux 和 Windows。": "macOS, Linux ve Windows için komut satırı istemcisi.",
-  "带图形界面的桌面应用，支持 macOS、Linux 和 Windows，安装包即将上线。": "macOS, Linux ve Windows için grafik arayüzlü masaüstü uygulaması. Paketler yakında geliyor.",
+  "带图形界面的桌面应用，提供 macOS、Linux 和 Windows 安装包。": "Grafik arayüzlü masaüstü uygulaması; macOS, Linux ve Windows için yükleyiciler sunulur.",
   "网站、用户页面和桌面客户端支持 20 种语言。": "Web sitesi, kullanıcı sayfası ve masaüstü istemcisi 20 dilde sunulur.",
   "账户和网站": "Hesaplar ve web sitesi",
   "邮箱注册和登录，在用户页面管理 API token、设备、credit 和账单。": "E-postayla kaydolup giriş yapın; API token, cihaz, credit ve faturaları kullanıcı sayfasından yönetin.",

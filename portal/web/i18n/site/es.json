@@ -171,7 +171,7 @@
   "普通节点的运营者能读到 prompt，需要排除运营者时可以选 TEE 节点（AMD SEV-SNP / Intel TDX）。": "Los operadores de nodos normales pueden leer los prompts. Para excluir al operador, elige nodos TEE (AMD SEV-SNP / Intel TDX).",
   "客户端": "Cliente",
   "命令行客户端，支持 macOS、Linux 和 Windows。": "Cliente de línea de comandos para macOS, Linux y Windows.",
-  "带图形界面的桌面应用，支持 macOS、Linux 和 Windows，安装包即将上线。": "Aplicación de escritorio con interfaz gráfica para macOS, Linux y Windows. Los paquetes llegarán pronto.",
+  "带图形界面的桌面应用，提供 macOS、Linux 和 Windows 安装包。": "Aplicación de escritorio con interfaz gráfica e instaladores para macOS, Linux y Windows.",
   "网站、用户页面和桌面客户端支持 20 种语言。": "El sitio web, la página de usuario y el cliente de escritorio están disponibles en 20 idiomas.",
   "账户和网站": "Cuentas y sitio web",
   "邮箱注册和登录，在用户页面管理 API token、设备、credit 和账单。": "Registro e inicio de sesión con correo electrónico, y gestión de API tokens, dispositivos, credit y facturas en la página de usuario.",

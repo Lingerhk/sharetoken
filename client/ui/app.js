@@ -111,7 +111,7 @@ I18N.ready.then(() => {
   function markEnv(session) {
     if (session.env !== 'dev' || document.body.classList.contains('env-dev')) return;
     document.body.classList.add('env-dev');
-    document.title = 'sharetoken DEV';
+    document.title = 'ShareToken DEV';
     document.body.prepend(h('div', { class: 'env-banner', id: 'env-banner' }, tr('DEV 环境（{portal}）', { portal: session.portal })));
   }
 

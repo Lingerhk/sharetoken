@@ -2,7 +2,7 @@
 Type=Application
 Name=@NAME@
 Comment=Share and use model inference
-Exec=sharetoken-gui-@ENV@
-Icon=sharetoken-@ENV@
+Exec=@GUI@
+Icon=@EXE@
 Terminal=false
 Categories=Network;Utility;

@@ -2,6 +2,9 @@
 
 从下载到第一次调用模型，大约 5 分钟。请先在页面上方选择你的系统。
 
+> [!TIP]
+> 这里用的是命令行版。想用图形界面的话，请安装[桌面应用](/docs/desktop)。
+
 ## 1. 下载并安装 {#download}
 
 ::: macos linux
@@ -11,10 +14,10 @@
 ::: macos
 ```bash
 ARCH=$(uname -m); [ "$ARCH" = x86_64 ] && ARCH=amd64
-curl -fLO {{origin}}/downloads/sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz
-tar -xzf sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz
+curl -fLO {{origin}}/downloads/sharetoken-cli-{{version}}-macos-$ARCH.tar.gz
+tar -xzf sharetoken-cli-{{version}}-macos-$ARCH.tar.gz
 mkdir -p ~/.local/bin
-mv sharetoken-cli-{{env}}-{{version}}-macos-$ARCH/{{exe}} ~/.local/bin/
+mv sharetoken-cli-{{version}}-macos-$ARCH/{{exe}} ~/.local/bin/
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
@@ -23,10 +26,10 @@ source ~/.zshrc
 ::: linux
 ```bash
 ARCH=$(uname -m); case $ARCH in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
-curl -fLO {{origin}}/downloads/sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz
-tar -xzf sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz
+curl -fLO {{origin}}/downloads/sharetoken-cli-{{version}}-linux-$ARCH.tar.gz
+tar -xzf sharetoken-cli-{{version}}-linux-$ARCH.tar.gz
 mkdir -p ~/.local/bin
-mv sharetoken-cli-{{env}}-{{version}}-linux-$ARCH/{{exe}} ~/.local/bin/
+mv sharetoken-cli-{{version}}-linux-$ARCH/{{exe}} ~/.local/bin/
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
@@ -37,7 +40,7 @@ source ~/.bashrc
 
 ```powershell
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-$name = "sharetoken-cli-{{env}}-{{version}}-windows-$arch"
+$name = "sharetoken-cli-{{version}}-windows-$arch"
 curl.exe -fLO "{{origin}}/downloads/$name.zip"
 Expand-Archive "$name.zip" -DestinationPath . -Force
 $dir = "$HOME\AppData\Local\Programs\sharetoken"

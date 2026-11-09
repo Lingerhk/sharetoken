@@ -195,13 +195,13 @@ curl http://127.0.0.1:9787/v1/chat/completions \
       <h3>赚 credit</h3>
       <p>把本机 Ollama 里的模型共享出去。不需要公网 IP，节点经中继打通连接。</p>
       <pre><code><span class="c"># 共享一个本地模型</span>
-sharetoken-prod share add gemma4:e4b -id gemma-4-e4b
+sharetoken share add gemma4:e4b -id gemma-4-e4b
 
 <span class="c"># 上线接单，按实际 token 结算</span>
-sharetoken-prod up
+sharetoken up
 
 <span class="c"># 查看收益</span>
-sharetoken-prod balance</code></pre>
+sharetoken balance</code></pre>
     </div>
   </div>
 </section>

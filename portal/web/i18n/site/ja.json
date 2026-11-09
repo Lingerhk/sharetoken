@@ -171,7 +171,7 @@
   "普通节点的运营者能读到 prompt，需要排除运营者时可以选 TEE 节点（AMD SEV-SNP / Intel TDX）。": "通常のノードの運営者は prompt を読めます。運営者を除外するには TEE ノード（AMD SEV-SNP / Intel TDX）を選んでください。",
   "客户端": "クライアント",
   "命令行客户端，支持 macOS、Linux 和 Windows。": "コマンドラインクライアント。macOS、Linux、Windows に対応。",
-  "带图形界面的桌面应用，支持 macOS、Linux 和 Windows，安装包即将上线。": "GUI 付きのデスクトップアプリ。macOS、Linux、Windows に対応。パッケージは近日公開です。",
+  "带图形界面的桌面应用，提供 macOS、Linux 和 Windows 安装包。": "GUI 付きのデスクトップアプリ。macOS、Linux、Windows 用のインストーラーを提供しています。",
   "网站、用户页面和桌面客户端支持 20 种语言。": "Web サイト、ユーザーページ、デスクトップクライアントは 20 言語に対応しています。",
   "账户和网站": "アカウントと Web サイト",
   "邮箱注册和登录，在用户页面管理 API token、设备、credit 和账单。": "メールで登録・ログインし、ユーザーページで API token、デバイス、credit、請求を管理できます。",

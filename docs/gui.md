@@ -11,9 +11,9 @@
 | 门户 | `https://dev.sharetoken.app` | `https://sharetoken.app` |
 | 数据目录 | `~/.sharetoken-dev` | `~/.sharetoken` |
 | 本地端口（备用） | 9887（9888–9897） | 9787（9788–9797） |
-| 命令行和 daemon | `sharetoken-dev` | `sharetoken-prod` |
+| 命令行和 daemon | `sharetoken-dev` | `sharetoken` |
 | 窗口程序 | `sharetoken-gui-dev` | `sharetoken-gui-prod` |
-| macOS 应用 | `sharetoken-dev.app`，`app.sharetoken.desktop.dev` | `sharetoken-prod.app`，`app.sharetoken.desktop` |
+| macOS 应用 | `ShareToken-dev.app`，`app.sharetoken.desktop.dev` | `ShareToken.app`，`app.sharetoken.desktop` |
 | 使用统计 | 不发送 | 发送 |
 | `SHARETOKEN_PORTAL` | 生效（测试网络用） | 忽略 |
 
@@ -132,9 +132,9 @@ PostHog 服务端仍能看到请求来源 IP：事件设置了 `$geoip_disable`�
 ## 构建
 
 ```bash
-scripts/build-gui.sh dev    # 必须指定 dev 或 prod。macOS: dist/sharetoken-dev.app 和 sharetoken-dev-<版本>-macos-<arch>.zip；Linux: dist/sharetoken-dev-<版本>-linux-<arch>/ 和 tar.gz
-scripts/build-gui.sh prod   # 正式版：dist/sharetoken-prod.app 等
-scripts/build-gui.sh dev windows arm64   # 任何系统上都能构建：dist/sharetoken-dev-<版本>-windows-<arch>/ 和 zip（默认 amd64）
+scripts/build-gui.sh dev    # 必须指定 dev 或 prod。macOS: dist/ShareToken-dev.app 和 sharetoken-dev-<版本>-macos-<arch>.dmg；Linux: dist/sharetoken-dev-<版本>-linux-<arch>/ 和 .deb（其他系统上用 scripts/build-gui-linux.sh dev [arch]，在 Docker 里构建）
+scripts/build-gui.sh prod   # 正式版：dist/ShareToken.app 和 sharetoken-<版本>-macos-<arch>.dmg 等
+scripts/build-gui.sh dev windows arm64   # 任何系统上都能构建：dist/sharetoken-dev-<版本>-windows-<arch>/ 和安装程序 .exe（默认 amd64）
 ```
 
 - macOS、Linux 版需要 cgo，**只能在目标系统上构建**（不能从 macOS 交叉编译 Linux 版）。Windows 版不需要 cgo，可以交叉编译；运行需要 WebView2 Runtime，也没有代码签名。Windows 调试环境和平台差异见 [windows-env.md](windows-env.md)。
@@ -152,13 +152,13 @@ scripts/build-cli.sh prod linux amd64  # macos、linux、windows，amd64、arm64
 scripts/build-cli.sh prod all          # 全部 6 个包
 ```
 
-产物是 `dist/sharetoken-cli-<env>-<版本>-<系统>-<架构>.tar.gz`（Windows 是 `.zip`），列入 `dist/SHA256SUMS-<版本>`，里面有程序和 `README.txt`。macOS 程序只有链接器的 ad-hoc 签名，Windows 程序没有代码签名，下载后的提示和桌面版相同。
+产物是 `dist/sharetoken-cli-<版本>-<系统>-<架构>.tar.gz`（dev 构建是 `sharetoken-cli-dev-…`）（Windows 是 `.zip`），列入 `dist/SHA256SUMS-<版本>`，里面有程序和 `README.txt`。macOS 程序只有链接器的 ad-hoc 签名，Windows 程序没有代码签名，下载后的提示和桌面版相同。
 
 全流程测试：`scripts/gui_stack.sh start DIR && . DIR/env && PORTAL=$PORTAL PIN=$PIN scripts/cli_test.sh <sharetoken-dev 程序>`（注册、运行、查询、经网络购买推理、停止、登录、退出）。
 
 Ubuntu 上的测试环境见 [linux-env.md](linux-env.md)。
 
-也可以不用窗口：`sharetoken-prod daemon` 后用浏览器打开 `http://127.0.0.1:9787/`（dev：`sharetoken-dev daemon`，端口 9887）。
+也可以不用窗口：`sharetoken daemon` 后用浏览器打开 `http://127.0.0.1:9787/`（dev：`sharetoken-dev daemon`，端口 9887）。
 
 ## 测试
 

@@ -99,7 +99,7 @@ var (
 	docLinkRe = regexp.MustCompile(`\]\(([^)\s]+)\)`)
 	docIDRe   = regexp.MustCompile(`\{#([a-z0-9-]+)\}\s*$`)
 	docVarRe  = regexp.MustCompile(`\{\{(\w*)\}\}`)
-	docKnown  = map[string]bool{"exe": true, "home": true, "homewin": true, "port": true, "version": true, "origin": true, "env": true}
+	docKnown  = map[string]bool{"exe": true, "home": true, "homewin": true, "port": true, "version": true, "origin": true}
 )
 
 func TestDocsPagesMatchAcrossLanguages(t *testing.T) {
@@ -303,15 +303,15 @@ func TestDocsCommandsExist(t *testing.T) {
 func TestDocsPackageNames(t *testing.T) {
 	src := readDoc(t, docsSource, "quickstart")
 	for _, want := range []string{
-		"sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz",
-		"sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz",
-		"sharetoken-cli-{{env}}-{{version}}-windows-$arch",
+		"sharetoken-cli-{{version}}-macos-$ARCH.tar.gz",
+		"sharetoken-cli-{{version}}-linux-$ARCH.tar.gz",
+		"sharetoken-cli-{{version}}-windows-$arch",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("quickstart does not use %s", want)
 		}
 	}
-	for _, name := range []string{"sharetoken-cli-prod-1.0.1-macos-arm64.tar.gz", "sharetoken-cli-dev-1.0.1-dev.abc1234.dirty-linux-amd64.tar.gz", "sharetoken-cli-prod-1.0.1-windows-amd64.zip", "sharetoken-prod-1.0.1-macos-arm64.zip"} {
+	for _, name := range []string{"sharetoken-cli-1.0.1-macos-arm64.tar.gz", "sharetoken-cli-dev-1.0.1-dev.abc1234.dirty-linux-amd64.tar.gz", "sharetoken-cli-1.0.1-windows-amd64.zip", "sharetoken-1.0.1-macos-arm64.dmg", "sharetoken-1.0.1-windows-amd64.exe", "sharetoken-1.0.1-linux-arm64.deb"} {
 		if !packageRe.MatchString(name) {
 			t.Errorf("%s is not recognised as a package", name)
 		}
@@ -320,7 +320,7 @@ func TestDocsPackageNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), "base=sharetoken-cli-$ENV-$VERSION-$os-$arch") {
+	if !strings.Contains(string(raw), "base=sharetoken-cli$SUFFIX-$VERSION-$os-$arch") {
 		t.Error("scripts/build-cli.sh names its packages differently now: update the guide and packageRe")
 	}
 }

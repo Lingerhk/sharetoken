@@ -71,18 +71,19 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
 ## 产物
 
 ```
-dist/sharetoken-prod-1.0.0-macos-arm64.zip        scripts/build-gui.sh prod
-dist/sharetoken-prod-1.0.0-windows-amd64.zip      scripts/build-gui.sh prod windows amd64
-dist/sharetoken-prod-1.0.0-linux-arm64.tar.gz     scripts/build-gui.sh prod（在 Linux 上）
-dist/sharetoken-cli-prod-1.0.0-linux-amd64.tar.gz scripts/build-cli.sh prod linux amd64（all 构建三个系统、两种架构）
-dist/sharetoken-cli-prod-1.0.0-windows-amd64.zip  scripts/build-cli.sh prod windows amd64
+dist/sharetoken-1.0.0-macos-arm64.dmg             scripts/build-gui.sh prod macos arm64
+dist/sharetoken-1.0.0-windows-amd64.exe           scripts/build-gui.sh prod windows amd64
+dist/sharetoken-1.0.0-linux-arm64.deb             scripts/build-gui-linux.sh prod arm64（用 Docker，任何系统）
+dist/sharetoken-cli-1.0.0-linux-amd64.tar.gz      scripts/build-cli.sh prod linux amd64（all 构建三个系统、两种架构）
+dist/sharetoken-cli-1.0.0-windows-amd64.zip       scripts/build-cli.sh prod windows amd64
 dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 scripts/build.sh relay
 dist/SHA256SUMS-1.0.0
 ```
 
-**命令行包的发布：** `scripts/publish-cli.sh <dev|prod> <版本> <user@host> <目录>` 构建 6 个包，上传并在服务器上校验后整体替换门户的 `downloads` 目录（`downloads.dir`），门户在 `/downloads/` 提供下载，`GET /api/v1/downloads` 列出每种系统和架构的最新版本。`scripts/{dev,prod}/deploy.sh --portal` 只更新门户和这些包。桌面包放进同一目录就会出现在下载区，目前没有发布。
+**安装包的发布：** `scripts/publish-packages.sh <版本> <user@host> <目录> [--with-dev-cli]` 在 Mac 上构建 12 个包（桌面安装包和命令行包，三个系统、两种架构），上传并在服务器上校验后整体替换门户的 `downloads` 目录（`downloads.dir`），门户在 `/downloads/` 提供下载。dev 和 prod 门户展示的都是正式版的包：dev 部署时加上 `--with-dev-cli`，多传 6 个 `sharetoken-cli-dev-*` 供测试，`GET /api/v1/downloads` 不列出它们，只能按文件名下载。
 
-压缩包内的可执行文件名不带版本（`sharetoken-prod`、`sharetoken-gui-prod`）：GUI 按固定名字查找 daemon，用户的 PATH 也不用变。
+
+可执行文件名不带版本（`sharetoken`、`sharetoken-gui`，dev 构建是 `sharetoken-dev`、`sharetoken-gui-dev`）：GUI 按固定名字查找 daemon，用户的 PATH 也不用变。
 
 服务器上文件放在 `releases/<版本>/`，程序名是软链，上一版的软链留在 `<程序>.prev`，保留最近 5 个版本：
 

@@ -19,25 +19,25 @@
 ::: macos
 ```bash
 ARCH=$(uname -m); [ "$ARCH" = x86_64 ] && ARCH=amd64
-curl -fLO {{origin}}/downloads/sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz
-tar -xzf sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz
-mv sharetoken-cli-{{env}}-{{version}}-macos-$ARCH/{{exe}} ~/.local/bin/
+curl -fLO {{origin}}/downloads/sharetoken-cli-{{version}}-macos-$ARCH.tar.gz
+tar -xzf sharetoken-cli-{{version}}-macos-$ARCH.tar.gz
+mv sharetoken-cli-{{version}}-macos-$ARCH/{{exe}} ~/.local/bin/
 ```
 :::
 
 ::: linux
 ```bash
 ARCH=$(uname -m); case $ARCH in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
-curl -fLO {{origin}}/downloads/sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz
-tar -xzf sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz
-mv sharetoken-cli-{{env}}-{{version}}-linux-$ARCH/{{exe}} ~/.local/bin/
+curl -fLO {{origin}}/downloads/sharetoken-cli-{{version}}-linux-$ARCH.tar.gz
+tar -xzf sharetoken-cli-{{version}}-linux-$ARCH.tar.gz
+mv sharetoken-cli-{{version}}-linux-$ARCH/{{exe}} ~/.local/bin/
 ```
 :::
 
 ::: windows
 ```powershell
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-$name = "sharetoken-cli-{{env}}-{{version}}-windows-$arch"
+$name = "sharetoken-cli-{{version}}-windows-$arch"
 curl.exe -fLO "{{origin}}/downloads/$name.zip"
 Expand-Archive "$name.zip" -DestinationPath . -Force
 Move-Item -Force "$name\{{exe}}.exe" "$HOME\AppData\Local\Programs\sharetoken\"

@@ -21,6 +21,7 @@ ShareToken 是开源权重模型的 P2P 共享网络。这份指南说明如何�
 ## 从哪里开始 {#start}
 
 ::: cards
+[桌面应用](/docs/desktop) 下载安装包，在图形界面里注册和登录。
 [快速开始](/docs/quickstart) 从下载到第一次调用模型，每个系统都有完整步骤。
 [安装命令行版](/docs/install) 选择架构、校验安装包、配置 PATH。
 [调用模型](/docs/use-models) curl、PowerShell、Python 和 Node.js 示例。

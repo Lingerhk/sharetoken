@@ -356,7 +356,7 @@ I18N.ready.then(() => {
     };
     document.querySelectorAll('[data-soon]').forEach(a => a.addEventListener('click', soon));
 
-    function cards(panel, packages) {
+    function cards(panel, packages, guidePage) {
       const grid = panel.querySelector('.platforms');
       grid.textContent = '';
       for (const os of ['macos', 'windows', 'linux']) {
@@ -385,7 +385,7 @@ I18N.ready.then(() => {
           card.appendChild(link);
         }
         const guide = mk('a', 'os-guide', tr('安装指南'));
-        guide.href = '/docs/install?os=' + os;
+        guide.href = guidePage + '?os=' + os;
         card.appendChild(guide);
         grid.appendChild(card);
       }
@@ -394,8 +394,8 @@ I18N.ready.then(() => {
     fetch('/api/v1/downloads', { headers: { Accept: 'application/json' } }).then(r => r.ok ? r.json() : null).then(d => {
       if (!d || !d.packages.length) return;
       const desktop = d.packages.filter(p => p.kind === 'desktop'), cli = d.packages.filter(p => p.kind === 'cli');
-      if (desktop.length) cards(tabs[0].panel, desktop);
-      if (cli.length) cards(tabs[1].panel, cli);
+      if (desktop.length) cards(tabs[0].panel, desktop, '/docs/desktop');
+      if (cli.length) cards(tabs[1].panel, cli, '/docs/install');
       // Open on what can be downloaded today.
       if (!desktop.length && cli.length) select(1);
       if (d.version) {

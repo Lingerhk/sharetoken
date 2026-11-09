@@ -2,6 +2,9 @@
 
 From download to your first model call takes about 5 minutes. First choose your system at the top of the page.
 
+> [!TIP]
+> This page uses the command-line edition. For a graphical interface, install the [desktop app](/docs/desktop).
+
 ## 1. Download and install {#download}
 
 ::: macos linux
@@ -11,10 +14,10 @@ The commands below detect the CPU architecture and install the program to `~/.lo
 ::: macos
 ```bash
 ARCH=$(uname -m); [ "$ARCH" = x86_64 ] && ARCH=amd64
-curl -fLO {{origin}}/downloads/sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz
-tar -xzf sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz
+curl -fLO {{origin}}/downloads/sharetoken-cli-{{version}}-macos-$ARCH.tar.gz
+tar -xzf sharetoken-cli-{{version}}-macos-$ARCH.tar.gz
 mkdir -p ~/.local/bin
-mv sharetoken-cli-{{env}}-{{version}}-macos-$ARCH/{{exe}} ~/.local/bin/
+mv sharetoken-cli-{{version}}-macos-$ARCH/{{exe}} ~/.local/bin/
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
@@ -23,10 +26,10 @@ source ~/.zshrc
 ::: linux
 ```bash
 ARCH=$(uname -m); case $ARCH in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
-curl -fLO {{origin}}/downloads/sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz
-tar -xzf sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz
+curl -fLO {{origin}}/downloads/sharetoken-cli-{{version}}-linux-$ARCH.tar.gz
+tar -xzf sharetoken-cli-{{version}}-linux-$ARCH.tar.gz
 mkdir -p ~/.local/bin
-mv sharetoken-cli-{{env}}-{{version}}-linux-$ARCH/{{exe}} ~/.local/bin/
+mv sharetoken-cli-{{version}}-linux-$ARCH/{{exe}} ~/.local/bin/
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
@@ -37,7 +40,7 @@ Run this in PowerShell. The program goes into your own directory, so you do not 
 
 ```powershell
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-$name = "sharetoken-cli-{{env}}-{{version}}-windows-$arch"
+$name = "sharetoken-cli-{{version}}-windows-$arch"
 curl.exe -fLO "{{origin}}/downloads/$name.zip"
 Expand-Archive "$name.zip" -DestinationPath . -Force
 $dir = "$HOME\AppData\Local\Programs\sharetoken"

@@ -58,15 +58,18 @@ func TestDownloads(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	const newest = "sharetoken-cli-prod-1.2.0-linux-amd64.tar.gz"
+	const newest = "sharetoken-cli-1.2.0-linux-amd64.tar.gz"
 	write(newest, "new linux archive")
-	write("sharetoken-cli-prod-1.1.9-linux-amd64.tar.gz", "older")
-	write("sharetoken-cli-prod-1.2.0-windows-arm64.zip", "windows archive")
-	write("sharetoken-prod-1.2.0-macos-arm64.zip", "desktop")
-	write("SHA256SUMS-1.2.0", "abc123  "+newest+"\ndef456  sharetoken-cli-prod-1.2.0-windows-arm64.zip\n")
+	write("sharetoken-cli-1.1.9-linux-amd64.tar.gz", "older")
+	write("sharetoken-cli-1.2.0-windows-arm64.zip", "windows archive")
+	write("sharetoken-1.2.0-macos-arm64.dmg", "desktop")
+	write("SHA256SUMS-1.2.0", "abc123  "+newest+"\ndef456  sharetoken-cli-1.2.0-windows-arm64.zip\n")
+	const devPackage = "sharetoken-cli-dev-1.3.0-linux-amd64.tar.gz" // newer, and still not what a user is offered
+	write(devPackage, "dev archive")
+	write("sharetoken-dev-1.3.0-macos-arm64.dmg", "dev desktop")
 	write("secret.key", "never served")
-	write("sharetoken-cli-prod-1.2.0-linux-amd64.tar.gz.tmp", "half uploaded")
-	if err := os.Mkdir(filepath.Join(dir, "sharetoken-cli-prod-1.2.0-macos-arm64.tar.gz"), 0o755); err != nil {
+	write("sharetoken-cli-1.2.0-linux-amd64.tar.gz.tmp", "half uploaded")
+	if err := os.Mkdir(filepath.Join(dir, "sharetoken-cli-1.2.0-macos-arm64.tar.gz"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(filepath.Dir(dir), "outside-downloads")
@@ -77,8 +80,8 @@ func TestDownloads(t *testing.T) {
 
 	srv := downloadsServer(t, dir)
 	d := listDownloadsAPI(t, srv.URL)
-	if d.Env != "prod" || d.Version != "1.2.0" {
-		t.Errorf("env %q version %q", d.Env, d.Version)
+	if d.Version != "1.2.0" {
+		t.Errorf("version %q", d.Version)
 	}
 	if len(d.Packages) != 3 {
 		t.Fatalf("want 3 packages (newest per kind, system, architecture), got %+v", d.Packages)
@@ -91,7 +94,7 @@ func TestDownloads(t *testing.T) {
 	if !ok || p.Kind != "cli" || p.OS != "linux" || p.Arch != "amd64" || p.SHA256 != "abc123" || p.Size != int64(len("new linux archive")) || p.URL != "/downloads/"+newest {
 		t.Errorf("linux package: %+v", p)
 	}
-	if p := byFile["sharetoken-prod-1.2.0-macos-arm64.zip"]; p.Kind != "desktop" || p.OS != "macos" {
+	if p := byFile["sharetoken-1.2.0-macos-arm64.dmg"]; p.Kind != "desktop" || p.OS != "macos" {
 		t.Errorf("desktop package: %+v", p)
 	}
 
@@ -108,6 +111,9 @@ func TestDownloads(t *testing.T) {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 		return resp, string(body)
+	}
+	if resp, body := get("/downloads/" + devPackage); resp.StatusCode != 200 || body != "dev archive" {
+		t.Errorf("dev package by name: %d %q", resp.StatusCode, body)
 	}
 	resp, body := get("/downloads/" + newest)
 	if resp.StatusCode != 200 || body != "new linux archive" {
@@ -131,8 +137,8 @@ func TestDownloads(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/downloads/secret.key",
-		"/downloads/sharetoken-cli-prod-1.2.0-linux-amd64.tar.gz.tmp",
-		"/downloads/sharetoken-cli-prod-1.2.0-macos-arm64.tar.gz", // a directory
+		"/downloads/sharetoken-cli-1.2.0-linux-amd64.tar.gz.tmp",
+		"/downloads/sharetoken-cli-1.2.0-macos-arm64.tar.gz", // a directory
 		"/downloads/..%2foutside-downloads",
 		"/downloads/%2e%2e%2foutside-downloads",
 		"/downloads/SHA256SUMS-..%2f..%2fetc",
@@ -148,10 +154,10 @@ func TestDownloadsWithoutDirectory(t *testing.T) {
 	for _, dir := range []string{"", filepath.Join(t.TempDir(), "missing")} {
 		srv := downloadsServer(t, dir)
 		d := listDownloadsAPI(t, srv.URL)
-		if d.Packages == nil || len(d.Packages) != 0 || d.Env != "" {
+		if d.Packages == nil || len(d.Packages) != 0 {
 			t.Errorf("dir %q: %+v", dir, d)
 		}
-		resp, err := http.Get(srv.URL + "/downloads/sharetoken-cli-prod-1.2.0-linux-amd64.tar.gz")
+		resp, err := http.Get(srv.URL + "/downloads/sharetoken-cli-1.2.0-linux-amd64.tar.gz")
 		if err != nil {
 			t.Fatal(err)
 		}

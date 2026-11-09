@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Builds the desktop app into dist/, for one build type, which must be named:
+# Builds the desktop app and its installer into dist/, for one build type, which
+# must be named:
 #   scripts/build-gui.sh <dev|prod>                        for this machine
+#   scripts/build-gui.sh <dev|prod> macos [amd64|arm64]    on a Mac, either architecture
 #   scripts/build-gui.sh <dev|prod> windows [amd64|arm64]  from any system, no cgo
+#   scripts/build-gui-linux.sh <dev|prod> [amd64|arm64]    Linux, from any system with Docker
 #
-#   macOS:   dist/sharetoken-<env>.app (not signed or notarized), and sharetoken-<env>-<version>-macos-<arch>.zip
-#   Linux:   dist/sharetoken-<env>-<version>-linux-<arch>/ with a launcher entry, and a tar.gz of it
-#   Windows: dist/sharetoken-<env>-<version>-windows-<arch>/ (not code-signed), and a zip of it
-#   dist/SHA256SUMS-<version> lists the archives.
+#   macOS:   dist/ShareToken.app (not signed or notarized), and sharetoken-<version>-macos-<arch>.dmg
+#   Linux:   dist/sharetoken-<version>-linux-<arch>/, and sharetoken-<version>-linux-<arch>.deb
+#   Windows: dist/sharetoken-<version>-windows-<arch>/ (not code-signed), and sharetoken-<version>-windows-<arch>.exe,
+#            made with makensis, or in the Docker image of scripts/build-gui-linux.sh if it is not installed
+#   dist/SHA256SUMS-<version> lists the installers.
 #
-# Programs: sharetoken-<env> (CLI and daemon), sharetoken-gui-<env> (window). Their
-# names carry no version: the window finds the daemon by name, and a user's PATH
-# keeps working across upgrades. The version is inside them and in the archive's name.
+# Programs: sharetoken (CLI and daemon), sharetoken-gui (window). Their names carry
+# no version: the window finds the daemon by name, and a user's PATH keeps working
+# across upgrades. The version is inside them and in the installer's name. A dev
+# build says so in all its names: sharetoken-dev, sharetoken-gui-dev, sharetoken-dev-<version>-…
 #
 # The build type decides the portal, the state directory and the local port
 # (client/env.go, gui/env.go), so a dev and a prod app can live on one machine:
@@ -30,8 +35,9 @@ case $ENV in
   dev|prod) shift ;;
   *) echo "usage: scripts/build-gui.sh <dev|prod> [windows [amd64|arm64]]" >&2; exit 2 ;;
 esac
-if [ "$ENV" = prod ]; then NAME=sharetoken; BUNDLE_ID=app.sharetoken.desktop
-else NAME="sharetoken DEV"; BUNDLE_ID=app.sharetoken.desktop.dev; fi
+if [ "$ENV" = prod ]; then NAME=ShareToken; BUNDLE_ID=app.sharetoken.desktop; SUFFIX=
+else NAME="ShareToken DEV"; BUNDLE_ID=app.sharetoken.desktop.dev; SUFFIX=-$ENV; fi
+EXE=sharetoken$SUFFIX; GUI=sharetoken-gui$SUFFIX
 OUT=dist
 VERSION=$(scripts/version.sh)
 NUMERIC=${VERSION%%-*}  # macOS and Windows metadata take only numbers
@@ -40,7 +46,7 @@ LDFLAGS=$(scripts/client_ldflags.sh "$ENV")
 SHELL_LDFLAGS="-s -w -X main.buildType=$STAMP -X main.version=$VERSION"
 
 fill() { # template: the packaging files name the build type with @ENV@ and so on
-  sed -e "s/@ENV@/$ENV/g" -e "s/@NAME@/$NAME/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" -e "s/@VERSION@/$NUMERIC/g" "$1"
+  sed -e "s/@EXE@/$EXE/g" -e "s/@GUI@/$GUI/g" -e "s/@NAME@/$NAME/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" -e "s/@VERSION@/$NUMERIC/g" "$1"
 }
 build_shell() { # output path, extra tags
   (cd gui && CGO_ENABLED=1 go build -trimpath -tags "desktop,production$2" -ldflags "$SHELL_LDFLAGS" -o "../$1" .)
@@ -56,8 +62,51 @@ verify() { # programs
   done
 }
 
-sums() { # archive: added to the release's checksum file
+sums() { # installer: added to the release's checksum file
   (cd "$OUT" && { cat "SHA256SUMS-$VERSION" 2>/dev/null; shasum -a 256 "$1"; } | sort -u -k2 > "SHA256SUMS-$VERSION.tmp" && mv "SHA256SUMS-$VERSION.tmp" "SHA256SUMS-$VERSION")
+}
+
+build_macos() { # architecture
+  # Cgo builds for the other architecture too: Go passes -arch to clang.
+  local arch=$1 app="$OUT/ShareToken$SUFFIX.app" dmg stage icons
+  export GOARCH=$arch
+  rm -rf "$app"
+  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+  CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$app/Contents/MacOS/$EXE" ./cmd/sharetoken
+  build_shell "$app/Contents/MacOS/$GUI" ""
+  verify "$app/Contents/MacOS/$EXE" "$app/Contents/MacOS/$GUI"
+  fill gui/packaging/Info.plist > "$app/Contents/Info.plist"
+  icons=$(mktemp -d)/app.iconset
+  mkdir -p "$icons"
+  for s in 16 32 128 256 512; do
+    sips -z $s $s gui/packaging/icon.png --out "$icons/icon_${s}x${s}.png" >/dev/null
+    sips -z $((s*2)) $((s*2)) gui/packaging/icon.png --out "$icons/icon_${s}x${s}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$icons" -o "$app/Contents/Resources/sharetoken.icns"
+  # Ad-hoc signature: Apple silicon refuses to run unsigned code. Downloaded
+  # copies still need a Developer ID signature and notarization to open without
+  # a Gatekeeper warning.
+  codesign --force --deep --sign - "$app" 2>/dev/null
+  # The disk image opens on the app and a link to drag it onto.
+  dmg=sharetoken$SUFFIX-$VERSION-macos-$arch.dmg
+  stage=$(mktemp -d)
+  ditto "$app" "$stage/$NAME.app"
+  ln -s /Applications "$stage/Applications"
+  rm -f "$OUT/$dmg"
+  hdiutil create -quiet -volname "$NAME" -srcfolder "$stage" -fs HFS+ -format UDZO "$OUT/$dmg"
+  rm -rf "$stage"
+  sums "$dmg"
+  echo "built $OUT/$dmg"
+}
+
+nsis() { # makensis arguments; paths in them are relative to dist/
+  if command -v makensis >/dev/null; then
+    local nsi=$PWD/gui/packaging/installer.nsi
+    (cd "$OUT" && makensis -NOCD "$@" "$nsi")
+  else
+    scripts/build-gui-linux.sh --image amd64
+    docker run --rm --platform linux/amd64 -v "$PWD/$OUT:/out" -v "$PWD/gui/packaging:/packaging:ro" -w /out sharetoken-gui-builder:amd64 makensis -NOCD "$@" /packaging/installer.nsi
+  fi
 }
 
 case "${1:-$(uname -s)}" in
@@ -66,61 +115,56 @@ windows)
   # icon and the manifest (DPI awareness, common controls v6 for its dialogs);
   # go build links it by its name, and it must not outlive this build.
   ARCH=${2:-amd64}
-  BASE=sharetoken-$ENV-$VERSION-windows-$ARCH
+  BASE=sharetoken$SUFFIX-$VERSION-windows-$ARCH
   DIR=$OUT/$BASE
   rm -rf "$DIR"
   mkdir -p "$DIR"
-  CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/sharetoken-$ENV.exe" ./cmd/sharetoken
+  CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/$EXE.exe" ./cmd/sharetoken
   trap 'rm -f gui/rsrc_windows_*.syso' EXIT
   go run github.com/tc-hib/go-winres@v0.3.3 simply --arch "$ARCH" --manifest gui --icon gui/packaging/icon.png --out gui/rsrc
-  (cd gui && CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -tags desktop,production -ldflags "$SHELL_LDFLAGS -H windowsgui" -o "../$DIR/sharetoken-gui-$ENV.exe" .)
-  verify "$DIR/sharetoken-$ENV.exe" "$DIR/sharetoken-gui-$ENV.exe"
-  (cd "$OUT" && rm -f "$BASE.zip" && zip -qr "$BASE.zip" "$BASE")
-  sums "$BASE.zip"
-  echo "built $DIR"
+  (cd gui && CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -tags desktop,production -ldflags "$SHELL_LDFLAGS -H windowsgui" -o "../$DIR/$GUI.exe" .)
+  verify "$DIR/$EXE.exe" "$DIR/$GUI.exe"
+  cp gui/packaging/icon.ico gui/packaging/user-path.ps1 "$DIR/"
+  nsis -V2 "-DNAME=$NAME" "-DEXE=$EXE" "-DGUI=$GUI" "-DVERSION=$NUMERIC" "-DSRC=$BASE" "-DOUTFILE=$BASE.exe" "-DSUFFIX=$SUFFIX"
+  sums "$BASE.exe"
+  echo "built $OUT/$BASE.exe"
+  ;;
+macos)
+  build_macos "${2:-$(go env GOARCH)}"
   ;;
 Darwin)
-  APP=$OUT/sharetoken-$ENV.app
-  rm -rf "$APP"
-  mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-  CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$APP/Contents/MacOS/sharetoken-$ENV" ./cmd/sharetoken
-  build_shell "$APP/Contents/MacOS/sharetoken-gui-$ENV" ""
-  verify "$APP/Contents/MacOS/sharetoken-$ENV" "$APP/Contents/MacOS/sharetoken-gui-$ENV"
-  fill gui/packaging/Info.plist > "$APP/Contents/Info.plist"
-  ICONSET=$(mktemp -d)/app.iconset
-  mkdir -p "$ICONSET"
-  for s in 16 32 128 256 512; do
-    sips -z $s $s gui/packaging/icon.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-    sips -z $((s*2)) $((s*2)) gui/packaging/icon.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
-  done
-  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/sharetoken.icns"
-  # Ad-hoc signature: Apple silicon refuses to run unsigned code. Downloaded
-  # copies still need a Developer ID signature and notarization to open without
-  # a Gatekeeper warning.
-  codesign --force --deep --sign - "$APP" 2>/dev/null
-  ZIP=sharetoken-$ENV-$VERSION-macos-$(go env GOARCH).zip
-  (cd "$OUT" && rm -f "$ZIP" && ditto -c -k --keepParent "sharetoken-$ENV.app" "$ZIP")
-  sums "$ZIP"
-  echo "built $APP"
+  build_macos "$(go env GOARCH)"
   ;;
 Linux)
-  # webkit2gtk 4.1 (Ubuntu 24.04+, Debian 12+); older systems only have 4.0.
+  # webkit2gtk 4.1 (Ubuntu 22.04+, Debian 12+); older systems only have 4.0.
   TAG=""
   pkg-config --exists webkit2gtk-4.1 && TAG=",webkit2_41"
-  BASE=sharetoken-$ENV-$VERSION-linux-$(go env GOARCH)
+  ARCH=$(go env GOARCH)
+  BASE=sharetoken$SUFFIX-$VERSION-linux-$ARCH
   DIR=$OUT/$BASE
   rm -rf "$DIR"
   mkdir -p "$DIR"
-  CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/sharetoken-$ENV" ./cmd/sharetoken
-  build_shell "$DIR/sharetoken-gui-$ENV" "$TAG"
-  verify "$DIR/sharetoken-$ENV" "$DIR/sharetoken-gui-$ENV"
-  cp gui/packaging/icon.png "$DIR/"
-  fill gui/packaging/sharetoken.desktop > "$DIR/sharetoken-$ENV.desktop"
-  fill gui/packaging/install-linux.sh > "$DIR/install-linux.sh"
-  chmod +x "$DIR/install-linux.sh"
-  tar -C "$OUT" -czf "$DIR.tar.gz" "$BASE"
-  sums "$BASE.tar.gz"
-  echo "built $DIR"
+  CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/$EXE" ./cmd/sharetoken
+  build_shell "$DIR/$GUI" "$TAG"
+  verify "$DIR/$EXE" "$DIR/$GUI"
+  # The package: programs on every user's PATH, an entry in the application menu.
+  ROOT=$(mktemp -d)
+  install -d "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/usr/share/icons/hicolor/512x512/apps"
+  install -m 755 "$DIR/$EXE" "$DIR/$GUI" "$ROOT/usr/bin/"
+  install -m 644 gui/packaging/icon.png "$ROOT/usr/share/icons/hicolor/512x512/apps/$EXE.png"
+  fill gui/packaging/sharetoken.desktop > "$ROOT/usr/share/applications/$EXE.desktop"
+  chmod 644 "$ROOT/usr/share/applications/$EXE.desktop"
+  { fill gui/packaging/deb-control
+    echo "Architecture: $ARCH"
+    echo "Installed-Size: $(du -sk "$ROOT/usr" | cut -f1)"
+  } > "$ROOT/DEBIAN/control"
+  install -m 755 gui/packaging/deb-postchange "$ROOT/DEBIAN/postinst"
+  install -m 755 gui/packaging/deb-postchange "$ROOT/DEBIAN/postrm"
+  chmod -R go-w "$ROOT"
+  dpkg-deb --root-owner-group -Zxz --build "$ROOT" "$DIR.deb" >/dev/null
+  rm -rf "$ROOT"
+  sums "$BASE.deb"
+  echo "built $DIR.deb"
   ;;
 *)
   echo "unsupported system: $(uname -s)" >&2; exit 1 ;;

@@ -52,21 +52,21 @@ $env:PROCESSOR_ARCHITECTURE
 ::: macos
 ```bash
 ARCH=arm64
-curl -fLO {{origin}}/downloads/sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz
+curl -fLO {{origin}}/downloads/sharetoken-cli-{{version}}-macos-$ARCH.tar.gz
 ```
 :::
 
 ::: linux
 ```bash
 ARCH=amd64
-curl -fLO {{origin}}/downloads/sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz
+curl -fLO {{origin}}/downloads/sharetoken-cli-{{version}}-linux-$ARCH.tar.gz
 ```
 :::
 
 ::: windows
 ```powershell
 $arch = 'amd64'
-$name = "sharetoken-cli-{{env}}-{{version}}-windows-$arch"
+$name = "sharetoken-cli-{{version}}-windows-$arch"
 curl.exe -fLO "{{origin}}/downloads/$name.zip"
 ```
 :::
@@ -107,9 +107,9 @@ $expected = (Select-String -Path "SHA256SUMS-{{version}}" -SimpleMatch "$name.zi
 
 ::: macos
 ```bash
-tar -xzf sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz
+tar -xzf sharetoken-cli-{{version}}-macos-$ARCH.tar.gz
 mkdir -p ~/.local/bin
-mv sharetoken-cli-{{env}}-{{version}}-macos-$ARCH/{{exe}} ~/.local/bin/
+mv sharetoken-cli-{{version}}-macos-$ARCH/{{exe}} ~/.local/bin/
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
@@ -124,9 +124,9 @@ source ~/.zshrc
 
 ::: linux
 ```bash
-tar -xzf sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz
+tar -xzf sharetoken-cli-{{version}}-linux-$ARCH.tar.gz
 mkdir -p ~/.local/bin
-mv sharetoken-cli-{{env}}-{{version}}-linux-$ARCH/{{exe}} ~/.local/bin/
+mv sharetoken-cli-{{version}}-linux-$ARCH/{{exe}} ~/.local/bin/
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
@@ -134,7 +134,7 @@ source ~/.bashrc
 zsh 用户把 `~/.bashrc` 换成 `~/.zshrc`。想给所有用户安装：
 
 ```bash
-sudo install -m 755 sharetoken-cli-{{env}}-{{version}}-linux-$ARCH/{{exe}} /usr/local/bin/
+sudo install -m 755 sharetoken-cli-{{version}}-linux-$ARCH/{{exe}} /usr/local/bin/
 ```
 :::
 
@@ -158,8 +158,4 @@ $env:Path += ";$dir"
 {{exe}} version
 ```
 
-输出里有版本号、网络（`env {{env}}`）、门户地址、数据目录和本地 API 地址（`127.0.0.1:{{port}}`）。这个命令不会连网，也不会写任何文件。接下来去[注册账户](/docs/account#register)。
-
-## 构建类型 {#build-type}
-
-安装包的文件名和程序名都带网络名：`prod` 连接正式网络 `https://sharetoken.app`，`dev` 连接测试网络 `https://dev.sharetoken.app`。两者的程序、数据目录和端口都不同，可以装在同一台机器上，账户和 credit 互不相通。
+输出里有版本号、网络（`env prod`）、门户地址、数据目录和本地 API 地址（`127.0.0.1:{{port}}`）。这个命令不会连网，也不会写任何文件。接下来去[注册账户](/docs/account#register)。

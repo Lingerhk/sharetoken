@@ -89,7 +89,7 @@ if [ $PORTAL_ONLY = 1 ]; then
   scp $Q "$HERE/portal.yaml" "$RUSER@$HOST:$DIR/portal.yaml.new" >/dev/null
   rsh "cd $DIR && releases/$V/portal -config portal.yaml.new check-config >/dev/null && echo portal config ok"
   echo "== client packages"
-  "$REPO/scripts/publish-cli.sh" prod "$V" "$RUSER@$HOST" "$DIR/downloads"
+  "$REPO/scripts/publish-packages.sh" "$V" "$RUSER@$HOST" "$DIR/downloads"
   echo "== restart portal (keeps portal.prev)"
   rsh "cd $DIR && cp portal.yaml portal.yaml.prev && sudo systemctl stop sharetoken-portal && mv portal.yaml.new portal.yaml"
   activate portal

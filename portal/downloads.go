@@ -21,8 +21,8 @@ import (
 const downloadWriteTimeout = time.Hour
 
 var (
-	// The names scripts/build-cli.sh and scripts/build-gui.sh give their archives.
-	packageRe  = regexp.MustCompile(`^sharetoken(-cli)?-(dev|prod)-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-(macos|linux|windows)-(amd64|arm64)\.(?:tar\.gz|zip)$`)
+	// The names scripts/build-cli.sh and scripts/build-gui.sh give their packages.
+	packageRe  = regexp.MustCompile(`^sharetoken(-cli)?(-dev)?-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-(macos|linux|windows)-(amd64|arm64)\.(?:tar\.gz|zip|dmg|exe|deb)$`)
 	checksumRe = regexp.MustCompile(`^SHA256SUMS-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?$`)
 )
 
@@ -40,13 +40,13 @@ type Package struct {
 
 // Downloads is the answer of GET /api/v1/downloads.
 type Downloads struct {
-	Env      string    `json:"env,omitempty"`     // dev or prod: the network these packages sign in to
-	Version  string    `json:"version,omitempty"` // newest command-line version
+	Version  string    `json:"version,omitempty"` // newest version
 	Packages []Package `json:"packages"`
 }
 
-// listDownloads reads the directory. A file that is not a package of this
-// network is not offered, and a missing directory is simply an empty list.
+// listDownloads reads the directory. Every portal, the dev one too, offers the
+// packages of the real network: dev packages are for testing, reachable by name
+// but not listed. A missing directory is simply an empty list.
 func (s *Server) listDownloads() Downloads {
 	out := Downloads{Packages: []Package{}}
 	if s.cfg.DownloadsDir == "" {
@@ -62,7 +62,7 @@ func (s *Server) listDownloads() Downloads {
 	newest := map[string]Package{}
 	for _, e := range entries {
 		m := packageRe.FindStringSubmatch(e.Name())
-		if m == nil || !e.Type().IsRegular() {
+		if m == nil || m[2] != "" || !e.Type().IsRegular() {
 			continue
 		}
 		info, err := e.Info()
@@ -73,15 +73,12 @@ func (s *Server) listDownloads() Downloads {
 		if m[1] != "" {
 			kind = "cli"
 		}
-		if out.Env == "" || version.Compare(m[3], out.Version) >= 0 {
-			out.Env = m[2]
-		}
 		p := Package{Kind: kind, OS: m[4], Arch: m[5], Version: m[3], File: e.Name(), URL: "/downloads/" + e.Name(), Size: info.Size()}
 		key := kind + "/" + p.OS + "/" + p.Arch
 		if old, ok := newest[key]; !ok || version.Compare(p.Version, old.Version) > 0 {
 			newest[key] = p
 		}
-		if kind == "cli" && (out.Version == "" || version.Compare(p.Version, out.Version) > 0) {
+		if out.Version == "" || version.Compare(p.Version, out.Version) > 0 {
 			out.Version = p.Version
 		}
 	}

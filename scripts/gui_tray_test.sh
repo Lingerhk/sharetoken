@@ -4,7 +4,7 @@
 # and the menu-bar icon do show for about 15 seconds. No account or network is
 # involved. macOS only; docs/windows-env.md has the steps for Windows.
 #
-#   scripts/gui_tray_test.sh <dev|prod> <dir with sharetoken-<env> and sharetoken-gui-<env>>
+#   scripts/gui_tray_test.sh <dev|prod> <dir with the programs of that build (sharetoken and sharetoken-gui, or sharetoken-dev and sharetoken-gui-dev)>
 set -euo pipefail
 ENV=$1
 BIN=$(cd "$2" && pwd)
@@ -15,7 +15,8 @@ printf '{"version":1,"env":"%s","http":"127.0.0.1:%s"}\n' "$ENV" "$PORT" > "$HOM
 # The binaries are release builds: keep this test out of the real statistics.
 export SHARETOKEN_HOME=$HOME_DIR SHARETOKEN_GUI_SELFTEST=tray SHARETOKEN_TELEMETRY=0
 set +e
-OUT=$("$BIN/sharetoken-gui-$ENV" 2>&1)
+SUFFIX=-$ENV; [ "$ENV" = prod ] && SUFFIX=
+OUT=$("$BIN/sharetoken-gui$SUFFIX" 2>&1)
 CODE=$?
 set -e
 echo "$OUT" | grep -E '^(tray|selftest):' || { echo "$OUT" | tail -20; echo "no self-test result (exit $CODE)"; exit 1; }

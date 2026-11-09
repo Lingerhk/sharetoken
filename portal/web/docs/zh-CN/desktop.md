@@ -2,37 +2,50 @@
 
 桌面应用提供图形界面：注册、登录、查看账户和网络状态。共享模型的设置目前仍然用命令行。
 
-> [!NOTE]
-> 可下载的版本以[下载区](/#download)为准。标着“即将上线”的版本暂时还不能下载，现在可以先用下面的[不装窗口的图形界面](#browser-ui)。
-
 ## 安装 {#install}
 
+::: downloads desktop
+:::
+
 ::: macos
-1. 解压 `sharetoken-{{env}}-<版本>-macos-<架构>.zip`，得到 `sharetoken-{{env}}.app`。
-2. 把它拖到“应用程序”文件夹。
-3. 第一次打开时，如果提示无法验证开发者：打开“系统设置 > 隐私与安全性”，在页面下方点“仍要打开”。应用还没有 Apple 公证。
+1. 打开下载的 `.dmg`，把 ShareToken 拖到“应用程序”文件夹。Apple Silicon 和 Intel 的安装包不同，查看方法是点左上角苹果菜单，再点“关于本机”。
+2. 第一次打开时，如果提示无法验证开发者：打开“系统设置 > 隐私与安全性”，在页面下方点“仍要打开”。应用还没有 Apple 公证。
 :::
 
 ::: linux
-需要 WebKitGTK。Ubuntu 24.04 上：
+安装包适用于 Ubuntu 22.04 或更新版本、Debian 12 或更新版本。用 `apt` 安装，它会一起装好需要的 WebKitGTK：
 
 ```bash
-sudo apt install libgtk-3-0t64 libwebkit2gtk-4.1-0
+sudo apt install ./sharetoken-{{version}}-linux-<arch>.deb
 ```
 
-解压后运行安装脚本，它把程序装到 `~/.local` 并添加应用菜单项：
+`<arch>` 换成你下载的 `amd64` 或 `arm64`。之后可以从应用菜单打开 ShareToken。其他发行版可以用[命令行版](/docs/install)，再用下面的[不装窗口的图形界面](#browser-ui)。
+:::
+
+::: windows
+1. 运行下载的安装程序。如果 SmartScreen 拦下，点“更多信息”再点“仍要运行”。应用还没有代码签名。
+2. 按提示完成安装。它只为当前用户安装，不需要管理员权限，并在开始菜单和桌面添加快捷方式。
+3. 需要 WebView2 Runtime。Windows 11 自带，Windows 10 没有时请从 Microsoft 网站安装。
+:::
+
+## 升级和卸载 {#upgrade}
+
+升级时下载新版本，像第一次那样安装，它会替换旧版本。卸载不会删除数据目录 `{{home}}`，账户和设备密钥都还在；要彻底清除，请再删除这个目录。
+
+::: macos
+卸载：退出应用，把“应用程序”文件夹里的 ShareToken 移到废纸篓。
+:::
+
+::: linux
+卸载：
 
 ```bash
-tar -xzf sharetoken-{{env}}-<version>-linux-<arch>.tar.gz
-cd sharetoken-{{env}}-<version>-linux-<arch>
-./install-linux.sh
+sudo apt remove sharetoken
 ```
 :::
 
 ::: windows
-1. 解压 `sharetoken-{{env}}-<版本>-windows-<架构>.zip` 到一个固定的目录。
-2. 运行 `sharetoken-gui-{{env}}.exe`。如果 SmartScreen 拦下，点“更多信息”再点“仍要运行”。应用还没有代码签名。
-3. 需要 WebView2 Runtime。Windows 11 自带，Windows 10 没有时请从 Microsoft 网站安装。
+卸载：打开“设置 > 应用 > 已安装的应用”，找到 ShareToken 后点“卸载”。
 :::
 
 ## 窗口和后台服务 {#behaviour}
@@ -71,6 +84,24 @@ cd sharetoken-{{env}}-<version>-linux-<arch>
 ## 和命令行一起用 {#with-cli}
 
 桌面应用和命令行版共用数据目录 `{{home}}`。应用运行时，`{{exe}} status`、`{{exe}} models`、`{{exe}} share add` 等命令都直接作用于它。同一个数据目录上不要再运行 `{{exe}} up`，否则同一把设备密钥会同时在线两次，客户端会报错退出。
+
+::: macos
+`{{exe}}` 在应用里面。要在终端直接用这个名字，先把它加入 PATH：
+
+```bash
+echo 'export PATH="/Applications/ShareToken.app/Contents/MacOS:$PATH"' >> ~/.zshrc
+```
+
+然后打开一个新终端。
+:::
+
+::: linux
+安装包已经把 `{{exe}}` 放到 `/usr/bin`，可以直接使用。
+:::
+
+::: windows
+安装程序已经把 `{{exe}}` 加入当前用户的 PATH，打开一个新终端就能使用。
+:::
 
 ## 使用统计 {#telemetry}
 

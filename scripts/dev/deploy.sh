@@ -30,7 +30,7 @@ if [ $PORTAL_ONLY = 1 ]; then
   pi "chmod +x $DIR/releases/$V/*; cd $DIR/releases && ls -1t | tail -n +6 | while read -r old; do rm -rf \"\$old\"; done"
   pi "cd $DIR && releases/$V/portal -config portal.yaml.new check-config >/dev/null && echo portal config ok"
   echo "== client packages"
-  scripts/publish-cli.sh dev "$V" "$RUSER@$PI" "$DIR/downloads"
+  scripts/publish-packages.sh "$V" "$RUSER@$PI" "$DIR/downloads" --with-dev-cli
   echo "== restart portal"
   pi "cd $DIR && sudo systemctl stop sharetoken-dev-portal; mv portal.yaml.new portal.yaml; [ -e portal ] && cp -P portal portal.prev; ln -sfn releases/$V/portal portal; sudo systemctl start sharetoken-dev-portal; sleep 3; systemctl is-active sharetoken-dev-portal"
   exit 0

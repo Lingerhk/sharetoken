@@ -4,10 +4,11 @@
 // `code`, **bold**, [links](url), and:
 //   > [!NOTE] / [!TIP] / [!WARNING]     a callout
 //   ::: macos linux                     content for these systems; closes with :::
-//   ::: downloads                       the portal's packages for the chosen system
+//   ::: downloads                       the command-line packages for the chosen system
+//   ::: downloads desktop               the desktop installers for the chosen system
 //   ::: cards ... [title](url) text     a grid of links
-// {{exe}}, {{home}}, {{homewin}}, {{port}}, {{version}}, {{origin}} and {{env}} fill
-// in the network this portal serves, so dev.sharetoken.app shows dev commands.
+// {{exe}}, {{home}}, {{homewin}} and {{port}} name the released program, the same
+// on every portal; {{version}} and {{origin}} say what this one offers and where.
 'use strict';
 
 I18N.ready.then(async () => {
@@ -39,13 +40,11 @@ I18N.ready.then(async () => {
     const r = await fetch('/api/v1/downloads', { headers: { Accept: 'application/json' } });
     if (r.ok) downloads = await r.json();
   } catch (e) { /* the guide still reads without the package list */ }
-  const dev = downloads.env ? downloads.env === 'dev' : /^dev\./.test(location.hostname);
   const VARS = {
-    exe: dev ? 'sharetoken-dev' : 'sharetoken-prod',
-    home: dev ? '~/.sharetoken-dev' : '~/.sharetoken',
-    homewin: dev ? '$HOME\\.sharetoken-dev' : '$HOME\\.sharetoken',
-    port: dev ? '9887' : '9787',
-    env: dev ? 'dev' : 'prod',
+    exe: 'sharetoken',
+    home: '~/.sharetoken',
+    homewin: '$HOME\\.sharetoken',
+    port: '9787',
     version: downloads.version || '<version>',
     origin: location.origin,
   };
@@ -142,7 +141,7 @@ I18N.ready.then(async () => {
           if (/^:::\s*$/.test(lines[j])) { if (--depth === 0) break; } else if (/^::: ?\S/.test(lines[j])) depth++;
         }
         const kind = m[1].trim(), body = lines.slice(i + 1, j);
-        if (kind === 'downloads') parent.append(mk('div', { class: 'dl-slot', 'data-downloads': '' }));
+        if (kind === 'downloads' || kind === 'downloads desktop') parent.append(mk('div', { class: 'dl-slot', 'data-downloads': kind === 'downloads' ? 'cli' : 'desktop' }));
         else if (kind === 'cards') parent.append(cards(body));
         else {
           const box = mk('div', { class: 'os-block', 'data-os': kind });
@@ -278,7 +277,8 @@ I18N.ready.then(async () => {
 
   function drawDownloads() {
     $('doc').querySelectorAll('[data-downloads]').forEach(slot => {
-      const mine = downloads.packages.filter(p => p.kind === 'cli' && p.os === os);
+      const mine = downloads.packages.filter(p => p.kind === slot.dataset.downloads && p.os === os);
+      if (!mine.length && slot.dataset.downloads !== 'cli') { slot.replaceChildren(); return; }
       if (!mine.length) {
         slot.replaceChildren(mk('div', { class: 'callout note' }, mk('b', null, tr('说明')), mk('p', null, tr('这个门户暂时没有可下载的命令行安装包。'))));
         return;
@@ -475,7 +475,7 @@ I18N.ready.then(async () => {
         for (const raw of lines) {
           if (/^```/.test(raw)) { fence = !fence; continue; }
           let m;
-          if (!fence && (m = raw.match(/^::: ?(.+)$/))) { const k = m[1].trim(); if (k !== 'downloads' && k !== 'cards') osStack = k; continue; }
+          if (!fence && (m = raw.match(/^::: ?(.+)$/))) { const k = m[1].trim(); if (!k.startsWith('downloads') && k !== 'cards') osStack = k; continue; }
           if (!fence && /^:::\s*$/.test(raw)) { osStack = ''; continue; }
           if (!fence && (m = raw.match(/^(#{2,3}) (.*?)\s*\{#([a-z0-9-]+)\}$/))) {
             sections.push(cur);

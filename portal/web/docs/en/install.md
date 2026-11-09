@@ -52,21 +52,21 @@ You can also download from the command line. Replace `ARCH` with `amd64` or `arm
 ::: macos
 ```bash
 ARCH=arm64
-curl -fLO {{origin}}/downloads/sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz
+curl -fLO {{origin}}/downloads/sharetoken-cli-{{version}}-macos-$ARCH.tar.gz
 ```
 :::
 
 ::: linux
 ```bash
 ARCH=amd64
-curl -fLO {{origin}}/downloads/sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz
+curl -fLO {{origin}}/downloads/sharetoken-cli-{{version}}-linux-$ARCH.tar.gz
 ```
 :::
 
 ::: windows
 ```powershell
 $arch = 'amd64'
-$name = "sharetoken-cli-{{env}}-{{version}}-windows-$arch"
+$name = "sharetoken-cli-{{version}}-windows-$arch"
 curl.exe -fLO "{{origin}}/downloads/$name.zip"
 ```
 :::
@@ -107,9 +107,9 @@ It should print `True`.
 
 ::: macos
 ```bash
-tar -xzf sharetoken-cli-{{env}}-{{version}}-macos-$ARCH.tar.gz
+tar -xzf sharetoken-cli-{{version}}-macos-$ARCH.tar.gz
 mkdir -p ~/.local/bin
-mv sharetoken-cli-{{env}}-{{version}}-macos-$ARCH/{{exe}} ~/.local/bin/
+mv sharetoken-cli-{{version}}-macos-$ARCH/{{exe}} ~/.local/bin/
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
@@ -124,9 +124,9 @@ source ~/.zshrc
 
 ::: linux
 ```bash
-tar -xzf sharetoken-cli-{{env}}-{{version}}-linux-$ARCH.tar.gz
+tar -xzf sharetoken-cli-{{version}}-linux-$ARCH.tar.gz
 mkdir -p ~/.local/bin
-mv sharetoken-cli-{{env}}-{{version}}-linux-$ARCH/{{exe}} ~/.local/bin/
+mv sharetoken-cli-{{version}}-linux-$ARCH/{{exe}} ~/.local/bin/
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
@@ -134,7 +134,7 @@ source ~/.bashrc
 If you use zsh, replace `~/.bashrc` with `~/.zshrc`. To install for all users:
 
 ```bash
-sudo install -m 755 sharetoken-cli-{{env}}-{{version}}-linux-$ARCH/{{exe}} /usr/local/bin/
+sudo install -m 755 sharetoken-cli-{{version}}-linux-$ARCH/{{exe}} /usr/local/bin/
 ```
 :::
 
@@ -158,8 +158,4 @@ A newly opened PowerShell window picks up the new PATH. The program is not yet c
 {{exe}} version
 ```
 
-The output shows the version, the network (`env {{env}}`), the portal address, the state directory and the local API address (`127.0.0.1:{{port}}`). This command does not connect to the network and does not write any file. Next, [register an account](/docs/account#register).
-
-## Build types {#build-type}
-
-Both the package file name and the program name include the network name. `prod` connects to the production network `https://sharetoken.app`, and `dev` connects to the test network `https://dev.sharetoken.app`. They use different programs, state directories and ports, so you can install both on one machine. Accounts and credit are separate between them.
+The output shows the version, the network (`env prod`), the portal address, the state directory and the local API address (`127.0.0.1:{{port}}`). This command does not connect to the network and does not write any file. Next, [register an account](/docs/account#register).
