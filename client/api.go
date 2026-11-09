@@ -14,6 +14,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/network"
 
+	"sharetoken/internal/cli"
 	"sharetoken/node"
 	"sharetoken/p2p"
 )
@@ -134,7 +135,20 @@ func (a *Agent) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, a.Status().Share)
 	})
 	mux.HandleFunc("GET /api/v1/share/detect", a.handleDetect)
-	return guardOrigin(mux)
+	mux.HandleFunc("POST /api/v1/login/check", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case a.loginKick <- struct{}{}:
+		default:
+		}
+		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
+	})
+	h := guardOrigin(mux)
+	// DNS rebinding. An address the user opened to the network on purpose is
+	// reached under other names, and is exposed to more than web pages anyway.
+	if host, _, err := net.SplitHostPort(a.cfg.HTTP); err == nil && cli.IsLoopback(host) {
+		h = guardHost(h)
+	}
+	return h
 }
 
 // guardOrigin rejects requests that a web page in the user's browser sent:

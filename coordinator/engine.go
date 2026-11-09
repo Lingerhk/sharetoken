@@ -35,6 +35,7 @@ import (
 	"log/slog"
 	"math"
 	mrand "math/rand/v2"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -225,6 +226,9 @@ type Engine struct {
 
 	mu     sync.Mutex // serializes transactions; guards offers
 	offers map[string]*offerEntry
+	// withdrawn holds, for each node that withdrew its offer, when it did: an
+	// announcement issued before then, still on its way, must not revive it.
+	withdrawn map[string]int64
 
 	teeMu    sync.Mutex
 	teeCache map[[32]byte]string
@@ -243,7 +247,7 @@ func NewEngine(self string, priv ed25519.PrivateKey, cfg Config) (*Engine, error
 	}
 	e := &Engine{
 		self: self, priv: priv, cfg: cfg, db: db, log: cfg.Log, policy: &accounts.PolicyCache{DB: db, TTL: 30 * time.Second},
-		offers: make(map[string]*offerEntry), teeCache: make(map[[32]byte]string), started: cfg.Now(),
+		offers: make(map[string]*offerEntry), withdrawn: make(map[string]int64), teeCache: make(map[[32]byte]string), started: cfg.Now(),
 	}
 	if err := Migrate(db); err != nil {
 		e.Close()
@@ -380,12 +384,25 @@ func (e *Engine) UpsertOffer(o *protocol.Offer) error {
 		if cur, ok := e.offers[o.Node]; ok && cur.offer.IssuedAt >= o.IssuedAt {
 			return nil
 		}
+		if at, ok := e.withdrawn[o.Node]; ok && o.IssuedAt <= at {
+			return nil
+		}
 		e.offers[o.Node] = &offerEntry{offer: *o, acct: acct, tee: tee}
 		if err := accounts.SetDeviceVersionTx(tx, o.Node, o.ClientVersion); err != nil {
 			return err
 		}
 		return accounts.TouchDevice(tx, o.Node, now, 5*time.Minute)
 	})
+}
+
+// WithdrawOffer removes node's offer at once: the node stopped sharing, and
+// buyers should not get tickets for it until the offer expires.
+func (e *Engine) WithdrawOffer(node string, issuedAt int64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.offers, node)
+	e.withdrawn[node] = issuedAt
+	return nil
 }
 
 // verifyQuote returns the allow-list label of the offer's attested image, or
@@ -561,6 +578,9 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		if err := e.grantDevCredit(tx, led, buyer, buyerAcct, now); err != nil {
 			return err
 		}
+		if err := accounts.TouchDevice(tx, buyer, now, 5*time.Minute); err != nil {
+			return err
+		}
 		// A buyer that keeps taking tickets and never connects would block
 		// nodes' slots; cap the tickets it leaves unused.
 		// Tickets the buyer disputed as failed (it could not reach the node: a
@@ -630,6 +650,12 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			what := "no node"
 			if req.RequireTEE {
 				what = "no attested node"
+			}
+			for _, oe := range e.offers {
+				if oe.acct == buyerAcct && slices.ContainsFunc(oe.offer.Models, func(m protocol.ModelPrice) bool { return m.Model == req.Model }) {
+					what = "no other user's node" // the model list shows it, so say why it cannot be bought
+					break
+				}
 			}
 			return protocol.Errorf(protocol.CodeNoOffers, "%s currently offers %q within the price limits", what, req.Model)
 		}
@@ -853,6 +879,13 @@ func (e *Engine) Settle(submitter string, req protocol.SettleRequest) (*protocol
 		case j.disputeReason != "":
 			j.status = StatusDisputed
 		default:
+			// No acknowledgement, typically a buyer that cancelled mid-stream.
+			// Only the billed cost waits out the dispute window: the rest of
+			// the reservation, a whole request budget when the request set no
+			// max_tokens, goes back to the buyer now.
+			if err := led.ShrinkHold(j.ticket.JobID, max(int64(j.cost), 1)); err != nil {
+				return err
+			}
 			j.status, j.finalizeAt = StatusPending, now.Add(e.cfg.DisputeWindow).UnixNano()
 		}
 		resp = settled(j)
@@ -1206,6 +1239,11 @@ func (e *Engine) Tick(now time.Time) {
 	for node, oe := range e.offers {
 		if oe.offer.ExpiresAt <= now.UnixNano() {
 			delete(e.offers, node)
+		}
+	}
+	for node, at := range e.withdrawn {
+		if at <= now.Add(-e.cfg.MaxOfferTTL).UnixNano() {
+			delete(e.withdrawn, node)
 		}
 	}
 	e.mu.Unlock()

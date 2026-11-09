@@ -62,6 +62,7 @@ const (
 const (
 	TypeError         = "error"
 	TypeAnnounce      = "announce" // a node's signed offer, sent to the coordinator
+	TypeWithdraw      = "withdraw" // a node stopped sharing; its offer ends now
 	TypeAbandon       = "abandon"  // a node gives up a ticketed job it could not deliver
 	TypeStarted       = "started"  // a node reports that the buyer started a ticketed job
 	TypeTicketRequest = "ticket_request"
@@ -372,6 +373,12 @@ type ModelsResponse struct {
 type BalanceResponse struct {
 	AvailableMicros int64 `json:"available"`
 	HeldMicros      int64 `json:"held"`
+}
+
+// WithdrawRequest ends the sending node's offer before it expires. Announcements
+// issued up to IssuedAt no longer count.
+type WithdrawRequest struct {
+	IssuedAt int64 `json:"issued_at"`
 }
 
 // AbandonRequest is a node giving up a ticketed job before delivering any

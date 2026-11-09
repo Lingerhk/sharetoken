@@ -165,6 +165,7 @@ coordinator -db mysql://sharetoken@10.0.0.5:3306/sharetoken -fee-bps 500 …
 | `POST /api/v1/share/start` / `stop` | 开关共享 |
 | `POST /api/v1/share/reload` | 从 config.json 重新加载共享设置 |
 | `GET /api/v1/share/detect[?upstream=]` | 列出本地模型服务的模型 |
+| `POST /api/v1/login/check` | 立即检查登录是否还有效（`sharetoken logout` 调用）。平时每分钟检查一次，失效后 `up` 退出，daemon 转为 `expired` |
 | `POST /v1/chat/completions`、`GET /v1/models` | OpenAI 兼容端点（响应头 `X-Sharetoken-Verified/Job/Node/Cost-Micros`） |
 
 `/v1/chat/completions` 的行为要点：

@@ -256,3 +256,36 @@ func TestBooksSurviveRestartAndReconcileCatchesTampering(t *testing.T) {
 		t.Fatal("reconcile accepted balances without journal entries")
 	}
 }
+
+func TestShrinkHoldReturnsTheRestAndKeepsTheHoldOpen(t *testing.T) {
+	db := openDB(t, newDSN(t))
+	buyer, node := Account("buyer"), Account("node")
+	must(t, update(t, db, func(l *Tx) error { return l.Deposit(buyer, 1000, "gift") }))
+	must(t, update(t, db, func(l *Tx) error { return l.Hold("job", buyer, 300) }))
+	if err := update(t, db, func(l *Tx) error { return l.ShrinkHold("job", 301) }); !errors.Is(err, ErrExceedsHold) {
+		t.Fatalf("keeping more than is held: %v", err)
+	}
+	must(t, update(t, db, func(l *Tx) error { return l.ShrinkHold("job", 40) }))
+	if got := balance(t, db, buyer); got != 960 {
+		t.Fatalf("buyer has %d, want 960", got)
+	}
+	checkBooks(t, db)
+	// What is left is captured as usual, and a job costing nothing closes too.
+	must(t, update(t, db, func(l *Tx) error { _, err := l.Capture("job", node, 40, 0); return err }))
+	if got := balance(t, db, node); got != 40 {
+		t.Fatalf("node has %d, want 40", got)
+	}
+	must(t, update(t, db, func(l *Tx) error { return l.Hold("job2", buyer, 10) }))
+	if err := update(t, db, func(l *Tx) error { return l.ShrinkHold("job2", 0) }); !errors.Is(err, ErrInvalidAmount) {
+		t.Fatalf("emptying an open hold: %v", err)
+	}
+	must(t, update(t, db, func(l *Tx) error { return l.ShrinkHold("job2", 1) }))
+	must(t, update(t, db, func(l *Tx) error { return l.Release("job2", "refund") }))
+	if err := update(t, db, func(l *Tx) error { return l.ShrinkHold("job2", 1) }); !errors.Is(err, ErrNoHold) {
+		t.Fatalf("shrinking a closed hold: %v", err)
+	}
+	if got := balance(t, db, buyer); got != 960 {
+		t.Fatalf("buyer has %d, want 960", got)
+	}
+	checkBooks(t, db)
+}

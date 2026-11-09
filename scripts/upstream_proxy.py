@@ -90,6 +90,13 @@ def make_handler(up):
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
+        def handle(self):
+            # A client hanging up between requests is normal, not a server error.
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
         def log_message(self, fmt, *args):
             sys.stderr.write("[%s] %s %s\n" % (up.name, self.command, self.path))
 

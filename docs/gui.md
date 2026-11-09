@@ -75,6 +75,7 @@ macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘，关
 | `POST /api/v1/register` | `{pin, email, password, device}` → 201 + session |
 | `POST /api/v1/login` | `{pin, account, password, totp, device}` → 200 + session。`account` 可以是邮箱或老用户名；管理员先得到 401 `mfa_required`，带 `totp` 重发 |
 | `POST /api/v1/logout` | 停 Agent、吊销 token（门户不可达时跳过）、从 config.json 删除 token，其他设置保留 |
+| 登录失效 | Agent 每分钟向门户确认一次 token（门户不可达时不算失效）。设备密钥在 token 吊销后仍能和协调器交易，所以失效后必须停下：daemon 转为 `expired`，`up` 退出并提示重新登录 |
 | `GET /api/v1/account`、`/api/v1/jobs`、`/api/v1/ledger` | 门户透传，不依赖 Agent。门户返回 401 时会话转为 `expired` |
 | 其余 `/api/*` 和 `/v1/*` | 同 `sharetoken up`（[guide-v2.md §3](guide-v2.md)）。未登录 401 `not_logged_in`，还没连上网络 503 `not_connected` |
 

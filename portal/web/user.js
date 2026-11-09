@@ -40,7 +40,7 @@
     const [jobs, led] = await Promise.all([api('GET', '/api/v1/jobs?limit=8'), api('GET', '/api/v1/ledger?limit=8')]);
     add(m, h('h2', null, tr('最近作业'), h('small', null, h('a', { href: '#/jobs' }, tr('全部')))), h('div', { class: 'card' }, jobsTable(jobs.jobs)),
       h('h2', null, tr('最近账单'), h('small', null, h('a', { href: '#/ledger' }, tr('全部')))), h('div', { class: 'card' }, ledgerTable(led.entries)));
-    if (d.devices.length === 0) add(m, h('div', { class: 'card muted' }, parts('还没有绑定设备。在你的机器上运行 {command} 即可把该设备绑定到此账户。', { command: h('code', null, 'sharetoken login -portal ' + location.origin + ' -user ' + me().user.username) })));
+    if (d.devices.length === 0) add(m, h('div', { class: 'card muted' }, parts('还没有绑定设备。在你的机器上运行 {command} 即可把该设备绑定到此账户。', { command: h('code', null, 'sharetoken login -user ' + me().user.username) })));
   }
   function tile(label, value, sub) { return h('div', { class: 'tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), sub ? h('div', { class: 'sub' }, sub) : null); }
 
@@ -129,7 +129,7 @@
   async function devices(m) {
     add(m, h('h1', null, tr('设备'), h('small', null, tr('绑定到此账户的 peer；它们花你的 credit、把收入记到你名下'))));
     const list = h('div', { class: 'card' }); add(m, list,
-      h('div', { class: 'card muted' }, parts('绑定新设备需要设备私钥签名，所以要在那台机器上运行 {command}。解绑后协调器会立即拒绝该设备。', { command: h('code', null, 'sharetoken login -portal ' + location.origin + ' -user ' + me().user.username) })));
+      h('div', { class: 'card muted' }, parts('绑定新设备需要设备私钥签名，所以要在那台机器上运行 {command}。解绑后协调器会立即拒绝该设备。', { command: h('code', null, 'sharetoken login -user ' + me().user.username) })));
     async function load() {
       const r = await api('GET', '/api/v1/devices');
       add(clear(list), table([

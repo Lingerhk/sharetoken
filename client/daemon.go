@@ -239,6 +239,7 @@ func (d *Daemon) joinNetwork(ctx context.Context, done chan struct{}, cfg Config
 	for {
 		a := NewAgent(d.home, cfg)
 		a.ExternalAPI = d.addr
+		a.OnLoginEnded = func() { go d.expire(cfg.Token, "the portal rejected the login (expired or revoked)") }
 		if d.OnAgent != nil {
 			d.OnAgent(a)
 		}

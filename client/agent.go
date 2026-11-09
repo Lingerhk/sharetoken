@@ -41,6 +41,11 @@ type Agent struct {
 	HealthEvery  time.Duration // check the path to the coordinator (10s)
 	MeasureEvery time.Duration // re-measure relays (5m)
 	RefreshEvery time.Duration // refresh the relay list from the portal (5m)
+	// OnLoginEnded, when set, is called once if the portal stops accepting this
+	// agent's token, or the user logs out. The agent keeps running: stopping it
+	// is up to the caller, and not from this call.
+	OnLoginEnded    func()
+	LoginCheckEvery time.Duration // how often to ask the portal (1m)
 	// HostOptions are extra libp2p options for the agent's host (embedding,
 	// tests); set before Start.
 	HostOptions []libp2p.Option
@@ -79,6 +84,8 @@ type Agent struct {
 	addr    string
 	started time.Time
 	kick    chan struct{}
+
+	loginKick chan struct{}
 }
 
 type shareState struct {
@@ -91,7 +98,7 @@ type shareState struct {
 // NewAgent prepares an agent with the configuration in home.
 func NewAgent(home string, cfg Config) *Agent {
 	cfg.fill()
-	return &Agent{home: home, cfg: cfg, log: slog.Default().With("component", "client"), warnings: map[string]string{}, kick: make(chan struct{}, 1),
+	return &Agent{home: home, cfg: cfg, log: slog.Default().With("component", "client"), warnings: map[string]string{}, kick: make(chan struct{}, 1), loginKick: make(chan struct{}, 1),
 		link: p2p.NewLinkMonitor(linkWindow), avoid: map[string]time.Time{}}
 }
 
@@ -164,6 +171,9 @@ func (a *Agent) Start(ctx context.Context) error {
 		}()
 		a.writeRunFile()
 	}
+	if a.OnLoginEnded != nil {
+		go a.watchLogin()
+	}
 	// Losing the last connection to the coordinator (its relay died) is
 	// checked at once, not at the next health check.
 	a.mu.Lock()
@@ -234,6 +244,47 @@ func (a *Agent) Close() {
 	}
 	if a.h != nil {
 		_ = a.h.Close()
+	}
+}
+
+// watchLogin notices a login that ended while the agent runs: the device key
+// keeps working with the coordinator after its token is gone, so without this a
+// client the user logged out of or revoked would go on spending and earning.
+// An unreachable portal says nothing about the login and is ignored.
+func (a *Agent) watchLogin() {
+	every := a.LoginCheckEvery
+	if every == 0 {
+		every = time.Minute
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		ended := false
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-t.C:
+		case <-a.loginKick:
+			// `sharetoken logout` revokes the token in the file, which is not this
+			// agent's if the user logged in again while it was running.
+			if cfg, err := LoadConfig(a.home); err == nil && cfg.Token == "" {
+				ended = true
+			}
+		}
+		ctx, cancel := context.WithTimeout(a.ctx, 20*time.Second)
+		if ended {
+			if err := a.portal.Logout(ctx); err != nil && !IsUnauthorized(err) {
+				a.log.Warn("could not revoke this client's token", "err", err)
+			}
+		} else {
+			ended = IsUnauthorized(a.portal.Do(ctx, http.MethodGet, "/api/v1/devices", nil, &struct{}{}))
+		}
+		cancel()
+		if ended {
+			a.log.Warn("this login has ended; stopping")
+			a.OnLoginEnded()
+			return
+		}
 	}
 }
 

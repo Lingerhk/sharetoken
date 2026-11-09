@@ -39,7 +39,8 @@ import (
 )
 
 const (
-	requestTimeout = 30 * time.Second
+	requestTimeout  = 30 * time.Second
+	withdrawTimeout = 3 * time.Second // stopping is not held up for long by a coordinator out of reach
 	// How long after a ticket expires the node keeps retrying its start report
 	// and its settlement (the coordinator releases unstarted jobs 30s after
 	// expiry, and holds started ones for a 15 minute settlement grace).
@@ -184,6 +185,13 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 func (s *Service) Close() {
 	s.h.RemoveStreamHandler(lproto.ID(protocol.InferProtocol))
 	s.cancel()
+	// Best effort: without it the offer expires by itself, and until then buyers
+	// get tickets for a node that no longer answers.
+	ctx, cancel := context.WithTimeout(context.Background(), withdrawTimeout)
+	defer cancel()
+	if err := p2p.Call(ctx, s.h, s.cfg.Coordinator.ID, protocol.CtrlProtocol, protocol.TypeWithdraw, protocol.WithdrawRequest{IssuedAt: s.cfg.Now().UnixNano()}, protocol.TypeOK, nil); err != nil {
+		s.log.Debug("withdrawing the offer failed", "err", err)
+	}
 }
 
 // Announce sends a fresh offer now (e.g. after the node's addresses changed).

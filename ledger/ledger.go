@@ -276,6 +276,30 @@ func (l *Tx) Capture(jobID, payee string, cost, feeBps int64) (fee int64, err er
 	return fee, l.closeHold(jobID)
 }
 
+// ShrinkHold returns what jobID's hold has above keep to its owner and leaves
+// the hold open with keep in it. An open hold is never empty, so keep is at
+// least 1.
+func (l *Tx) ShrinkHold(jobID string, keep int64) error {
+	h, err := l.hold(jobID)
+	if err != nil {
+		return err
+	}
+	if h == nil || !h.open {
+		return ErrNoHold
+	}
+	if keep <= 0 {
+		return ErrInvalidAmount
+	}
+	if keep > h.amount {
+		return ErrExceedsHold
+	}
+	if err := l.transfer(jobID, holdAccount(jobID), h.owner, h.amount-keep, "refund unused"); err != nil {
+		return err
+	}
+	_, err = l.tx.Exec(`UPDATE ledger_holds SET amount = ? WHERE job_id = ?`, keep, jobID)
+	return err
+}
+
 // Release returns jobID's entire hold to its owner.
 func (l *Tx) Release(jobID, memo string) error {
 	h, err := l.hold(jobID)

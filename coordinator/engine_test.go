@@ -200,8 +200,11 @@ func TestUnackedSettlementWaitsOutDisputeWindow(t *testing.T) {
 	if err != nil || resp.Status != string(StatusPending) {
 		t.Fatalf("want pending, got %+v %v", resp, err)
 	}
-	if held := f.held(buyer); held != 100_000 {
-		t.Fatalf("funds must stay on hold while pending, held=%d", held)
+	if held := f.held(buyer); held != 20 {
+		t.Fatalf("only the cost stays on hold while pending, held=%d", held)
+	}
+	if got := f.balance(buyer); got != 1_000_000-20 {
+		t.Fatalf("the rest of the reservation must return at once, balance=%d", got)
 	}
 	f.eng.Tick(f.now.Add(59 * time.Minute))
 	if st, _ := f.eng.JobStatus(tk.JobID); st != StatusPending {
@@ -1200,4 +1203,85 @@ func TestFourStaleTicketsAreAllowedByDefault(t *testing.T) {
 	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: "m", BudgetMicros: 10}); err != nil {
 		t.Fatalf("4 stale tickets: %v", err)
 	}
+}
+
+// A buyer that cancels gets its reservation back at once, keeps its right to
+// dispute what it was billed, and a lost dispute refunds exactly that.
+func TestCancelledJobHoldsOnlyItsCostAndCanStillBeDisputed(t *testing.T) {
+	f := newFixture(t, Config{})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 4)
+	f.deposit(buyer, 1_000_000)
+	tk := f.ticket(buyer, 200_000)
+	if _, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: signReceipt(t, node, tk, 10, 5)}); err != nil {
+		t.Fatal(err)
+	}
+	if f.held(buyer) != 20 || f.balance(buyer) != 1_000_000-20 {
+		t.Fatalf("held %d, balance %d", f.held(buyer), f.balance(buyer))
+	}
+	if err := f.eng.Dispute(buyer.ID(), protocol.DisputeRequest{JobID: tk.JobID, Reason: "overbilled"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.eng.ResolveDispute(tk.JobID, false); err != nil {
+		t.Fatal(err)
+	}
+	if f.held(buyer) != 0 || f.balance(buyer) != 1_000_000 {
+		t.Fatalf("after the refund: held %d, balance %d", f.held(buyer), f.balance(buyer))
+	}
+	f.booksBalance()
+}
+
+func TestWithdrawnOfferIsGoneAndLateAnnouncementsDoNotReviveIt(t *testing.T) {
+	f := newFixture(t, Config{})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.deposit(buyer, 1_000_000)
+	late := f.signedOffer(node, "m", priceIn, priceOut, 4)
+	f.now = f.now.Add(time.Second)
+	f.offer(node, "m", priceIn, priceOut, 4)
+	if len(f.eng.Models()) != 1 {
+		t.Fatal("offer not listed")
+	}
+	f.now = f.now.Add(time.Second)
+	if err := f.eng.WithdrawOffer(node.ID(), f.now.UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.eng.Models()) != 0 {
+		t.Fatal("withdrawn offer is still listed")
+	}
+	if err := f.eng.UpsertOffer(late); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.eng.Models()) != 0 {
+		t.Fatal("an announcement from before the withdrawal revived the offer")
+	}
+	if _, err := f.eng.IssueTicket(buyer.ID(), protocol.TicketRequest{Model: "m", BudgetMicros: 100_000, InferVersions: []uint32{protocol.InferVersion}}); protocol.CodeOf(err) != protocol.CodeNoOffers {
+		t.Fatalf("ticket for a withdrawn offer: %v", err)
+	}
+	f.now = f.now.Add(time.Second)
+	f.offer(node, "m", priceIn, priceOut, 4) // sharing on again
+	if len(f.eng.Models()) != 1 {
+		t.Fatal("a new announcement must bring it back")
+	}
+}
+
+// A settlement billing nothing (a request cancelled before any tokens) still
+// settles, and the micro left on hold comes back with the window.
+func TestUnackedSettlementOfNoTokensCostsNothing(t *testing.T) {
+	f := newFixture(t, Config{DisputeWindow: time.Hour})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 4)
+	f.deposit(buyer, 1_000_000)
+	tk := f.ticket(buyer, 200_000)
+	resp, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: signReceipt(t, node, tk, 0, 0)})
+	if err != nil || resp.Status != string(StatusPending) {
+		t.Fatalf("settling nothing: %+v %v", resp, err)
+	}
+	if f.held(buyer) != 1 {
+		t.Fatalf("held %d", f.held(buyer))
+	}
+	f.eng.Tick(f.now.Add(61 * time.Minute))
+	if f.held(buyer) != 0 || f.balance(buyer) != 1_000_000 || f.balance(node) != 0 {
+		t.Fatalf("after the window: held %d, buyer %d, node %d", f.held(buyer), f.balance(buyer), f.balance(node))
+	}
+	f.booksBalance()
 }

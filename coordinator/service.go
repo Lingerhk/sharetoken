@@ -205,6 +205,13 @@ func (s *Service) handleCtrl(st network.Stream) {
 				respType = protocol.TypeOK
 			}
 		}
+	case protocol.TypeWithdraw:
+		var req protocol.WithdrawRequest
+		if herr = decode(env, &req); herr == nil {
+			if herr = s.Engine.WithdrawOffer(remote, req.IssuedAt); herr == nil {
+				respType = protocol.TypeOK
+			}
+		}
 	case protocol.TypeAbandon:
 		var req protocol.AbandonRequest
 		if herr = decode(env, &req); herr == nil {

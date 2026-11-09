@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -167,7 +168,7 @@ func (c *cmdCtx) auth(args []string, register bool) error {
 		*user = ""
 	}
 	if *user == "" && !(register && *email != "") {
-		if *user, err = cli.Prompt("Username: "); err != nil {
+		if *user, err = cli.Prompt("Email (or username): "); err != nil {
 			return err
 		}
 	}
@@ -289,7 +290,16 @@ func (c *cmdCtx) logout([]string) error {
 		return err
 	}
 	c.cfg.Token = ""
-	return c.save()
+	if err := c.save(); err != nil {
+		return err
+	}
+	fmt.Println("logged out")
+	// A client running on this login has to stop too: its device key would go on
+	// buying and selling. It finds out by itself within a minute; this is at once.
+	if c.daemon(http.MethodPost, "/api/v1/login/check", nil, nil) == nil {
+		fmt.Println("the running client is stopping")
+	}
+	return nil
 }
 
 func credits(micros int64) string {
@@ -359,6 +369,11 @@ func (c *cmdCtx) up(args []string) error {
 	sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	a := client.NewAgent(c.home, c.cfg)
+	var loginEnded atomic.Bool
+	a.OnLoginEnded = func() {
+		loginEnded.Store(true)
+		stop()
+	}
 	if err := a.Start(sctx); err != nil {
 		return err
 	}
@@ -381,6 +396,9 @@ func (c *cmdCtx) up(args []string) error {
 	<-sctx.Done()
 	fmt.Println("stopping…")
 	a.Close()
+	if loginEnded.Load() {
+		return errors.New("you are logged out or this login was revoked: run `sharetoken login` to continue")
+	}
 	return nil
 }
 

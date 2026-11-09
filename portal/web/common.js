@@ -59,7 +59,7 @@ const ST = (() => {
   const MICRO = 1_000_000;
   function credit(micros, digits) {
     const n = Number(micros || 0) / MICRO;
-    const d = digits === undefined ? (Math.abs(n) >= 100 ? 2 : 4) : digits;
+    const d = digits === undefined ? (Math.abs(n) >= 100 ? 2 : 6) : digits; // small amounts are real: a short request costs a few micros
     return n.toLocaleString(I18N.lang, { minimumFractionDigits: 0, maximumFractionDigits: d });
   }
   function signed(micros) { const n = Number(micros || 0); return (n > 0 ? '+' : '') + credit(n); }
