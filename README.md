@@ -39,6 +39,10 @@
 | [docs/validation-v2-distributed.md](docs/validation-v2-distributed.md) | 7 机跨三大洲实测：功能、性能、故障注入、长稳 |
 | [docs/validation-v2-mysql.md](docs/validation-v2-mysql.md) | 门户和协调器迁到 MySQL 后的复测 |
 | [docs/test-env.md](docs/test-env.md) | 分布式测试环境（主机、访问路径、脚本） |
+| [docs/prod-env.md](docs/prod-env.md) / [docs/dev-env.md](docs/dev-env.md) | 生产与 dev 环境：主机、域名、DNS、证书、部署命令 |
+| [docs/server-layout.md](docs/server-layout.md) | 服务器布局与权限：每个服务一个系统用户、机密目录、运维命令、MySQL 账号、systemd 加固、部署流程 |
+| [docs/security-audit.md](docs/security-audit.md) | 2026-11-09 代码级安全审计：发现、严重度、修复状态与建议顺序 |
+| [docs/mail.md](docs/mail.md) | 邮件服务：注册验证码、收发、DNS、投递与安全 |
 | [reports/](reports/) | 前期调研：AI token 共享平台 |
 
 ## 快速开始

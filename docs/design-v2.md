@@ -162,9 +162,12 @@
 
 ## 4. 威胁对照
 
+2026-11-09 的代码级审计结论和修复状态见 [security-audit.md](security-audit.md)；生产服务器的用户、权限与部署布局见 [server-layout.md](server-layout.md)。
+
 | 威胁 | 防御 | 代码 |
 |---|---|---|
 | 中继读取控制面或推理内容 | 控制面和数据面都是 Noise 端到端，推理内容再加 box | `p2p`、`box` |
+| 门户被攻破后拿到协调器身份、DKIM 私钥、数据库和 DNS 凭据 | 门户、协调器、邮件服务各自的系统用户，机密只有对应用户可读，二进制 root 只读，单元加固 | `scripts/ops/st-host-setup.sh`（server-layout.md） |
 | 中继宕机 | 用户自动切换中继；卖家同时在多个中继预约；协调器在所有中继预约 | `client.maintain`、`p2p.Reserver` |
 | 有人直连协调器绕过中继 | 协调器不监听任何地址 | `cmd/coordinator`（`DialOnly`） |
 | 把别人的节点绑到自己账户 | 绑定需设备签名 + 时间窗；已绑定设备不能被抢 | `accounts.VerifyBind`、`Store.BindDevice` |
@@ -178,7 +181,7 @@
 | 禁用用户继续交易 | 协调器每次请求都查用户状态；token 立即失效 | `accounts.DeviceAccount` |
 | 网页会话被窃取 / 跨站请求伪造 / 注入脚本 | HttpOnly + SameSite cookie；自定义头 + Origin 校验；严格 CSP、无内联代码 | `portal/web.go`（§2.12） |
 | 管理员口令泄露 / 被猜中 | 管理员强制 TOTP 两步验证；无二步的 token 进不了 `/admin/*`；错码限流、challenge 限次、防重放；密钥加密存放 | `portal/mfa.go`、`internal/totp`（§2.12） |
-| 陌生 peer 用超大帧或海量流耗尽中继 / 协调器内存 | 帧按实际到达的数据增长，不按声明长度预分配；流处理器先向 libp2p 资源管理器预留帧大小，超出每流 16 MiB、每 peer 和全局（RAM 的 1/8）限额即拒绝；只含几个字段的帧（凭证、ack）上限 64 KiB；枢纽进程的资源管理器不再是 `InfiniteLimits`，只把随用户数增长的计数（全局连接/流/fd、circuit 与 ping 等内建服务）按 `max_conns` 放宽，全局内存上限为 RAM 的 1/4；用户端沿用 libp2p 默认限额，仅把每 peer 并发 ping 从 3 提到 8，免得测速与链路监控重叠时把中继误判为不可达 | `protocol.RecvStream`、`p2p.HubLimits`、`p2p.ClientLimits` |
+| 陌生 peer 用超大帧或海量流耗尽中继 / 协调器内存 | 帧按实际到达的数据增长，不按声明长度预分配；流处理器先向 libp2p 资源管理器预留帧大小，超出每流 16 MiB、每 peer 或全局（RAM 的 1/4）限额即拒绝；只含几个字段的帧（凭证、ack）上限 64 KiB；枢纽进程只放宽随用户数增长的计数（全局连接/流/fd、circuit 与 ping 等内建服务），其余沿用 libp2p 按机器缩放的默认值；用户端每 peer 并发 ping 从 3 提到 8，免得测速与链路监控重叠时把中继误判为不可达 | `protocol.RecvStream`、`p2p.HubLimits`、`p2p.ClientLimits` |
 
 ## 5. 诚实的边界
 

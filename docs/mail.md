@@ -11,7 +11,7 @@
 ```
 
 - 门户和 mailserver **只通过数据库交互**。mailserver 宕机时邮件排队，注册接口不受影响。
-- mailserver 是唯一直接面对陌生人的进程，所以用单独的 MySQL 账号，只能访问 `mail_outbox`、`mail_inbox`、`mail_status`，碰不到账本、用户和验证码表。systemd 只给它绑定 25 端口的权限。
+- mailserver 是唯一直接面对陌生人的进程，所以有自己的系统用户 `st-mail` 和单独的 MySQL 账号，只能访问 `mail_outbox`、`mail_inbox`、`mail_status`，碰不到账本、用户和验证码表，也读不到门户和协调器的密钥。systemd 只给它绑定 25 端口的权限（[server-layout.md](server-layout.md)）。
 - 只收 `smtp.mailboxes` 列出的地址，其他在 SMTP 对话中拒绝（550）。不转发，不自动回复，所以不是开放中继，也不会产生反向散射。
 
 ## 环境
