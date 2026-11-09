@@ -3,21 +3,40 @@
 # 在 Mac 上运行；可重复运行（已有的密钥、数据库、证书都不会被覆盖）。
 #   scripts/dev/deploy.sh            # 全部
 #   scripts/dev/deploy.sh --bins     # 只更新二进制和配置并重启（含邮件服务）
+#   scripts/dev/deploy.sh --portal   # 只更新门户和客户端安装包，协调器、邮件服务都不动
 # 不碰中继（scripts/relay/），也不碰生产服务：armbian 上只增加 nginx 站点、MySQL 库和账号、一把受限的隧道密钥。
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd)
 PI=192.168.6.148; ARMBIAN=192.168.6.91; RUSER=s0nnet; DIR=/home/$RUSER/sharetoken-dev
 DOMAIN=dev.sharetoken.app; EMAIL=${LE_EMAIL:-lingerhk@gmail.com}
 BINS_ONLY=0; [ "${1:-}" = "--bins" ] && BINS_ONLY=1
+PORTAL_ONLY=0; [ "${1:-}" = "--portal" ] && PORTAL_ONLY=1
 Q="-o LogLevel=ERROR -o ConnectTimeout=10"
 pi() { ssh $Q -n "$RUSER@$PI" "$@"; }
 arm() { ssh $Q -n "$RUSER@$ARMBIAN" "$@"; }
 W=${ST_TESTENV_WORK:-$HOME/st-test}; B=$W/build/arm64; KEYS=$W/dev-keys; mkdir -p "$B"
 (umask 077; mkdir -p "$KEYS")
 
-echo "== build (linux/arm64)"
 cd "$REPO"
 V=$(scripts/version.sh); echo "version $V"
+if [ $PORTAL_ONLY = 1 ]; then
+  echo "== build and upload (linux/arm64)"
+  GOOS=linux GOARCH=arm64 scripts/build.sh portal >/dev/null
+  pi "mkdir -p $DIR/releases/$V"
+  # Through a new name: a running program's file cannot be overwritten, and a dirty tree keeps its version.
+  scp $Q "dist/portal-$V-linux-arm64" "$RUSER@$PI:$DIR/releases/$V/portal.new" >/dev/null
+  pi "mv $DIR/releases/$V/portal.new $DIR/releases/$V/portal"
+  scp $Q "$HERE/portal.yaml" "$RUSER@$PI:$DIR/portal.yaml.new" >/dev/null
+  pi "chmod +x $DIR/releases/$V/*; cd $DIR/releases && ls -1t | tail -n +6 | while read -r old; do rm -rf \"\$old\"; done"
+  pi "cd $DIR && releases/$V/portal -config portal.yaml.new check-config >/dev/null && echo portal config ok"
+  echo "== client packages"
+  scripts/publish-cli.sh dev "$V" "$RUSER@$PI" "$DIR/downloads"
+  echo "== restart portal"
+  pi "cd $DIR && sudo systemctl stop sharetoken-dev-portal; mv portal.yaml.new portal.yaml; [ -e portal ] && cp -P portal portal.prev; ln -sfn releases/$V/portal portal; sudo systemctl start sharetoken-dev-portal; sleep 3; systemctl is-active sharetoken-dev-portal"
+  exit 0
+fi
+
+echo "== build (linux/arm64)"
 GOOS=linux GOARCH=arm64 scripts/build.sh portal coordinator mailserver >/dev/null
 
 echo "== upload"

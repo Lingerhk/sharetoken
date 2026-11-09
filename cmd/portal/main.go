@@ -86,6 +86,10 @@ type File struct {
 		From    string `yaml:"from"`    // ShareToken <team@sharetoken.app>
 		Support string `yaml:"support"` // ShareToken Support <support@sharetoken.app>
 	} `yaml:"mail"`
+	// Downloads: the client packages the portal offers at /downloads/ (scripts/*/deploy.sh puts them there).
+	Downloads struct {
+		Dir string `yaml:"dir"`
+	} `yaml:"downloads"`
 	Sessions struct {
 		LoginTTL      config.Duration `yaml:"login_ttl"`
 		WebSessionTTL config.Duration `yaml:"web_session_ttl"`
@@ -293,7 +297,7 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 	p, err := portal.New(portal.Config{DB: db, OpenRegistration: f.Accounts.OpenRegistration, SignupCreditMicros: f.Accounts.SignupCreditMicros,
 		LoginTTL: f.Sessions.LoginTTL.T(), PassKey: passKey, PassTTL: f.Sessions.PassTTL.T(), WebSessionTTL: f.Sessions.WebSessionTTL.T(),
 		SecureCookies: mode == "proxy", TrustedProxies: trustedProxies(f.HTTP.TrustedProxies), MFAKey: mfaKey, Log: lg,
-		EmailVerification: f.Accounts.EmailVerification, Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}})
+		EmailVerification: f.Accounts.EmailVerification, Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir})
 	if err != nil {
 		log.Fatal(err)
 	}

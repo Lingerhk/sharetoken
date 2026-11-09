@@ -5,6 +5,7 @@
 #   scripts/prod/deploy.sh --bins     # 只更新二进制和配置并重启（日常发版）
 #   scripts/prod/deploy.sh --mail     # 只更新门户和邮件服务，不动协调器
 #   scripts/prod/deploy.sh --mail-server  # 只更新邮件服务：门户、协调器都不动（门户还没带邮件代码时也能收发）
+#   scripts/prod/deploy.sh --portal   # 只更新门户和客户端安装包，协调器、邮件服务都不动（改网页、文档时用）
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../.." && pwd)
 HOST=${ARMBIAN:-192.168.6.91}; RUSER=s0nnet; DIR=/home/$RUSER/sharetoken-prod
@@ -12,6 +13,7 @@ EMAIL=${LE_EMAIL:-lingerhk@gmail.com}
 BINS_ONLY=0; [ "${1:-}" = "--bins" ] && BINS_ONLY=1
 MAIL_ONLY=0; [ "${1:-}" = "--mail" ] && MAIL_ONLY=1
 MAIL_SERVER_ONLY=0; [ "${1:-}" = "--mail-server" ] && MAIL_SERVER_ONLY=1
+PORTAL_ONLY=0; [ "${1:-}" = "--portal" ] && PORTAL_ONLY=1
 Q="-o LogLevel=ERROR -o ConnectTimeout=10"
 rsh() { ssh $Q "$RUSER@$HOST" "$@"; }
 W=${ST_TESTENV_WORK:-$HOME/st-test}
@@ -73,6 +75,20 @@ H
   activate mailserver
   rsh "sudo systemctl start sharetoken-mail; sleep 3; systemctl is-active sharetoken-mail"
 }
+
+if [ $PORTAL_ONLY = 1 ]; then
+  echo "== build and upload (linux/arm64)"
+  release portal
+  scp $Q "$HERE/portal.yaml" "$RUSER@$HOST:$DIR/portal.yaml.new" >/dev/null
+  rsh "cd $DIR && releases/$V/portal -config portal.yaml.new check-config >/dev/null && echo portal config ok"
+  echo "== client packages"
+  "$REPO/scripts/publish-cli.sh" prod "$V" "$RUSER@$HOST" "$DIR/downloads"
+  echo "== restart portal (keeps portal.prev)"
+  rsh "cd $DIR && cp portal.yaml portal.yaml.prev && sudo systemctl stop sharetoken-portal && mv portal.yaml.new portal.yaml"
+  activate portal
+  rsh "sudo systemctl start sharetoken-portal; sleep 3; systemctl is-active sharetoken-portal"
+  exit 0
+fi
 
 if [ $MAIL_SERVER_ONLY = 1 ]; then
   echo "== build and upload (linux/arm64)"

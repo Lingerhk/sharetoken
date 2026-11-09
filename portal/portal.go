@@ -64,7 +64,10 @@ type Config struct {
 	// mailed code, and closes sign-up by plain username. It needs Mail.From.
 	EmailVerification bool
 	Mail              MailConfig
-	Now               func() time.Time
+	// DownloadsDir holds the client packages offered at /downloads/ (downloads.go).
+	// Empty: none.
+	DownloadsDir string
+	Now          func() time.Time
 	Log               *slog.Logger
 }
 
@@ -345,7 +348,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/info", s.handleInfo)
 	mux.HandleFunc("GET /api/v1/network", s.handleNetwork)
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
-	mux.Handle("POST /api/v1/register", s.clientOnly(http.HandlerFunc(s.handleRegister)))
+	mux.HandleFunc("GET /api/v1/downloads", s.handleDownloads)
+	mux.HandleFunc("GET /downloads/{file}", s.handleDownloadFile)
+	mux.Handle("POST /api/v1/register",s.clientOnly(http.HandlerFunc(s.handleRegister)))
 	mux.HandleFunc("POST /api/v1/register/code", s.handleRegisterCode) // the web sign-up uses it too; the sign-up itself is what is guarded
 	mux.Handle("POST /api/v1/login", s.clientOnly(http.HandlerFunc(s.handleLogin)))
 

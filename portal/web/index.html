@@ -28,6 +28,7 @@
     <a class="wide" href="#start">怎么用</a>
     <a class="wide" href="#roles">架构</a>
     <a class="wide" href="#download">下载</a>
+    <a class="wide" href="/docs/">文档</a>
     <span data-lang-picker></span>
     <a class="btn small" href="/login">登录</a>
   </nav>
@@ -171,6 +172,7 @@
     <h2>同一个账户，既能卖也能买。</h2>
     <p class="lead">客户端在本地开一个 OpenAI 兼容端点。任何支持 OpenAI 协议的工具，改一下 base URL 就能用。</p>
   </div>
+  <p class="start-docs"><a class="btn" href="/docs/quickstart">查看快速开始</a></p>
   <div class="two reveal">
     <div class="term">
       <h3>用模型</h3>
@@ -216,16 +218,30 @@ sharetoken-prod balance</code></pre>
   <div class="head">
     <p class="eyebrow">下载</p>
     <h2>准备好接入了吗？</h2>
-    <p class="lead">桌面客户端覆盖三大平台，自带 CLI，正在准备公开下载。</p>
+    <p class="lead">桌面应用带图形界面，命令行版适合服务器和脚本。两者都支持 macOS、Linux 和 Windows。</p>
   </div>
-  <!-- 占位链接：有安装包后把 href 换成下载地址，再删掉 data-soon 和 .soon 标签 -->
-  <div class="platforms reveal">
-    <a class="platform" href="#download" data-soon><b>macOS</b><span class="soon">即将上线</span></a>
-    <a class="platform" href="#download" data-soon><b>Windows</b><span class="soon">即将上线</span></a>
-    <a class="platform" href="#download" data-soon><b>Linux</b><span class="soon">即将上线</span></a>
+  <div class="dl-tabs" role="tablist" aria-label="客户端类型">
+    <button type="button" role="tab" id="tab-desktop" aria-controls="panel-desktop" aria-selected="true">桌面应用</button>
+    <button type="button" role="tab" id="tab-cli" aria-controls="panel-cli" aria-selected="false" tabindex="-1">命令行</button>
   </div>
+  <!-- 没有安装包时显示占位；site.js 按 /api/v1/downloads 换成真实的下载链接 -->
+  <div id="panel-desktop" role="tabpanel" aria-labelledby="tab-desktop">
+    <div class="platforms reveal">
+      <a class="platform" href="#download" data-soon><b>macOS</b><span class="soon">即将上线</span></a>
+      <a class="platform" href="#download" data-soon><b>Windows</b><span class="soon">即将上线</span></a>
+      <a class="platform" href="#download" data-soon><b>Linux</b><span class="soon">即将上线</span></a>
+    </div>
+  </div>
+  <div id="panel-cli" role="tabpanel" aria-labelledby="tab-cli" hidden>
+    <div class="platforms">
+      <a class="platform" href="#download" data-soon><b>macOS</b><span class="soon">即将上线</span></a>
+      <a class="platform" href="#download" data-soon><b>Windows</b><span class="soon">即将上线</span></a>
+      <a class="platform" href="#download" data-soon><b>Linux</b><span class="soon">即将上线</span></a>
+    </div>
+  </div>
+  <p class="dl-meta" id="dl-meta" hidden></p>
   <p class="toast-line" id="soon-msg" aria-live="polite"></p>
-  <p class="already">已有账户？<a href="/login">登录控制台</a></p>
+  <p class="already">已有账户？ <a href="/login">登录控制台</a> · <a href="/docs/">阅读使用文档</a></p>
 </section>
 
 </main>
@@ -233,7 +249,7 @@ sharetoken-prod balance</code></pre>
 <footer class="foot">
   <span>© 2026 ShareToken</span>
   <span class="spacer"></span>
-  <a href="#security">安全</a><a href="#download">下载</a><a href="/login">登录</a>
+  <a href="#security">安全</a><a href="#download">下载</a><a href="/docs/">文档</a><a href="/login">登录</a>
 </footer>
 
 </body>

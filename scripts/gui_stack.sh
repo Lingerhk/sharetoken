@@ -52,8 +52,10 @@ tls:
   mode: self-signed
   self_signed_dir: $DIR/tls
   self_signed_hosts: [127.0.0.1]
+downloads:
+  dir: $DIR/downloads
 YAML
-mkdir -p tls
+mkdir -p tls downloads
 "$BIN/portal" -config portal.yaml -db "$DSN" serve -listen 127.0.0.1:$PORTAL_PORT -open-registration -signup-credit 5000000 > portal.log 2>&1 &
 PORTAL_PID=$!; echo $PORTAL_PID >> pids
 wait_for portal.log "listening"

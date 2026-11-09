@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a0c10">
+<title>ShareToken 文档</title>
+<meta name="description" content="ShareToken 客户端使用文档：在 macOS、Linux 和 Windows 上安装、登录、调用模型和共享模型。">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/docs.css">
+<script src="/static/i18n.js" data-bundle="site"></script>
+<script src="/static/docs.js"></script>
+</head>
+<body>
+
+<header class="top">
+  <button class="menu" id="menu" type="button" aria-expanded="false" aria-controls="sidebar" aria-label="打开目录"><i></i><i></i><i></i></button>
+  <a class="logo" href="/" aria-label="ShareToken 首页">
+    <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M8 22 16 9l8 13" fill="none" stroke="#8fa3bf" stroke-width="2"/><circle cx="8" cy="22" r="3.5" fill="#ffb648"/><circle cx="16" cy="9" r="3.5" fill="#c6f24e"/><circle cx="24" cy="22" r="3.5" fill="#ffb648"/></svg>
+    <span>ShareToken</span>
+  </a>
+  <a class="section-link" href="/docs/">文档</a>
+  <div class="search" id="search" role="search">
+    <input id="search-input" type="search" autocomplete="off" spellcheck="false" placeholder="搜索文档" aria-label="搜索文档" aria-controls="search-results" aria-expanded="false" role="combobox" aria-autocomplete="list">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="results" id="search-results" role="listbox" aria-label="搜索结果" hidden></div>
+  </div>
+  <nav class="links">
+    <a class="wide" href="/#download">下载</a>
+    <span data-lang-picker></span>
+    <a class="login" href="/login">登录</a>
+  </nav>
+</header>
+
+<div class="backdrop" id="backdrop" hidden></div>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="文档目录"></aside>
+  <main class="content" id="main">
+    <div class="os-bar" id="os-bar" hidden>
+      <span class="os-label" id="os-label">你的系统</span>
+      <div class="os-tabs" id="os-tabs" role="radiogroup" aria-labelledby="os-label"></div>
+    </div>
+    <p class="lang-note" id="lang-note" hidden>本指南目前提供英文和简体中文版本。</p>
+    <article class="doc" id="doc" aria-live="polite"></article>
+    <nav class="pager" id="pager" aria-label="上一页和下一页"></nav>
+  </main>
+  <aside class="toc" id="toc-box" aria-label="本页目录" hidden>
+    <p class="toc-title">本页内容</p>
+    <ol id="toc"></ol>
+  </aside>
+</div>
+
+</body>
+</html>

@@ -57,6 +57,9 @@ mail:
   from: ""     # ShareToken <team@sharetoken.app>；留空：不发邮件
   support: ""  # ShareToken Support <support@sharetoken.app>；用户反馈地址，管理员回复也从这里发
 
+downloads:
+  dir: ""      # 客户端安装包所在目录，门户在 /downloads/ 提供下载；留空：不提供
+
 sessions:
   login_ttl: 720h                # 客户端登录 token 有效期
   web_session_ttl: 24h           # 浏览器会话有效期

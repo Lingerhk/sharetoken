@@ -74,3 +74,7 @@ st-db 平时停机（`orb stop st-db`，数据保留，测试期的用户和流�
 4. 压完恢复 Pi 上的 dev 协调器。
 
 `scripts/testenv` 发现 st-db 还是生产协调器 key 时会拒绝启动，防止和生产抢中继。
+
+## 文档和安装包
+
+门户提供 `/docs/`（用户指南，内容编译在程序里）和 `/downloads/`（客户端安装包，放在服务器的 `downloads/` 目录）。两者都经 nginx 的 `location /` 转发，nginx 不用改。只改网页、文档或发布命令行包时用 `scripts/dev/deploy.sh --portal`，协调器和邮件服务不动。

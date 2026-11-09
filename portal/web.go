@@ -106,6 +106,30 @@ func (s *Server) servePages(mux *http.ServeMux) {
 		http.Redirect(w, r, "/admin/", http.StatusMovedPermanently)
 	})
 	mux.HandleFunc("GET /admin/{$}", page("admin.html"))
+	// The user guide: one page that draws every /docs/<page> from the Markdown
+	// under web/docs/. A page that does not exist still gets the guide's navigation.
+	mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/docs/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /docs/{$}", page("docs.html"))
+	mux.HandleFunc("GET /docs/{page}", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := fs.Stat(sub, "docs/en/"+r.PathValue("page")+".md"); err == nil {
+			page("docs.html")(w, r)
+			return
+		}
+		data, err := fs.ReadFile(sub, "docs.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(data)
+	})
+	mux.HandleFunc("GET /static/docs/{lang}/{file}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFileFS(w, r, sub, "docs/"+r.PathValue("lang")+"/"+r.PathValue("file"))
+	})
 	// Translations; a wildcard matches one path segment, so these stay under i18n/.
 	mux.HandleFunc("GET /static/i18n/{bundle}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")

@@ -26,6 +26,8 @@ accounts:
 mail:
   from: "ShareToken <team@sharetoken.app>"
   support: "ShareToken Support <support@sharetoken.app>"
+downloads:
+  dir: downloads                  # 客户端安装包，deploy.sh 上传到这里，门户在 /downloads/ 提供下载
 sessions:
   login_ttl: 720h
   web_session_ttl: 24h

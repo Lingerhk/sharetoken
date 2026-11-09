@@ -166,6 +166,22 @@ em.yes { color: var(--amber); background: rgba(255, 182, 72, .12); }
 .platform:hover { border-color: var(--lime); transform: translateY(-2px); }
 .platform b { font-size: 19px; font-weight: 650; }
 .soon { color: var(--dim); font: 12.5px var(--mono); }
+.platform.real { justify-content: flex-start; gap: 10px; padding: 24px 18px; position: relative; }
+.platform.real:hover { transform: none; border-color: var(--line-2); }
+.platform.here { border-color: rgba(198, 242, 78, .45); }
+.here-tag { color: var(--lime); font: 12px var(--mono); }
+.arch-link { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 42px; padding: 7px 12px; border-radius: 9px; background: var(--bg); border: 1px solid var(--line-2); font-size: 14px; font-weight: 600; transition: border-color .15s, color .15s; }
+.arch-link:hover { border-color: var(--lime); color: var(--lime); }
+.arch-size { color: var(--dim); font: 12px var(--mono); white-space: nowrap; }
+.os-guide { color: var(--muted); font-size: 13.5px; text-decoration: underline; text-underline-offset: 3px; margin-top: 2px; }
+.os-guide:hover { color: var(--text); }
+.dl-tabs { display: inline-flex; gap: 3px; padding: 3px; margin-bottom: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
+.dl-tabs button { height: 36px; padding: 0 18px; font: inherit; font-size: 14.5px; font-weight: 600; color: var(--muted); background: none; border: 0; border-radius: 8px; cursor: pointer; }
+.dl-tabs button:hover { color: var(--text); }
+.dl-tabs button[aria-selected=true] { color: #11150a; background: var(--lime); }
+.dl-meta { margin-top: 14px; color: var(--dim); font-size: 13.5px; }
+.dl-meta a { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
+.start-docs { margin: -36px 0 28px; }
 .toast-line { min-height: 24px; margin-top: 14px; color: var(--lime); font-size: 14px; }
 .already { color: var(--muted); font-size: 14.5px; }
 .already a { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
@@ -181,6 +197,7 @@ em.yes { color: var(--amber); background: rgba(255, 182, 72, .12); }
   .grid-6 { grid-template-columns: 1fr 1fr; }
   .two { grid-template-columns: 1fr; }
   .block { padding-top: 84px; }
+  .start-docs { margin-top: -20px; }
   .nav nav a.wide { display: none; }
 }
 @media (max-width: 560px) {

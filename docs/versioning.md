@@ -78,6 +78,8 @@ dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 script
 dist/SHA256SUMS-1.0.0
 ```
 
+**命令行包的发布：** `scripts/publish-cli.sh <dev|prod> <版本> <user@host> <目录>` 构建 6 个包，上传并在服务器上校验后整体替换门户的 `downloads` 目录（`downloads.dir`），门户在 `/downloads/` 提供下载，`GET /api/v1/downloads` 列出每种系统和架构的最新版本。`scripts/{dev,prod}/deploy.sh --portal` 只更新门户和这些包。桌面包放进同一目录就会出现在下载区，目前没有发布。
+
 压缩包内的可执行文件名不带版本（`sharetoken-prod`、`sharetoken-gui-prod`）：GUI 按固定名字查找 daemon，用户的 PATH 也不用变。
 
 服务器上文件放在 `releases/<版本>/`，程序名是软链，上一版的软链留在 `<程序>.prev`，保留最近 5 个版本：

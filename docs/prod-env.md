@@ -133,3 +133,7 @@ dig +short AAAA relay-us.sharetoken.app @ns51.domaincontrol.com
   - 从 Mac 上传很慢（约 6 KB/s），二进制要在机器上从源码编译（Go 用阿里云镜像，GOPROXY=goproxy.cn）。
 - 稳定后把中继记录的 TTL 从 600 调大（`@`/`www` 因为 DDNS 要保持 600）。
 - 生产库 2026-11-09 清空重建：只有管理员 `root` 和 4 个中继，没有用户、余额和历史作业。清空前的导出在 armbian 的 `~/sharetoken-prod/backup/sharetoken-2026-11-09.sql.gz`（当时只有 `root`、`probe` 和几封邮件）。
+
+## 文档和安装包
+
+门户提供 `/docs/`（用户指南，内容编译在程序里）和 `/downloads/`（客户端安装包，放在服务器的 `downloads/` 目录）。两者都经 nginx 的 `location /` 转发，nginx 不用改。只改网页、文档或发布命令行包时用 `scripts/prod/deploy.sh --portal`，协调器和邮件服务不动。

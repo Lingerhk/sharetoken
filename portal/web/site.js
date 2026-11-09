@@ -305,11 +305,96 @@ I18N.ready.then(() => {
     });
   })();
 
-  // ---- placeholders and sign-up ----
-  document.querySelectorAll('[data-soon]').forEach(a => a.addEventListener('click', e => {
-    e.preventDefault();
-    $('soon-msg').textContent = tr('{platform} 版即将上线，敬请期待', { platform: a.querySelector('b').textContent });
-  }));
+  // ---- downloads: the packages the portal actually has ----
+  (function downloads() {
+    const OS_NAMES = { macos: 'macOS', windows: 'Windows', linux: 'Linux' };
+    const ARCHES = {
+      macos: { arm64: 'Apple Silicon', amd64: 'Intel' },
+      windows: { amd64: 'x64', arm64: 'ARM64' },
+      linux: { amd64: 'x86-64', arm64: 'ARM64' },
+    };
+    const ua = navigator.userAgent;
+    const here = /Windows/.test(ua) ? 'windows' : /Mac OS X|Macintosh/.test(ua) && !/iPhone|iPad/.test(ua) ? 'macos' : /Linux|X11/.test(ua) && !/Android/.test(ua) ? 'linux' : '';
+    const mk = (tag, cls, text) => {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text !== undefined) e.textContent = text;
+      return e;
+    };
+    const size = n => tr('{n} MB', { n: (n / 1048576).toLocaleString(I18N.lang, { maximumFractionDigits: 1 }) });
+
+    const tabs = ['desktop', 'cli'].map(k => ({ tab: $('tab-' + k), panel: $('panel-' + k) }));
+    function select(i, focus) {
+      tabs.forEach((t, j) => {
+        t.tab.setAttribute('aria-selected', String(i === j));
+        t.tab.tabIndex = i === j ? 0 : -1;
+        t.panel.hidden = i !== j;
+      });
+      if (focus) tabs[i].tab.focus();
+    }
+    tabs.forEach((t, i) => {
+      t.tab.addEventListener('click', () => select(i));
+      t.tab.addEventListener('keydown', e => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); select(1 - i, true); }
+      });
+    });
+
+    const soon = e => {
+      e.preventDefault();
+      $('soon-msg').textContent = tr('{platform} 版即将上线，敬请期待', { platform: e.currentTarget.querySelector('b').textContent });
+    };
+    document.querySelectorAll('[data-soon]').forEach(a => a.addEventListener('click', soon));
+
+    function cards(panel, packages) {
+      const grid = panel.querySelector('.platforms');
+      grid.textContent = '';
+      for (const os of ['macos', 'windows', 'linux']) {
+        const mine = packages.filter(p => p.os === os);
+        if (!mine.length) {
+          const a = mk('a', 'platform');
+          a.href = '#download';
+          a.append(mk('b', '', OS_NAMES[os]), mk('span', 'soon', tr('即将上线')));
+          a.addEventListener('click', soon);
+          grid.appendChild(a);
+          continue;
+        }
+        const card = mk('div', 'platform real' + (os === here ? ' here' : ''));
+        card.dataset.os = os;
+        card.appendChild(mk('b', '', OS_NAMES[os]));
+        if (os === here) card.appendChild(mk('span', 'here-tag', tr('当前系统')));
+        // The likely choice first: most machines of a system share one architecture.
+        for (const arch of Object.keys(ARCHES[os])) {
+          const p = mine.find(x => x.arch === arch);
+          if (!p) continue;
+          const link = mk('a', 'arch-link');
+          link.href = p.url;
+          link.download = p.file;
+          link.title = p.file;
+          link.append(mk('span', 'arch-name', ARCHES[os][arch]), mk('span', 'arch-size', size(p.size)));
+          card.appendChild(link);
+        }
+        const guide = mk('a', 'os-guide', tr('安装指南'));
+        guide.href = '/docs/install?os=' + os;
+        card.appendChild(guide);
+        grid.appendChild(card);
+      }
+    }
+
+    fetch('/api/v1/downloads', { headers: { Accept: 'application/json' } }).then(r => r.ok ? r.json() : null).then(d => {
+      if (!d || !d.packages.length) return;
+      const desktop = d.packages.filter(p => p.kind === 'desktop'), cli = d.packages.filter(p => p.kind === 'cli');
+      if (desktop.length) cards(tabs[0].panel, desktop);
+      if (cli.length) cards(tabs[1].panel, cli);
+      // Open on what can be downloaded today.
+      if (!desktop.length && cli.length) select(1);
+      if (d.version) {
+        const meta = $('dl-meta'), sums = mk('a', '', tr('SHA-256 校验值'));
+        sums.href = '/downloads/SHA256SUMS-' + d.version;
+        meta.append(tr('版本 {version}', { version: d.version }), ' · ', sums);
+        meta.hidden = false;
+      }
+    }).catch(() => {});
+  })();
 
   // The call-to-action follows the portal's own setting: no sign-up button while registration is closed.
   fetch('/api/v1/info', { headers: { Accept: 'application/json' } }).then(r => r.ok ? r.json() : null).then(info => {
