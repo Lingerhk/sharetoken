@@ -9,6 +9,7 @@ Group=st-portal
 # 配置和机密在 /etc/sharetoken/portal（root:st-portal 0750）；唯一可写目录是 /var/lib/sharetoken/portal（下载区）
 WorkingDirectory=/etc/sharetoken/portal
 StateDirectory=sharetoken/portal
+Environment=GOMEMLIMIT=150MiB
 ExecStartPre=/bin/bash -c 'for i in $(seq 60); do (echo > /dev/tcp/127.0.0.1/3306) 2>/dev/null && exit 0; sleep 2; done; exit 1'
 ExecStart=/srv/sharetoken/portal -config /etc/sharetoken/portal/portal.yaml serve
 Restart=always

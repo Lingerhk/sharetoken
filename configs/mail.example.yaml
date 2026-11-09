@@ -20,11 +20,13 @@ dkim:
   key_file: dkim.key      # mailserver dkim-keygen 生成；没有它不发信（未签名的邮件过不了 DMARC）
 
 delivery:
-  mode: direct            # direct：直投收件方 MX（需要出站 25 端口）；smarthost：交给中继
+  mode: direct            # direct：直投收件方 MX（需要出站 25 端口）；smarthost：交给中继；resend：Resend 的 HTTPS API
   smarthost:
     addr: ""              # smtp.example.com:587（STARTTLS）或 :465（TLS），都校验证书
     username: ""
     password_file: ""
+  resend:
+    api_key_file: ""      # 只有一行 re_… 的文件；Resend 用自己的 DKIM 签名，域名要在 Resend 验证过
   workers: 4
   retry_for: 48h          # 暂时失败时重试多久（验证码邮件 10 分钟后就过期）
   keep_for: 2160h         # 发完的邮件保留多久

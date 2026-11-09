@@ -238,6 +238,7 @@ func (s *Smarthost) Deliver(ctx context.Context, from, to string, raw []byte) (s
 type WorkerConfig struct {
 	Store       *Store
 	Transport   Transport
+	API         APITransport // when set, used instead of Transport; the provider signs
 	Signers     []*DKIMSigner // chosen by the sender's domain
 	Workers     int           // parallel deliveries (default 4)
 	PollEvery   time.Duration // default 2s
@@ -372,24 +373,30 @@ func (w *Worker) deliver(ctx context.Context, m *OutMail) {
 		fail("", "expired before it could be delivered: "+m.LastError)
 		return
 	}
-	from, raw, err := Compose(m, messageID, now)
-	if err != nil {
-		fail("", err.Error())
-		return
-	}
-	if s := w.signer(from); s != nil {
-		if raw, err = s.Sign(raw); err != nil {
-			fail("", "DKIM: "+err.Error())
-			return
-		}
-	} else {
-		// Unsigned mail from this domain fails DMARC at the receiver.
-		fail("", fmt.Errorf("%w for the domain of %s", errNoSigner, from).Error())
-		return
-	}
 	sctx, cancel := context.WithTimeout(ctx, w.cfg.SendTimeout)
 	defer cancel()
-	remote, err := w.cfg.Transport.Deliver(sctx, from, bareAddress(m.To), raw)
+	var remote string
+	var err error
+	if w.cfg.API != nil {
+		remote, err = w.cfg.API.Send(sctx, m, messageID)
+	} else {
+		from, raw, cerr := Compose(m, messageID, now)
+		if cerr != nil {
+			fail("", cerr.Error())
+			return
+		}
+		if s := w.signer(from); s != nil {
+			if raw, cerr = s.Sign(raw); cerr != nil {
+				fail("", "DKIM: "+cerr.Error())
+				return
+			}
+		} else {
+			// Unsigned mail from this domain fails DMARC at the receiver.
+			fail("", fmt.Errorf("%w for the domain of %s", errNoSigner, from).Error())
+			return
+		}
+		remote, err = w.cfg.Transport.Deliver(sctx, from, bareAddress(m.To), raw)
+	}
 	switch {
 	case err == nil:
 		if err := st.markSent(m, messageID, remote); err != nil {

@@ -4,35 +4,33 @@
 
 ## 拓扑
 
+2026-11-09 从树莓派迁到 armbian；生产同时迁到了云主机，所以 dev 不再和生产共用 MySQL。
+
 ```
- 用户 ──https://dev.sharetoken.app──> armbian nginx（Let's Encrypt）
-                                        │ 局域网明文 HTTP
-                                        ▼
-                         树莓派 192.168.6.148：dev 门户 :8092 + dev 协调器
-                                        │ SSH 隧道，127.0.0.1:3306
-                                        ▼
-                         armbian MySQL：库 sharetoken_dev，账号 sharetoken_dev
+ 用户 ──https://dev.sharetoken.app──> 家庭路由器 WAN :80/:443 ──> armbian 192.168.6.91
+                                        nginx（Let's Encrypt，终结 TLS）──> dev 门户 127.0.0.1:8092
+ 协调器：无监听端口，只在中继上预约；MySQL：Docker 容器 st-mysql，127.0.0.1:3306，库 sharetoken_dev
 ```
 
 | 项 | 说明 |
 |---|---|
-| 域名 | `dev.sharetoken.app` 是 `sharetoken.app` 的 CNAME，公网 IP 变化时自动跟随，不用改 DDNS |
-| 主机 | 树莓派 3B（1 GB，`ssh s0nnet@192.168.6.148`）；机器上还有桌面环境、VLC 等。布局同生产（[server-layout.md](server-layout.md)，根目录带 `-dev`）：`/srv/sharetoken-dev/`、`/etc/sharetoken-dev/<服务>/`、`/var/lib/sharetoken-dev/portal/downloads`；运维命令 `st-portal …`、`st-coordinator …`、`st-mailserver …` |
-| 服务 | systemd `sharetoken-dev-dbtunnel`（`st-dbtunnel`）、`sharetoken-dev-coordinator`（`st-coord`）、`sharetoken-dev-portal`（`st-portal`）、`sharetoken-dev-mail`（`st-mail`）；单元里写了内存上限，但 Pi 的启动参数带 `cgroup_disable=memory`，**上限实际不生效**，只有 `GOMEMLIMIT` 这个软限制（实测两个进程共约 50 MB） |
-| 数据库 | 和生产**同一个 MySQL 实例**，独立的库 `sharetoken_dev`，账号按进程分开（`sharetoken_dev_portal`、`sharetoken_dev_coord`、`sharetoken_mail_dev`，server-layout.md §4）。生产的备份不包含这个库 |
-| 隧道 | Pi 的 `dbtunnel.key` 在 armbian 的 `authorized_keys` 里限制为 `command="/usr/bin/false",restrict,port-forwarding,permitopen="127.0.0.1:3306"`，只能转发到 MySQL，不能执行命令。生产容器不用改端口绑定 |
+| 域名 | `dev.sharetoken.app` 是自己的 A 记录，指向家宽公网 IP，由 DDNS 维护 |
+| 主机 | armbian（192.168.6.91，aarch64 2 GB，`ssh s0nnet@192.168.6.91`）；机器上还有 `sgvpn` 站点、homebridge、anylink，互不相干。布局同生产（[server-layout.md](server-layout.md)，根目录带 `-dev`）：`/srv/sharetoken-dev/`、`/etc/sharetoken-dev/<服务>/`、`/var/lib/sharetoken-dev/portal/downloads`；运维命令 `st-portal …`、`st-coordinator …`、`st-mailserver …` |
+| 服务 | systemd `sharetoken-dev-coordinator`（`st-coord`）、`sharetoken-dev-portal`（`st-portal`）、`sharetoken-dev-mail`（`st-mail`） |
+| 数据库 | 本机容器 `st-mysql`，库 `sharetoken_dev`，账号按进程分开（`sharetoken_dev_portal`、`sharetoken_dev_coord`、`sharetoken_mail_dev`，server-layout.md §4）；root 操作用 `sudo st-mysql-root`。没有定时备份 |
+| DDNS | `/etc/cron.d/sharetoken-dev` 每 10 分钟以 `st-ddns` 跑 `/srv/sharetoken-dev/ddns.sh`（`scripts/godaddy_ddns.sh`，`DDNS_NAMES=dev`），日志 `/var/lib/sharetoken-dev/ddns/ddns.log`，token 在 `/etc/sharetoken-dev/ddns/ddns.env`。IP 未变不调用写接口；IP 变后最长约 10 分钟（cron）+ 10 分钟（TTL）生效 |
 | 协调器 peer ID | `12D3KooWDa9b2HPSjHYhxuVGhKQ1866qAsGTKmgwEB5oY4D7qSYt` |
 | 门户 pass 公钥 | `ed25519:5262c7de2eb39f527d515a36082293f1c3426aaaf583883ad71312ad223ed011` |
 | 版本 | 程序是指向 `releases/<版本>/` 的软链，上一版留在 `<程序>.prev`；版本策略 `min 1.0.0`、`allow_dev=true`，可以部署 `-dev` 构建，见 [versioning.md](versioning.md) |
 | 管理员 | `root`（2026-11-09 库清空后重建），密码在 Mac 的 `~/st-test/dev-keys/admin.pass`，首次登录网页要绑两步验证 |
 | 注册 | 开放，必须有邮箱验证码（[mail.md](mail.md)）；模型只有 mock。关闭时改 `scripts/dev/portal.yaml` 的 `open_registration` |
-| 邮件 | systemd `sharetoken-dev-mail`，发件人 `team-dev@`；收信只有局域网可达 |
-| 门户入口 | `http.trusted_proxies` 只信任 armbian 传来的 `X-Real-IP`；systemd `IPAddressAllow` 限制 8092 端口只有 armbian 和本机能访问。**armbian 到 Pi 这段是明文**，登录密码和 token 会以明文经过局域网，所以 dev 不要用和生产相同的密码 |
+| 邮件 | systemd `sharetoken-dev-mail`，发件人 `team-dev@`，从家宽 IP 直投；收信只听回环。外部发给 `*-dev@` 的邮件进生产收件箱 |
+| 门户入口 | 只听回环，由本机 nginx 转发；systemd `IPAddressAllow=localhost` |
 | 模型 | 只用 mock（`scripts/mock_upstream.py`），不放公司采购的 API：dev 在公网上，额度可能被消耗 |
 
 部署：`scripts/dev/deploy.sh`（全部）、`--bins`（只更新二进制和配置）、`--portal`（门户和安装包）。不碰中继和生产服务；流程见 server-layout.md §6。部署后跑 `scripts/functest.py dev` 做功能测试。
 
-**注意：** dev 和生产共用 MySQL 实例（内存上限 600 MB），所以 dev 上不要跑压测，否则会拖累生产。
+**注意：** dev 和 armbian 上的家庭服务共用一台 2 GB 的机器，所以 dev 上不要跑压测；压测用 st-db（见下）。
 
 ## 客户端
 
@@ -70,10 +68,10 @@ us、sg、eu、cn、lab-cn2 由 systemd 管理（`sharetoken-relay` 服务，崩
 
 st-db 平时停机（`orb stop st-db`，数据保留，测试期的用户和流水也在它的 MySQL 里）。它有 MySQL 8 + 4 CPU / 8 GB，压测时才启动（`orb start st-db`），走 dev 身份和实验中继：
 
-1. 停掉 Pi 上的 dev 协调器：同一把协调器 key 不能同时在两处运行。
+1. 停掉 armbian 上的 dev 协调器：同一把协调器 key 不能同时在两处运行。
 2. 把 `~/st-test/dev-keys/` 的 `coordinator.key`、`portal-pass.key` 放到 st-db 的 `~/st-test/`（先备份原文件）。st-db 上的管理员两步验证依赖旧 pass key，换后要重新建管理员。
 3. 在 st-db 的门户里只登记实验中继。
-4. 压完恢复 Pi 上的 dev 协调器。
+4. 压完恢复 armbian 上的 dev 协调器。
 
 `scripts/testenv` 发现 st-db 还是生产协调器 key 时会拒绝启动，防止和生产抢中继。
 

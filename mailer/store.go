@@ -586,7 +586,7 @@ type ServerStatus struct {
 	Domain       string      `json:"domain"`
 	SMTPListen   string      `json:"smtp_listen"`
 	Mailboxes    []string    `json:"mailboxes"`
-	Delivery     string      `json:"delivery"` // direct, or smarthost host:port
+	Delivery     string      `json:"delivery"` // direct, smarthost host:port, or resend
 	DKIMSelector string      `json:"dkim_selector"`
 	StartedAt    int64       `json:"started_at"`
 	DNS          []DNSCheck  `json:"dns,omitempty"`

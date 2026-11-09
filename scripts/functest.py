@@ -14,9 +14,9 @@ import sys, tempfile, time, urllib.error, urllib.request
 ENV = sys.argv[1]
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CFG = {
-    "dev": {"portal": "https://dev.sharetoken.app", "ssh": "s0nnet@192.168.6.148", "dir": "sharetoken-dev", "db": "sharetoken_dev",
+    "dev": {"portal": "https://dev.sharetoken.app", "ssh": "s0nnet@192.168.6.91", "dir": "sharetoken-dev", "db": "sharetoken_dev",
             "mail": "support-dev@sharetoken.app", "mail_unit": "sharetoken-dev-mail", "api": 19887, "seller": 19888, "daemon": 19889, "mock": 19890},
-    "prod": {"portal": "https://sharetoken.app", "ssh": "s0nnet@192.168.6.91", "dir": "sharetoken-prod", "db": "sharetoken",
+    "prod": {"portal": "https://sharetoken.app", "ssh": "s0nnet@165.227.3.194", "dir": "sharetoken-prod", "db": "sharetoken",
              "mail": "support@sharetoken.app", "mail_unit": "sharetoken-mail", "api": 19787, "seller": 19788, "daemon": 19789, "mock": 19790},
 }[ENV]
 PORTAL, MODEL = CFG["portal"], "functest-mock"
@@ -56,11 +56,9 @@ def portal_cmd(args, password=None):
 
 
 def sql(q):
-    # MySQL root through the root-only helper (its password is never on a command line); the old way until armbian is migrated.
-    cmd = ("if sudo -n test -x /usr/local/sbin/st-mysql-root; then sudo /usr/local/sbin/st-mysql-root -N --default-character-set=utf8mb4 %s -e %s; "
-           "else cd ~/sharetoken-prod && docker exec st-mysql mysql -h127.0.0.1 -uroot -p\"$(cat mysql-root.pass)\" -N --default-character-set=utf8mb4 %s -e %s 2>/dev/null; fi")
+    # MySQL root through the root-only helper (its password is never on a command line).
     qq = json.dumps(q).replace("$", "\\$").replace("`", "\\`")
-    return ssh(cmd % (CFG["db"], qq, CFG["db"], qq), host="s0nnet@192.168.6.91").strip()
+    return ssh("sudo /usr/local/sbin/st-mysql-root -N --default-character-set=utf8mb4 %s -e %s" % (CFG["db"], qq)).strip()
 
 
 def call(method, url, body=None, headers=None, opener=None):

@@ -1,4 +1,4 @@
-# 生产邮件服务（armbian）。装到 /etc/sharetoken/mail/mail.yaml，以 st-mail 运行。team-dev@、support-dev@ 也在这里收：MX 只有一个，dev 邮件的退信和回复会到这里。
+# 生产邮件服务（云主机）。装到 /etc/sharetoken/mail/mail.yaml，以 st-mail 运行。team-dev@、support-dev@ 也在这里收：MX 只有一个，dev 邮件的退信和回复会到这里。
 version: 1
 database:
   dsn: mysql://sharetoken_mail@127.0.0.1:3306/sharetoken
@@ -15,7 +15,11 @@ dkim:
   selector: st1
   key_file: /etc/sharetoken/mail/dkim.key
 delivery:
-  mode: direct
+  # DigitalOcean 封了出站 25、465、587，所以发信走 Resend 的 HTTPS API（docs/mail.md）。
+  # Resend 用它自己的 DKIM（resend._domainkey）签名；dkim.key 仍保留，dkim 段是必填项。
+  mode: resend
+  resend:
+    api_key_file: /etc/sharetoken/mail/resend.key   # deploy.sh 从 ~/st-test/prod-keys/resend.key 安装
   workers: 4
   retry_for: 48h
   keep_for: 2160h

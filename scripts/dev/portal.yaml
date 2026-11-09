@@ -1,8 +1,7 @@
-# dev 门户（树莓派）。装到 /etc/sharetoken-dev/portal/portal.yaml，以 st-portal 运行（scripts/ops/st-host-setup.sh）。
-# TLS 在 armbian 的 nginx 终结，再转发到这里。systemd 单元用 IPAddressAllow 限制只有 armbian 和本机能访问这个端口。
+# dev 门户（armbian）。装到 /etc/sharetoken-dev/portal/portal.yaml，以 st-portal 运行（scripts/ops/st-host-setup.sh）。
+# TLS 在本机 nginx 终结，门户只听回环。
 version: 1
 database:
-  # armbian 上生产 MySQL 实例里的独立库和账号，经 SSH 隧道到达（sharetoken-dev-dbtunnel.service）
   dsn: mysql://sharetoken_dev_portal@127.0.0.1:3306/sharetoken_dev
   password_file: /etc/sharetoken-dev/portal/db.pass
   max_open_conns: 8
@@ -14,8 +13,7 @@ keys:
   pass_key_file: /etc/sharetoken-dev/portal/portal-pass.key  # dev 专用，绝不和生产混用；公钥在 scripts/relay/conf/*.yaml 的 dev 网络里
   mfa_key_file: ""
 http:
-  listen: "0.0.0.0:8092"
-  trusted_proxies: [192.168.6.91]  # armbian 的 nginx
+  listen: "127.0.0.1:8092"
   read_header_timeout: 10s
   read_timeout: 30s
   write_timeout: 60s

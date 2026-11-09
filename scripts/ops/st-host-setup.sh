@@ -2,7 +2,8 @@
 # 在服务器上以 root 运行：把门户、协调器、邮件服务装成各自独立的系统用户，机密只有对应的服务用户能读。
 # 由 scripts/{prod,dev}/deploy.sh 上传到暂存目录后调用；可重复运行，已有的机密绝不覆盖。
 #
-#   st-host-setup.sh <prod|dev> <暂存目录> install <版本>          # 用户、目录、机密迁移、单元、cron，然后装二进制并重启全部
+#   st-host-setup.sh <prod|dev> <暂存目录> prepare <版本>          # 用户、目录、机密、单元、cron、二进制，不启动服务（换主机切换前用）
+#   st-host-setup.sh <prod|dev> <暂存目录> install <版本>          # prepare，然后重启全部并自检
 #   st-host-setup.sh <prod|dev> <暂存目录> bins <版本> <程序...>     # 只装这些程序的二进制和配置并重启对应服务
 #   st-host-setup.sh <prod|dev> <暂存目录> config <程序...>          # 只装配置（不重启）
 #   st-host-setup.sh <prod|dev> <暂存目录> restart <程序...>
@@ -11,8 +12,8 @@
 #   /srv/sharetoken/releases/<版本>/{portal,coordinator,mailserver}   root 所有，只读；/srv/sharetoken/<程序> 是当前版本的软链
 #   /etc/sharetoken/portal/{portal.yaml,db.pass,portal-pass.key}     目录 root:st-portal 0750；yaml 0640；机密 st-portal 0600
 #   /etc/sharetoken/coordinator/{coordinator.yaml,db.pass,coordinator.key}
-#   /etc/sharetoken/mail/{mail.yaml,db.pass,dkim.key,tls/}
-#   /etc/sharetoken/ddns/ddns.env（prod）、/etc/sharetoken-dev/dbtunnel/（dev）
+#   /etc/sharetoken/mail/{mail.yaml,db.pass,dkim.key,resend.key,tls/}
+#   /etc/sharetoken-dev/ddns/ddns.env（只有 dev：家宽动态 IP；生产静态 IP，主机上没有 DNS token）
 #   /var/lib/sharetoken/portal/downloads                               门户唯一可写目录（StateDirectory）
 #   /root/sharetoken/mysql-root.pass                                   只有 root；st-mysql-root 用它
 #   /root/sharetoken/migrated-<时间>/                                  迁移时从旧目录搬走的机密副本，确认无误后删除
@@ -72,6 +73,11 @@ install_config() { # programs...
     install -d -o root -g "$u" -m 750 "$d"
     [ -s "$STAGE/$(conf_of "$p")" ] || { echo "missing $STAGE/$(conf_of "$p")" >&2; exit 1; }
     install -o root -g "$u" -m 640 "$STAGE/$(conf_of "$p")" "$d/$(conf_of "$p")"
+    # 发信服务商的 API key 可以轮换：暂存目录里有就覆盖
+    if [ "$p" = mailserver ] && [ -s "$STAGE/resend.key" ]; then
+      install -o st-mail -g st-mail -m 600 "$STAGE/resend.key" "$d/resend.key"; rm -f "$STAGE/resend.key"
+    fi
+    if [ "$p" = mailserver ]; then rm -f "$d/smarthost.pass" "$STAGE/smarthost.pass"; fi   # 以前的 Brevo 占位
   done
 }
 
@@ -134,11 +140,13 @@ migrate_secrets() {
     log "downloads -> $LIB/portal/downloads"
   fi
   rm -rf "$STAGE/downloads.old" "$STAGE/downloads.new"
+  # MySQL root 密码：只有 root 用得着（prod 由 deploy.sh 在主机上生成；dev 用这台主机已有的）
+  install -d -m 700 /root/sharetoken
   if [ $ENV = prod ]; then
-    # MySQL root 密码：只有 root 用得着
-    install -d -m 700 /root/sharetoken
-    install_secret "$STAGE/mysql-root.pass" /root/sharetoken/mysql-root.pass root
-    # DDNS：自己的用户和 token
+    # 备份归 root
+    install -d -m 700 /var/backups/sharetoken
+  else
+    # DDNS：家宽 IP 会变，只有这台主机需要 DNS token；生产是静态 IP，主机上不放 token
     ensure_user st-ddns "$LIB/ddns"
     install -d -o st-ddns -g st-ddns -m 750 "$LIB/ddns"
     install -d -o root -g st-ddns -m 750 "$ETC/ddns"
@@ -146,41 +154,31 @@ migrate_secrets() {
     install_secret "$home/.config/sharetoken/ddns.env" "$ETC/ddns/ddns.env" st-ddns
     install -d -o root -g root -m 755 "$SRV"
     [ -s "$STAGE/ddns.sh" ] && install -o root -g root -m 755 "$STAGE/ddns.sh" "$SRV/ddns.sh"
-    # 备份归 root
-    install -d -m 700 /var/backups/sharetoken
-    if [ -d "$STAGE/backup" ]; then mv -f "$STAGE"/backup/*.sql.gz /var/backups/sharetoken/ 2>/dev/null || true; rm -rf "$STAGE/backup"; fi
-    chown -R root:root /var/backups/sharetoken; chmod 600 /var/backups/sharetoken/*.sql.gz 2>/dev/null || true
-    rm -f "$STAGE/backup.sh"
-  else
-    ensure_user st-dbtunnel "$LIB/dbtunnel"
-    install -d -o st-dbtunnel -g st-dbtunnel -m 700 "$LIB/dbtunnel"
-    install -d -o root -g st-dbtunnel -m 750 "$ETC/dbtunnel"
-    install_secret "$STAGE/dbtunnel.key" "$ETC/dbtunnel/dbtunnel.key" st-dbtunnel
-    [ -s "$STAGE/dbtunnel.known_hosts" ] && install -o root -g st-dbtunnel -m 640 "$STAGE/dbtunnel.known_hosts" "$ETC/dbtunnel/dbtunnel.known_hosts"
-    rm -f "$STAGE/dbtunnel.key.pub"
   fi
   # 旧布局留下的东西
   rm -f "$STAGE"/portal "$STAGE"/coordinator "$STAGE"/mailserver "$STAGE"/*.prev "$STAGE"/portal.yaml.prev "$STAGE"/nginx-sharetoken.conf
 }
 
 install_host_scripts() {
-  [ $ENV = prod ] || return 0
   [ -s "$STAGE/st-mysql-root" ] && install -o root -g root -m 700 "$STAGE/st-mysql-root" /usr/local/sbin/st-mysql-root
+  if [ $ENV = dev ]; then
+    cat > /etc/cron.d/sharetoken-dev <<C
+# sharetoken dev: DDNS every 10 min as st-ddns (only the dev name; this host's IP is dynamic)
+*/10 * * * * st-ddns GODADDY_ENV=$ETC/ddns/ddns.env DDNS_NAMES=dev $SRV/ddns.sh >> $LIB/ddns/ddns.log 2>&1
+C
+    chmod 644 /etc/cron.d/sharetoken-dev
+    return 0
+  fi
   [ -s "$STAGE/st-mysql-backup" ] && install -o root -g root -m 700 "$STAGE/st-mysql-backup" /usr/local/sbin/st-mysql-backup
   cat > /etc/cron.d/sharetoken <<C
-# sharetoken: DDNS every 10 min as st-ddns; MySQL dump nightly as root (/var/backups/sharetoken, keeps 7)
-*/10 * * * * st-ddns GODADDY_ENV=$ETC/ddns/ddns.env $SRV/ddns.sh >> $LIB/ddns/ddns.log 2>&1
+# sharetoken: MySQL dump nightly as root (/var/backups/sharetoken, keeps 7)
 17 3 * * * root /usr/local/sbin/st-mysql-backup
 C
   chmod 644 /etc/cron.d/sharetoken
-  # 旧的用户 crontab 条目
-  local home; home=$(getent passwd "$STAGE_USER" | cut -d: -f6)
-  if crontab -u "$STAGE_USER" -l 2>/dev/null | grep -q "sharetoken-prod/\(ddns\|backup\).sh"; then
-    crontab -u "$STAGE_USER" -l | grep -v -e "sharetoken-prod/ddns.sh" -e "sharetoken-prod/backup.sh" | crontab -u "$STAGE_USER" -
-    log "removed ddns/backup from $STAGE_USER's crontab"
-  fi
-  rm -f "$STAGE/ddns.log"
-  # certbot 把邮件证书交给 st-mail
+  # certbot 续期后重载 nginx，并把邮件证书交给 st-mail
+  install -d -m 755 /etc/letsencrypt/renewal-hooks/deploy
+  printf '#!/bin/sh\nsystemctl reload nginx\n' > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+  chmod 755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
   cat > /etc/letsencrypt/renewal-hooks/deploy/sharetoken-mail.sh <<H
 #!/bin/sh
 d=$ETC/mail/tls
@@ -205,7 +203,7 @@ verify() {
   runuser -u st-coord -- cat "$ETC/portal/portal-pass.key" >/dev/null 2>&1 && { echo "  FAIL: st-coord can read portal-pass.key"; bad=1; }
   runuser -u st-mail -- cat "$ETC/portal/db.pass" >/dev/null 2>&1 && { echo "  FAIL: st-mail can read the portal's db.pass"; bad=1; }
   runuser -u st-portal -- cat "$ETC/portal/db.pass" >/dev/null 2>&1 || { echo "  FAIL: st-portal cannot read its own db.pass"; bad=1; }
-  [ $ENV = prod ] && { runuser -u st-portal -- cat /root/sharetoken/mysql-root.pass >/dev/null 2>&1 && { echo "  FAIL: st-portal can read mysql-root.pass"; bad=1; }; }
+  runuser -u st-portal -- cat /root/sharetoken/mysql-root.pass >/dev/null 2>&1 && { echo "  FAIL: st-portal can read mysql-root.pass"; bad=1; }
   for p in portal coordinator mailserver; do
     printf '  %-28s %s\n' "$(unit_of "$p")" "$(systemctl is-active "$(unit_of "$p")") $(systemd-analyze security "$(unit_of "$p")" 2>/dev/null | tail -1)"
   done
@@ -213,15 +211,21 @@ verify() {
   return $bad
 }
 
+prepare() { # version: everything but starting the services
+  echo "== users, directories, secrets"; migrate_secrets
+  echo "== host scripts, cron, certbot hooks"; install_host_scripts
+  echo "== binaries $1"; install_bins "$1" portal coordinator mailserver
+  echo "== configs"; install_config portal coordinator mailserver
+  echo "== units"; install_units; install_wrappers
+}
+
 case $ACTION in
+  prepare)
+    prepare "$1"
+    ;;
   install)
     V=$1
-    echo "== users, directories, secrets"; migrate_secrets
-    echo "== host scripts, cron, certbot hook"; install_host_scripts
-    echo "== binaries $V"; install_bins "$V" portal coordinator mailserver
-    echo "== configs"; install_config portal coordinator mailserver
-    echo "== units"; install_units; install_wrappers
-    if [ $ENV = dev ]; then systemctl enable "${UNIT}dbtunnel" >/dev/null 2>&1 || true; systemctl restart "${UNIT}dbtunnel"; sleep 2; systemctl is-active "${UNIT}dbtunnel"; fi
+    prepare "$V"
     echo "== restart"; systemctl stop "${UNIT}mail" "${UNIT}portal" "${UNIT}coordinator" 2>/dev/null || true
     restart_services coordinator portal mailserver
     verify

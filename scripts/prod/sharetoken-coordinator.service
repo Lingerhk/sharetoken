@@ -8,6 +8,7 @@ User=st-coord
 Group=st-coord
 # 配置和机密在 /etc/sharetoken/coordinator（root:st-coord 0750）；协调器不写磁盘
 WorkingDirectory=/etc/sharetoken/coordinator
+Environment=GOMEMLIMIT=256MiB
 ExecStartPre=/bin/bash -c 'for i in $(seq 60); do (echo > /dev/tcp/127.0.0.1/3306) 2>/dev/null && exit 0; sleep 2; done; exit 1'
 ExecStart=/srv/sharetoken/coordinator -config /etc/sharetoken/coordinator/coordinator.yaml
 Restart=always

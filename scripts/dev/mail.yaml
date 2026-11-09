@@ -1,4 +1,4 @@
-# dev 邮件服务（树莓派）。装到 /etc/sharetoken-dev/mail/mail.yaml，以 st-mail 运行。发件人 team-dev@，收信只在局域网可达（路由器 25 端口映射给 armbian）。
+# dev 邮件服务（armbian）。装到 /etc/sharetoken-dev/mail/mail.yaml，以 st-mail 运行。发件人 team-dev@，从家宽 IP 直投。收信只听回环：MX 指向生产，team-dev@ 的外部来信都进生产收件箱。
 version: 1
 database:
   dsn: mysql://sharetoken_mail_dev@127.0.0.1:3306/sharetoken_dev
@@ -21,7 +21,7 @@ delivery:
   keep_for: 720h
 smtp:
   enabled: true
-  listen: ":25"
+  listen: "127.0.0.1:25"
   mailboxes:
     - support-dev@sharetoken.app
     - team-dev@sharetoken.app

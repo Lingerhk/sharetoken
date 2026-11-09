@@ -8,7 +8,7 @@ User=st-mail
 Group=st-mail
 # 配置和机密在 /etc/sharetoken/mail（root:st-mail 0750）；证书由 certbot 钩子复制到 tls/；邮件服务不写磁盘
 WorkingDirectory=/etc/sharetoken/mail
-Environment=GOMEMLIMIT=256MiB
+Environment=GOMEMLIMIT=64MiB
 ExecStartPre=/bin/bash -c 'for i in $(seq 60); do (echo > /dev/tcp/127.0.0.1/3306) 2>/dev/null && exit 0; sleep 2; done; exit 1'
 ExecStart=/srv/sharetoken/mailserver -config /etc/sharetoken/mail/mail.yaml serve
 Restart=always
@@ -39,7 +39,7 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 UMask=0077
-MemoryMax=400M
+MemoryMax=200M
 
 [Install]
 WantedBy=multi-user.target

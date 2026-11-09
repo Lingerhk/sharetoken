@@ -1,4 +1,4 @@
-# 生产门户（armbian）。装到 /etc/sharetoken/portal/portal.yaml，以 st-portal 运行（scripts/ops/st-host-setup.sh）。nginx 终结 TLS（Let's Encrypt），门户只听回环。
+# 生产门户（云主机）。装到 /etc/sharetoken/portal/portal.yaml，以 st-portal 运行（scripts/ops/st-host-setup.sh）。nginx 终结 TLS（Let's Encrypt），门户只听回环。
 version: 1
 database:
   dsn: mysql://sharetoken_portal@127.0.0.1:3306/sharetoken

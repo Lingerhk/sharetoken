@@ -7,7 +7,7 @@
 ```
 门户 ── 写 mail_outbox / mail_codes ──▶ MySQL ◀── 投递、收信写 mail_inbox ── mailserver ◀── 25 端口 ── 互联网
  ▲                                                    │
- └── 管理后台 /admin/#/mail                            └── 直投收件方 MX（或 smarthost）
+ └── 管理后台 /admin/#/mail                            └── 直投收件方 MX（或 smarthost、Resend API）
 ```
 
 - 门户和 mailserver **只通过数据库交互**。mailserver 宕机时邮件排队，注册接口不受影响。
@@ -16,16 +16,17 @@
 
 ## 环境
 
-| | prod（armbian） | dev（树莓派） |
+| | prod（云主机） | dev（armbian） |
 |---|---|---|
 | 发件地址 | `team@sharetoken.app` | `team-dev@sharetoken.app` |
 | 反馈地址 | `support@sharetoken.app` | `support-dev@sharetoken.app` |
 | DKIM 选择器 | `st1` | `stdev1` |
 | 配置 | `scripts/prod/mail.yaml` | `scripts/dev/mail.yaml` |
-| 密钥 | Mac `~/st-test/prod-keys/{dkim.key,mail-db.pass}`；服务器 `/etc/sharetoken/mail/{dkim.key,db.pass}`（st-mail 0600），证书由 certbot 钩子复制到 `/etc/sharetoken/mail/tls/` | Mac `~/st-test/dev-keys/{dkim.key,mail-db.pass}`；Pi `/etc/sharetoken-dev/mail/` |
-| 互联网收信 | 路由器 WAN:25 → 192.168.6.91:25（规则 `smtp-armbian-mail`） | 只有局域网可达 |
+| 密钥 | Mac `~/st-test/prod-keys/{dkim.key,mail-db.pass,resend.key}`；服务器 `/etc/sharetoken/mail/{dkim.key,db.pass,resend.key}`（st-mail 0600），证书由 certbot 钩子复制到 `/etc/sharetoken/mail/tls/` | Mac `~/st-test/dev-keys/{dkim.key,mail-db.pass}`；armbian `/etc/sharetoken-dev/mail/` |
+| 发信 | Resend HTTPS API（`delivery.mode: resend`） | 从家宽 IP 直投 |
+| 互联网收信 | 主机 25 端口（ufw 放行） | 只听回环，互联网不可达 |
 
-MX 和公网 IP 都只有一个，所以外部发给 `team-dev@`、`support-dev@` 的邮件（比如 dev 邮件的退信）进的是 **prod** 的收件箱，后台可按收件地址区分。
+MX 只有一个，所以外部发给 `team-dev@`、`support-dev@` 的邮件（比如 dev 邮件的退信）进的是 **prod** 的收件箱，后台可按收件地址区分。
 
 部署：
 
@@ -42,22 +43,24 @@ scripts/prod/deploy.sh --mail         # prod：门户 + 邮件服务，协调器
 | 记录 | 值 |
 |---|---|
 | `MX @` | `10 mail.sharetoken.app` |
-| `A mail` | 公网 IP，由 `scripts/godaddy_ddns.sh` 维护 |
-| `TXT @` | `v=spf1 a:mail.sharetoken.app ~all` |
+| `A mail` | 生产主机 165.227.3.194（静态） |
+| `TXT @` | `v=spf1 a:dev.sharetoken.app ~all`（dev 从家宽 IP 直投；prod 的 SPF 由 Resend 的退信域 `send` 承担） |
+| `TXT resend._domainkey` | Resend 的 DKIM 公钥（prod 发信由 Resend 签名） |
+| `CNAME send`、`CNAME rsend` | `send.forge.rmta.net`、`rsend.forge.rmta.net`（Resend 的退信域和 SPF） |
 | `TXT st1._domainkey`、`stdev1._domainkey` | DKIM 公钥 |
 | `TXT _dmarc` | GoDaddy 默认（`p=quarantine`），未改动 |
 
-检查：`st-mailserver dns`（服务器上的包装脚本，以 st-mail 运行），或后台“服务状态”页（每 10 分钟自动检查一次）。IP 变化后 SPF 最多滞后约 20 分钟，因为用的是 `~all`，且 DKIM 不依赖 IP，DMARC 仍能通过。
+检查：`st-mailserver dns`（服务器上的包装脚本，以 st-mail 运行），或后台“服务状态”页（每 10 分钟自动检查一次）。dev 的家宽 IP 变化后 SPF 最多滞后约 20 分钟，因为用的是 `~all`，且 DKIM 不依赖 IP，DMARC 仍能通过。
 
-## 发信可靠性：已知问题
+## 发信路径
 
-发信 IP `27.125.141.245` 是 StarHub 家宽动态地址，云主机（DigitalOcean、腾讯云）都封了出站 25，所以目前只能从这里直投。
+**prod：Resend。** DigitalOcean 封了出站 25、465、587（2026-11-09 实测），所以 prod 配 `delivery.mode: resend`，用官方 Go SDK（`github.com/resend/resend-go/v2`，`mailer/resend.go`）走 HTTPS。Resend 自己组装邮件，并用 `resend._domainkey` 签 DKIM，我们的 `st1` 密钥在 prod 上不参与发信。每封信以我们的 Message-ID 作幂等键，重试时丢了回复也不会发出第二份。HTTP 400、422 视为永久失败；401、403（key 或域名验证出问题）、429、5xx 留在队列里重试。
 
-2026-11-08 实测（Port25 验证服务）：**SPF 通过，DKIM 通过，iprev 失败**。这个 IP 还在 Spamhaus PBL（家宽段）里，PTR 也没有正向解析，这两点家宽上改不了。
+API key 在 Mac 的 `~/st-test/prod-keys/resend.key`（Resend 后台名为 `sharetoken-app-full`，Full access），`scripts/prod/deploy.sh --mail-server` 每次都会重新安装，换 key 只要改这个文件后再部署一次。没有 key，邮件服务不会启动。Resend 后台的域名 `sharetoken.app` 已于 2026-11-10 验证通过（区域 us-east-1，只开发信，收信仍由我们的 MX 处理）；它的三条记录也由 `scripts/mail_dns.py` 维护。
 
-Gmail 实测（2026-11-09）：邮件能收到，但**进垃圾邮件**。所以后台的“对方已接受”不代表用户在收件箱里看到了，服务端看不到邮件被归到哪里。注册页因此提示用户查看垃圾邮件。其他收件方（QQ、163、Outlook）还没有测过。
+**dev：家宽直投。** 发信 IP 是 StarHub 家宽动态地址，在 Spamhaus PBL 里，PTR 也没有正向解析（2026-11-08 Port25 实测：SPF、DKIM 通过，iprev 失败）。Gmail 实测（2026-11-09）能收到，但进垃圾邮件。dev 上这样可以接受。
 
-要进收件箱，可靠的办法是 smarthost：配置 `delivery.mode: smarthost`，并把服务商加进 SPF。收信不受影响，DKIM 继续由我们签名。
+后台的“对方已接受”不代表用户在收件箱里看到了，服务端看不到邮件被归到哪里。注册页因此提示用户查看垃圾邮件。
 
 ## 注册验证码
 

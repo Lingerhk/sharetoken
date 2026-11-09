@@ -51,12 +51,15 @@ type File struct {
 		KeyFile  string `yaml:"key_file"`
 	} `yaml:"dkim"`
 	Delivery struct {
-		Mode      string `yaml:"mode"` // direct or smarthost
+		Mode      string `yaml:"mode"` // direct, smarthost or resend
 		Smarthost struct {
 			Addr         string `yaml:"addr"`
 			Username     string `yaml:"username"`
 			PasswordFile string `yaml:"password_file"`
 		} `yaml:"smarthost"`
+		Resend struct {
+			APIKeyFile string `yaml:"api_key_file"`
+		} `yaml:"resend"`
 		Workers  int             `yaml:"workers"`
 		RetryFor config.Duration `yaml:"retry_for"`
 		KeepFor  config.Duration `yaml:"keep_for"`
@@ -110,8 +113,12 @@ func (f *File) validate() error {
 		if f.Delivery.Smarthost.Addr == "" {
 			bad("delivery.mode smarthost needs delivery.smarthost.addr")
 		}
+	case "resend":
+		if f.Delivery.Resend.APIKeyFile == "" {
+			bad("delivery.mode resend needs delivery.resend.api_key_file")
+		}
 	default:
-		bad("delivery.mode %q: want direct or smarthost", f.Delivery.Mode)
+		bad("delivery.mode %q: want direct, smarthost or resend", f.Delivery.Mode)
 	}
 	if f.From != "" {
 		a, err := netmail.ParseAddress(f.From)
@@ -146,7 +153,7 @@ func main() {
 			log.Fatal(err)
 		}
 		config.Resolve(config.Dir(path), &f.Database.DSN, &f.Database.PasswordFile, &f.DKIM.KeyFile, &f.SMTP.TLS.CertFile,
-			&f.SMTP.TLS.KeyFile, &f.Delivery.Smarthost.PasswordFile, &f.Log.File)
+			&f.SMTP.TLS.KeyFile, &f.Delivery.Smarthost.PasswordFile, &f.Delivery.Resend.APIKeyFile, &f.Log.File)
 	}
 	flag.String("config", "", "YAML configuration file (configs/mail.example.yaml)")
 	flag.Usage = func() {
@@ -251,11 +258,23 @@ func main() {
 		}
 		transport = sh
 	}
-	worker := mailer.NewWorker(mailer.WorkerConfig{Store: store, Transport: transport,
+	var api mailer.APITransport
+	name := transport.Name()
+	if f.Delivery.Mode == "resend" {
+		k, err := mailer.ReadSecretFile(f.Delivery.Resend.APIKeyFile)
+		if err != nil || k == "" {
+			log.Fatalf("delivery.resend.api_key_file: empty or unreadable (%v)", err)
+		}
+		if api, err = mailer.NewResend(k, ""); err != nil {
+			log.Fatal(err)
+		}
+		name = api.Name()
+	}
+	worker := mailer.NewWorker(mailer.WorkerConfig{Store: store, Transport: transport, API: api,
 		Signers: []*mailer.DKIMSigner{{Domain: f.Domain, Selector: f.DKIM.Selector, Key: crypto.Signer(key)}},
 		Workers: f.Delivery.Workers, RetryFor: f.Delivery.RetryFor.T(), KeepFor: f.Delivery.KeepFor.T(), Log: lg})
 
-	sc := mailer.ServerConfig{Store: store, Worker: worker, Hostname: f.Hostname, Domain: f.Domain, Selector: f.DKIM.Selector, Key: key, Delivery: transport.Name(), Log: lg}
+	sc := mailer.ServerConfig{Store: store, Worker: worker, Hostname: f.Hostname, Domain: f.Domain, Selector: f.DKIM.Selector, Key: key, Delivery: name, Log: lg}
 	if f.SMTP.Enabled {
 		tlsCfg, err := serverTLS(&f)
 		if err != nil {
@@ -271,7 +290,7 @@ func main() {
 			MaxPerIPHour: f.SMTP.MaxPerIPHour, Log: lg})
 		fmt.Printf("receiving on %s for %s\n", f.SMTP.Listen, strings.Join(f.SMTP.Mailboxes, ", "))
 	}
-	fmt.Printf("delivering (%s) as %s\n", transport.Name(), f.Hostname)
+	fmt.Printf("delivering (%s) as %s\n", name, f.Hostname)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := mailer.Run(ctx, sc); err != nil {

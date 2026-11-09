@@ -1,4 +1,4 @@
-# 生产协调器（armbian）。装到 /etc/sharetoken/coordinator/coordinator.yaml，以 st-coord 运行。
+# 生产协调器（云主机）。装到 /etc/sharetoken/coordinator/coordinator.yaml，以 st-coord 运行。
 version: 1
 identity:
   key_file: /etc/sharetoken/coordinator/coordinator.key       # peer ID 12D3KooWFAqCYkUS2Kt2KRWQ1mWF82Em4mRbB5nD4V7Fr5PmWfUh，中继按它放行
@@ -32,7 +32,7 @@ jobs:
   job_retention: 720h
   suspend_for: 24h
 # 参考模型（争议时精确计 token）：Mac 上 scripts/upstream_proxy.py（公司采购的 API），
-# 经 scripts/testenv/tunnels.sh 建的反向隧道出现在 armbian 的回环端口上。隧道不在时只影响争议裁决。
+# 经 scripts/testenv/tunnels.sh 建的反向隧道出现在这台主机的回环端口上。隧道不在时只影响争议裁决。
 references:
   - {id: deepseek-flash, upstream: deepseek-flash, url: "http://127.0.0.1:11434/v1"}
   - {id: gpt-4o-mini, upstream: gpt-4o-mini, url: "http://127.0.0.1:11436/v1"}

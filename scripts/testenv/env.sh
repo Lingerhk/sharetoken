@@ -3,7 +3,8 @@
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 W=${ST_TESTENV_WORK:-$HOME/st-test}          # Mac work dir: alice's home, builds, results
 Q="-o LogLevel=ERROR -o ConnectTimeout=10"
-ARMBIAN=192.168.6.91                         # PRODUCTION portal+coordinator+MySQL (docs/prod-env.md, scripts/prod/deploy.sh)
+ARMBIAN=192.168.6.91                         # dev portal+coordinator+MySQL (docs/dev-env.md, scripts/dev/deploy.sh)
+PROD=165.227.3.194                           # PRODUCTION portal+coordinator+MySQL (docs/prod-env.md, scripts/prod/deploy.sh)
 STDB=st-db                                   # orb VM (4 CPU / 8 GB): load-test only; its portal/coordinator must stay stopped while production runs (same coordinator key)
 DB_DSN=mysql://sharetoken@127.0.0.1:3306/sharetoken   # password in ~/st-test/db.env on st-db
 US=165.227.115.27;  US6=2604:a880:800:14:0:3:d0f4:b000

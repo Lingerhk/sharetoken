@@ -1,7 +1,7 @@
 [Unit]
 Description=sharetoken dev mail server
-After=network-online.target sharetoken-dev-dbtunnel.service sharetoken-dev-portal.service
-Wants=network-online.target sharetoken-dev-dbtunnel.service
+After=network-online.target docker.service sharetoken-dev-portal.service
+Wants=network-online.target
 
 [Service]
 User=st-mail

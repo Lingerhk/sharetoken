@@ -1,7 +1,7 @@
 [Unit]
 Description=sharetoken dev portal
-After=network-online.target sharetoken-dev-dbtunnel.service sharetoken-dev-coordinator.service
-Wants=network-online.target sharetoken-dev-dbtunnel.service
+After=network-online.target docker.service sharetoken-dev-coordinator.service
+Wants=network-online.target
 
 [Service]
 User=st-portal
@@ -38,9 +38,9 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 UMask=0077
-# Plain HTTP on the LAN: only armbian (nginx) and this machine may talk to it.
+# Only this machine (nginx, MySQL).
 IPAddressDeny=any
-IPAddressAllow=localhost 192.168.6.91
+IPAddressAllow=localhost
 MemoryHigh=150M
 MemoryMax=200M
 

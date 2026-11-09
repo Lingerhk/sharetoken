@@ -1,7 +1,7 @@
 [Unit]
 Description=sharetoken dev coordinator
-After=network-online.target sharetoken-dev-dbtunnel.service
-Wants=network-online.target sharetoken-dev-dbtunnel.service
+After=network-online.target docker.service
+Wants=network-online.target
 
 [Service]
 User=st-coord
