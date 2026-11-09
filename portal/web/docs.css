@@ -26,7 +26,6 @@ code, pre, kbd { font-family: var(--mono); }
 .links { display: flex; align-items: center; gap: 16px; margin-inline-start: auto; font-size: 14px; color: var(--muted); }
 .links a:hover { color: var(--text); }
 .login { color: var(--text); border: 1px solid var(--line-2); padding: 5px 13px; border-radius: 8px; white-space: nowrap; }
-.lang-select { max-width: 124px; height: 32px; font: inherit; font-size: 13px; padding: 0 6px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
 
 /* search */
 .search { position: relative; flex: 0 1 340px; margin-inline-start: 10px; }
@@ -147,7 +146,6 @@ code, pre, kbd { font-family: var(--mono); }
   .search { margin-inline-start: 0; flex: 1 1 auto; min-width: 0; }
   .search kbd { display: none; }
   .links { gap: 8px; margin-inline-start: 0; flex: none; }
-  .lang-select { max-width: 74px; }
   .login { padding: 5px 9px; font-size: 13px; }
   .sidebar { position: fixed; top: var(--top); bottom: 0; inset-inline-start: 0; z-index: 15; width: min(290px, 84vw); height: auto; padding-inline: 12px; background: var(--bg); transform: translateX(-102%); transition: transform .18s ease; }
   [dir=rtl] .sidebar { transform: translateX(102%); }

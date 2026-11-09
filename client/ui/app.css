@@ -87,8 +87,7 @@ html.i18n-pending body { visibility: hidden; }
 :is(:lang(ar), :lang(ur), :lang(hi), :lang(bn), :lang(th)) * { letter-spacing: 0 !important; }
 :is(:lang(ar), :lang(ur), :lang(hi), :lang(bn), :lang(th)) :is(h1, h2, h3) { line-height: 1.45; }
 :lang(ur) body { line-height: 2; }
-select.lang-select { font: inherit; font-size: 12.5px; max-width: 150px; padding: 3px 6px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
-.auth > .lang-select { display: block; margin-block: 0 12px; }
+.auth > .lang-picker { display: block; width: max-content; margin-block: 0 12px; }
 [dir=rtl] td.num { direction: ltr; text-align: left; }
 #feedback select, #feedback textarea { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
 #feedback textarea { display: block; width: 100%; resize: vertical; }

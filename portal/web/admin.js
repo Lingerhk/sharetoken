@@ -1,30 +1,30 @@
 // The operator console: platform overview, users, relays, jobs, nodes, audits, disputes, ledger.
 'use strict';
 (async () => {
-  const { api, h, clear, add, credit, signed, num, time, ago, peer, status, badge, toast, fail, modal, confirm, secret, table, kv, field, input, state } = ST;
+  const { api, h, clear, add, credit, signed, num, time, ago, peer, status, badge, toast, fail, modal, confirm, secret, table, kv, field, input, state, pageTitle, section, tile } = ST;
   const app = ST.$('app');
 
   await ST.loadInfo().catch(fail);
   while (!(await ST.loadMe())) await ST.renderLogin(app, { title: '管理控制台', allowRegister: false });
   const me = () => state.me;
   if (!me().user.is_admin) {
-    add(clear(app), h('div', { class: 'card login' }, h('h1', null, '管理控制台'), h('p', null, '账户 ', h('b', null, me().user.username), ' 不是管理员。'),
-      h('div', { class: 'row' }, h('a', { href: '/app/' }, '返回用户门户'), h('button', { class: 'small', onclick: ST.logout }, '退出'))));
+    add(clear(app), ST.authFrame(h('div', { class: 'card login' }, h('h1', null, '管理控制台'), h('p', null, '账户 ', h('b', null, me().user.username), ' 不是管理员。'),
+      h('div', { class: 'row' }, h('a', { href: '/app/' }, '返回用户门户'), h('button', { class: 'small', onclick: ST.logout }, '退出')))));
     return;
   }
 
   const mailBadge = h('span', { class: 'nav-count', id: 'mail-unread', hidden: true });
   const feedbackBadge = h('span', { class: 'nav-count', id: 'feedback-new', hidden: true });
-  const nav = h('nav', { class: 'sidenav' },
-    h('a', { href: '#/overview' }, '总览'), h('a', { href: '#/users' }, '用户'), h('a', { href: '#/relays' }, '中继'), h('a', { href: '#/versions' }, '版本'), h('a', { href: '#/jobs' }, '作业'),
-    h('a', { href: '#/nodes' }, '节点'), h('a', { href: '#/audits' }, '审计'), h('a', { href: '#/disputes' }, '争议'), h('a', { href: '#/ledger' }, '账本'), h('a', { href: '#/mail' }, '邮件', mailBadge), h('a', { href: '#/feedback' }, '反馈', feedbackBadge));
-  const main = h('main');
-  add(clear(app), 
-    h('header', { class: 'topbar' }, h('span', { class: 'brand' }, h('img', { class: 'brand-logo', src: '/static/favicon.svg', alt: '' }), 'sharetoken', h('small', null, '管理控制台')), h('span', { class: 'spacer' }),
-      h('a', { href: '/app/' }, '用户门户'), h('span', { class: 'who' }, me().user.username), h('button', { class: 'small', onclick: ST.logout }, '退出')),
-    h('div', { class: 'layout' }, nav, main));
+  const { nav, main } = ST.shell(app, {
+    title: '管理控制台', role: '管理员',
+    items: [
+      { route: 'overview', icon: 'grid', label: '总览' }, { route: 'users', icon: 'users', label: '用户' }, { route: 'relays', icon: 'server', label: '中继' }, { route: 'versions', icon: 'cube', label: '版本' },
+      { route: 'jobs', icon: 'bolt', label: '作业' }, { route: 'nodes', icon: 'cpu', label: '节点' }, { route: 'audits', icon: 'shield', label: '审计' }, { route: 'disputes', icon: 'warning', label: '争议' },
+      { route: 'ledger', icon: 'database', label: '账本' }, { route: 'mail', icon: 'mail', label: '邮件', badge: mailBadge }, { route: 'feedback', icon: 'chat', label: '反馈', badge: feedbackBadge },
+    ],
+    links: [{ href: '/docs/', icon: 'book', label: '文档' }, { href: '/app/', icon: 'home', label: '用户门户' }],
+  });
 
-  const tile = (label, value, sub, cls) => h('div', { class: 'tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value ' + (cls || '') }, value), sub ? h('div', { class: 'sub' }, sub) : null);
   const moreButton = fn => h('div', { class: 'row end' }, h('button', { onclick: fn }, '加载更多'));
   const userLink = name => name ? h('a', { href: '#/users/' + encodeURIComponent(name) }, name) : null;
   const acct = (a, user) => user ? [userLink(user), ' ', h('span', { class: 'muted mono' }, a)] : h('code', { class: 'mono' }, a);
@@ -36,21 +36,21 @@
   async function overview(m) {
     const o = await api('GET', '/api/v1/admin/overview');
     const jobs = o.jobs || {};
-    add(m, h('h1', null, '平台总览'),
+    add(m, pageTitle('平台总览'),
       h('div', { class: 'tiles' },
-        tile('用户', num(o.users), o.disabled_users ? o.disabled_users + ' 个已禁用' : '无禁用'),
-        tile('设备', num(o.devices)),
-        tile('流通 credit', credit(o.circulating_micros), '已发放到网络中的额度'),
-        tile('平台手续费', credit(o.platform_fees_micros), '费率 ' + (o.fee_bps / 100).toFixed(2) + '%'),
-        tile('冻结中', credit(o.open_holds_micros), '进行中作业的预留额'),
-        tile('账本', o.books_balance ? '平衡' : '不平衡', o.books_error || '从流水回放各账户一致', o.books_balance ? 'ok' : 'bad'),
-        tile('中继', o.relays_ok + ' / ' + o.relays_enabled, '可达 / 启用（共 ' + o.relays + ' 个）', o.relays_enabled && o.relays_ok === 0 ? 'bad' : ''),
-        tile('作业', num(Object.values(jobs).reduce((a, b) => a + b, 0)), Object.entries(jobs).map(([k, v]) => (ST.STATUS[k] ? ST.STATUS[k][0] : k) + ' ' + v).join('，') || '无', jobs.disputed ? 'warn' : '')),
+        tile('用户', num(o.users), o.disabled_users ? o.disabled_users + ' 个已禁用' : '无禁用', 'users'),
+        tile('设备', num(o.devices), null, 'desktop', 'blue'),
+        tile('流通 credit', credit(o.circulating_micros), '已发放到网络中的额度', 'dollar', 'ok'),
+        tile('平台手续费', credit(o.platform_fees_micros), '费率 ' + (o.fee_bps / 100).toFixed(2) + '%', 'chart', 'violet'),
+        tile('冻结中', credit(o.open_holds_micros), '进行中作业的预留额', 'lock', 'warn'),
+        tile('账本', o.books_balance ? '平衡' : '不平衡', o.books_error || '从流水回放各账户一致', 'database', '', o.books_balance ? 'ok' : 'bad'),
+        tile('中继', o.relays_ok + ' / ' + o.relays_enabled, '可达 / 启用（共 ' + o.relays + ' 个）', 'server', '', o.relays_enabled && o.relays_ok === 0 ? 'bad' : ''),
+        tile('作业', num(Object.values(jobs).reduce((a, b) => a + b, 0)), Object.entries(jobs).map(([k, v]) => (ST.STATUS[k] ? ST.STATUS[k][0] : k) + ' ' + v).join('，') || '无', 'bolt', 'blue', jobs.disputed ? 'warn' : '')),
       h('div', { class: 'card' }, kv([['协调器', o.coordinator ? h('code', { class: 'mono' }, o.coordinator) : h('span', { class: 'warn' }, '尚未启动')],
         ['注册', state.info.registration_open ? '开放（赠送 ' + credit(state.info.signup_credit_micros) + ' credit）' : '关闭，仅管理员创建用户'],
         ['中继凭证', state.info.passes_enabled ? '已启用' : '未启用（开放中继）'], ['浏览器会话有效期', state.info.session_hours + ' 小时']])));
     const a = await api('GET', '/api/v1/admin/accounts');
-    add(m, h('h2', null, '账户余额', h('small', null, 'external 为负数表示已发放的 credit')),
+    add(m, section('creditCard', '账户余额', h('small', null, 'external 为负数表示已发放的 credit')),
       h('div', { class: 'card' }, table([
         { title: '账户', cell: r => acct(r.account, r.user) },
         { title: '余额', num: true, cell: r => h('span', { class: r.balance_micros < 0 ? 'bad' : '' }, credit(r.balance_micros)) },
@@ -65,7 +65,7 @@
     const list = h('div', { class: 'card' });
     const total = h('span', { class: 'muted' });
     const createBtn = h('button', { class: 'primary', onclick: createUser }, '新建用户');
-    add(m, h('h1', null, '用户'), h('div', { class: 'toolbar' }, q, total, h('span', { class: 'spacer' }), createBtn), list);
+    add(m, pageTitle('用户'), h('div', { class: 'toolbar' }, q, total, h('span', { class: 'spacer' }), createBtn), list);
     let offset = 0, rows = [];
     async function load(more) {
       if (!more) { offset = 0; rows = []; }
@@ -95,12 +95,12 @@
   }
 
   async function userDetail(m, name) {
-    const head = h('h1'); const body = h('div'); add(m, head, body);
+    const head = h('h1', { class: 'page-title' }); const body = h('div'); add(m, head, body);
     async function load() {
       const d = await api('GET', '/api/v1/admin/users/' + encodeURIComponent(name));
       const u = d.user, isMe = u.id === me().user.id;
-      add(clear(head), h('a', { href: '#/users' }, '用户'), ' / ', u.username, ' ', u.is_admin ? badge('管理员', 'accent') : null, ' ', u.disabled ? badge('已禁用', 'bad') : null, ' ',
-        u.mfa_enrolled_at ? badge('两步验证', 'ok') : (u.is_admin ? badge('未绑定两步验证', 'warn') : null));
+      add(clear(head), ST.pageChip(), h('span', { class: 'page-title-text' }, h('a', { href: '#/users' }, '用户'), ' / ', u.username, ' ', u.is_admin ? badge('管理员', 'accent') : null, ' ', u.disabled ? badge('已禁用', 'bad') : null, ' ',
+        u.mfa_enrolled_at ? badge('两步验证', 'ok') : (u.is_admin ? badge('未绑定两步验证', 'warn') : null)));
       const actions = h('div', { class: 'row' },
         h('button', { class: 'primary', onclick: creditDialog }, '发放 / 扣减 credit'),
         h('button', { onclick: passwordDialog }, '重置密码'),
@@ -120,11 +120,11 @@
       const b = d.balance, us = d.usage;
       add(clear(body), 
         h('div', { class: 'tiles' },
-          tile('可用余额', credit(b.available_micros), b.account), tile('冻结', credit(b.held_micros)),
-          tile('买入', us.bought.jobs + ' 单', '花费 ' + credit(us.bought.micros)), tile('卖出', us.sold.jobs + ' 单', '净收入 ' + credit(us.sold.micros)),
-          tile('注册', time(u.created_at), 'ID ' + u.id, 'small')),
+          tile('可用余额', credit(b.available_micros), b.account, 'creditCard', 'ok'), tile('冻结', credit(b.held_micros), null, 'lock', 'warn'),
+          tile('买入', us.bought.jobs + ' 单', '花费 ' + credit(us.bought.micros), 'trendingUp', 'blue'), tile('卖出', us.sold.jobs + ' 单', '净收入 ' + credit(us.sold.micros), 'dollar', 'violet'),
+          tile('注册', time(u.created_at), 'ID ' + u.id, 'clock', '', 'small')),
         h('div', { class: 'card' }, actions),
-        h('h2', null, '设备'), h('div', { class: 'card' }, table([
+        section('desktop', '设备'), h('div', { class: 'card' }, table([
           { title: '名称', cell: x => x.name }, { title: 'Peer ID', cell: x => h('code', { class: 'mono' }, x.peer) },
           { title: '绑定', cell: x => time(x.created_at) }, { title: '最近活动', cell: x => ago(x.last_seen_at) },
           { title: '', cell: x => h('button', { class: 'small danger', onclick: async () => {
@@ -132,7 +132,7 @@
             try { await api('DELETE', '/api/v1/admin/users/' + encodeURIComponent(name) + '/devices/' + encodeURIComponent(x.peer)); toast('已解绑'); await load(); } catch (ex) { fail(ex); }
           } }, '解绑') },
         ], d.devices, '没有设备')),
-        h('h2', null, 'Token'), h('div', { class: 'card' }, table([
+        section('key', 'Token'), h('div', { class: 'card' }, table([
           { title: '名称', cell: t => t.name }, { title: '前缀', cell: t => h('code', null, t.prefix + '…') }, { title: '创建', cell: t => time(t.created_at) },
           { title: '最近使用', cell: t => ago(t.last_used_at) }, { title: '过期', cell: t => t.expires_at ? time(t.expires_at) : '永不' },
           { title: '', cell: t => h('button', { class: 'small danger', onclick: async () => {
@@ -140,8 +140,8 @@
             try { await api('DELETE', '/api/v1/admin/users/' + encodeURIComponent(name) + '/tokens/' + t.id); toast('已吊销'); await load(); } catch (ex) { fail(ex); }
           } }, '吊销') },
         ], d.tokens, '没有有效 token')),
-        h('h2', null, '账单'), h('div', { class: 'card' }, await ledgerOf('/api/v1/admin/users/' + encodeURIComponent(name) + '/ledger')),
-        h('h2', null, '作业'), h('div', { class: 'card' }, await jobsOf('/api/v1/admin/users/' + encodeURIComponent(name) + '/jobs')));
+        section('creditCard', '账单'), h('div', { class: 'card' }, await ledgerOf('/api/v1/admin/users/' + encodeURIComponent(name) + '/ledger')),
+        section('bolt', '作业'), h('div', { class: 'card' }, await jobsOf('/api/v1/admin/users/' + encodeURIComponent(name) + '/jobs')));
 
       async function creditDialog() {
         const amount = input({ type: 'number', step: 'any', placeholder: '正数发放，负数扣减（单位 credit）' });
@@ -199,13 +199,13 @@
     const r = await api('GET', '/api/v1/admin/versions');
     const same = v => !v || v === r.server.version ? 'ok' : 'warn';
     const service = (name, v) => ({ name, v });
-    add(m, h('h1', null, '版本', h('small', null, '各模块实际运行的版本，以及客户端版本策略')),
-      h('div', { class: 'card' }, h('h2', null, '服务'), table([
+    add(m, pageTitle('版本', h('small', null, '各模块实际运行的版本，以及客户端版本策略')),
+      h('div', { class: 'card' }, section('server', '服务'), table([
         { title: '模块', cell: x => x.name },
         { title: '版本', cell: x => x.v ? badge(x.v, same(x.v)) : badge('未上报', 'warn') },
       ], [service('门户', r.server.version), service('协调器', r.coordinator), service('邮件服务', r.mail)].concat(r.relays.map(x => service('中继 ' + (x.name || x.id), x.version))), ''),
       h('p', { class: 'muted' }, 'API v' + r.api + ' · 控制协议 ' + r.protocols.ctrl + ' · 推理协议 ' + r.protocols.infer + ' · 数据库 core ' + r.schema.core + ' / mail ' + r.schema.mail)),
-      h('div', { class: 'card' }, h('h2', null, '客户端分布'), table([
+      h('div', { class: 'card' }, section('chart', '客户端分布'), table([
         { title: '版本', cell: x => x.version || '未上报' },
         { title: '设备数', num: true, cell: x => String(x.devices) },
       ], r.devices, '还没有设备')));
@@ -215,7 +215,7 @@
     const url = input({ type: 'text', value: r.policy.download_url || '', placeholder: 'https://sharetoken.app/#download', maxlength: 256 });
     const dev = input({ type: 'checkbox' });
     dev.checked = !!r.policy.allow_dev;
-    add(m, h('div', { class: 'card' }, h('h2', null, '客户端版本策略'),
+    add(m, h('div', { class: 'card' }, section('cog', '客户端版本策略'),
       h('p', { class: 'muted' }, '低于最低版本的客户端不能登录、绑定设备、发布报价或买入；已有作业的结算和争议不受影响。'),
       field('最低版本', min), field('推荐版本', rec), field('最新版本', latest), field('下载地址', url),
       h('label', { class: 'check' }, dev, '允许开发构建'),
@@ -230,7 +230,7 @@
   // ---- relays ----
   async function relays(m) {
     const list = h('div', { class: 'card' });
-    add(m, h('h1', null, '中继', h('small', null, '协调器每 15 秒同步一次登记表，并回写是否可达')), h('div', { class: 'toolbar' }, h('button', { class: 'primary', onclick: addRelay }, '登记中继')), list);
+    add(m, pageTitle('中继', h('small', null, '协调器每 15 秒同步一次登记表，并回写是否可达')), h('div', { class: 'toolbar' }, h('button', { class: 'primary', onclick: addRelay }, '登记中继')), list);
     async function load() {
       const r = await api('GET', '/api/v1/admin/relays');
       add(clear(list), table([
@@ -268,7 +268,7 @@
     const st = h('select', { onchange: () => load(false) }, h('option', { value: '' }, '全部状态'), Object.entries(ST.STATUS).map(([k, v]) => h('option', { value: k }, v[0])));
     const user = input({ type: 'search', placeholder: '按用户名筛选' });
     const list = h('div', { class: 'card' });
-    add(m, h('h1', null, '作业', h('small', null, '协调器保留期内的作业（默认 30 天）')), h('div', { class: 'toolbar' }, st, user), list);
+    add(m, pageTitle('作业', h('small', null, '协调器保留期内的作业（默认 30 天）')), h('div', { class: 'toolbar' }, st, user), list);
     let all = [];
     async function load(more) {
       if (!more) all = [];
@@ -295,7 +295,7 @@
   async function nodes(m) {
     const r = await api('GET', '/api/v1/admin/nodes');
     const now = Date.now() * 1e6;
-    add(m, h('h1', null, '节点', h('small', null, '卖家设备的信誉记录；连续两次审计不符会被暂停撮合')), h('div', { class: 'card' }, table([
+    add(m, pageTitle('节点', h('small', null, '卖家设备的信誉记录；连续两次审计不符会被暂停撮合')), h('div', { class: 'card' }, table([
       { title: '节点', cell: n => [peer(n.node), n.user ? h('div', null, userLink(n.user)) : h('div', { class: 'muted' }, '未绑定')] },
       { title: '版本', cell: n => n.client_version || '—' },
       { title: '信誉', num: true, cell: n => String(n.reputation) },
@@ -308,7 +308,7 @@
   async function audits(m) {
     const r = await api('GET', '/api/v1/admin/audits?limit=200');
     const V = { match: ['一致', 'ok'], mismatch: ['不符', 'bad'], inconclusive: ['无法判定', 'warn'] };
-    add(m, h('h1', null, '审计', h('small', null, '平台抽检：用参考模型复算节点的回答')), h('div', { class: 'card' }, table([
+    add(m, pageTitle('审计', h('small', null, '平台抽检：用参考模型复算节点的回答')), h('div', { class: 'card' }, table([
       { title: '时间', cell: a => time(a.at) }, { title: '节点', cell: a => peer(a.node) }, { title: '模型', cell: a => a.model },
       { title: '结论', cell: a => badge((V[a.verdict] || [a.verdict])[0], (V[a.verdict] || [])[1]) },
       { title: '相似度', num: true, cell: a => a.similarity.toFixed(2) }, { title: '详情', cell: a => a.detail }, { title: '作业', cell: a => peer(a.job_id) },
@@ -316,7 +316,7 @@
   }
   async function disputes(m) {
     const list = h('div', { class: 'card' });
-    add(m, h('h1', null, '争议', h('small', null, '证据无法自动裁决的单需要人工裁决；判给节点即结算，判给买家即退款并扣节点信誉')), list);
+    add(m, pageTitle('争议', h('small', null, '证据无法自动裁决的单需要人工裁决；判给节点即结算，判给买家即退款并扣节点信誉')), list);
     async function load() {
       const r = await api('GET', '/api/v1/admin/disputes?limit=200');
       add(clear(list), table([
@@ -343,7 +343,7 @@
   async function ledger(m) {
     const account = input({ type: 'search', placeholder: '按账户筛选，如 user:3、platform:fees' });
     const list = h('div', { class: 'card' });
-    add(m, h('h1', null, '账本', h('small', null, '复式流水：每笔从一个账户转到另一个账户')), h('div', { class: 'toolbar' }, account), list);
+    add(m, pageTitle('账本', h('small', null, '复式流水：每笔从一个账户转到另一个账户')), h('div', { class: 'toolbar' }, account), list);
     let all = [];
     async function load(more) {
       if (!more) all = [];
@@ -385,7 +385,7 @@
   async function mail(m, rest) {
     const sub = rest[0] || 'inbox';
     const tab = (key, label) => h('a', { href: '#/mail/' + key, class: 'tab-link' + (sub === key ? ' active' : '') }, label);
-    add(m, h('h1', null, '邮件'),
+    add(m, pageTitle('邮件'),
       h('div', { class: 'toolbar' }, h('div', { class: 'tab-links' }, tab('inbox', '收件箱'), tab('archived', '已归档'), tab('bounces', '退信'), tab('outbox', '发件箱'), tab('status', '服务状态')),
         h('span', { class: 'spacer' }), h('button', { class: 'primary', id: 'mail-compose', onclick: () => composeMail() }, '写邮件')));
     const body = h('div'); add(m, body);
@@ -534,13 +534,13 @@
     const o = d.overview, srv = o.server, out = o.outbox || {};
     setUnread(o.unread);
     add(root, h('div', { class: 'tiles' },
-      tile('邮件服务', o.online ? '运行中' : '离线', o.last_seen ? '上次报告 ' + secAgo(o.last_seen) : '从未报告', o.online ? 'ok' : 'bad'),
-      tile('未读', num(o.unread), '收件箱 ' + num(o.inbox) + '，已归档 ' + num(o.archived)),
-      tile('待发送', num((out.queued || 0) + (out.sending || 0)), '', (out.queued || 0) > 20 ? 'warn' : ''),
-      tile('对方已接受', num(out.sent || 0), '不代表已进入收件箱；失败 ' + num(out.failed || 0), out.failed ? 'warn' : ''),
-      tile('退信', num(o.bounces), '', o.bounces ? 'warn' : ''),
-      tile('24 小时验证码', num(o.codes_last_day)),
-      tile('邮件占用', size(o.inbox_bytes))),
+      tile('邮件服务', o.online ? '运行中' : '离线', o.last_seen ? '上次报告 ' + secAgo(o.last_seen) : '从未报告', 'server', '', o.online ? 'ok' : 'bad'),
+      tile('未读', num(o.unread), '收件箱 ' + num(o.inbox) + '，已归档 ' + num(o.archived), 'inbox', 'blue'),
+      tile('待发送', num((out.queued || 0) + (out.sending || 0)), '', 'swap', '', (out.queued || 0) > 20 ? 'warn' : ''),
+      tile('对方已接受', num(out.sent || 0), '不代表已进入收件箱；失败 ' + num(out.failed || 0), 'checkCircle', 'ok', out.failed ? 'warn' : ''),
+      tile('退信', num(o.bounces), '', 'warning', '', o.bounces ? 'warn' : ''),
+      tile('24 小时验证码', num(o.codes_last_day), null, 'key', 'violet'),
+      tile('邮件占用', size(o.inbox_bytes), null, 'database')),
       h('div', { class: 'card' }, kv([
         ['发件地址', d.from || h('span', { class: 'bad' }, '门户未配置 mail.from')], ['客服地址', d.support || h('span', { class: 'warn' }, '未配置')],
         ['注册', !d.registration_open ? '关闭，仅管理员创建用户' : d.email_verification ? '开放，需要邮箱验证码' : h('span', { class: 'warn' }, '开放，不验证邮箱')],
@@ -548,7 +548,7 @@
         ['收信', srv && srv.smtp_listen ? srv.smtp_listen + '：' + (srv.mailboxes || []).join('、') : '未启用'],
         ['SMTP 计数', srv ? '连接 ' + srv.counters.connections + '，接收 ' + srv.counters.accepted + '，拒绝 ' + srv.counters.rejected : '—'],
         ['启动于', srv ? secTime(srv.started_at) : '—']])),
-      srv && srv.dns ? [h('h2', null, 'DNS 检查', h('small', null, srv.dns_checked_at ? secAgo(srv.dns_checked_at) + '检查' : '')), h('div', { class: 'card' }, table([
+      srv && srv.dns ? [section('globe', 'DNS 检查', h('small', null, srv.dns_checked_at ? secAgo(srv.dns_checked_at) + '检查' : '')), h('div', { class: 'card' }, table([
         { title: '记录', cell: c => c.name }, { title: '结果', cell: c => c.ok ? badge('正常', 'ok') : badge('异常', 'bad') }, { title: '详情', cell: c => h('span', { class: 'mono wrap' }, c.detail) },
       ], srv.dns))] : null);
   }
@@ -559,7 +559,7 @@
 
   async function feedback(m) {
     const st = h('select', { id: 'feedback-status', onchange: () => { all = []; load(); } }, h('option', { value: 'new' }, '待处理'), h('option', { value: 'done' }, '已处理'), h('option', { value: '' }, '全部'));
-    add(m, h('h1', null, '反馈', h('small', null, '用户从门户和客户端提交的内容')), h('div', { class: 'toolbar' }, h('span', { class: 'muted' }, '状态'), st));
+    add(m, pageTitle('反馈', h('small', null, '用户从门户和客户端提交的内容')), h('div', { class: 'toolbar' }, h('span', { class: 'muted' }, '状态'), st));
     const card = h('div', { class: 'card' }); add(m, card);
     let all = [];
     const origin = f => f.source === 'client' ? ['客户端', f.app_version, f.os].filter(Boolean).join(' · ') : '门户';

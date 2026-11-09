@@ -100,24 +100,92 @@ const I18N = (() => {
     });
   }
 
+  // svg draws an outline icon from one path on a 24×24 grid.
+  function svg(d, size) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const el = document.createElementNS(NS, 'svg');
+    const set = (node, attrs) => { for (const k in attrs) node.setAttribute(k, attrs[k]); };
+    set(el, { viewBox: '0 0 24 24', width: size || 18, height: size || 18, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.5, 'aria-hidden': 'true' });
+    const path = document.createElementNS(NS, 'path');
+    set(path, { d, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
+    el.appendChild(path);
+    return el;
+  }
+  const GLOBE = 'M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418';
+  const CHEVRON = 'M19.5 8.25l-7.5 7.5-7.5-7.5', CHECK = 'M4.5 12.75l6 6 9-13.5';
+
+  function choosePicked(code) {
+    store(code);
+    const u = new URL(location.href);
+    u.searchParams.delete('lang'); // it would override the choice just made
+    // An address that differs by nothing, or only by its #fragment, would not reload.
+    if (u.href === location.href) location.reload(); else location.replace(u.href);
+  }
+
+  // picker builds the language menu: a globe, the current language, and a list of all.
   function picker() {
     if (fixed) return null;
-    const sel = document.createElement('select');
-    sel.className = 'lang-select';
-    sel.id = 'lang-select';
-    sel.setAttribute('aria-label', 'Language');
-    for (const [code, name] of Object.entries(LANGS)) {
-      const o = document.createElement('option');
-      o.value = code; o.textContent = name; o.lang = code; o.selected = code === lang;
-      sel.appendChild(o);
+    const wrap = document.createElement('div');
+    wrap.className = 'lang-picker';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'lang-btn';
+    btn.id = 'lang-select';
+    btn.title = 'Language';
+    btn.setAttribute('aria-label', 'Language: ' + LANGS[lang]);
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'false');
+    const name = document.createElement('span');
+    name.className = 'lang-name';
+    name.textContent = LANGS[lang];
+    const chevron = svg(CHEVRON, 12);
+    chevron.classList.add('lang-chevron');
+    btn.append(svg(GLOBE, 18), name, chevron);
+
+    const menu = document.createElement('div');
+    menu.className = 'lang-menu';
+    menu.setAttribute('role', 'menu');
+    menu.hidden = true;
+    for (const [code, label] of Object.entries(LANGS)) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'lang-item';
+      item.lang = code;
+      item.setAttribute('role', 'menuitemradio');
+      item.setAttribute('aria-checked', String(code === lang));
+      const text = document.createElement('span');
+      text.textContent = label;
+      item.appendChild(text);
+      if (code === lang) item.appendChild(svg(CHECK, 15));
+      item.addEventListener('click', () => { close(); choosePicked(code); });
+      menu.appendChild(item);
     }
-    sel.addEventListener('change', () => {
-      store(sel.value);
-      const u = new URL(location.href);
-      u.searchParams.delete('lang'); // it would override the choice just made
-      location.replace(u.href);
+
+    const onOutside = e => { if (!wrap.contains(e.target)) close(); };
+    function close() {
+      menu.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('click', onOutside);
+    }
+    function open() {
+      menu.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('click', onOutside);
+      (menu.querySelector('[aria-checked=true]') || menu.firstChild).focus();
+    }
+    btn.addEventListener('click', () => { if (menu.hidden) open(); else close(); });
+    wrap.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && !menu.hidden) { e.stopPropagation(); close(); btn.focus(); return; }
+      if (e.key === 'Tab') { close(); return; }
+      if (menu.hidden) return;
+      const items = [...menu.children], at = items.indexOf(document.activeElement);
+      const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[e.key];
+      if (to === undefined) return;
+      e.preventDefault();
+      items[(to + items.length) % items.length].focus();
     });
-    return sel;
+    wrap.append(btn, menu);
+    return wrap;
   }
 
   const domReady = new Promise(r => {
@@ -140,5 +208,5 @@ const I18N = (() => {
   })();
 
   const list = items => new Intl.ListFormat(lang, { style: 'narrow' }).format(items);
-  return { lang, ready, t, parts, rich, picker, list, LANGS };
+  return { lang, ready, t, parts, rich, picker, list, svg, LANGS };
 })();

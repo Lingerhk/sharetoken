@@ -65,7 +65,7 @@ const leftovers = `(() => {
   const han = /\\p{Script=Han}/u, out = [];
   const walk = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
   for (let n = walk.nextNode(); n; n = walk.nextNode()) {
-    if (!n.parentElement.closest('script,style,select') && han.test(n.nodeValue)) out.push(n.nodeValue.trim().slice(0, 60));
+    if (!n.parentElement.closest('script,style,.lang-picker') && han.test(n.nodeValue)) out.push(n.nodeValue.trim().slice(0, 60));
   }
   for (const el of document.querySelectorAll('[aria-label],[title],[alt],[placeholder],meta[name=description],meta[property^="og:"]')) {
     for (const a of ['aria-label', 'title', 'alt', 'placeholder', 'content']) { const v = el.getAttribute(a); if (v && han.test(v)) out.push(a + '=' + v.slice(0, 60)); }
@@ -76,7 +76,7 @@ const leftovers = `(() => {
 const overflow = `(() => {
   const W = document.documentElement.clientWidth, out = [];
   for (const el of document.body.querySelectorAll('*')) {
-    if (el.tagName === 'CANVAS' || el.tagName === 'OPTION' || !el.getClientRects().length) continue;
+    if (el.tagName === 'CANVAS' || !el.getClientRects().length || getComputedStyle(el).visibility === 'hidden') continue;
     const r = el.getBoundingClientRect();
     if (r.width === 0 || (r.right <= W + 1 && r.left >= -1)) continue;
     let scrolled = false;
@@ -172,7 +172,7 @@ for (const lang of LANGS) {
     if (r === 'home' || r === 'account' || r === 'feedback') await shot(`portal-${r}-${lang}`);
   }
   await size(390, 800);
-  await ev(`location.hash = '#/home'`); await sleep(200);
+  await ev(`location.hash = '#/home'`); await sleep(400); // the sidebar takes .22 s to slide away after the resize
   await inspect(lang, 'portal phone');
   await shot(`portal-phone-${lang}`);
 }
@@ -189,7 +189,7 @@ await ev(`document.querySelector('.modal .actions button').click()`);
 // ---- the picker, across pages, and the admin console that ignores it ----
 if (LANGS.includes('ja') && LANGS.includes('de')) {
   await go(`${portal}/?lang=de`);
-  await ev(`(() => { const s = document.getElementById('lang-select'); s.value = 'ja'; s.dispatchEvent(new Event('change')); })()`);
+  await ev(`(() => { document.getElementById('lang-select').click(); document.querySelector('.lang-item[lang="ja"]').click(); })()`);
   await waitFor(`document.documentElement.lang === 'ja'`);
   ok(!(await ev('location.search')).includes('lang='), 'choosing a language drops ?lang= from the address');
   await go(`${portal}/app/`);

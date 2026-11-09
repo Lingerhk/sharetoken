@@ -533,7 +533,7 @@ for (const l of ['ja', 'de', 'ar', 'th', 'ru']) {
 ok(true, 'the download section is translated in sampled languages');
 await setLang('en');
 await go('/docs/');
-await ev(`(() => { const s = document.getElementById('lang-select'); s.value = 'zh-CN'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+await ev(`(() => { document.getElementById('lang-select').click(); document.querySelector('.lang-item[lang="zh-CN"]').click(); })()`);
 await sleep(300);
 await waitFor(DOC_READY);
 await waitFor(`document.querySelector('#doc h1').textContent.startsWith('概览')`);

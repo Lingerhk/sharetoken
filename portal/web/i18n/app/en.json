@@ -180,5 +180,10 @@
   "我的反馈": "My feedback",
   "还没有提交过反馈": "No feedback sent yet",
   "已收到": "Received",
-  "已处理": "Handled"
+  "已处理": "Handled",
+  "浅色模式": "Light mode",
+  "深色模式": "Dark mode",
+  "收起侧边栏": "Collapse sidebar",
+  "打开菜单": "Open menu",
+  "文档": "Docs"
 }

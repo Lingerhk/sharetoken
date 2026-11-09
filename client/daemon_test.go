@@ -800,7 +800,7 @@ func TestDaemonPortInUse(t *testing.T) {
 func TestDaemonServesApp(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	for path, ct := range map[string]string{"/": "text/html", "/ui/app.js": "javascript", "/ui/app.css": "text/css", "/ui/i18n.js": "javascript", "/ui/i18n/client/en.json": "application/json"} {
+	for path, ct := range map[string]string{"/": "text/html", "/ui/app.js": "javascript", "/ui/app.css": "text/css", "/ui/i18n.js": "javascript", "/ui/i18n.css": "text/css", "/ui/i18n/client/en.json": "application/json"} {
 		resp, err := http.Get(d.base + path)
 		if err != nil {
 			t.Fatal(err)

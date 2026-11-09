@@ -146,6 +146,7 @@ coordinator -db mysql://sharetoken@10.0.0.5:3306/sharetoken -fee-bps 500 …
 - 页面只调用本机 `/api/v1/v1`，没有第三方资源，可以在没有外网的内网部署。
 - 争议裁决和协调器 `coordinator resolve` 等价：门户进程直接在共用数据库里结算（手续费率取协调器启动时写入 `meta.fee_bps` 的值）。
 - 自动化 UI 测试：`node scripts/portal_ui_test.mjs http://127.0.0.1:8099 ./shots`（需要本机 Chrome；见 validation-v2.md §10）。
+- 外观测试：`node scripts/theme_ui_test.mjs <门户地址>` 检查浅色和深色模式、侧边栏、语言菜单和图标，并把每个页面按两种主题、桌面和手机宽度各截一张图（用法见脚本开头）。主题选择存在浏览器的 `localStorage.st_theme`，没有选择时跟随系统。
 
 ## 3. 本地管理 API（给 GUI）
 

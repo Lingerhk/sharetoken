@@ -231,4 +231,3 @@ html.i18n-pending body { visibility: hidden; }
 :lang(ur) body { line-height: 2; }
 [dir=rtl] :is(.box.cipher, .hashes dd, .primitives, .formula code) { direction: ltr; }
 [dir=rtl] .hashes dd { text-align: end; }
-.lang-select { max-width: 124px; height: 32px; font: inherit; font-size: 13px; padding: 0 6px; color: var(--text); background: var(--panel, #12151b); border: 1px solid var(--line); border-radius: 8px; }

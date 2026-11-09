@@ -700,7 +700,7 @@ func (d *Daemon) Handler() http.Handler {
 		}
 	}
 	mux.HandleFunc("GET /{$}", page("index.html"))
-	for _, f := range []string{"app.js", "app.css", "i18n.js", "favicon.svg"} {
+	for _, f := range []string{"app.js", "app.css", "i18n.js", "i18n.css", "favicon.svg"} {
 		mux.HandleFunc("GET /ui/"+f, page(f))
 	}
 	mux.HandleFunc("GET /ui/i18n/client/{file}", func(w http.ResponseWriter, r *http.Request) {

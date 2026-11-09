@@ -3,7 +3,7 @@
 (async () => {
   await I18N.ready;
   const tr = I18N.t, parts = I18N.parts;
-  const { api, h, clear, add, credit, signed, num, time, ago, peer, status, badge, toast, fail, modal, confirm, secret, table, kv, field, input, state } = ST;
+  const { api, h, clear, add, credit, signed, num, time, ago, peer, status, badge, toast, fail, modal, confirm, secret, table, kv, field, input, state, pageTitle, section, tile } = ST;
   const app = ST.$('app');
 
   await ST.loadInfo().catch(fail);
@@ -13,16 +13,22 @@
   const me = () => state.me;
 
   // ---- frame ----
-  const nav = h('nav', { class: 'sidenav' },
-    h('a', { href: '#/home' }, tr('总览')), h('a', { href: '#/ledger' }, tr('账单')), h('a', { href: '#/jobs' }, tr('作业')),
-    h('a', { href: '#/tokens' }, 'API Token'), h('a', { href: '#/devices' }, tr('设备')), h('a', { href: '#/network' }, tr('网络')),
-    h('a', { href: '#/account' }, tr('账户')), h('a', { href: '#/feedback' }, tr('反馈')));
-  const main = h('main');
-  add(clear(app), 
-    h('header', { class: 'topbar' }, h('span', { class: 'brand' }, h('img', { class: 'brand-logo', src: '/static/favicon.svg', alt: '' }), 'sharetoken', h('small', null, tr('用户门户'))), h('span', { class: 'spacer' }),
-      me().user.is_admin ? h('a', { href: '/admin/' }, tr('管理控制台')) : null,
-      I18N.picker(), h('span', { class: 'who' }, me().user.username), h('button', { class: 'small', onclick: ST.logout }, tr('退出'))),
-    h('div', { class: 'layout' }, nav, main));
+  const balance = h('span');
+  const showBalance = d => { balance.textContent = credit(d.balance.available_micros) + ' credit'; };
+  const balancePill = h('a', { class: 'balance-pill', id: 'top-balance', href: '#/ledger', title: tr('可用余额') }, ST.icon('creditCard', 16), balance);
+  showBalance(me());
+  const { nav, main } = ST.shell(app, {
+    title: tr('用户门户'), role: me().user.is_admin ? tr('管理员') : tr('普通用户'), extra: balancePill,
+    items: [
+      { route: 'home', icon: 'grid', label: tr('总览') }, { route: 'ledger', icon: 'creditCard', label: tr('账单') }, { route: 'jobs', icon: 'bolt', label: tr('作业') },
+      { route: 'tokens', icon: 'key', label: 'API Token' }, { route: 'devices', icon: 'desktop', label: tr('设备') }, { route: 'network', icon: 'globe', label: tr('网络') },
+      { route: 'account', icon: 'user', label: tr('账户') }, { route: 'feedback', icon: 'chat', label: tr('反馈') },
+    ],
+    links: [{ href: '/docs/', icon: 'book', label: tr('文档') }, me().user.is_admin ? { href: '/admin/', icon: 'shield', label: tr('管理控制台') } : null].filter(Boolean),
+    menu: [{ href: '#/account', icon: 'user', label: tr('账户') }],
+  });
+  // The balance moves while a page stays open; state.me is left alone so a lapsed session cannot pull it from under a page.
+  window.addEventListener('hashchange', () => { api('GET', '/api/v1/me').then(showBalance).catch(() => {}); });
 
   const moreButton = (fn) => h('div', { class: 'row end' }, h('button', { onclick: fn }, tr('加载更多')));
 
@@ -30,19 +36,18 @@
   async function home(m) {
     const d = await ST.loadMe();
     const b = d.balance, u = d.usage;
-    add(m, h('h1', null, tr('总览')),
+    add(m, pageTitle(tr('总览')),
       h('div', { class: 'tiles' },
-        tile(tr('可用余额'), credit(b.available_micros) + ' credit', tr('账户 {account}', { account: b.account })),
-        tile(tr('冻结中'), credit(b.held_micros) + ' credit', tr('进行中作业的预留额')),
-        tile(tr('买入'), tr('{n} 单', { n: num(u.bought.jobs) }), tr('花费 {credit}，{tokens} tokens', { credit: credit(u.bought.micros), tokens: num(u.bought.prompt_tokens + u.bought.completion_tokens) }) + (u.bought.pending_jobs ? ' · ' + tr('进行中：{n}', { n: num(u.bought.pending_jobs) }) : '')),
-        tile(tr('卖出'), tr('{n} 单', { n: num(u.sold.jobs) }), tr('净收入 {credit}，{tokens} tokens', { credit: credit(u.sold.micros), tokens: num(u.sold.prompt_tokens + u.sold.completion_tokens) }) + (u.sold.pending_jobs ? ' · ' + tr('进行中：{n}', { n: num(u.sold.pending_jobs) }) : '')),
-        tile(tr('设备'), num(d.devices.length), I18N.list(d.devices.map(x => x.name)) || tr('尚未绑定设备'))));
+        tile(tr('可用余额'), credit(b.available_micros) + ' credit', tr('账户 {account}', { account: b.account }), 'creditCard', 'ok'),
+        tile(tr('冻结中'), credit(b.held_micros) + ' credit', tr('进行中作业的预留额'), 'lock', 'warn'),
+        tile(tr('买入'), tr('{n} 单', { n: num(u.bought.jobs) }), tr('花费 {credit}，{tokens} tokens', { credit: credit(u.bought.micros), tokens: num(u.bought.prompt_tokens + u.bought.completion_tokens) }) + (u.bought.pending_jobs ? ' · ' + tr('进行中：{n}', { n: num(u.bought.pending_jobs) }) : ''), 'trendingUp', 'blue'),
+        tile(tr('卖出'), tr('{n} 单', { n: num(u.sold.jobs) }), tr('净收入 {credit}，{tokens} tokens', { credit: credit(u.sold.micros), tokens: num(u.sold.prompt_tokens + u.sold.completion_tokens) }) + (u.sold.pending_jobs ? ' · ' + tr('进行中：{n}', { n: num(u.sold.pending_jobs) }) : ''), 'dollar', 'violet'),
+        tile(tr('设备'), num(d.devices.length), I18N.list(d.devices.map(x => x.name)) || tr('尚未绑定设备'), 'desktop')));
     const [jobs, led] = await Promise.all([api('GET', '/api/v1/jobs?limit=8'), api('GET', '/api/v1/ledger?limit=8')]);
-    add(m, h('h2', null, tr('最近作业'), h('small', null, h('a', { href: '#/jobs' }, tr('全部')))), h('div', { class: 'card' }, jobsTable(jobs.jobs)),
-      h('h2', null, tr('最近账单'), h('small', null, h('a', { href: '#/ledger' }, tr('全部')))), h('div', { class: 'card' }, ledgerTable(led.entries)));
+    add(m, section('bolt', tr('最近作业'), h('small', null, h('a', { href: '#/jobs' }, tr('全部')))), h('div', { class: 'card' }, jobsTable(jobs.jobs)),
+      section('creditCard', tr('最近账单'), h('small', null, h('a', { href: '#/ledger' }, tr('全部')))), h('div', { class: 'card' }, ledgerTable(led.entries)));
     if (d.devices.length === 0) add(m, h('div', { class: 'card muted' }, parts('还没有绑定设备。在你的机器上运行 {command} 即可把该设备绑定到此账户。', { command: h('code', null, 'sharetoken login -user ' + me().user.username) })));
   }
-  function tile(label, value, sub) { return h('div', { class: 'tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), sub ? h('div', { class: 'sub' }, sub) : null); }
 
   function ledgerTable(entries) {
     return table([
@@ -53,7 +58,7 @@
     ], entries, tr('还没有账单记录'));
   }
   async function ledger(m) {
-    add(m, h('h1', null, tr('账单'), h('small', null, tr('正数入账、负数出账，单位 credit'))));
+    add(m, pageTitle(tr('账单'), h('small', null, tr('正数入账、负数出账，单位 credit'))));
     const card = h('div', { class: 'card' }); add(m, card);
     let all = [];
     async function load() {
@@ -79,7 +84,7 @@
   }
   async function jobs(m) {
     const role = h('select', { onchange: () => { all = []; load(); } }, h('option', { value: '' }, tr('全部')), h('option', { value: 'buy' }, tr('买入')), h('option', { value: 'sell' }, tr('卖出')));
-    add(m, h('h1', null, tr('作业')), h('div', { class: 'toolbar' }, h('span', { class: 'muted' }, tr('角色')), role));
+    add(m, pageTitle(tr('作业')), h('div', { class: 'toolbar' }, h('span', { class: 'muted' }, tr('角色')), role));
     const card = h('div', { class: 'card' }); add(m, card);
     let all = [];
     async function load() {
@@ -92,7 +97,7 @@
   }
 
   async function tokens(m) {
-    add(m, h('h1', null, 'API Token', h('small', null, tr('用于 sharetoken 客户端和脚本；浏览器会话也在这里'))));
+    add(m, pageTitle('API Token', h('small', null, tr('用于 sharetoken 客户端和脚本；浏览器会话也在这里'))));
     const list = h('div', { class: 'card' });
     const name = input({ type: 'text', placeholder: tr('例如 laptop、ci'), maxlength: 64, required: true });
     const ttl = h('select', null, h('option', { value: '0' }, tr('永不过期')), h('option', { value: '24' }, tr('1 天')), h('option', { value: '168' }, tr('7 天')), h('option', { value: '720' }, tr('30 天')), h('option', { value: '2160' }, tr('90 天')), h('option', { value: '8760' }, tr('1 年')));
@@ -108,7 +113,7 @@
         } catch (ex) { fail(ex); }
       }
     }, h('div', { class: 'row' }, field(tr('名称'), name), field(tr('有效期'), ttl)), h('div', null, h('button', { class: 'primary', type: 'submit' }, tr('创建 token'))));
-    add(m, h('h2', null, tr('新建')), h('div', { class: 'card' }, form), h('h2', null, tr('现有 token')), list);
+    add(m, section('plus', tr('新建')), h('div', { class: 'card' }, form), section('key', tr('现有 token')), list);
     async function load() {
       const r = await api('GET', '/api/v1/tokens');
       add(clear(list), table([
@@ -127,7 +132,7 @@
   }
 
   async function devices(m) {
-    add(m, h('h1', null, tr('设备'), h('small', null, tr('绑定到此账户的 peer；它们花你的 credit、把收入记到你名下'))));
+    add(m, pageTitle(tr('设备'), h('small', null, tr('绑定到此账户的 peer；它们花你的 credit、把收入记到你名下'))));
     const list = h('div', { class: 'card' }); add(m, list,
       h('div', { class: 'card muted' }, parts('绑定新设备需要设备私钥签名，所以要在那台机器上运行 {command}。解绑后协调器会立即拒绝该设备。', { command: h('code', null, 'sharetoken login -user ' + me().user.username) })));
     async function load() {
@@ -153,12 +158,12 @@
   }
 
   async function network(m) {
-    add(m, h('h1', null, tr('网络')));
+    add(m, pageTitle(tr('网络')));
     let n;
     try { n = await api('GET', '/api/v1/network'); }
     catch (e) { add(m, h('div', { class: 'card warn' }, e.code === 'not_ready' ? tr('协调器尚未启动，暂无网络信息。') : e.message)); return; }
     add(m, h('div', { class: 'card' }, kv([[tr('协调器'), h('code', { class: 'mono' }, n.coordinator)], [tr('中继凭证公钥'), n.pass_key ? h('code', { class: 'mono' }, n.pass_key) : h('span', { class: 'muted' }, tr('未启用（开放中继）'))]])),
-      h('h2', null, tr('中继'), h('small', null, tr('客户端按自己测得的延迟自动选择；「延迟」是协调器到该中继的往返时间，每 30 秒更新；「可达」表示协调器在该中继上有预约'))),
+      section('server', tr('中继'), h('small', null, tr('客户端按自己测得的延迟自动选择；「延迟」是协调器到该中继的往返时间，每 30 秒更新；「可达」表示协调器在该中继上有预约'))),
       h('div', { class: 'card' }, table([
         { title: tr('名称'), cell: r => r.name || '—' }, { title: tr('地区'), cell: r => r.region || '—' },
         { title: tr('地址'), cell: r => h('div', null, r.addr.split(',').map(a => h('div', null, h('code', { class: 'mono' }, a)))) },
@@ -170,7 +175,7 @@
   async function account(m) {
     const u = me().user;
     const mfa = u.mfa_enrolled_at ? [badge(tr('已启用'), 'ok'), ' ' + tr('绑定于 {time}', { time: time(u.mfa_enrolled_at) })] : (u.is_admin ? badge(tr('未启用'), 'warn') : h('span', { class: 'muted' }, tr('未启用（仅管理员需要）')));
-    add(m, h('h1', null, tr('账户')), h('div', { class: 'card' }, kv([[tr('用户名'), u.username], [tr('用户 ID'), String(u.id)], [tr('注册时间'), time(u.created_at)], [tr('角色'), u.is_admin ? tr('管理员') : tr('普通用户')], [tr('两步验证'), h('span', null, mfa)]]),
+    add(m, pageTitle(tr('账户')), h('div', { class: 'card' }, kv([[tr('用户名'), u.username], [tr('用户 ID'), String(u.id)], [tr('注册时间'), time(u.created_at)], [tr('角色'), u.is_admin ? tr('管理员') : tr('普通用户')], [tr('两步验证'), h('span', null, mfa)]]),
       state.info && state.info.support_email ? h('p', { class: 'muted', id: 'support-email' }, parts('有问题或建议？发邮件到 {email}。', { email: h('a', { href: 'mailto:' + state.info.support_email }, state.info.support_email) })) : null,
       u.is_admin ? h('p', { class: 'muted' }, tr('管理员登录必须通过验证器 App 的两步验证。更换手机时请让其他管理员在控制台重置，或在服务器上执行 portal mfa-reset。')) : null));
     const oldP = input({ type: 'password', autocomplete: 'current-password', required: true });
@@ -190,7 +195,7 @@
       }
     }, field(tr('当前密码'), oldP), field(tr('新密码'), newP), field(tr('重复新密码'), newP2),
       h('label', { class: 'check' }, revoke, tr('同时吊销其他所有 token 和会话（本浏览器除外）')), err, h('div', null, h('button', { class: 'primary', type: 'submit' }, tr('修改密码'))));
-    add(m, h('h2', null, tr('修改密码')), h('div', { class: 'card' }, form));
+    add(m, section('lock', tr('修改密码')), h('div', { class: 'card' }, form));
   }
 
   const FEEDBACK_KIND = { bug: () => tr('问题'), idea: () => tr('建议'), other: () => tr('其他') };
@@ -212,8 +217,8 @@
         } catch (ex) { err.textContent = ex.code === 'throttled' ? tr('提交太频繁，请稍后再试') : ex.message; }
       }
     }, field(tr('类型'), kind), field(tr('内容'), text), err, h('div', null, h('button', { class: 'primary', type: 'submit', id: 'feedback-send' }, tr('提交反馈'))));
-    add(m, h('h1', null, tr('反馈')), h('div', { class: 'card' }, h('p', { class: 'muted' }, tr('告诉我们你遇到的问题或建议。请不要填写密码、token 或 prompt 内容。我们可能会通过账户邮箱回复你。')), form),
-      h('h2', null, tr('我的反馈')), list);
+    add(m, pageTitle(tr('反馈')), h('div', { class: 'card' }, h('p', { class: 'muted' }, tr('告诉我们你遇到的问题或建议。请不要填写密码、token 或 prompt 内容。我们可能会通过账户邮箱回复你。')), form),
+      section('chat', tr('我的反馈')), list);
     async function load() {
       const r = await api('GET', '/api/v1/feedback');
       add(clear(list), table([

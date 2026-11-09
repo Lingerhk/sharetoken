@@ -134,7 +134,7 @@ const ST = (() => {
   // ---- tables ----
   // table(columns, rows): columns = [{title, cell(row) → node|string, num?}]
   function table(columns, rows, empty) {
-    if (!rows || rows.length === 0) return h('div', { class: 'empty' }, empty || tr('暂无数据'));
+    if (!rows || rows.length === 0) return h('div', { class: 'empty' }, icon('inbox', 30), h('span', null, empty || tr('暂无数据')));
     const thead = h('thead', null, h('tr', null, columns.map(c => h('th', { class: c.num ? 'num' : null }, c.title))));
     const tbody = h('tbody', null, rows.map(r => h('tr', null, columns.map(c => h('td', { class: c.num ? 'num' : null }, c.cell(r))))));
     return h('div', { class: 'table-wrap' }, h('table', null, thead, tbody));
@@ -144,6 +144,85 @@ const ST = (() => {
   }
   function field(label, input) { return h('div', { class: 'field' }, h('label', null, label), input); }
   function input(attrs) { return h('input', Object.assign({ autocomplete: 'off' }, attrs)); }
+
+  // ---- icons and page parts ----
+  function icon(name, size) { return I18N.svg(ICONS[name], size); }
+  // chip is an icon on a tinted square; tone: ok, warn, bad, blue, violet, or none for the accent.
+  function chip(name, tone, size) { return h('span', { class: 'chip ' + (tone || '') }, icon(name, size || 22)); }
+  // pageTitle is a page's h1, carrying the icon of the module it belongs to.
+  function pageChip() { return chip(state.routeIcon || 'grid'); }
+  function pageTitle(...children) { return h('h1', { class: 'page-title' }, pageChip(), h('span', { class: 'page-title-text' }, children)); }
+  function section(name, ...children) { return h('h2', { class: 'section-title' }, icon(name, 18), children); }
+  // tile is a number on a card. cls colours the value (ok, warn, bad) and the icon with it; small shrinks a long value.
+  function tile(label, value, sub, name, tone, cls) {
+    return h('div', { class: 'tile' }, chip(name, cls && cls !== 'small' ? cls : tone),
+      h('div', { class: 'tile-body' }, h('div', { class: 'label' }, label), h('div', { class: 'value ' + (cls || '') }, value), sub ? h('div', { class: 'sub' }, sub) : null));
+  }
+  // themeButton offers the other theme; the stylesheet shows the half that applies.
+  function themeButton(cls) {
+    return h('button', { type: 'button', class: cls + ' theme-toggle', id: 'theme-toggle', onclick: THEME.toggle },
+      h('span', { class: 'for-dark' }, icon('sun', 20), h('span', { class: 'nav-label' }, tr('浅色模式'))),
+      h('span', { class: 'for-light' }, icon('moon', 20), h('span', { class: 'nav-label' }, tr('深色模式'))));
+  }
+  // popover wires a button to a menu that closes on Escape and on any click elsewhere.
+  function popover(wrap, btn, menu) {
+    const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', outside); };
+    const outside = e => { if (!wrap.contains(e.target)) close(); };
+    btn.setAttribute('aria-expanded', 'false');
+    btn.setAttribute('aria-haspopup', 'menu');
+    menu.hidden = true;
+    btn.addEventListener('click', () => {
+      if (!menu.hidden) { close(); return; }
+      menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); document.addEventListener('click', outside);
+    });
+    wrap.addEventListener('keydown', e => { if (e.key === 'Escape' && !menu.hidden) { close(); btn.focus(); } });
+    menu.addEventListener('click', close);
+  }
+
+  // shell draws the frame of a signed-in page and returns its navigation and main area:
+  // {title, items: [{route, icon, label, badge}], links: [{href, icon, label}], extra: node, role, menu: [{href, icon, label}]}
+  let onRoute = null;
+  const SIDEBAR_KEY = 'st_sidebar';
+  function shell(root, o) {
+    const box = h('div', { class: 'shell' });
+    const stored = () => { try { return localStorage.getItem(SIDEBAR_KEY) === 'collapsed'; } catch (e) { return false; } };
+    box.classList.toggle('collapsed', stored());
+    const closeDrawer = () => box.classList.remove('nav-open');
+    const nav = h('nav', { class: 'sidenav' }, o.items.map(it => h('a', { href: '#/' + it.route, 'data-icon': it.icon, title: it.label },
+      icon(it.icon, 20), h('span', { class: 'nav-label' }, it.label), it.badge)));
+    nav.addEventListener('click', e => { if (e.target.closest('a')) closeDrawer(); });
+    const collapse = h('button', { type: 'button', class: 'side-btn side-collapse', id: 'side-collapse', onclick: () => {
+      const on = box.classList.toggle('collapsed');
+      try { localStorage.setItem(SIDEBAR_KEY, on ? 'collapsed' : 'open'); } catch (e) { /* this visit only */ }
+    } }, h('span', { class: 'when-open' }, icon('collapse', 20)), h('span', { class: 'when-collapsed' }, icon('expand', 20)), h('span', { class: 'nav-label' }, tr('收起侧边栏')));
+    const sidebar = h('aside', { class: 'sidebar' },
+      h('div', { class: 'side-head' }, h('img', { class: 'side-logo', src: '/static/favicon.svg', alt: '' }),
+        h('div', { class: 'side-brand' }, h('b', null, 'sharetoken'), h('small', null, o.title))),
+      nav, h('div', { class: 'side-foot' }, themeButton('side-btn'), collapse));
+
+    const place = h('b');
+    const crumb = h('div', { class: 'crumb' }, h('span', null, o.title), h('i', null, '/'), place);
+    onRoute = (link, name) => { state.routeIcon = link ? link.dataset.icon : null; place.textContent = link ? link.textContent : name; closeDrawer(); };
+
+    const username = state.me.user.username;
+    const userBtn = h('button', { type: 'button', class: 'user-btn', id: 'user-menu', title: username },
+      h('span', { class: 'avatar', 'aria-hidden': 'true' }, Array.from(username)[0].toUpperCase()),
+      h('span', { class: 'user-text' }, h('span', { class: 'who' }, username), h('span', { class: 'user-role' }, o.role)), icon('chevronDown', 14));
+    const drop = h('div', { class: 'drop', role: 'menu' },
+      (o.menu || []).map(m => h('a', { href: m.href, role: 'menuitem' }, icon(m.icon, 18), m.label)),
+      h('button', { type: 'button', role: 'menuitem', class: 'drop-danger', onclick: logout }, icon('logout', 18), h('span', null, tr('退出'))));
+    const userMenu = h('div', { class: 'user-menu' }, userBtn, drop);
+    popover(userMenu, userBtn, drop);
+
+    const topbar = h('header', { class: 'topbar' },
+      h('button', { type: 'button', class: 'icon-btn menu-btn', id: 'menu-btn', 'aria-label': tr('打开菜单'), onclick: () => box.classList.toggle('nav-open') }, icon('menu', 22)),
+      crumb, h('span', { class: 'spacer' }),
+      (o.links || []).map(l => h('a', { class: 'top-link', href: l.href, title: l.label }, icon(l.icon, 18), h('span', null, l.label))),
+      I18N.picker(), o.extra, userMenu);
+    const main = h('main');
+    add(clear(root), add(box, sidebar, h('div', { class: 'backdrop', onclick: closeDrawer }), h('div', { class: 'frame' }, topbar, main)));
+    return { nav, main };
+  }
 
   // ---- session / routing ----
   const state = { me: null, info: null };
@@ -156,6 +235,13 @@ const ST = (() => {
     try { await api('POST', '/api/v1/web/logout'); } catch (e) { /* already out */ }
     state.me = null; location.hash = ''; location.reload();
   }
+
+  // authFrame centres a card on the sign-in background, with the logo above it.
+  function authFrame(card) {
+    return h('div', { class: 'auth' }, h('div', { class: 'auth-tools' }, I18N.picker(), themeButton('icon-btn')),
+      h('img', { class: 'auth-logo', src: '/static/favicon.svg', alt: '' }), card);
+  }
+  const withIcon = (name, el) => h('span', { class: 'input-icon' }, icon(name, 18), el);
 
   // renderLogin(root, {title, allowRegister}) → resolves when signed in
   function renderLogin(root, opts) {
@@ -224,7 +310,7 @@ const ST = (() => {
           }
         }, h('p', { class: 'muted' }, tr('管理员账号需要两步验证，请输入验证器 App 显示的 6 位验证码。')), field(tr('验证码'), code), e2,
           h('div', { class: 'row' }, h('button', { class: 'primary', type: 'submit' }, tr('验证')), h('button', { type: 'button', onclick: restart }, tr('返回'))));
-        clear(root).appendChild(h('div', { class: 'card login' }, h('h1', null, tr('两步验证')), form2));
+        clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, tr('两步验证')), form2)));
         code.focus();
       }
       // First admin login: enroll an authenticator before any session exists.
@@ -245,7 +331,7 @@ const ST = (() => {
           h('div', { class: 'secret' }, h('code', { id: 'mfa-secret' }, setup.secret), h('button', { class: 'small', type: 'button', onclick: () => copy(setup.secret) }, tr('复制'))),
           field(tr('验证码'), code), e2,
           h('div', { class: 'row' }, h('button', { class: 'primary', type: 'submit' }, tr('完成绑定')), h('button', { type: 'button', onclick: restart }, tr('取消'))));
-        clear(root).appendChild(h('div', { class: 'card login' }, h('h1', null, tr('启用两步验证')), form2));
+        clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, tr('启用两步验证')), form2)));
         code.focus();
       }
       const form = h('form', {
@@ -268,9 +354,9 @@ const ST = (() => {
               : ex.code === 'exists' ? tr('用户名已被使用') : ex.code === 'cross_site' ? tr('请求被拒绝（跨站）') : ex.message;
           } finally { submit.disabled = false; }
         }
-      }, h('div', { class: 'field' }, userLabel, user), codeField, field(tr('密码'), pass), err, submit);
-      clear(root).appendChild(h('div', { class: 'card login' }, I18N.picker(), h('h1', null, opts.title || 'sharetoken'), tabs, form, hint,
-        h('p', { class: 'muted' }, h('a', { href: '/' }, tr('← 返回官网')))));
+      }, h('div', { class: 'field' }, userLabel, withIcon('user', user)), codeField, field(tr('密码'), withIcon('lock', pass)), err, submit);
+      clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, opts.title || 'sharetoken'), tabs, form, hint,
+        h('p', { class: 'muted' }, h('a', { href: '/' }, tr('← 返回官网'))))));
       if (opts.allowRegister && location.hash === '#register') setMode('register');
       user.focus();
     });
@@ -279,9 +365,11 @@ const ST = (() => {
   // Hash router: routes = {name: async (main) => void}
   function router(routes, nav, main, fallback) {
     async function go() {
-      const name = (location.hash.replace(/^#\/?/, '').split('/')[0]) || fallback;
-      const fn = routes[name] || routes[fallback];
+      const asked = location.hash.replace(/^#\/?/, '').split('/')[0];
+      const name = Object.hasOwn(routes, asked) ? asked : fallback; // #register, left over from signing up, shows the first page
+      const fn = routes[name];
       for (const a of nav.querySelectorAll('a')) a.classList.toggle('active', a.getAttribute('href') === '#/' + name);
+      if (onRoute) onRoute(nav.querySelector('a.active'), name);
       clear(main);
       try { await fn(main, location.hash.replace(/^#\/?/, '').split('/').slice(1)); }
       catch (e) {
@@ -295,6 +383,6 @@ const ST = (() => {
   }
   function param(hash) { return hash; }
 
-  return { api, ApiError, h, clear, add, $, credit, signed, num, time, ago, short, peer, status, badge, rtt, toast, fail, modal, confirm, copy, secret,
+  return { icon, chip, pageChip, pageTitle, section, tile, shell, authFrame, api, ApiError, h, clear, add, $, credit, signed, num, time, ago, short, peer, status, badge, rtt, toast, fail, modal, confirm, copy, secret,
     table, kv, field, input, state, loadInfo, loadMe, logout, renderLogin, router, param, STATUS };
 })();

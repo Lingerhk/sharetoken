@@ -165,16 +165,18 @@ func TestI18nDictionaries(t *testing.T) {
 }
 
 func TestI18nRuntimeSharedByPortalAndClient(t *testing.T) {
-	a, err := os.ReadFile("web/i18n.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := os.ReadFile("../client/ui/i18n.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(a) != string(b) {
-		t.Error("portal/web/i18n.js and client/ui/i18n.js differ")
+	for _, name := range []string{"i18n.js", "i18n.css"} {
+		a, err := os.ReadFile("web/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile("../client/ui/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(a) != string(b) {
+			t.Errorf("portal/web/%s and client/ui/%s differ", name, name)
+		}
 	}
 }
 
