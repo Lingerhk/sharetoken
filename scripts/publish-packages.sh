@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 [ "$(scripts/version.sh)" = "$V" ] || { echo "this tree is $(scripts/version.sh), not $V" >&2; exit 2; }
 Q="-o LogLevel=ERROR -o ConnectTimeout=10"
 # The version does not identify the code before launch, so nothing is reused.
-rm -f "dist/SHA256SUMS-$V" dist/sharetoken-cli-* dist/sharetoken-[0-9]* dist/sharetoken-dev-[0-9]*
+rm -rf "dist/SHA256SUMS-$V" dist/sharetoken-cli-* dist/sharetoken-[0-9]* dist/sharetoken-dev-[0-9]*
 scripts/build-cli.sh prod all >/dev/null
 for arch in amd64 arm64; do
   scripts/build-gui.sh prod macos "$arch" >/dev/null
