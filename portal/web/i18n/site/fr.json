@@ -154,5 +154,6 @@
   "链接到本节": "Lien vers cette section",
   "链接可能已经过期。请从左侧目录选择一个页面。": "Le lien a peut-être expiré. Choisissez une page dans le sommaire à gauche.",
   "阅读使用文档": "Lire la documentation",
-  "页面加载失败，请检查网络后重试。": "La page n'a pas pu se charger. Vérifiez votre réseau et réessayez."
+  "页面加载失败，请检查网络后重试。": "La page n'a pas pu se charger. Vérifiez votre réseau et réessayez.",
+  "切换深色或浅色模式": "Basculer entre le mode sombre et le mode clair"
 }

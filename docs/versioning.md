@@ -4,6 +4,8 @@
 
 ## 版本号
 
+**正式上线前版本统一是 1.0.0。** 发布时不升版本号，而是把 tag `v1.0.0` 移到要发布的提交上（`git tag -f -a v1.0.0 -m ...`）。因此上线前“1.0.0”不代表一份固定的代码，看具体是哪份要看 `commit`（`GET /api/v1/version`、管理后台“版本”页）。下面的规则从正式上线起生效。
+
 - **发布版本：** 全仓一个 semver，写在根目录 `VERSION`。客户端、GUI、中继、协调器、门户、邮件服务同一个 tag。
 - **格式：** tag `v1.2.3` 上没有改动的构建是 `1.2.3`；其他构建是 `1.2.3-dev.<commit>[.dirty]`（`scripts/version.sh`）。没有注入版本的 `go build` 是 `dev`。
 - **注入：** `scripts/ldflags.sh` 写入 `internal/version`，GUI 外壳是独立 module，用 `main.version`。

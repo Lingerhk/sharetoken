@@ -156,6 +156,74 @@ await ev(`document.getElementById('lang-select').click()`);
 await shot('site-lang');
 ok(await ev(`!document.querySelector('.lang-menu').hidden`), 'the landing page has the same menu');
 
+// ---- the landing page ----
+console.log('landing page');
+// Scrolls through the page so everything has revealed itself, then photographs all of it.
+async function wholePage(name) {
+  const height = await ev('document.documentElement.scrollHeight');
+  for (let y = 0; y < height; y += 600) { await ev(`scrollTo({ top: ${y}, behavior: 'instant' })`); await sleep(120); }
+  await ev(`scrollTo({ top: 0, behavior: 'instant' })`); await sleep(900);
+  const r = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+  writeFileSync(`${shots}/${name}.png`, Buffer.from(r.data, 'base64'));
+}
+const fillOf = sel => bg(sel);
+await ev(`document.getElementById('lang-select').click()`); // closes the menu opened above
+ok(await ev(`!!document.getElementById('theme-toggle')`), 'it has the theme control');
+ok(await theme() === 'dark', 'it takes the choice made in the portal');
+const darkPage = await bg('body'), darkButton = await fillOf('.btn.primary');
+await wholePage('site-dark');
+await ev(`document.getElementById('theme-toggle').click()`);
+ok(await theme() === 'light', 'the control switches it to light');
+ok(await bg('body') !== darkPage, 'the page changes colour');
+ok(await fillOf('.btn.primary') === darkButton, 'the main button keeps its colour, with dark text on it');
+ok(await ev(`document.querySelector('meta[name=theme-color]').content`) === '#fafaf7', "the browser's bar follows");
+await sleep(400);
+const inked = await ev(`(() => { const c = document.getElementById('mesh'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let dark = 0, light = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 40) { const l = d[i] + d[i + 1] + d[i + 2]; if (l < 380) dark++; else if (l > 650) light++; } return { dark, light }; })()`);
+ok(inked.dark > inked.light, 'the hero animation redraws in dark ink');
+await wholePage('site-light');
+await ev(`document.getElementById('security').scrollIntoView({ behavior: 'instant' })`); await sleep(1500);
+await shot('site-security-light');
+for (const mode of ['light', 'dark']) {
+  await ev(`THEME.current() === ${JSON.stringify(mode)} || THEME.toggle()`);
+  await size(390, 780, true);
+  await sleep(300);
+  ok(await overflow() <= 0, `nothing runs off a phone screen in ${mode} mode`);
+  ok(await ev(`(() => { const r = document.getElementById('theme-toggle').getBoundingClientRect(); return r.width > 0 && r.right <= innerWidth; })()`), `the control is on screen on a phone (${mode})`);
+  await shot('site-phone-' + mode);
+}
+await size(1440, 900);
+await ev(`THEME.current() === 'light' || THEME.toggle()`);
+await go(`${portal}/app/?lang=zh-CN`);
+await waitFor(`document.querySelector('.sidenav')`);
+ok(await theme() === 'light', 'the choice carries back to the portal');
+
+// ---- the guide ----
+console.log('guide');
+await go(`${portal}/docs/?lang=zh-CN`);
+await waitFor(`document.querySelector('.doc h1')`);
+ok(await theme() === 'light', 'it takes the choice made elsewhere');
+const lightDoc = await bg('body');
+await wholePage('docs-light');
+await ev(`document.getElementById('theme-toggle').click()`);
+ok(await theme() === 'dark', 'the control switches it to dark');
+ok(await bg('body') !== lightDoc, 'the page changes colour');
+await wholePage('docs-dark');
+await go(`${portal}/docs/quickstart`);
+await waitFor(`document.querySelector('.doc h1')`);
+ok(await theme() === 'dark', 'the choice survives a reload');
+await ev(`document.getElementById('theme-toggle').click()`);
+await sleep(200);
+await shot('docs-page-light');
+await size(390, 780, true);
+await sleep(300);
+ok(await overflow() <= 0, 'nothing runs off a phone screen');
+ok(await ev(`(() => { const r = document.getElementById('theme-toggle').getBoundingClientRect(); return r.width > 0 && r.right <= innerWidth; })()`), 'the control is on screen on a phone');
+await shot('docs-phone-light');
+await size(1440, 900);
+await go(`${portal}/app/?lang=zh-CN`);
+await waitFor(`document.querySelector('.sidenav')`);
+ok(await theme() === 'light', 'the choice carries back to the portal');
+
 // ---- every user page, both themes, phone and desktop ----
 const USER = ['home', 'ledger', 'jobs', 'tokens', 'devices', 'network', 'account', 'feedback'];
 async function pages(path, routes, label) {

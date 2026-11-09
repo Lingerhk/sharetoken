@@ -10,7 +10,11 @@ const THEME = (() => {
   function saved() {
     try { const v = localStorage.getItem(KEY); return v === 'dark' || v === 'light' ? v : ''; } catch (e) { return ''; }
   }
-  const apply = mode => { root.dataset.theme = mode; };
+  function apply(mode) {
+    root.dataset.theme = mode;
+    const bar = document.querySelector('meta[name=theme-color]'); // the browser's own bar on phones
+    if (bar && bar.dataset[mode]) bar.content = bar.dataset[mode];
+  }
   const current = () => root.dataset.theme;
   function toggle() {
     const next = current() === 'dark' ? 'light' : 'dark';

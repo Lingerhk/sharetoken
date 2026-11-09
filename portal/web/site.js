@@ -7,6 +7,7 @@ I18N.ready.then(() => {
   const tr = I18N.t;
   const $ = id => document.getElementById(id);
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  $('theme-toggle').addEventListener('click', THEME.toggle);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
   const subtle = window.crypto && crypto.subtle;
@@ -72,7 +73,14 @@ I18N.ready.then(() => {
   // ---- hero: the mesh, with one encrypted route through a relay ----
   (function mesh() {
     const canvas = $('mesh'), ctx = canvas.getContext('2d');
-    const LIME = '198,242,78', AMBER = '255,182,72';
+    // The colours are the stylesheet's, so the animation changes with the theme.
+    let LIME, AMBER, INK, TEXT, LINE_A, DOT_A;
+    function palette() {
+      const css = getComputedStyle(document.documentElement), v = name => css.getPropertyValue(name).trim();
+      LIME = v('--lime-rgb'); AMBER = v('--amber-rgb'); INK = v('--ink-rgb'); TEXT = v('--text-rgb');
+      LINE_A = Number(v('--mesh-line')); DOT_A = Number(v('--mesh-dot'));
+    }
+    palette();
     let W = 0, H = 0, nodes = [], route = [], running = false;
     const LABELS = [tr('买家'), tr('中继'), tr('卖家')];
 
@@ -101,12 +109,12 @@ I18N.ready.then(() => {
         for (let j = i + 1; j < nodes.length; j++) {
           const b = nodes[j], d = Math.hypot(a.x - b.x, a.y - b.y);
           if (d < LINK) {
-            ctx.strokeStyle = `rgba(255,255,255,${.075 * (1 - d / LINK)})`;
+            ctx.strokeStyle = `rgba(${INK},${LINE_A * (1 - d / LINK)})`;
             ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
           }
         }
       }
-      ctx.fillStyle = 'rgba(255,255,255,.34)';
+      ctx.fillStyle = `rgba(${INK},${DOT_A})`;
       for (const n of nodes) { ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 7); ctx.fill(); }
     }
 
@@ -132,7 +140,7 @@ I18N.ready.then(() => {
         ctx.beginPath(); ctx.arc(pt[0], pt[1], near ? 20 : 14, 0, 7); ctx.fill();
         ctx.fillStyle = `rgb(${rgb})`;
         ctx.beginPath(); ctx.arc(pt[0], pt[1], 5, 0, 7); ctx.fill();
-        ctx.fillStyle = 'rgba(238,240,244,.82)';
+        ctx.fillStyle = `rgba(${TEXT},.82)`;
         ctx.font = '13px -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif';
         ctx.fillText(LABELS[i], pt[0], pt[1] + 34);
         ctx.font = '11px ui-monospace, Menlo, monospace';
@@ -176,6 +184,9 @@ I18N.ready.then(() => {
       clearTimeout(resizing);
       resizing = setTimeout(() => { layout(); if (still) { ctx.clearRect(0, 0, W, H); drawMesh(); drawRoute(.5, []); } }, 150);
     });
+    // A moving hero picks the new colours up on its next frame; a still one is drawn again.
+    new MutationObserver(() => { palette(); if (still) { ctx.clearRect(0, 0, W, H); drawMesh(); drawRoute(.5, []); } })
+      .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     if (still) { drawMesh(); drawRoute(.5, []); return; }
     watch(canvas, v => { if (v) start(); else running = false; });
   })();

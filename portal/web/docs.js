@@ -11,6 +11,7 @@
 'use strict';
 
 I18N.ready.then(async () => {
+  document.getElementById('theme-toggle').addEventListener('click', THEME.toggle);
   const tr = I18N.t;
   const $ = id => document.getElementById(id);
   const OSES = [['macos', 'macOS'], ['linux', 'Linux'], ['windows', 'Windows']];
