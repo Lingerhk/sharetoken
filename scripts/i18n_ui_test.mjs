@@ -5,14 +5,17 @@
 // screen, and the language picker and pinned admin console behave.
 //
 //   scripts/gui_stack.sh start DIR && . DIR/env
-//   node scripts/i18n_ui_test.mjs https://127.0.0.1:18092 http://127.0.0.1:19787 ./shots-i18n
+//   node scripts/i18n_ui_test.mjs https://127.0.0.1:18092 http://127.0.0.1:19787 [shots-dir]
 //
-// LANGS=en,ar limits the run. Screenshots land in the shots directory.
+// LANGS=en,ar limits the run. Screenshots land in the shots directory, a new
+// temporary one by default. A client left signed in by another test is signed out.
 import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-const [portal, daemon, shots] = [process.argv[2], process.argv[3], process.argv[4] || './shots-i18n'];
+const [portal, daemon, shots] = [process.argv[2], process.argv[3], process.argv[4] || mkdtempSync(join(tmpdir(), 'st-i18n-'))];
 mkdirSync(shots, { recursive: true });
 const runtime = readFileSync(new URL('../portal/web/i18n.js', import.meta.url), 'utf8');
 const ALL = [...runtime.slice(runtime.indexOf('const LANGS = {'), runtime.indexOf('};')).matchAll(/'?([A-Za-z-]+)'?: '/g)].map(m => m[1]);
@@ -100,6 +103,7 @@ async function shot(name) {
 }
 
 await cdp('Page.enable'); await cdp('Runtime.enable'); await cdp('Log.enable');
+await fetch(`${daemon}/api/v1/logout`, { method: 'POST' });
 
 // ---- the landing page and the logged-out portal and client ----
 for (const lang of LANGS) {

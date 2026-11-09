@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"sharetoken/internal/mysqldb"
@@ -135,13 +134,7 @@ func AccountUsage(db *sql.DB, acct string) (Usage, error) {
 		earn bool
 	}{{"buyer_acct", &u.Bought, false}, {"node_acct", &u.Sold, true}} {
 		var jobs, pt, ct, money, pending sql.NullInt64
-		err := db.QueryRow(`SELECT
-			SUM(CASE WHEN status = 'final' THEN 1 ELSE 0 END),
-			SUM(CASE WHEN status = 'final' THEN prompt_tokens ELSE 0 END),
-			SUM(CASE WHEN status = 'final' THEN completion_tokens ELSE 0 END),
-			SUM(CASE WHEN status = 'final' THEN cost - `+feeTerm(side.earn)+` ELSE 0 END),
-			SUM(CASE WHEN status IN ('held', 'pending', 'disputed') THEN 1 ELSE 0 END)
-			FROM jobs WHERE `+side.col+` = ?`, acct).Scan(&jobs, &pt, &ct, &money, &pending)
+		err := db.QueryRow(accountUsageSQL(side.col, side.earn), acct).Scan(&jobs, &pt, &ct, &money, &pending)
 		if err != nil {
 			return u, err
 		}
@@ -149,6 +142,22 @@ func AccountUsage(db *sql.DB, acct string) (Usage, error) {
 			Micros: uint64(money.Int64), Pending: uint64(pending.Int64)}
 	}
 	return u, nil
+}
+
+// accountUsageSQL is answered from the index alone, which holds every column
+// it reads; the optimizer would otherwise read each of the account's rows.
+func accountUsageSQL(col string, earn bool) string {
+	index := "jobs_buy_usage"
+	if earn {
+		index = "jobs_sell_usage"
+	}
+	return `SELECT
+		SUM(CASE WHEN status = 'final' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN status = 'final' THEN prompt_tokens ELSE 0 END),
+		SUM(CASE WHEN status = 'final' THEN completion_tokens ELSE 0 END),
+		SUM(CASE WHEN status = 'final' THEN cost - ` + feeTerm(earn) + ` ELSE 0 END),
+		SUM(CASE WHEN status IN ('held', 'pending', 'disputed') THEN 1 ELSE 0 END)
+		FROM jobs FORCE INDEX (` + index + `) WHERE ` + col + ` = ?`
 }
 
 func feeTerm(earn bool) string {
@@ -237,12 +246,11 @@ func queryJobsSQL(status, acct string, beforeNanos int64, limit int) (string, []
 			append(append([]any{beforeNanos}, statusArgs...), limit)
 	}
 	// Two index-ordered scans of at most limit rows each, merged: an OR of
-	// the two account columns would sort the account's whole history.
-	// "+status" keeps the planner off the (status, created_at) index, which
-	// would walk every job of that status instead of this account's.
-	accountStatus := strings.Replace(statusWhere, "status =", "+status =", 1)
+	// the two account columns would sort the account's whole history. The
+	// index is forced because the optimizer otherwise walks all recent jobs
+	// looking for an account whose history is old.
 	side := func(col string) (string, []any) {
-		return `SELECT ` + cols + ` FROM jobs WHERE ` + col + ` = ? AND created_at < ?` + accountStatus + ` ORDER BY created_at DESC LIMIT ?`,
+		return `SELECT ` + cols + ` FROM jobs FORCE INDEX (jobs_by_` + col + `) WHERE ` + col + ` = ? AND created_at < ?` + statusWhere + ` ORDER BY created_at DESC LIMIT ?`,
 			append(append([]any{acct, beforeNanos}, statusArgs...), limit)
 	}
 	buy, buyArgs := side("buyer_acct")
@@ -308,16 +316,18 @@ func QueryAudits(q Querier, limit int) ([]AuditRecord, error) {
 	return out, rows.Err()
 }
 
+// Open disputes come off the (status, created_at) index, judged ones off
+// jobs_judged; an OR of the two would scan the table.
+const disputesCols = `job_id, buyer, node, buyer_acct, node_acct, model, status, cost, dispute_reason, dispute_outcome, dispute_detail,
+	created_at, done_at`
+const disputesSQL = `SELECT ` + disputesCols + ` FROM (
+		SELECT * FROM (SELECT ` + disputesCols + ` FROM jobs WHERE status = 'disputed' ORDER BY created_at DESC LIMIT ?) AS o
+		UNION SELECT * FROM (SELECT ` + disputesCols + ` FROM jobs WHERE dispute_outcome != '' ORDER BY created_at DESC LIMIT ?) AS j) AS d
+	ORDER BY status = 'disputed' DESC, created_at DESC LIMIT ?`
+
 // QueryDisputes lists jobs awaiting arbitration first, then judged ones, newest first.
 func QueryDisputes(q Querier, limit int) ([]DisputeInfo, error) {
-	// Open disputes come off the (status, created_at) index, judged ones off
-	// the partial index jobs_judged; an OR of the two would scan the table.
-	const cols = `job_id, buyer, node, buyer_acct, node_acct, model, status, cost, dispute_reason, dispute_outcome, dispute_detail,
-		created_at, done_at`
-	rows, err := q.Query(`SELECT `+cols+` FROM (
-			SELECT * FROM (SELECT `+cols+` FROM jobs WHERE status = 'disputed' ORDER BY created_at DESC LIMIT ?) AS o
-			UNION SELECT * FROM (SELECT `+cols+` FROM jobs WHERE dispute_outcome != '' ORDER BY created_at DESC LIMIT ?) AS j) AS d
-		ORDER BY status = 'disputed' DESC, created_at DESC LIMIT ?`, limit, limit, limit)
+	rows, err := q.Query(disputesSQL, limit, limit, limit)
 	if err != nil {
 		return nil, err
 	}

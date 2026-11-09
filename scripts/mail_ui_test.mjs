@@ -71,10 +71,11 @@ function smtp(from, to, message) {
         const m = buf.match(/^(\d{3}) .*\r\n/m);
         if (!m) break;
         replies.push(m[1]); buf = buf.slice(m.index + m[0].length);
+        if (m[1][0] === '5') i = steps.length - 1; // refused: on to QUIT, like a real client
         if (i < steps.length) s.write(steps[i++] + '\r\n');
       }
     });
-    s.on('close', () => res(replies)); s.on('error', rej);
+    s.on('close', () => res(replies)); s.on('error', e => rej(new Error(`SMTP ${e.code} after ${i} steps, replies ${replies.join(',')}`)));
   });
 }
 
@@ -137,8 +138,8 @@ ok((await body()).includes('验证码错误或已过期'), 'a wrong code is expl
 await click('#send-code');
 ok((await ev(`${q('#send-code')}.disabled`)) && (await ev(`${q('#send-code')}.textContent`)).includes('秒后可重发'), 'the send button counts down');
 await shot('01-register');
-const code = sql(`SELECT subject FROM mail_outbox WHERE to_addr='ui@example.com' ORDER BY id DESC LIMIT 1`).split('：')[1];
-ok(/^\d{6}$/.test(code), 'a code was mailed');
+const code = sql(`SELECT subject FROM mail_outbox WHERE to_addr='ui@example.com' ORDER BY id DESC LIMIT 1`).match(/\b\d{6}\b/)?.[0];
+ok(code, 'a code was mailed');
 await fill('#login-code', code);
 await ev(`document.querySelector('form').requestSubmit()`);
 await waitFor(`document.body.innerText.includes('ui@example.com')`);

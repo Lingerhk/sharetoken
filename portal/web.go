@@ -26,7 +26,6 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
-	"fmt"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -520,11 +519,7 @@ func (s *Server) handleJournal(w http.ResponseWriter, r *http.Request, _ ctxUser
 	const cols = `seq, at, job_id, debit, credit, amount, memo`
 	query, args := `SELECT `+cols+` FROM ledger_entries WHERE seq < ? ORDER BY seq DESC LIMIT ?`, []any{before, limit}
 	if acct := r.URL.Query().Get("account"); acct != "" {
-		// Two index-ordered scans merged (an OR of the two columns would sort
-		// the account's whole history); UNION ALL is exact as debit != credit.
-		const side = `SELECT ` + cols + ` FROM ledger_entries WHERE %s = ? AND seq < ? ORDER BY seq DESC LIMIT ?`
-		query = `SELECT * FROM (` + fmt.Sprintf(side, "debit") + `) AS d UNION ALL SELECT * FROM (` + fmt.Sprintf(side, "credit") + `) AS c ORDER BY seq DESC LIMIT ?`
-		args = []any{acct, before, limit, acct, before, limit, limit}
+		query, args = ledger.AccountEntriesSQL, []any{acct, before, limit, acct, before, limit, limit}
 	}
 	rows, err := s.db.Query(query, args...)
 	if err != nil {

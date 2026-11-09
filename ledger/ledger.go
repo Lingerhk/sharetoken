@@ -320,6 +320,20 @@ func (l *Tx) Journal(afterSeq int64, limit int) ([]Entry, error) {
 	return out, rows.Err()
 }
 
+// AccountEntriesSQL lists an account's entries below a seq, newest first; its
+// arguments are account, seq, limit, account, seq, limit, limit. Two
+// index-ordered scans of at most limit rows each, merged: an OR of the two
+// columns would sort the account's whole history. UNION ALL is exact because
+// transfer refuses debit = credit. The indexes are forced because the optimizer
+// otherwise walks the whole journal looking for an account whose history is old.
+const AccountEntriesSQL = `SELECT * FROM (SELECT ` + entryCols + ` FROM ledger_entries FORCE INDEX (ledger_entries_by_debit)
+		WHERE debit = ? AND seq < ? ORDER BY seq DESC LIMIT ?) AS d
+	UNION ALL SELECT * FROM (SELECT ` + entryCols + ` FROM ledger_entries FORCE INDEX (ledger_entries_by_credit)
+		WHERE credit = ? AND seq < ? ORDER BY seq DESC LIMIT ?) AS c
+	ORDER BY seq DESC LIMIT ?`
+
+const entryCols = `seq, at, job_id, debit, credit, amount, memo`
+
 // AccountEntries returns up to limit journal entries that move money into or
 // out of account, or of its job holds (owner = account), newest first,
 // starting below beforeSeq (0: from the newest).
@@ -327,13 +341,7 @@ func (l *Tx) AccountEntries(account string, beforeSeq int64, limit int) ([]Entry
 	if beforeSeq <= 0 {
 		beforeSeq = math.MaxInt64
 	}
-	// Two index-ordered scans of at most limit rows each, merged: an OR of
-	// the two columns would sort the account's whole history. UNION ALL is
-	// exact because transfer refuses debit = credit.
-	const side = `SELECT seq, at, job_id, debit, credit, amount, memo FROM ledger_entries
-		WHERE %s = ? AND seq < ? ORDER BY seq DESC LIMIT ?`
-	rows, err := l.tx.Query(`SELECT * FROM (`+fmt.Sprintf(side, "debit")+`) AS d UNION ALL SELECT * FROM (`+fmt.Sprintf(side, "credit")+`) AS c
-		ORDER BY seq DESC LIMIT ?`, account, beforeSeq, limit, account, beforeSeq, limit, limit)
+	rows, err := l.tx.Query(AccountEntriesSQL, account, beforeSeq, limit, account, beforeSeq, limit, limit)
 	if err != nil {
 		return nil, err
 	}
