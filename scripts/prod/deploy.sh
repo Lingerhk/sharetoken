@@ -40,6 +40,11 @@ release() {
   for c in "$@"; do scp $Q "dist/$c-$V-linux-$ARCH" "$RUSER@$HOST:$DIR/releases/$V/$c" >/dev/null; done
   scp $Q "$HERE"/*.yaml "$HERE"/sharetoken-*.service "$HERE/nginx-sharetoken.conf" "$REPO/scripts/ops/st-host-setup.sh" \
     "$REPO/scripts/ops/st-mysql-root" "$REPO/scripts/ops/st-mysql-backup" "$RUSER@$HOST:$DIR/" >/dev/null
+  # the portal reads relay metrics over SSH (scripts/relay/authorize-metrics.sh prod …)
+  if [ -s "$KEYS/relay-metrics.key" ]; then
+    scp $Q "$KEYS/relay-metrics.key" "$HERE/relay-metrics.known_hosts" "$RUSER@$HOST:$DIR/" >/dev/null
+    rsh "chmod 600 $DIR/relay-metrics.key"
+  fi
   resend_key
   rsh "chmod +x $DIR/releases/$V/*; cd $DIR/releases && ls -1t | tail -n +6 | while read -r old; do rm -rf \"\$old\"; done"
   for c in "$@"; do rsh "cd $DIR && releases/$V/$c -config $(conf_of $c) check-config >/dev/null && echo $c config ok"; done

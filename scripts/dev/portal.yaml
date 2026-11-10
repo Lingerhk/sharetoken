@@ -43,6 +43,7 @@ relay_metrics:
     - {relay: relay-us, ssh: s0nnet@165.227.115.27}
     - {relay: relay-sg, ssh: s0nnet@201.79.122.100}
     - {relay: relay-eu, ssh: s0nnet@164.92.157.227}
+    - {relay: relay-us2, ssh: s0nnet@165.227.3.194}
     - {relay: relay-cn, ssh: s0nnet@119.29.250.173}
     - {relay: lab-cn2, ssh: orcatermuser@101.43.2.87}
 sessions:

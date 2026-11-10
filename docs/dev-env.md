@@ -49,13 +49,13 @@ scripts/relay/deploy.sh --prod sg           # 生产在用的中继，必须带 
 
 | 中继 | 地址 | 网络 | 用途 |
 |---|---|---|---|
-| relay-us / sg / eu / cn | 见 prod-env.md | prod + dev | 日常使用；dev 的设备合计最多 32 个预约 |
+| relay-us / sg / eu / us2 / cn | 见 prod-env.md | prod + dev | 日常使用；dev 的设备合计最多 32 个预约 |
 | lab-cn2 | `relay-cn2.sharetoken.app:4002` | 只有 dev | 压测、chaos、验证中继改动；公网可达，但跨境链路差 |
 | lab-stdb | Mac 局域网 `192.168.6.125:4101`（orb VM st-db） | 只有 dev | **已随 st-db 停机，在 dev 门户里是停用状态**。压测时 `orb start st-db`，启动 `~/st-test/relay-lab/relay`，再 `portal relay enable`；只有局域网内可达，Mac 的 IP 变了要改配置并重新登记 |
 
-dev 门户登记了 relay-sg、relay-us、relay-eu、relay-cn 和 lab-cn2。压测和 chaos 前，先在 dev 门户 `relay disable` 四个共用中继，让 dev 流量只走实验中继，结束后再 `enable`。
+dev 门户登记了 relay-sg、relay-us、relay-eu、relay-us2、relay-cn 和 lab-cn2。压测和 chaos 前，先在 dev 门户 `relay disable` 五个共用中继，让 dev 流量只走实验中继，结束后再 `enable`。
 
-us、sg、eu、cn、lab-cn2 由 systemd 管理（`sharetoken-relay` 服务，崩溃和开机后自动拉起，日志在 journal），由 `scripts/relay/install-service.sh` 安装；lab-stdb 仍是手动启动。上线新中继：先 `deploy.sh`，再 `install-service.sh`，最后 `deploy-monitor.sh`。回滚：`mv relay.prev relay`（软链，指向上一个 `releases/<版本>/relay`），`cp relay.yaml.prev relay.yaml`，再 `sudo systemctl restart sharetoken-relay`。
+us、sg、eu、us2、cn、lab-cn2 由 systemd 管理（`sharetoken-relay` 服务，崩溃和开机后自动拉起，日志在 journal），由 `scripts/relay/install-service.sh` 安装；lab-stdb 仍是手动启动。上线新中继：先 `deploy.sh`，再 `install-service.sh`，最后 `deploy-monitor.sh`（us2 和生产门户同机，以 st-relay 运行，顺序是先 `install-service.sh` 再 `deploy.sh`，见 prod-env.md）。回滚：`mv relay.prev relay`（软链，指向上一个 `releases/<版本>/relay`），`cp relay.yaml.prev relay.yaml`，再 `sudo systemctl restart sharetoken-relay`。
 
 共用时的隔离：
 - **账号：** 设备配额按“网络 + 账号”计算，两个网络的 `user:3` 互不影响。

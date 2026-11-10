@@ -18,6 +18,7 @@
 | US | relay-us.sharetoken.app | 165.227.115.27 | 2604:a880:800:14:0:3:d0f4:b000 | 600 |
 | SG | relay-sg.sharetoken.app | 201.79.122.100 | 2400:6180:0:d2:0:3:50d5:3000 | 600 |
 | EU | relay-eu.sharetoken.app | 164.92.157.227 | 2a03:b0c0:2:f0:0:2:4191:8001 | 600 |
+| US 2（美西） | relay-us2.sharetoken.app | 165.227.3.194 | 2604:a880:2:d1:0:1:cb79:c001 | 600 |
 | CN | relay-cn.sharetoken.app | 119.29.250.173 | 无（暂未开通） | 600 |
 | CN 2 | relay-cn2.sharetoken.app | 101.43.2.87 | 无（暂未开通） | 600 |
 
@@ -36,6 +37,8 @@
 | AAAA | relay-sg | 2400:6180:0:d2:0:3:50d5:3000 | 600 | 本次新增 |
 | A | relay-eu | 164.92.157.227 | 600 | 2026-11-09 新增 |
 | AAAA | relay-eu | 2a03:b0c0:2:f0:0:2:4191:8001 | 600 | 2026-11-09 新增 |
+| A | relay-us2 | 165.227.3.194 | 600 | 2026-11-11 新增，和门户同机 |
+| AAAA | relay-us2 | 2604:a880:2:d1:0:1:cb79:c001 | 600 | 2026-11-11 新增 |
 | A | relay-cn | 119.29.250.173 | 600 | 本次新增 |
 | A | relay-cn2 | 101.43.2.87 | 600 | 本次新增 |
 | A | @ | 165.227.3.194 | 600 | 生产主机（静态） |
@@ -45,7 +48,9 @@
 | CNAME | _domainconnect | _domainconnect.gd.domaincontrol.com | 3600 | GoDaddy 默认，未改动 |
 | TXT | _dmarc | GoDaddy 默认 DMARC | 3600 | GoDaddy 默认，未改动 |
 
-中继由 prod 和 dev 共用（2026-11-08 起），只用 `scripts/relay/deploy.sh --prod <us|sg|eu|cn>` 逐台发布，见 [dev-env.md](dev-env.md)。指标和监控告警见 [relay-monitor.md](relay-monitor.md)。
+**relay-us2 和生产门户同机**（2026-11-11 上线，peer `12D3KooWHCzGVzBYQir8gDS5mN9jH28EhpRGGJUKZscG2ryGDFpd`，prod、dev 门户都登记为 region `us-west`）。和别的中继不同：以系统用户 `st-relay` 运行（systemd `sharetoken-relay` 加 drop-in `sharetoken-relay.service.d/us2.conf`：加固、`GOMEMLIMIT=160MiB`、`MemoryMax=300M`），程序和配置在 `/srv/sharetoken-relay/`（s0nnet 发布），身份密钥在 `/var/lib/sharetoken-relay/relay.key`（只有 st-relay 能读），限额是 1024 预约 / 2048 连接。新机器先 `scripts/relay/install-service.sh --prod us2`（建用户、目录、drop-in、放行 4001），再 `deploy.sh --prod us2`。监控仍以 s0nnet 跑在 `~/st-test`。
+
+中继由 prod 和 dev 共用（2026-11-08 起），只用 `scripts/relay/deploy.sh --prod <us|sg|eu|us2|cn>` 逐台发布，见 [dev-env.md](dev-env.md)。指标和监控告警见 [relay-monitor.md](relay-monitor.md)。
 
 ## 门户与协调器（云主机）
 
@@ -53,14 +58,14 @@
 
 ```
  用户 / 浏览器 ──https://sharetoken.app──> 165.227.3.194 nginx（Let's Encrypt，终结 TLS）──> 门户 127.0.0.1:8092
- 协调器：无监听端口，只在 4 个中继上预约（出站连接）；MySQL：Docker 容器 st-mysql，127.0.0.1:3306
+ 协调器：无监听端口，只在 5 个中继上预约（出站连接）；MySQL：Docker 容器 st-mysql，127.0.0.1:3306
  邮件：25 端口直接收信；发信经 Resend 的 HTTPS API（docs/mail.md）
 ```
 
 | 项 | 说明 |
 |---|---|
 | 主机 | DigitalOcean sfo2，`st-portal-us-01`，165.227.3.194，x86_64，1 vCPU、1 GB 内存、2 GB swap，Ubuntu 26.04。`ssh s0nnet@165.227.3.194`（只有密钥登录，root 也只能用密钥）。新主机先以 root 跑一次 `scripts/ops/st-vps-bootstrap.sh`。布局、用户、权限、运维命令见 [server-layout.md](server-layout.md)：二进制 `/srv/sharetoken/`，配置和机密 `/etc/sharetoken/<服务>/`，下载区 `/var/lib/sharetoken/portal/downloads`；`~/sharetoken-prod` 只是部署暂存目录 |
-| 防火墙 | ufw 只放行 22、80、443、25/tcp；MySQL 和门户只听回环 |
+| 防火墙 | ufw 只放行 22、80、443、25/tcp，以及中继的 4001/tcp+udp；MySQL 和门户只听回环 |
 | 域名 | `https://sharetoken.app`（`www` 301 到主域）。客户端 `-portal https://sharetoken.app`，**不需要 `-portal-pin`**（公共 CA 证书） |
 | 门户 | systemd `sharetoken-portal`（用户 `st-portal`），`tls.mode: proxy`，只听 127.0.0.1:8092，配置 `scripts/prod/portal.yaml`；`open_registration: true`（邮箱验证码） |
 | 协调器 | systemd `sharetoken-coordinator`，用户 `st-coord`，配置 `scripts/prod/coordinator.yaml`；peer ID `12D3KooWFAqCYkUS2Kt2KRWQ1mWF82Em4mRbB5nD4V7Fr5PmWfUh`（key 沿用，中继无需改动）；门户凭证公钥也沿用。**同一把 key 不能同时在两处运行** |

@@ -41,7 +41,7 @@ UMask=0077
 # This machine (nginx, MySQL), plus SSH to the relays for their metrics (portal.yaml relay_metrics).
 IPAddressDeny=any
 IPAddressAllow=localhost
-IPAddressAllow=165.227.115.27 201.79.122.100 164.92.157.227 119.29.250.173 101.43.2.87
+IPAddressAllow=165.227.115.27 201.79.122.100 164.92.157.227 165.227.3.194 119.29.250.173 101.43.2.87
 MemoryHigh=150M
 MemoryMax=200M
 

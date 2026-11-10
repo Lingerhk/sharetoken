@@ -5,7 +5,7 @@
   "# 客户端登录后，本地端点就绪": "# Une fois le client connecté, le point d'accès local est prêt",
   "# 查看收益": "# Consulter vos gains",
   "40 分钟长稳测试的请求数": "requêtes lors d'un test d'endurance de 40 minutes",
-  "4 个中继 · 3 大洲": "4 relais · 3 continents",
+  "5 个中继 · 3 大洲": "5 relais · 3 continents",
   "AMD SEV-SNP / Intel TDX 的 quote 同时绑定签名钥和收件钥，宿主机没法把收件钥放到虚拟机外偷看。": "Le quote AMD SEV-SNP / Intel TDX lie à la fois la clé de signature et la clé de destinataire : l'hôte ne peut pas sortir la clé de destinataire de la machine virtuelle pour lire vos données.",
   "Ed25519 已签名": "signé avec Ed25519",
   "Noise 通道内还有一层封装加密": "Une couche de chiffrement scellé supplémentaire dans le canal Noise",

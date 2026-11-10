@@ -5,7 +5,7 @@
   "# 客户端登录后，本地端点就绪": "# Sau khi client đăng nhập, endpoint cục bộ sẵn sàng",
   "# 查看收益": "# Xem thu nhập",
   "40 分钟长稳测试的请求数": "yêu cầu trong bài kiểm tra độ ổn định 40 phút",
-  "4 个中继 · 3 大洲": "4 relay · 3 châu lục",
+  "5 个中继 · 3 大洲": "5 relay · 3 châu lục",
   "AMD SEV-SNP / Intel TDX 的 quote 同时绑定签名钥和收件钥，宿主机没法把收件钥放到虚拟机外偷看。": "Quote của AMD SEV-SNP / Intel TDX gắn đồng thời khóa ký và khóa nhận, nên máy chủ chủ không thể đưa khóa nhận ra ngoài máy ảo để xem lén dữ liệu của bạn.",
   "Ed25519 已签名": "đã ký bằng Ed25519",
   "Noise 通道内还有一层封装加密": "Bên trong kênh Noise còn một lớp mã hóa đóng gói",

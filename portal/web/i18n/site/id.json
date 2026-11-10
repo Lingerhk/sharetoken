@@ -5,7 +5,7 @@
   "# 客户端登录后，本地端点就绪": "# Setelah klien login, endpoint lokal siap",
   "# 查看收益": "# Lihat pendapatan Anda",
   "40 分钟长稳测试的请求数": "permintaan dalam soak test 40 menit",
-  "4 个中继 · 3 大洲": "4 relay · 3 benua",
+  "5 个中继 · 3 大洲": "5 relay · 3 benua",
   "AMD SEV-SNP / Intel TDX 的 quote 同时绑定签名钥和收件钥，宿主机没法把收件钥放到虚拟机外偷看。": "Quote AMD SEV-SNP / Intel TDX mengikat kunci penandatangan sekaligus kunci penerima, sehingga host tidak dapat memindahkan kunci penerima ke luar VM untuk mengintip data Anda.",
   "Ed25519 已签名": "ditandatangani Ed25519",
   "Noise 通道内还有一层封装加密": "Satu lapisan enkripsi tersegel di dalam kanal Noise",

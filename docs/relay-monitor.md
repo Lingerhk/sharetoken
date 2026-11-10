@@ -32,13 +32,13 @@ curl -s 127.0.0.1:8093/metrics | grep ^sharetoken_relay
 
 管理后台的「仪表盘」页显示每台中继的连接、预约、电路、转发速率、拒绝预约、CPU/内存、运行时长和各网络的协调器预约。门户每分钟通过 SSH 登录中继执行一次 `curl 127.0.0.1:8093/metrics`（`portal/relaymetrics.go`），中继上不对外开任何端口。
 
-- **钥匙：** `~/st-test/<env>-keys/relay-metrics.key`，门户专用。中继的 `authorized_keys` 里这一行带 `restrict,command="curl …/metrics"`，只能读指标，开不了 shell、不能转发端口。`scripts/relay/authorize-metrics.sh dev us sg eu cn lab-cn2` 生成钥匙、装到中继并验证；`--remove` 撤销。不重启中继
+- **钥匙：** `~/st-test/<env>-keys/relay-metrics.key`，门户专用。中继的 `authorized_keys` 里这一行带 `restrict,command="curl …/metrics"`，只能读指标，开不了 shell、不能转发端口。`scripts/relay/authorize-metrics.sh dev us sg eu us2 cn lab-cn2` 生成钥匙、装到中继并验证；`--remove` 撤销。不重启中继
 - **主机公钥：** 固定在 `scripts/<env>/relay-metrics.known_hosts`，脚本只写入和 Mac 的 `~/.ssh/known_hosts` 一致的公钥；门户不认识的主机直接拒绝
 - **门户配置：** `portal.yaml` 的 `relay_metrics`（`targets` 里 `relay` 是登记表里的中继名称）。门户的 systemd 单元只放行本机，所以中继 IP 要同时写进 `IPAddressAllow`
 - **部署：** `scripts/dev/deploy.sh` 把钥匙和 known_hosts 传上去，`st-host-setup.sh` 装到 `/etc/sharetoken-dev/portal/`（钥匙 st-portal 0600，可覆盖轮换）
 - 读取失败和恢复写进门户日志（`relay metrics unavailable` / `relay metrics read`），页面上该中继显示「指标读取失败」和错误原因
 - 「中继」页的「在线客户端」卡片用 `network_clients`、`network_client_mismatches` 和 `agents`：按系统和版本统计每台中继上预约中的设备，以及已连接的程序
-- 目前只有 dev 配置了；生产要用时跑 `authorize-metrics.sh prod …`（会生成另一把钥匙），再给 `scripts/prod` 的 portal.yaml 和单元做同样的修改
+- dev 和 prod 都已配置（prod 自 2026-11-11：钥匙 `~/st-test/prod-keys/relay-metrics.key`，只装在 us、sg、eu、us2、cn 上，`scripts/prod/deploy.sh` 随门户上传）。生产门户的单元没有 `IPAddressAllow` 限制，加减中继只需改 `scripts/prod/portal.yaml` 和跑 `authorize-metrics.sh prod <中继>`
 
 ## 监控项
 
@@ -57,7 +57,7 @@ curl -s 127.0.0.1:8093/metrics | grep ^sharetoken_relay
 
 严重用 Pushover 优先级 1，警告和恢复用 0。进程重启的通知用 -1，不响铃。一切正常时不发任何通知，所以没收到通知不能说明监控在工作：cron 或 Pushover 坏了不会有提示，要确认时登录机器跑 `monitor.py -c monitor.ini --check`，或看 `monitor.log`。
 
-相互守望：机器彻底宕机时它发不出告警，所以 US→SG→EU→US 环形互盯，CN 和 lab-cn2 互盯（跨境丢包太重，不和境外互盯）。
+相互守望：机器彻底宕机时它发不出告警，所以 US→SG→EU→US2→US 环形互盯，CN 和 lab-cn2 互盯（跨境丢包太重，不和境外互盯）。
 
 监控只通知，不重启中继。进程崩溃和机器重启由 systemd 负责（`sharetoken-relay` 服务，5 秒后拉起，一直重试），所以短暂崩溃可能只收到一条静音的重启通知；一直起不来才会告警。
 
@@ -66,7 +66,7 @@ curl -s 127.0.0.1:8093/metrics | grep ^sharetoken_relay
 ```
 scripts/relay/deploy.sh lab-cn2                   # 先更新中继，/metrics 随新版本上线（build_info 是中继的版本，和已部署的软链不一致时告警）
 scripts/relay/deploy-monitor.sh lab-cn2           # 装监控：不重启中继
-scripts/relay/deploy-monitor.sh --prod us sg eu cn   # 生产中继要带 --prod
+scripts/relay/deploy-monitor.sh --prod us sg eu us2 cn   # 生产中继要带 --prod
 ```
 
 配置在 `scripts/relay/conf/<中继>.monitor.ini`，可调项和默认值见 `monitor.py` 的 `DEFAULTS`。服务器上的文件都在 `~/st-test/`：`monitor.py`、`monitor.ini`、`pushover.env`、`monitor.state`、`monitor.log`（超过 1 MB 轮转一份）。cron 只有一行，带 `sharetoken-relay-monitor` 标记。
@@ -83,7 +83,7 @@ PUSHOVER_USER=<用户 key>
 ```
 chmod 600 ~/st-test/pushover.env
 scripts/relay/deploy-monitor.sh --test-push lab-cn2
-scripts/relay/deploy-monitor.sh --test-push --prod us sg eu cn
+scripts/relay/deploy-monitor.sh --test-push --prod us sg eu us2 cn
 ```
 
 文件以 0600 下发。没有账号时监控照常运行，告警只写日志。发送失败会在下一轮重试。

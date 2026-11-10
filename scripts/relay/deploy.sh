@@ -1,7 +1,7 @@
 #!/bin/bash
 # 发布中继（docs/dev-env.md）。在 Mac 上运行，一次发布明确点名的中继，失败就停，不会继续下一台。
 #   scripts/relay/deploy.sh lab-cn2 lab-stdb          # 实验中继：只有 dev 用
-#   scripts/relay/deploy.sh --prod sg                 # 生产在用的中继（us sg eu usw cn）：必须带 --prod，逐台来
+#   scripts/relay/deploy.sh --prod sg                 # 生产在用的中继（us sg eu us2 cn）：必须带 --prod，逐台来
 # 每台先用新二进制校验新配置，通过才切换并重启。二进制放在 releases/<版本>/relay，relay 是指向它的软链；
 # 上一版的软链留在 relay.prev，配置留在 relay.yaml.prev。
 # 装了 systemd 服务（install-service.sh）的用 systemctl 重启，lab-stdb 和还没装的新中继用 nohup。
@@ -15,9 +15,9 @@ PROD=0; [ "${1:-}" = "--prod" ] && { PROD=1; shift; }
 [ $# -gt 0 ] || { sed -n 2,7p "$0"; exit 2; }
 for r in "$@"; do
   case $r in
-    us|sg|eu|usw|cn) [ $PROD = 1 ] || { echo "$r carries production: pass --prod" >&2; exit 2; };;
+    us|sg|eu|us2|cn) [ $PROD = 1 ] || { echo "$r carries production: pass --prod" >&2; exit 2; };;
     lab-cn2|lab-stdb) ;;
-    *) echo "unknown relay $r (us sg eu usw cn lab-cn2 lab-stdb)" >&2; exit 2;;
+    *) echo "unknown relay $r (us sg eu us2 cn lab-cn2 lab-stdb)" >&2; exit 2;;
   esac
 done
 cd "$REPO"
@@ -56,7 +56,7 @@ for r in "$@"; do
       scp $Q "$conf" "s0nnet@$h:st-test/relay.yaml.new"
       ssh $Q -n "s0nnet@$h" "cd ~/st-test && gunzip -c relay.gz > relay.new && chmod +x relay.new; export V=$V RDIR=\$HOME/st-test STATUS=8093; $SWAP"
       ;;
-    usw) # 生产门户同机：程序在 /srv/sharetoken-relay，以 st-relay 运行（install-service.sh 先准备好目录和服务）
+    us2) # 生产门户同机：程序在 /srv/sharetoken-relay，以 st-relay 运行（install-service.sh 先准备好目录和服务）
       h=165.227.3.194; build_amd64
       scp $Q "$B/relay.gz" "s0nnet@$h:/srv/sharetoken-relay/relay.gz"
       scp $Q "$conf" "s0nnet@$h:/srv/sharetoken-relay/relay.yaml.new"

@@ -5,7 +5,7 @@
   "# 客户端登录后，本地端点就绪": "# İstemcide oturum açıldığında yerel uç nokta hazır olur",
   "# 查看收益": "# Kazancınızı görün",
   "40 分钟长稳测试的请求数": "40 dakikalık dayanıklılık testindeki istek sayısı",
-  "4 个中继 · 3 大洲": "4 röle · 3 kıta",
+  "5 个中继 · 3 大洲": "5 röle · 3 kıta",
   "AMD SEV-SNP / Intel TDX 的 quote 同时绑定签名钥和收件钥，宿主机没法把收件钥放到虚拟机外偷看。": "AMD SEV-SNP / Intel TDX quote değeri hem imza anahtarını hem alıcı anahtarını bağlar; bu yüzden ana makine alıcı anahtarını sanal makinenin dışına taşıyıp verilerinizi okuyamaz.",
   "Ed25519 已签名": "Ed25519 ile imzalandı",
   "Noise 通道内还有一层封装加密": "Noise kanalının içinde ayrıca mühürlü bir şifreleme katmanı var",
