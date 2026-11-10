@@ -120,9 +120,9 @@ def main():
     server = v["server"]["version"]
     print("        portal " + server)
     ok(hdr.get("X-ST-Server-Version") == server, "responses carry the server version", hdr.get("X-ST-Server-Version"))
-    ok(v["schema"].get("core") == 2 and v["schema"].get("mail") == 1 and v["schema"].get("portal") == 1, "schema versions reported", v["schema"])
+    ok(v["schema"].get("core") == 3 and v["schema"].get("mail") == 1 and v["schema"].get("portal") == 2, "schema versions reported", v["schema"])
     ok(v["client"].get("min") == "1.0.0" and v["client"].get("latest"), "client policy published", v["client"])
-    ok(sql("SELECT COUNT(*) FROM schema_migrations") == "4", "schema_migrations has core, mail and portal")
+    ok(sql("SELECT COUNT(*) FROM schema_migrations") == "6", "schema_migrations has core, mail and portal")
 
     section("pages")
     for path, mark in (("/", "ShareToken"), ("/app/", ""), ("/admin/", ""), ("/static/favicon.svg", "")):

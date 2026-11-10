@@ -1,7 +1,7 @@
 #!/bin/bash
 # 部署中继监控（docs/relay-monitor.md）。在 Mac 上运行，不重启中继。中继要先更新到带 /metrics 的版本（deploy.sh）。
 #   scripts/relay/deploy-monitor.sh lab-cn2                  # 实验中继
-#   scripts/relay/deploy-monitor.sh --prod us sg eu cn       # 生产中继必须带 --prod
+#   scripts/relay/deploy-monitor.sh --prod us sg eu usw cn   # 生产中继必须带 --prod
 #   scripts/relay/deploy-monitor.sh --test-push lab-cn2      # 部署后发一条测试通知
 #   scripts/relay/deploy-monitor.sh --remove --prod us       # 删除 cron（文件留着）
 # Pushover 账号放在 ~/st-test/pushover.env（PUSHOVER_TOKEN=…、PUSHOVER_USER=…），不进仓库；有这个文件才下发。
@@ -22,9 +22,9 @@ done
 [ $# -gt 0 ] || { sed -n 2,7p "$0"; exit 2; }
 for r in "$@"; do
   case $r in
-    us|sg|eu|cn) [ $PROD = 1 ] || { echo "$r carries production: pass --prod" >&2; exit 2; };;
+    us|sg|eu|usw|cn) [ $PROD = 1 ] || { echo "$r carries production: pass --prod" >&2; exit 2; };;
     lab-cn2) ;;
-    *) echo "unknown relay $r (us sg eu cn lab-cn2)" >&2; exit 2;;
+    *) echo "unknown relay $r (us sg eu usw cn lab-cn2)" >&2; exit 2;;
   esac
 done
 
@@ -33,6 +33,7 @@ for r in "$@"; do
     us) h=s0nnet@165.227.115.27;;
     sg) h=s0nnet@201.79.122.100;;
     eu) h=s0nnet@164.92.157.227;;
+    usw) h=s0nnet@165.227.3.194;;   # 生产门户同机；监控仍以 s0nnet 跑在 ~/st-test
     cn) h=s0nnet@119.29.250.173;;
     lab-cn2) h=orcatermuser@101.43.2.87;;
   esac

@@ -24,8 +24,9 @@ KNOWN=$REPO/scripts/$ENV/relay-metrics.known_hosts
 target() { # relay -> user@host
   case $1 in
     us) echo s0nnet@165.227.115.27;; sg) echo s0nnet@201.79.122.100;; eu) echo s0nnet@164.92.157.227;;
+    usw) echo s0nnet@165.227.3.194;;
     cn) echo s0nnet@119.29.250.173;; lab-cn2) echo orcatermuser@101.43.2.87;;
-    *) echo "unknown relay $1 (us sg eu cn lab-cn2)" >&2; exit 2;;
+    *) echo "unknown relay $1 (us sg eu usw cn lab-cn2)" >&2; exit 2;;
   esac
 }
 for r in "$@"; do target "$r" >/dev/null; done
