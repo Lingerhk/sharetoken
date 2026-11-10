@@ -48,7 +48,7 @@ type HostConfig struct {
 func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 	opts := []libp2p.Option{libp2p.Identity(k.Libp2p)}
 	if cfg.Program != "" {
-		opts = append(opts, libp2p.UserAgent(version.UserAgent(cfg.Program)))
+		opts = append(opts, libp2p.UserAgent(version.AgentVersion(cfg.Program)))
 	}
 	if cfg.DialOnly {
 		// NoListenAddrs also drops the relay transport, which would leave

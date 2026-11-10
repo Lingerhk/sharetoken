@@ -2,6 +2,7 @@ package portal
 
 import (
 	"net/http"
+	"strings"
 
 	"sharetoken/accounts"
 	"sharetoken/coordinator"
@@ -15,9 +16,16 @@ import (
 // HTTP headers that carry versions.
 const (
 	ClientVersionHeader  = "X-ST-Client-Version"  // the desktop client and CLI, on every request
-	ClientPlatformHeader = "X-ST-Client-Platform" // their GOOS, beside the version
+	ClientPlatformHeader = "X-ST-Client-Platform" // their GOOS/GOARCH, beside the version
 	ServerVersionHeader  = "X-ST-Server-Version"  // the portal, on every response
 )
+
+// clientOf is what a request says of the client that sent it, in the form a
+// relay pass carries.
+func clientOf(r *http.Request) relaypass.Client {
+	goos, arch, _ := strings.Cut(r.Header.Get(ClientPlatformHeader), "/")
+	return relaypass.Client{Version: r.Header.Get(ClientVersionHeader), OS: goos, Arch: arch}.Clean()
+}
 
 // ClientVersions tells a client where it stands.
 type ClientVersions struct {

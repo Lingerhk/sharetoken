@@ -12,7 +12,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"sharetoken/internal/version"
 	"sharetoken/p2p"
+	"sharetoken/relaypass"
 )
 
 // scrape returns metric name + label value -> value.
@@ -115,5 +117,66 @@ func TestMetricsOpenRelay(t *testing.T) {
 		if strings.Contains(k, "network_") {
 			t.Fatalf("open relay reports %s", k)
 		}
+	}
+}
+
+// Devices are counted by the build their pass names; one whose identify agent
+// says otherwise is a mismatch. Connected peers are counted by agent.
+func TestMetricsCountClientBuilds(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	portalPub, portalKey, _ := ed25519.GenerateKey(nil)
+	rk, _ := p2p.NewKeys()
+	r, err := New(rk, Config{Listen: []string{"/ip4/127.0.0.1/tcp/0"}, Networks: []Network{{Name: "prod", PortalKeys: []ed25519.PublicKey{portalPub}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	ri := peer.AddrInfo{ID: r.Host.ID(), Addrs: r.Host.Addrs()}
+	agent, _ := version.ParseAgent(version.AgentVersion("client"))
+	honest := relaypass.Client{Version: agent.Version, OS: agent.OS, Arch: agent.Arch}
+	device := func(program string, c relaypass.Client) {
+		k, _ := p2p.NewKeys()
+		h, err := p2p.NewHost(k, p2p.HostConfig{Program: program, Listen: []string{"/ip4/127.0.0.1/tcp/0"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = h.Close() })
+		if err := relaypass.Present(ctx, h, ri, relaypass.Issue(portalKey, h.ID().String(), "user:"+k.ID()[len(k.ID())-4:], c, time.Now(), time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Reserve(ctx, h, ri); err != nil {
+			t.Fatal(err)
+		}
+	}
+	device("client", honest)
+	device("client", honest)
+	device("client", relaypass.Client{Version: "0.9.0", OS: "windows", Arch: "amd64"}) // the pass says Windows, the agent says otherwise
+	device("", honest)                                                                 // no sharetoken agent at all
+
+	// Identify finishes in the background; wait until every peer has an agent.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		m := scrape(t, r)
+		if m["sharetoken_relay_agents{"+agent.Arch+","+agent.OS+",client,"+agent.Version+"}"] == 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	m := scrape(t, r)
+	// Labels come sorted by name: arch, network, os, version.
+	for key, want := range map[string]float64{
+		"sharetoken_relay_network_clients{" + agent.Arch + ",prod," + agent.OS + "," + agent.Version + "}": 3,
+		"sharetoken_relay_network_clients{amd64,prod,windows,0.9.0}":                                       1,
+		"sharetoken_relay_network_client_mismatches{prod}":                                                 2,
+		"sharetoken_relay_agents{" + agent.Arch + "," + agent.OS + ",client," + agent.Version + "}":        3,
+		"sharetoken_relay_agents{,,other,}":                                                                1,
+	} {
+		if m[key] != want {
+			t.Errorf("%s = %v, want %v", key, m[key], want)
+		}
+	}
+	if t.Failed() {
+		t.Logf("metrics: %v", m)
 	}
 }

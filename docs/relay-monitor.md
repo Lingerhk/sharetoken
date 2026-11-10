@@ -22,6 +22,9 @@ curl -s 127.0.0.1:8093/metrics | grep ^sharetoken_relay
 | `reservations_granted_total`、`reservations_denied_total` | 预约的批准和拒绝 |
 | `circuits_opened_total`、`circuits_denied_total`、`relayed_bytes_total` | 电路和转发字节 |
 | `passes_accepted_total`、`passes_rejected_total` | 通行证 |
+| `network_clients{network,version,os,arch}` | 持有预约的设备，按通行证里门户签名的客户端版本、系统、架构计数（每个网络最多 64 种，其余归入 `version="other"`） |
+| `network_client_mismatches{network}` | 其中 libp2p identify 自报的版本或平台和通行证对不上的设备（旧客户端、被改过的客户端） |
+| `agents{program,version,os,arch}` | 所有已连接对端按 identify 自报的 agent 计数，包括没预约的买家；未签名，非 sharetoken 程序记为 `program="other"` |
 
 另外还有 libp2p 自带的 `libp2p_*`，以及 `go_*`、`process_*`。
 
@@ -34,6 +37,7 @@ curl -s 127.0.0.1:8093/metrics | grep ^sharetoken_relay
 - **门户配置：** `portal.yaml` 的 `relay_metrics`（`targets` 里 `relay` 是登记表里的中继名称）。门户的 systemd 单元只放行本机，所以中继 IP 要同时写进 `IPAddressAllow`
 - **部署：** `scripts/dev/deploy.sh` 把钥匙和 known_hosts 传上去，`st-host-setup.sh` 装到 `/etc/sharetoken-dev/portal/`（钥匙 st-portal 0600，可覆盖轮换）
 - 读取失败和恢复写进门户日志（`relay metrics unavailable` / `relay metrics read`），页面上该中继显示「指标读取失败」和错误原因
+- 「中继」页的「在线客户端」卡片用 `network_clients`、`network_client_mismatches` 和 `agents`：按系统和版本统计每台中继上预约中的设备，以及已连接的程序
 - 目前只有 dev 配置了；生产要用时跑 `authorize-metrics.sh prod …`（会生成另一把钥匙），再给 `scripts/prod` 的 portal.yaml 和单元做同样的修改
 
 ## 监控项

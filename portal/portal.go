@@ -896,7 +896,7 @@ func (s *Server) handleBindDevice(w http.ResponseWriter, r *http.Request, cu ctx
 	if err := s.store.SetDeviceVersion(d.Peer, r.Header.Get(ClientVersionHeader)); err != nil {
 		s.log.Warn("recording a device's version", "err", err)
 	}
-	if err := s.store.SetDevicePlatform(d.Peer, r.Header.Get(ClientPlatformHeader)); err != nil {
+	if err := s.store.SetDevicePlatform(d.Peer, clientOf(r).OS); err != nil {
 		s.log.Warn("recording a device's platform", "err", err)
 	}
 	writeJSON(w, http.StatusOK, d)
@@ -937,7 +937,9 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request, cu ctxUser)
 }
 
 // IssuePass signs a relay pass for peer if it is a device of the active user u.
-func (s *Server) IssuePass(u *accounts.User, peer string) (*relaypass.Pass, error) {
+// client is what the device's client reported of itself; it is signed into
+// the pass for relay statistics.
+func (s *Server) IssuePass(u *accounts.User, peer string, client relaypass.Client) (*relaypass.Pass, error) {
 	if s.cfg.PassKey == nil {
 		return nil, errNoPasses
 	}
@@ -948,7 +950,7 @@ func (s *Server) IssuePass(u *accounts.User, peer string) (*relaypass.Pass, erro
 	if uid != u.ID {
 		return nil, accounts.ErrBoundElsewhere
 	}
-	return relaypass.Issue(s.cfg.PassKey, peer, acct, s.cfg.Now(), s.cfg.PassTTL), nil
+	return relaypass.Issue(s.cfg.PassKey, peer, acct, client.Clean(), s.cfg.Now(), s.cfg.PassTTL), nil
 }
 
 var errNoPasses = errors.New("portal: relay passes are not enabled")
@@ -960,7 +962,7 @@ func (s *Server) handleRelayPass(w http.ResponseWriter, r *http.Request, cu ctxU
 	if !readJSON(w, r, &req) {
 		return
 	}
-	p, err := s.IssuePass(cu.user, req.Peer)
+	p, err := s.IssuePass(cu.user, req.Peer, clientOf(r))
 	switch {
 	case err == nil:
 		// Devices that only buy never announce an offer: passes are where
@@ -968,7 +970,7 @@ func (s *Server) handleRelayPass(w http.ResponseWriter, r *http.Request, cu ctxU
 		if err := s.store.SetDeviceVersion(req.Peer, r.Header.Get(ClientVersionHeader)); err != nil {
 			s.log.Warn("recording a device's version", "err", err)
 		}
-		if err := s.store.SetDevicePlatform(req.Peer, r.Header.Get(ClientPlatformHeader)); err != nil {
+		if err := s.store.SetDevicePlatform(req.Peer, clientOf(r).OS); err != nil {
 			s.log.Warn("recording a device's platform", "err", err)
 		}
 		writeJSON(w, http.StatusOK, p)
@@ -1100,7 +1102,7 @@ func (s *Server) handleDisable(disabled bool) authedHandler {
 }
 
 func (s *Server) handleRelays(w http.ResponseWriter, r *http.Request, _ ctxUser) {
-	rs, err := s.store.Relays(false)
+	rs, err := s.relaysWithMetrics()
 	if err != nil {
 		s.internal(w, err)
 		return

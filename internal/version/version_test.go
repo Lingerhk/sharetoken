@@ -38,3 +38,27 @@ func TestValidAndDev(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAgent(t *testing.T) {
+	for in, want := range map[string]struct {
+		a  Agent
+		ok bool
+	}{
+		"sharetoken-client/1.0.0 (darwin/arm64)":       {Agent{"client", "1.0.0", "darwin", "arm64"}, true},
+		"sharetoken-relay/1.0.0-dev.abc (linux/amd64)": {Agent{"relay", "1.0.0-dev.abc", "linux", "amd64"}, true},
+		"sharetoken-client/1.0.0":                      {Agent{"client", "1.0.0", "", ""}, true},
+		"sharetoken-client/1 0 (Linux/amd64)":          {Agent{"client", "1", "", ""}, true},
+		"sharetoken-client/1.0.0 (linux/amd64":         {Agent{"client", "1.0.0", "", ""}, true},
+		"sharetoken-client/x\"y (linux/amd64)":         {Agent{"client", "", "linux", "amd64"}, true},
+		"github.com/libp2p/go-libp2p":                  {Agent{}, false},
+		"sharetoken-":                                  {Agent{}, false},
+		"":                                             {Agent{}, false},
+	} {
+		if a, ok := ParseAgent(in); a != want.a || ok != want.ok {
+			t.Errorf("%q: %+v %v", in, a, ok)
+		}
+	}
+	if a, ok := ParseAgent(AgentVersion("client")); !ok || a.Program != "client" || a.OS+"/"+a.Arch != Platform() {
+		t.Errorf("own agent: %+v", a)
+	}
+}

@@ -21,6 +21,7 @@ import (
 type api struct {
 	t   *testing.T
 	url string
+	hdr map[string]string // sent with every request
 }
 
 func (a *api) call(method, path, token string, body any, wantStatus int, out any) {
@@ -35,6 +36,9 @@ func (a *api) call(method, path, token string, body any, wantStatus int, out any
 	req, _ := http.NewRequest(method, a.url+path, rd)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for k, v := range a.hdr {
+		req.Header.Set(k, v)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -203,9 +207,21 @@ func TestRelayPassEndpoint(t *testing.T) {
 	a.call("POST", "/api/v1/devices", alice.Token, BindRequest{Peer: k.ID(), UnixNano: ts, Sig: accounts.SignBind(k.Signer, "alice", k.ID(), ts)}, 200, nil)
 	var p relaypass.Pass
 	a.call("POST", "/api/v1/relay-pass", alice.Token, map[string]string{"peer": k.ID()}, 200, &p)
-	if err := p.Verify([]ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, k.ID(), time.Now()); err != nil || p.Account != "user:1" {
+	if err := p.Verify([]ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, k.ID(), time.Now()); err != nil || p.Account != "user:1" || p.Client != (relaypass.Client{}) {
 		t.Fatalf("pass %+v: %v", p, err)
 	}
+	// The client's build goes into the pass as it reported it, if well formed.
+	a.hdr = map[string]string{ClientVersionHeader: "1.0.0", ClientPlatformHeader: "windows/arm64"}
+	a.call("POST", "/api/v1/relay-pass", alice.Token, map[string]string{"peer": k.ID()}, 200, &p)
+	if want := (relaypass.Client{Version: "1.0.0", OS: "windows", Arch: "arm64"}); p.Client != want || p.Verify([]ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, k.ID(), time.Now()) != nil {
+		t.Fatalf("pass client %+v", p.Client)
+	}
+	a.hdr = map[string]string{ClientVersionHeader: "1.0.0 <b>", ClientPlatformHeader: "Windows"}
+	a.call("POST", "/api/v1/relay-pass", alice.Token, map[string]string{"peer": k.ID()}, 200, &p)
+	if p.Client != (relaypass.Client{}) {
+		t.Fatalf("malformed client info signed: %+v", p.Client)
+	}
+	a.hdr = nil
 	a.call("POST", "/api/v1/relay-pass", bob.Token, map[string]string{"peer": k.ID()}, 403, nil) // alice's device
 	_ = s
 

@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,7 @@ import (
 	lproto "github.com/libp2p/go-libp2p/core/protocol"
 	ma "github.com/multiformats/go-multiaddr"
 
+	"sharetoken/internal/version"
 	"sharetoken/protocol"
 	"sharetoken/relaypass"
 )
@@ -115,6 +117,7 @@ type admission struct {
 type admitted struct {
 	tenant  *tenant
 	account string
+	client  relaypass.Client // signed by the portal, for statistics only
 	expires time.Time
 }
 
@@ -122,6 +125,7 @@ type admitted struct {
 type holder struct {
 	tenant  *tenant
 	account string // "" for an allow-listed peer, which no limit counts
+	client  relaypass.Client
 	until   time.Time
 }
 
@@ -186,7 +190,7 @@ func (a *admission) AllowReserve(p peer.ID, _ ma.Multiaddr) bool {
 		e.tenant.denied.Add(1)
 		return false
 	}
-	a.reserved[p] = holder{tenant: e.tenant, account: e.account, until: now.Add(a.ttl)}
+	a.reserved[p] = holder{tenant: e.tenant, account: e.account, client: e.client, until: now.Add(a.ttl)}
 	return true
 }
 
@@ -230,7 +234,7 @@ func (a *admission) handlePass(s network.Stream) {
 		return
 	}
 	a.mu.Lock()
-	a.passes[remote] = admitted{tenant: t, account: p.Account, expires: p.Expires()}
+	a.passes[remote] = admitted{tenant: t, account: p.Account, client: p.Client.Clean(), expires: p.Expires()}
 	if len(a.passes) > 4*maxTrackedPasses/5 {
 		for id, e := range a.passes {
 			if !now.Before(e.expires) {
@@ -255,6 +259,63 @@ type NetworkStats struct {
 	Coordinators         int `json:"coordinators"`
 	CoordinatorsExpected int `json:"coordinators_expected"` // allow_peers configured
 	MaxReservations      int `json:"max_reservations"`      // 0: only the relay's global limit
+	// Clients counts the devices holding a reservation by what their pass
+	// says of their client (signed by the portal, as the client reported it).
+	Clients []ClientCount `json:"clients,omitempty"`
+	// ClientMismatches counts those whose libp2p identify agent says
+	// otherwise: another release or platform than their pass, or none.
+	ClientMismatches int `json:"client_mismatches"`
+}
+
+// ClientCount is how many devices run one client build.
+type ClientCount struct {
+	Version string `json:"version"`
+	OS      string `json:"os"`
+	Arch    string `json:"arch"`
+	Devices int    `json:"devices"`
+}
+
+// maxClientKinds bounds the distinct builds listed per network (and of
+// connected agents); the rest are counted under version "other".
+const maxClientKinds = 64
+
+// agentOf reads what a connected peer announced in libp2p's identify exchange.
+func agentOf(h host.Host, p peer.ID) (version.Agent, bool) {
+	v, err := h.Peerstore().Get(p, "AgentVersion")
+	if err != nil {
+		return version.Agent{}, false
+	}
+	s, _ := v.(string)
+	return version.ParseAgent(s)
+}
+
+// countClient adds one device of build c to counts, keyed by build.
+func countClient(counts map[relaypass.Client]int, c relaypass.Client) {
+	if _, ok := counts[c]; !ok && len(counts) >= maxClientKinds {
+		c = relaypass.Client{Version: "other"}
+	}
+	counts[c]++
+}
+
+func clientCounts(counts map[relaypass.Client]int) []ClientCount {
+	out := make([]ClientCount, 0, len(counts))
+	for c, n := range counts {
+		out = append(out, ClientCount{Version: c.Version, OS: c.OS, Arch: c.Arch, Devices: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Devices != b.Devices {
+			return a.Devices > b.Devices
+		}
+		if a.Version != b.Version {
+			return a.Version < b.Version
+		}
+		if a.OS != b.OS {
+			return a.OS < b.OS
+		}
+		return a.Arch < b.Arch
+	})
+	return out
 }
 
 func (a *admission) networkStats() []NetworkStats {
@@ -262,13 +323,22 @@ func (a *admission) networkStats() []NetworkStats {
 		return nil
 	}
 	now := a.now()
-	held, coordinators := map[*tenant]int{}, map[*tenant]int{}
+	held, coordinators, mismatches := map[*tenant]int{}, map[*tenant]int{}, map[*tenant]int{}
+	clients := map[*tenant]map[relaypass.Client]int{}
 	a.mu.Lock()
 	for p, h := range a.reserved {
 		if now.Before(h.until) && a.h != nil && a.h.Network().Connectedness(p) == network.Connected {
 			held[h.tenant]++
 			if h.account == "" {
 				coordinators[h.tenant]++
+				continue
+			}
+			if clients[h.tenant] == nil {
+				clients[h.tenant] = map[relaypass.Client]int{}
+			}
+			countClient(clients[h.tenant], h.client)
+			if ag, ok := agentOf(a.h, p); !ok || ag.Program != "client" || ag.Version != h.client.Version || ag.OS != h.client.OS || ag.Arch != h.client.Arch {
+				mismatches[h.tenant]++
 			}
 		}
 	}
@@ -276,7 +346,8 @@ func (a *admission) networkStats() []NetworkStats {
 	out := make([]NetworkStats, 0, len(a.tenants))
 	for _, t := range a.tenants {
 		out = append(out, NetworkStats{Name: t.Name, Reservations: held[t], PassesAccepted: t.accepted.Load(), ReservationsDenied: t.denied.Load(),
-			Coordinators: coordinators[t], CoordinatorsExpected: len(t.AllowPeers), MaxReservations: t.MaxReservations})
+			Coordinators: coordinators[t], CoordinatorsExpected: len(t.AllowPeers), MaxReservations: t.MaxReservations,
+			Clients: clientCounts(clients[t]), ClientMismatches: mismatches[t]})
 	}
 	return out
 }

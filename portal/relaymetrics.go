@@ -49,6 +49,19 @@ type RelayNetMetrics struct {
 	Reservations    int64  `json:"reservations"`
 	MaxReservations int64  `json:"max_reservations"`
 	Denied          int64  `json:"reservations_denied_total"`
+	// Clients are the devices holding a reservation, by the build their
+	// portal-signed pass names; Mismatches those whose libp2p agent disagrees.
+	Clients    []RelayClientCount `json:"clients"`
+	Mismatches int64              `json:"client_mismatches"`
+}
+
+// RelayClientCount is how many peers of one build a relay sees.
+type RelayClientCount struct {
+	Program string `json:"program,omitempty"` // agents only: client, coordinator, relay, other
+	Version string `json:"version"`
+	OS      string `json:"os"`
+	Arch    string `json:"arch"`
+	Count   int64  `json:"count"`
 }
 
 // RelayMetrics is the last scrape of one relay.
@@ -85,8 +98,10 @@ type RelayMetrics struct {
 	NetRxBps     float64           `json:"net_rx_bps"` // -1 when unknown
 	NetTxBps     float64           `json:"net_tx_bps"`
 	Networks     []RelayNetMetrics `json:"networks"`
-	cpuSeconds   float64
-	okMono       time.Time
+	// Agents are the connected peers by their libp2p identify agent (unsigned).
+	Agents     []RelayClientCount `json:"agents"`
+	cpuSeconds float64
+	okMono     time.Time
 }
 
 // relayMetrics scrapes the configured relays in the background.
@@ -391,6 +406,13 @@ func parseRelayMetrics(body []byte) (*RelayMetrics, error) {
 			netOf(labels["network"]).MaxReservations = iv
 		case "sharetoken_relay_network_reservations_denied_total":
 			netOf(labels["network"]).Denied = iv
+		case "sharetoken_relay_network_client_mismatches":
+			netOf(labels["network"]).Mismatches = iv
+		case "sharetoken_relay_network_clients":
+			n := netOf(labels["network"])
+			n.Clients = append(n.Clients, RelayClientCount{Version: labels["version"], OS: labels["os"], Arch: labels["arch"], Count: iv})
+		case "sharetoken_relay_agents":
+			r.Agents = append(r.Agents, RelayClientCount{Program: labels["program"], Version: labels["version"], OS: labels["os"], Arch: labels["arch"], Count: iv})
 		case "process_cpu_seconds_total":
 			r.cpuSeconds = val
 		case "process_resident_memory_bytes":
@@ -412,10 +434,28 @@ func parseRelayMetrics(body []byte) (*RelayMetrics, error) {
 	}
 	r.Networks = make([]RelayNetMetrics, 0, len(nets))
 	for _, n := range nets {
+		if n.Clients == nil {
+			n.Clients = []RelayClientCount{}
+		}
+		sortCounts(n.Clients)
 		r.Networks = append(r.Networks, *n)
 	}
+	if r.Agents == nil {
+		r.Agents = []RelayClientCount{}
+	}
+	sortCounts(r.Agents)
 	sort.Slice(r.Networks, func(i, j int) bool { return r.Networks[i].Network < r.Networks[j].Network })
 	return r, nil
+}
+
+// sortCounts puts the most common builds first.
+func sortCounts(c []RelayClientCount) {
+	sort.Slice(c, func(i, j int) bool {
+		if c[i].Count != c[j].Count {
+			return c[i].Count > c[j].Count
+		}
+		return c[i].Program+"/"+c[i].Version+"/"+c[i].OS+"/"+c[i].Arch < c[j].Program+"/"+c[j].Version+"/"+c[j].OS+"/"+c[j].Arch
+	})
 }
 
 // parsePromLine splits `name{k="v",...} value [timestamp]`.

@@ -61,9 +61,9 @@ func TestRelayAdmitsOnlyPassHolders(t *testing.T) {
 
 	// Passes the relay must refuse.
 	for name, pass := range map[string]*relaypass.Pass{
-		"another portal's": relaypass.Issue(rogueKey, stranger.ID().String(), "user:9", now, time.Hour),
-		"another peer's":   relaypass.Issue(portalKey, coord.ID().String(), "user:9", now, time.Hour),
-		"an expired":       relaypass.Issue(portalKey, stranger.ID().String(), "user:9", now.Add(-2*time.Hour), time.Hour),
+		"another portal's": relaypass.Issue(rogueKey, stranger.ID().String(), "user:9", relaypass.Client{}, now, time.Hour),
+		"another peer's":   relaypass.Issue(portalKey, coord.ID().String(), "user:9", relaypass.Client{}, now, time.Hour),
+		"an expired":       relaypass.Issue(portalKey, stranger.ID().String(), "user:9", relaypass.Client{}, now.Add(-2*time.Hour), time.Hour),
 	} {
 		if err := relaypass.Present(ctx, stranger, ri, pass); protocol.CodeOf(err) != protocol.CodeUnauthorized {
 			t.Fatalf("%s pass: want unauthorized, got %v", name, err)
@@ -78,7 +78,7 @@ func TestRelayAdmitsOnlyPassHolders(t *testing.T) {
 	devices := make([]host.Host, 3)
 	for i := range devices {
 		devices[i], _ = newHost(t)
-		if err := relaypass.Present(ctx, devices[i], ri, relaypass.Issue(portalKey, devices[i].ID().String(), "user:1", now, time.Hour)); err != nil {
+		if err := relaypass.Present(ctx, devices[i], ri, relaypass.Issue(portalKey, devices[i].ID().String(), "user:1", relaypass.Client{}, now, time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -92,7 +92,7 @@ func TestRelayAdmitsOnlyPassHolders(t *testing.T) {
 		t.Fatal("third device of the same account reserved")
 	}
 	other, _ := newHost(t)
-	if err := relaypass.Present(ctx, other, ri, relaypass.Issue(portalKey, other.ID().String(), "user:2", now, time.Hour)); err != nil {
+	if err := relaypass.Present(ctx, other, ri, relaypass.Issue(portalKey, other.ID().String(), "user:2", relaypass.Client{}, now, time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if err := reserve(other); err != nil {
@@ -132,7 +132,7 @@ func TestRelayKeepsNetworksApart(t *testing.T) {
 	reserve := func(h host.Host) error { _, err := client.Reserve(ctx, h, ri); return err }
 	device := func(key ed25519.PrivateKey, account string) host.Host {
 		h, _ := newHost(t)
-		if err := relaypass.Present(ctx, h, ri, relaypass.Issue(key, h.ID().String(), account, now, time.Hour)); err != nil {
+		if err := relaypass.Present(ctx, h, ri, relaypass.Issue(key, h.ID().String(), account, relaypass.Client{}, now, time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 		return h
@@ -205,7 +205,7 @@ func TestRelayRefusesUnknownPortal(t *testing.T) {
 	defer r.Close()
 	h, _ := newHost(t)
 	ri := peer.AddrInfo{ID: r.Host.ID(), Addrs: r.Host.Addrs()}
-	err = relaypass.Present(ctx, h, ri, relaypass.Issue(rogue, h.ID().String(), "user:1", time.Now(), time.Hour))
+	err = relaypass.Present(ctx, h, ri, relaypass.Issue(rogue, h.ID().String(), "user:1", relaypass.Client{}, time.Now(), time.Hour))
 	if protocol.CodeOf(err) != protocol.CodeUnauthorized {
 		t.Fatalf("want unauthorized, got %v", err)
 	}

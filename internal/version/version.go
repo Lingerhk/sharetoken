@@ -6,6 +6,7 @@ package version
 
 import (
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -32,6 +33,73 @@ func Current() Info { return Info{Version: Version, Commit: Commit, BuildTime: B
 
 // UserAgent names a program of this build: sharetoken-relay/1.2.3.
 func UserAgent(program string) string { return "sharetoken-" + program + "/" + Version }
+
+// Platform is this build's operating system and architecture: darwin/arm64.
+func Platform() string { return runtime.GOOS + "/" + runtime.GOARCH }
+
+// AgentVersion is what a program announces in libp2p's identify exchange:
+// sharetoken-client/1.2.3 (darwin/arm64).
+func AgentVersion(program string) string { return UserAgent(program) + " (" + Platform() + ")" }
+
+// Agent is an AgentVersion taken apart.
+type Agent struct {
+	Program, Version, OS, Arch string
+}
+
+// ParseAgent reads an AgentVersion. Fields not in the expected form are left
+// empty; ok is false when s is not a sharetoken program at all.
+func ParseAgent(s string) (a Agent, ok bool) {
+	rest, found := strings.CutPrefix(s, "sharetoken-")
+	if !found {
+		return a, false
+	}
+	head, plat, _ := strings.Cut(rest, " ")
+	prog, ver, found := strings.Cut(head, "/")
+	if !found || !ValidPlatformName(prog) {
+		return a, false
+	}
+	a.Program = prog
+	if ValidVersionLabel(ver) {
+		a.Version = ver
+	}
+	if p, found := strings.CutPrefix(plat, "("); found {
+		if p, found = strings.CutSuffix(p, ")"); found {
+			goos, arch, _ := strings.Cut(p, "/")
+			if ValidPlatformName(goos) && ValidPlatformName(arch) {
+				a.OS, a.Arch = goos, arch
+			}
+		}
+	}
+	return a, true
+}
+
+// ValidVersionLabel says whether v is safe to store and to use as a metric
+// label: up to 64 of [0-9A-Za-z.+-].
+func ValidVersionLabel(v string) bool {
+	if v == "" || len(v) > 64 {
+		return false
+	}
+	for _, c := range v {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '.' || c == '+' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidPlatformName says whether s looks like a GOOS, a GOARCH or a program
+// name: up to 16 of [a-z0-9].
+func ValidPlatformName(s string) bool {
+	if s == "" || len(s) > 16 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z') {
+			return false
+		}
+	}
+	return true
+}
 
 // String is what a program's version command and first log line print.
 func String(program string) string {

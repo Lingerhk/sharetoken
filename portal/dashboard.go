@@ -229,22 +229,30 @@ func (s *Server) Dashboard() (*Dashboard, error) {
 	if d.Coordinator, err = coordinator.CoordinatorID(s.db); err != nil {
 		return nil, err
 	}
+	if d.Relays, err = s.relaysWithMetrics(); err != nil {
+		return nil, err
+	}
+	d.MetricsOn = s.relayMetrics != nil
+	if d.MetricsOn {
+		d.MetricsEvery = int64(s.relayMetrics.cfg.Interval / time.Second)
+	}
+	return d, nil
+}
+
+// relaysWithMetrics is the relay registry with each relay's last scrape.
+func (s *Server) relaysWithMetrics() ([]DashRelay, error) {
 	relays, err := s.store.Relays(false)
 	if err != nil {
 		return nil, err
 	}
 	snap := s.relayMetrics.snapshot()
-	d.MetricsOn = s.relayMetrics != nil
-	if d.MetricsOn {
-		d.MetricsEvery = int64(s.relayMetrics.cfg.Interval / time.Second)
-	}
-	d.Relays = make([]DashRelay, 0, len(relays))
+	out := make([]DashRelay, 0, len(relays))
 	for _, rl := range relays {
 		dr := DashRelay{Relay: rl}
 		if m, ok := snap[rl.Name]; ok {
 			dr.Metrics = &m
 		}
-		d.Relays = append(d.Relays, dr)
+		out = append(out, dr)
 	}
-	return d, nil
+	return out, nil
 }

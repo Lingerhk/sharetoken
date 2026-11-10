@@ -385,13 +385,13 @@
 
   // ---- relays ----
   async function relays(m) {
-    const list = h('div', { class: 'card' });
+    const list = h('div', { class: 'card' }), clients = h('div', { class: 'card', id: 'relay-clients' });
     const charts = h('div'), legend = h('div', { class: 'dash-legend' });
     let range = '24h';
     const rangeBtns = ['24h', '3d', '7d'].map(k => h('button', { class: k === range ? 'active' : '', onclick: () => { range = k; rangeBtns.forEach(b => b.classList.toggle('active', b.dataset.range === k)); loadCharts().catch(fail); } }, { '24h': '24 小时', '3d': '3 天', '7d': '7 天' }[k]));
     rangeBtns.forEach((b, i) => b.dataset.range = ['24h', '3d', '7d'][i]);
     add(m, pageTitle('中继', h('small', null, '协调器每 15 秒同步一次登记表，并回写是否可达')), h('div', { class: 'toolbar' }, h('button', { class: 'primary', onclick: addRelay }, '登记中继')),
-      h('div', { class: 'card' }, section('chart', '资源监控', h('span', { class: 'tabs' }, rangeBtns)), legend, charts), list);
+      h('div', { class: 'card' }, section('chart', '资源监控', h('span', { class: 'tabs' }, rangeBtns)), legend, charts), clients, list);
     async function loadCharts() {
       const hs = await api('GET', '/api/v1/admin/relay-history?range=' + range);
       const to = hs.now, from = hs.from, ser = hs.series.map((s, i) => ({ s, color: SERIES_COLORS[i % SERIES_COLORS.length] }));
@@ -414,6 +414,7 @@
     loadCharts().catch(fail);
     async function load() {
       const r = await api('GET', '/api/v1/admin/relays');
+      renderClients(r.relays);
       add(clear(list), table([
         { title: 'ID', num: true, cell: x => String(x.id) },
         { title: '名称 / 地区', cell: x => [x.name || '—', ' ', h('span', { class: 'muted' }, x.region || '')] },
@@ -434,6 +435,50 @@
             try { await api('DELETE', '/api/v1/admin/relays/' + x.id); toast('已删除'); await load(); } catch (ex) { fail(ex); }
           } }, '删除')) },
       ], r.relays, '还没有登记中继'));
+    }
+    // Who is online, as the relays see it: devices holding a reservation by the
+    // build their portal-signed pass names, and every connected peer by the
+    // agent it announced in libp2p identify.
+    function renderClients(rs) {
+      const OS = [['Windows', 'windows'], ['Linux', 'linux'], ['macOS', 'darwin']];
+      const osOf = c => OS.some(o => o[1] === c.os) ? c.os : 'other';
+      const live = rs.filter(x => x.metrics && x.metrics.ok_at);
+      const rows = [], total = { windows: 0, linux: 0, darwin: 0, other: 0, all: 0, mismatch: 0 };
+      for (const x of live) for (const n of x.metrics.networks || []) {
+        const cl = n.clients || [];
+        if (!cl.length && !n.client_mismatches) continue;
+        const row = { relay: x.name || '#' + x.id, network: n.network, windows: 0, linux: 0, darwin: 0, other: 0, all: 0, mismatch: n.client_mismatches || 0, builds: cl };
+        for (const c of cl) { row[osOf(c)] += c.count; row.all += c.count; }
+        for (const k of ['windows', 'linux', 'darwin', 'other', 'all', 'mismatch']) total[k] += row[k];
+        rows.push(row);
+      }
+      const build = c => (c.version || '未知') + (c.os ? ' ' + c.os + '/' + (c.arch || '?') : '');
+      const agentRows = live.map(x => {
+        const a = x.metrics.agents || [], by = p => a.filter(c => c.program === p).reduce((n, c) => n + c.count, 0);
+        return { relay: x.name || '#' + x.id, client: by('client'), coordinator: by('coordinator'), relay_: by('relay'), other: a.filter(c => !['client', 'coordinator', 'relay'].includes(c.program)).reduce((n, c) => n + c.count, 0),
+          builds: a.filter(c => c.program === 'client') };
+      });
+      add(clear(clients), section('desktop', '在线客户端', h('small', null, '中继每次被采集时统计；系统和版本取自门户签名的通行证')),
+        !live.length ? h('p', { class: 'muted' }, '没有可用的中继指标：需要在门户配置中继指标采集。') : [
+          h('div', { class: 'tiles' }, OS.map(([label, k]) => tile(label, num(total[k]), '预约中的设备', 'desktop', 'blue')),
+            tile('未知系统', num(total.other), '通行证里没有系统信息', 'cube'),
+            tile('自报不一致', num(total.mismatch), 'libp2p 自报的版本或平台和通行证不同', 'shield', '', total.mismatch ? 'warn' : 'ok')),
+          table([
+            { title: '中继', cell: x => x.relay }, { title: '网络', cell: x => x.network },
+            { title: '设备', num: true, cell: x => num(x.all) },
+            ...OS.map(([label, k]) => ({ title: label, num: true, cell: x => num(x[k]) })),
+            { title: '未知', num: true, cell: x => num(x.other) },
+            { title: '版本', cell: x => h('span', { class: 'row' }, x.builds.slice(0, 6).map(c => badge(build(c) + ' ×' + c.count, ''))) },
+            { title: '不一致', num: true, cell: x => x.mismatch ? badge(String(x.mismatch), 'warn') : '0' },
+          ], rows, '没有设备在中继上预约'),
+          h('h3', { class: 'dash-sub' }, '已连接的程序（libp2p 自报，未签名）'),
+          table([
+            { title: '中继', cell: x => x.relay },
+            { title: '客户端', num: true, cell: x => num(x.client) }, { title: '协调器', num: true, cell: x => num(x.coordinator) },
+            { title: '中继', num: true, cell: x => num(x.relay_) }, { title: '其他', num: true, cell: x => num(x.other) },
+            { title: '客户端版本', cell: x => h('span', { class: 'row' }, x.builds.slice(0, 6).map(c => badge(build(c) + ' ×' + c.count, ''))) },
+          ], agentRows, ''),
+          h('p', { class: 'muted' }, '「设备」只算持有预约的客户端（卖家和接单设备）；只买不卖、没预约的客户端出现在「已连接的程序」里。「不一致」多半是旧客户端，或者被改过的客户端。')]);
     }
     async function addRelay() {
       const addr = h('textarea', { rows: 3, placeholder: '/ip4/203.0.113.7/tcp/8091/p2p/12D3Koo…,/ip6/2001:db8::7/tcp/8091/p2p/12D3Koo…' });

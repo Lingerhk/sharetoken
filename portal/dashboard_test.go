@@ -39,6 +39,11 @@ sharetoken_relay_network_coordinators_reserved{network="dev"} 0
 sharetoken_relay_network_coordinators_reserved{network="prod"} 1
 sharetoken_relay_network_max_reservations{network="dev"} 32
 sharetoken_relay_network_reservations{network="dev"} 1
+sharetoken_relay_network_client_mismatches{network="prod"} 1
+sharetoken_relay_network_clients{arch="arm64",network="prod",os="darwin",version="1.0.0"} 2
+sharetoken_relay_network_clients{arch="amd64",network="prod",os="windows",version="1.0.0"} 5
+sharetoken_relay_agents{arch="amd64",os="windows",program="client",version="1.0.0"} 6
+sharetoken_relay_agents{arch="",os="",program="other",version=""} 1
 sharetoken_relay_peers 6
 sharetoken_relay_relayed_bytes_total 1.26499907e+08
 sharetoken_relay_reservations 2
@@ -59,6 +64,15 @@ func TestParseRelayMetrics(t *testing.T) {
 	}
 	if len(m.Networks) != 2 || m.Networks[0].Network != "dev" || m.Networks[0].Reserved != 0 || m.Networks[0].MaxReservations != 32 || m.Networks[1].Reserved != 1 {
 		t.Fatalf("networks: %+v", m.Networks)
+	}
+	if p := m.Networks[1]; p.Mismatches != 1 || len(p.Clients) != 2 || p.Clients[0] != (RelayClientCount{Version: "1.0.0", OS: "windows", Arch: "amd64", Count: 5}) {
+		t.Fatalf("prod clients: %+v", p)
+	}
+	if len(m.Networks[0].Clients) != 0 || m.Networks[0].Clients == nil {
+		t.Fatalf("dev clients must be an empty list: %#v", m.Networks[0].Clients)
+	}
+	if len(m.Agents) != 2 || m.Agents[0].Program != "client" || m.Agents[0].Count != 6 || m.Agents[1].Program != "other" {
+		t.Fatalf("agents: %+v", m.Agents)
 	}
 	if _, err := parseRelayMetrics([]byte("go_goroutines 7\n")); err == nil {
 		t.Fatal("output without relay metrics was accepted")

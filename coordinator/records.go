@@ -3,9 +3,9 @@ package coordinator
 import (
 	"database/sql"
 	"math"
-	"strings"
 
 	"sharetoken/accounts"
+	"sharetoken/internal/version"
 	"sharetoken/ledger"
 	"sharetoken/p2p"
 	"sharetoken/protocol"
@@ -154,7 +154,7 @@ func (e *Engine) recordRelayStatus(st []p2p.RelayStatus) error {
 	now := e.cfg.Now()
 	return e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
 		for _, r := range st {
-			if err := accounts.SetRelayStatus(tx, r.Addr, r.Reserved, r.Err, r.RTT.Milliseconds(), strings.TrimPrefix(r.Agent, "sharetoken-relay/"), now); err != nil {
+			if err := accounts.SetRelayStatus(tx, r.Addr, r.Reserved, r.Err, r.RTT.Milliseconds(), relayRelease(r.Agent), now); err != nil {
 				return err
 			}
 		}
@@ -167,4 +167,13 @@ func RunningVersion(q Querier) (string, error) {
 	var v string
 	err := q.QueryRow("SELECT value FROM meta WHERE `key` = 'coordinator_version'").Scan(&v)
 	return v, err
+}
+
+// relayRelease is the release a relay announces in its identify agent
+// ("sharetoken-relay/1.0.0 (linux/amd64)" is 1.0.0); "" for anything else.
+func relayRelease(agent string) string {
+	if a, ok := version.ParseAgent(agent); ok && a.Program == "relay" {
+		return a.Version
+	}
+	return ""
 }

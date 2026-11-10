@@ -16,6 +16,7 @@ package relay
 
 import (
 	"fmt"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -88,6 +89,47 @@ type Stats struct {
 	// Networks splits what can be attributed. Circuits and bytes cannot: the
 	// relay does not know which network a buyer belongs to.
 	Networks []NetworkStats `json:"networks,omitempty"`
+	// Agents counts the connected peers by what they announced in libp2p's
+	// identify exchange: every sharetoken program, buyers that hold no
+	// reservation included. Peers say what they like here; it is unsigned.
+	Agents []AgentCount `json:"agents,omitempty"`
+}
+
+// AgentCount is how many connected peers announced one build.
+type AgentCount struct {
+	Program string `json:"program"` // client, coordinator, relay; "other" for anything not sharetoken
+	Version string `json:"version"`
+	OS      string `json:"os"`
+	Arch    string `json:"arch"`
+	Peers   int    `json:"peers"`
+}
+
+// agentCounts groups the connected peers by their identify agent.
+func (r *Relay) agentCounts() []AgentCount {
+	counts := map[AgentCount]int{}
+	for _, p := range r.Host.Network().Peers() {
+		k := AgentCount{Program: "other"}
+		if ag, ok := agentOf(r.Host, p); ok {
+			k = AgentCount{Program: ag.Program, Version: ag.Version, OS: ag.OS, Arch: ag.Arch}
+		}
+		if _, seen := counts[k]; !seen && len(counts) >= maxClientKinds {
+			k = AgentCount{Program: "other"}
+		}
+		counts[k]++
+	}
+	out := make([]AgentCount, 0, len(counts))
+	for k, n := range counts {
+		k.Peers = n
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Peers != b.Peers {
+			return a.Peers > b.Peers
+		}
+		return a.Program+"/"+a.Version+"/"+a.OS+"/"+a.Arch < b.Program+"/"+b.Version+"/"+b.OS+"/"+b.Arch
+	})
+	return out
 }
 
 // Relay is a running relay.
@@ -167,6 +209,7 @@ func (r *Relay) Stats() Stats {
 	s := r.stats.snapshot()
 	s.PassesAccepted, s.PassesRejected = r.adm.accepted.Load(), r.adm.rejected.Load()
 	s.Networks = r.adm.networkStats()
+	s.Agents = r.agentCounts()
 	return s
 }
 

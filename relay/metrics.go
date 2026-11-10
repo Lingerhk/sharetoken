@@ -12,6 +12,13 @@ func (r *Relay) Collector() prometheus.Collector { return collector{r} }
 
 type collector struct{ r *Relay }
 
+var (
+	clientsDesc = prometheus.NewDesc("sharetoken_relay_network_clients",
+		"Devices holding a reservation, by the client build their portal-signed pass names.", []string{"network", "version", "os", "arch"}, nil)
+	agentsDesc = prometheus.NewDesc("sharetoken_relay_agents",
+		"Connected peers by the build they announce in libp2p identify (unsigned).", []string{"program", "version", "os", "arch"}, nil)
+)
+
 func (c collector) Describe(ch chan<- *prometheus.Desc) { prometheus.DescribeByCollect(c, ch) }
 
 func (c collector) Collect(ch chan<- prometheus.Metric) {
@@ -54,5 +61,12 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 		emit(prometheus.GaugeValue, "network_coordinators_expected", "Allow-listed peers configured.", float64(n.CoordinatorsExpected), "network", n.Name)
 		emit(prometheus.CounterValue, "network_passes_accepted_total", "Passes accepted for this network.", float64(n.PassesAccepted), "network", n.Name)
 		emit(prometheus.CounterValue, "network_reservations_denied_total", "Reservations denied over this network's limits.", float64(n.ReservationsDenied), "network", n.Name)
+		emit(prometheus.GaugeValue, "network_client_mismatches", "Devices holding a reservation whose identify agent disagrees with their pass.", float64(n.ClientMismatches), "network", n.Name)
+		for _, c := range n.Clients {
+			ch <- prometheus.MustNewConstMetric(clientsDesc, prometheus.GaugeValue, float64(c.Devices), n.Name, c.Version, c.OS, c.Arch)
+		}
+	}
+	for _, a := range st.Agents {
+		ch <- prometheus.MustNewConstMetric(agentsDesc, prometheus.GaugeValue, float64(a.Peers), a.Program, a.Version, a.OS, a.Arch)
 	}
 }
