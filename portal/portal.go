@@ -778,7 +778,7 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, cu ctxUs
 		s.accountErr(w, err)
 		return
 	}
-	s.notify(cu.user.Username, "ShareToken: your password was changed", "The password of your ShareToken account was just changed.\r\nIf this wasn't you, contact "+s.supportAddress()+" immediately.\r\n")
+	s.notify(mailer.PasswordChangedMail(cu.user.Username, false, s.cfg.Now(), s.clientIP(r), s.supportAddress()))
 	var revoked int64
 	if req.RevokeOthers {
 		ts, err := s.store.Tokens(cu.user.ID)

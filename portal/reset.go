@@ -208,7 +208,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	s.notify(u.Username, "ShareToken: your password was changed", "The password of your ShareToken account was just reset with a link sent to this address, and every device and browser was signed out.\r\nIf this wasn't you, contact "+s.supportAddress()+" immediately.\r\n")
+	s.notify(mailer.PasswordChangedMail(u.Username, true, s.cfg.Now(), ip, s.supportAddress()))
 	s.auditEvent(r, u, actionPasswordReset, u.Username, map[string]any{"tokens_revoked": revoked})
 	s.log.Info("password reset by mail", "user", u.Username, "tokens_revoked", revoked, "ip", ip)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

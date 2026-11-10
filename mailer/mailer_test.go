@@ -578,3 +578,21 @@ func TestInboundSurvivesMisbehavingClients(t *testing.T) {
 	}
 	t.Fatalf("mail not accepted after misbehaving clients: %+v", m)
 }
+
+func TestPasswordChangedMail(t *testing.T) {
+	when := time.Date(2026, 11, 10, 13, 5, 0, 0, time.FixedZone("x", 8*3600))
+	m := PasswordChangedMail("ann@example.test", true, when, "203.0.113.7", "support@example.test")
+	for _, want := range []string{"ann@example.test", "2026-11-10 05:05 UTC", "203.0.113.7", "support@example.test", "signed out"} {
+		if !strings.Contains(m.Text, want) || !strings.Contains(m.HTML, want) {
+			t.Fatalf("%q missing:\n%s\n%s", want, m.Text, m.HTML)
+		}
+	}
+	if m.Kind != KindNotice || m.Sensitive {
+		t.Fatalf("%+v", m)
+	}
+	// The address is the user's own input: escaped in the HTML.
+	m = PasswordChangedMail("<b>@example.test", false, when, "", "")
+	if strings.Contains(m.HTML, "<b>@") || strings.Contains(m.Text, "IP address") || strings.Contains(m.Text, "signed out") {
+		t.Fatalf("%s\n%s", m.Text, m.HTML)
+	}
+}

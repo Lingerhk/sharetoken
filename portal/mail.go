@@ -33,14 +33,13 @@ func (s *Server) supportAddress() string {
 
 // notify queues a notice to a user whose account name is an email address. A
 // failure must not fail what triggered it: it is logged.
-func (s *Server) notify(username, subject, text string) {
-	if !s.mailEnabled() || !strings.Contains(username, "@") {
+func (s *Server) notify(m mailer.Message) {
+	if !s.mailEnabled() || !strings.Contains(m.To, "@") {
 		return
 	}
-	m := mailer.NoticeMail(username, subject, text)
 	m.From, m.ReplyTo = s.settings().MailFrom, s.supportAddress()
 	if _, err := s.mail.Enqueue(m); err != nil {
-		s.log.Warn("queueing a notice", "err", err, "user", username)
+		s.log.Warn("queueing a notice", "err", err, "user", m.To)
 	}
 }
 

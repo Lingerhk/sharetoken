@@ -200,7 +200,41 @@ func ResetMail(to, link string, ttl time.Duration, now time.Time) Message {
 	}
 }
 
-// NoticeMail is a short plain-text notification to a user.
-func NoticeMail(to, subject, text string) Message {
-	return Message{Kind: KindNotice, To: to, Subject: subject, Text: text}
+var passwordChangedHTML = template.Must(template.New("password-changed").Parse(`<!doctype html>
+<html lang="en"><body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;color:#1f2933">
+<div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:32px">
+<h1 style="font-size:18px;margin:0 0 16px">Your ShareToken password was changed</h1>
+<p style="margin:0 0 16px">{{.Lead}}</p>
+<table style="border-collapse:collapse;margin:0 0 16px;font-size:14px">
+<tr><td style="padding:4px 16px 4px 0;color:#52606d">Account</td><td style="padding:4px 0;word-break:break-all">{{.Account}}</td></tr>
+<tr><td style="padding:4px 16px 4px 0;color:#52606d">Time</td><td style="padding:4px 0">{{.Time}}</td></tr>
+{{if .IP}}<tr><td style="padding:4px 16px 4px 0;color:#52606d">IP address</td><td style="padding:4px 0">{{.IP}}</td></tr>{{end}}
+</table>
+<p style="margin:0 0 8px;color:#52606d">If this was you, there is nothing more to do.</p>
+<p style="margin:0;color:#52606d">If this wasn't you, {{if .Support}}contact <a href="mailto:{{.Support}}" style="color:#0d9488">{{.Support}}</a> immediately{{else}}contact your ShareToken administrator immediately{{end}}. ShareToken staff will never ask you for your password.</p>
+</div></body></html>`))
+
+// PasswordChangedMail tells an account its password changed: in the settings
+// (viaLink false) or with a reset link from this mailbox (viaLink true, which
+// also signed every device out). ip may be empty, support too.
+func PasswordChangedMail(to string, viaLink bool, when time.Time, ip, support string) Message {
+	lead := "The password of your ShareToken account was just changed."
+	if viaLink {
+		lead = "The password of your ShareToken account was just reset with a link sent to this address. Every device and browser was signed out."
+	}
+	at := when.UTC().Format("2006-01-02 15:04 UTC")
+	var html strings.Builder
+	_ = passwordChangedHTML.Execute(&html, map[string]any{"Lead": lead, "Account": to, "Time": at, "IP": ip, "Support": support})
+	var text strings.Builder
+	fmt.Fprintf(&text, "%s\r\n\r\n    Account: %s\r\n    Time: %s\r\n", lead, to, at)
+	if ip != "" {
+		fmt.Fprintf(&text, "    IP address: %s\r\n", ip)
+	}
+	text.WriteString("\r\nIf this was you, there is nothing more to do.\r\n")
+	if support != "" {
+		fmt.Fprintf(&text, "If this wasn't you, contact %s immediately. ShareToken staff will never ask you for your password.\r\n", support)
+	} else {
+		text.WriteString("If this wasn't you, contact your ShareToken administrator immediately. ShareToken staff will never ask you for your password.\r\n")
+	}
+	return Message{Kind: KindNotice, To: to, Subject: "Your ShareToken password was changed", Text: text.String(), HTML: html.String()}
 }
