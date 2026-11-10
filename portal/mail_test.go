@@ -2,7 +2,6 @@ package portal
 
 import (
 	"database/sql"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -83,23 +82,26 @@ func TestRegisterNeedsMailedCode(t *testing.T) {
 	reg(map[string]string{"email": email, "password": "correct horse", "code": code}, 400) // used
 }
 
-// Asking for a code does not tell strangers whether an address has an account.
-func TestRegisterCodeDoesNotRevealAccounts(t *testing.T) {
+// An address that already has an account is told so, and no mail goes out.
+func TestRegisterCodeForTakenAddress(t *testing.T) {
 	s, a, _ := newMailPortal(t)
 	if _, err := s.CreateUser("taken@example.com", "correct horse", false); err != nil {
 		t.Fatal(err)
 	}
-	var free, taken map[string]any
-	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "free@example.com"}, 200, &free)
-	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "taken@example.com"}, 200, &taken)
-	if fmt.Sprint(free) != fmt.Sprint(taken) {
-		t.Fatalf("%v vs %v", free, taken)
+	var e ErrorBody
+	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "Taken@Example.com"}, 409, &e)
+	if e.Error.Code != "exists" {
+		t.Fatalf("%+v", e)
 	}
-	ms, _ := s.mail.Outbox(mailer.OutFilter{Q: "taken@example.com"})
-	if len(ms) != 1 || ms[0].Kind != mailer.KindNotice {
-		t.Fatalf("%+v", ms)
+	if ms, _ := s.mail.Outbox(mailer.OutFilter{Q: "taken@example.com"}); len(ms) != 0 {
+		t.Fatalf("mail went out: %+v", ms)
 	}
-	a.call("POST", "/api/v1/register", "", map[string]string{"email": "taken@example.com", "password": "correct horse", "code": "000000"}, 400, nil)
+	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "free@example.com"}, 200, nil)
+	// Checking many addresses from one IP is throttled.
+	for i := 1; i < maxFails; i++ {
+		a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "taken@example.com"}, 409, nil)
+	}
+	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "taken@example.com"}, 429, nil)
 }
 
 func TestRegisterCodeWrongGuessesThrottled(t *testing.T) {

@@ -217,6 +217,7 @@
   "跳转到页码": "Go to page",
   "返回登录": "Back to log in",
   "这个邮箱不能在此注册": "This email address cannot sign up here",
+  "这个邮箱已经注册过了，请直接登录": "This email is already registered. Please log in",
   "这个链接无效、已使用或已过期，请重新获取": "This link is invalid, already used or expired. Please request a new one",
   "邀请码": "Invite code",
   "邀请码错误、已用完或已过期": "The invite code is wrong, used up or expired",

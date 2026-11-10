@@ -58,6 +58,16 @@ func (s statusRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
+// apiAddress writes an address the way Resend accepts it: "a@b" or
+// "Name <a@b>". net/mail's String gives "<a@b>" for a bare address, which
+// Resend refuses.
+func apiAddress(a *netmail.Address) string {
+	if a.Name == "" {
+		return a.Address
+	}
+	return a.String()
+}
+
 // Send implements APITransport.
 func (r *Resend) Send(ctx context.Context, m *OutMail, messageID string) (string, error) {
 	from, err := netmail.ParseAddress(headerText(m.From))
@@ -69,12 +79,12 @@ func (r *Resend) Send(ctx context.Context, m *OutMail, messageID string) (string
 		return "", &PermanentError{Err: fmt.Errorf("recipient %q: %w", m.To, err)}
 	}
 	req := &resend.SendEmailRequest{
-		From: from.String(), To: []string{to.Address}, Subject: headerText(m.Subject),
+		From: apiAddress(from), To: []string{to.Address}, Subject: headerText(m.Subject),
 		Text: m.Text, Html: m.HTML, Headers: map[string]string{},
 	}
 	if m.ReplyTo != "" {
 		if rt, err := netmail.ParseAddress(headerText(m.ReplyTo)); err == nil {
-			req.ReplyTo = rt.String()
+			req.ReplyTo = apiAddress(rt)
 		}
 	}
 	if id := headerText(m.InReplyTo); id != "" {

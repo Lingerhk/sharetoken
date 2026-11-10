@@ -413,7 +413,7 @@ const ST = (() => {
           clearInterval(cooldown); sendCode.disabled = false; sendCode.textContent = tr('重新发送');
         }, 1000);
       }
-      const signupError = ex => ex.code === 'email_not_allowed' ? tr('这个邮箱不能在此注册') : ex.code === 'invite_required' ? tr('注册需要邀请码') : ex.code === 'bad_invite' ? tr('邀请码错误、已用完或已过期') : '';
+      const signupError = ex => ex.code === 'exists' ? tr('这个邮箱已经注册过了，请直接登录') : ex.code === 'email_not_allowed' ? tr('这个邮箱不能在此注册') : ex.code === 'invite_required' ? tr('注册需要邀请码') : ex.code === 'bad_invite' ? tr('邀请码错误、已用完或已过期') : '';
       const forgot = h('p', { class: 'muted', hidden: true }, h('a', { href: '#', id: 'forgot-link', onclick: e => { e.preventDefault(); showForgot(); } }, tr('忘记密码？')));
       const tabLogin = h('button', { type: 'button', class: 'active', onclick: () => setMode('login') }, tr('登录'));
       const tabReg = h('button', { type: 'button', onclick: () => setMode('register') }, tr('注册'));
@@ -511,7 +511,7 @@ const ST = (() => {
             if (ex.code === 'mfa_setup_required' && ex.data.challenge) { pass.value = ''; showSetup(ex.data.challenge); return; }
             err.textContent = ex.code === 'bad_credentials' ? tr('用户名或密码错误') : ex.code === 'throttled' ? tr('尝试次数过多，请几分钟后再试')
               : ex.code === 'bad_code' ? tr('验证码错误或已过期') : ex.code === 'email_required' ? tr('请用邮箱注册')
-              : ex.code === 'exists' ? tr('用户名已被使用') : ex.code === 'cross_site' ? tr('请求被拒绝（跨站）') : signupError(ex) || ex.message;
+              : ex.code === 'exists' && !verify() ? tr('用户名已被使用') : ex.code === 'cross_site' ? tr('请求被拒绝（跨站）') : signupError(ex) || ex.message;
           } finally { submit.disabled = false; }
         }
       }, h('div', { class: 'field' }, userLabel, withIcon('user', user)), inviteField, codeField, field(tr('密码'), withIcon('lock', pass)), err, submit);

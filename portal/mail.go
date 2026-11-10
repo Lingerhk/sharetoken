@@ -44,8 +44,8 @@ func (s *Server) notify(username, subject, text string) {
 	}
 }
 
-// handleRegisterCode mails a sign-up code. The answer does not depend on whether
-// the address has an account: the mail does.
+// handleRegisterCode mails a sign-up code, or answers "exists" for an address
+// that already has an account.
 func (s *Server) handleRegisterCode(w http.ResponseWriter, r *http.Request) {
 	st := s.settings()
 	if !st.OpenRegistration {
@@ -78,16 +78,24 @@ func (s *Server) handleRegisterCode(w http.ResponseWriter, r *http.Request) {
 	if !s.checkSignupRules(w, s.clientIP(r), email, req.Invite, st) {
 		return
 	}
-	taken := false
+	// An address that already has an account is told so on the page; the
+	// lookups are rate-limited per IP so the endpoint is no bulk directory.
+	ip := s.clientIP(r)
+	if s.throttled("taken:" + ip) {
+		writeErr(w, http.StatusTooManyRequests, "throttled", "too many requests from this address; try again in a few minutes")
+		return
+	}
 	switch _, err := s.store.UserByName(email); {
 	case err == nil:
-		taken = true
+		s.recordFailure("taken:" + ip)
+		writeErr(w, http.StatusConflict, "exists", "this email address is already registered; log in instead")
+		return
 	case !errors.Is(err, accounts.ErrNotFound):
 		s.internal(w, err)
 		return
 	}
-	err := s.mail.RequestCode(mailer.CodeRequest{Purpose: mailer.PurposeRegister, Email: email, IP: s.clientIP(r),
-		From: st.MailFrom, ReplyTo: s.supportAddress(), Taken: taken})
+	err := s.mail.RequestCode(mailer.CodeRequest{Purpose: mailer.PurposeRegister, Email: email, IP: ip,
+		From: st.MailFrom, ReplyTo: s.supportAddress()})
 	switch {
 	case errors.Is(err, mailer.ErrCodeCooldown):
 		writeErr(w, http.StatusTooManyRequests, "code_cooldown", "a code was just sent to this address; wait a minute before asking again")

@@ -64,7 +64,7 @@ API key 在 Mac 的 `~/st-test/prod-keys/resend.key`（Resend 后台名为 `shar
 
 ## 注册验证码
 
-1. `POST /api/v1/register/code {email}`：邮箱已注册时发“已注册”通知而不发验证码，响应完全相同，不泄露谁注册过。
+1. `POST /api/v1/register/code {email}`：邮箱已注册时直接返回 409 `exists`（页面提示“已注册，请直接登录”），不发邮件；查到已注册的请求按 IP 限流（5 分钟 8 次）。
 2. `POST /api/v1/register {email, password, code}`：`accounts.email_verification: true` 时必填，同时关闭用户名注册。
 
 | 限制 | 值 |

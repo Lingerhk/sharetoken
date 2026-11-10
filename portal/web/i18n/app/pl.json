@@ -217,6 +217,7 @@
   "跳转到页码": "Przejdź do strony",
   "返回登录": "Wróć do logowania",
   "这个邮箱不能在此注册": "Ten adres e-mail nie może się tu zarejestrować",
+  "这个邮箱已经注册过了，请直接登录": "Ten adres e-mail jest już zarejestrowany. Zaloguj się",
   "这个链接无效、已使用或已过期，请重新获取": "Ten link jest nieprawidłowy, został już użyty lub wygasł. Poproś o nowy",
   "邀请码": "Kod zaproszenia",
   "邀请码错误、已用完或已过期": "Kod zaproszenia jest nieprawidłowy, wykorzystany lub wygasł",

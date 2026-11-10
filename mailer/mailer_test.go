@@ -496,23 +496,6 @@ func TestCodeLimits(t *testing.T) {
 	}
 }
 
-// An address with an account gets a notice, not a code, and nothing redeems.
-func TestCodeForTakenAddress(t *testing.T) {
-	st := newStore(t)
-	if err := st.RequestCode(CodeRequest{Purpose: PurposeRegister, Email: "a@example.test", IP: "1.1.1.1", From: "team@example.test", Taken: true}); err != nil {
-		t.Fatal(err)
-	}
-	ms, _ := st.Outbox(OutFilter{})
-	if len(ms) != 1 || ms[0].Kind != KindNotice {
-		t.Fatalf("%+v", ms)
-	}
-	for _, c := range []string{"", "000000", "123456"} {
-		if err := st.VerifyCode(PurposeRegister, "a@example.test", c); !errors.Is(err, ErrBadCode) {
-			t.Fatalf("%q redeemed: %v", c, err)
-		}
-	}
-}
-
 func TestSensitiveBodyIsWiped(t *testing.T) {
 	st := newStore(t)
 	port, _ := startInbound(t, st, nil)

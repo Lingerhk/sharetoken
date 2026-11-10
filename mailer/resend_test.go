@@ -61,7 +61,7 @@ func TestResendDelivery(t *testing.T) {
 	}
 	b := bodies[0]
 	if b["from"] != "\"ShareToken\" <no-reply@example.test>" || b["to"].([]any)[0] != "ann@example.org" || b["subject"] != "code Bcc: x@y" ||
-		b["text"] != "123456" || b["html"] != "<b>123456</b>" || b["reply_to"] != "<help@example.test>" {
+		b["text"] != "123456" || b["html"] != "<b>123456</b>" || b["reply_to"] != "help@example.test" {
 		t.Fatalf("request body %v", b)
 	}
 	if h, _ := b["headers"].(map[string]any); h["Auto-Submitted"] != "auto-generated" {

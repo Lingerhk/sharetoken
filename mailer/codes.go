@@ -41,10 +41,6 @@ type CodeRequest struct {
 	IP      string
 	From    string
 	ReplyTo string
-	// Taken says the address already has an account: nothing can be redeemed,
-	// and the mail says so. The caller answers the same either way, so the
-	// response does not tell strangers who has registered.
-	Taken bool
 }
 
 func newCode() (string, error) {
@@ -99,10 +95,6 @@ func (s *Store) RequestCode(r CodeRequest) error {
 		return err
 	}
 	hash := hashCode(salt, r.Purpose, r.Email, code)
-	if r.Taken {
-		// A row is still written so that the limits apply, but no code can match it.
-		hash = make([]byte, sha256.Size)
-	}
 	// A newer code replaces older ones.
 	if _, err := s.DB.Exec(`UPDATE mail_codes SET consumed = 1 WHERE email = ? AND purpose = ? AND consumed = 0`, r.Email, r.Purpose); err != nil {
 		return err
@@ -112,14 +104,9 @@ func (s *Store) RequestCode(r CodeRequest) error {
 		r.Purpose, r.Email, r.IP, salt, hash, exp.Unix(), now.Unix()); err != nil {
 		return err
 	}
-	var m Message
-	if r.Taken {
-		m = accountExistsMail(r.Email)
-	} else {
-		m = verifyMail(r.Email, code)
-		m.Sensitive = true
-		m.ExpiresAt = exp
-	}
+	m := verifyMail(r.Email, code)
+	m.Sensitive = true
+	m.ExpiresAt = exp
 	m.From, m.ReplyTo = r.From, r.ReplyTo
 	_, err = s.Enqueue(m)
 	return err
@@ -181,15 +168,6 @@ func verifyMail(email, code string) Message {
 		Text: fmt.Sprintf("You are signing up for ShareToken with this email address. Your verification code is:\r\n\r\n    %s\r\n\r\nThe code is valid for %d minutes. Do not share it with anyone. ShareToken staff will never ask you for it.\r\nIf this wasn't you, you can ignore this email.\r\n",
 			code, minutes),
 		HTML: html.String(),
-	}
-}
-
-func accountExistsMail(email string) Message {
-	return Message{
-		Kind:    KindNotice,
-		To:      email,
-		Subject: "ShareToken: this email is already registered",
-		Text:    "Someone (possibly you) tried to sign up for ShareToken with this email address, but it already has an account. Please log in instead.\r\nIf this wasn't you, you can ignore this email. Your account has not changed.\r\n",
 	}
 }
 

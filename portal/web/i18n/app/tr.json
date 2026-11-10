@@ -217,6 +217,7 @@
   "跳转到页码": "Sayfaya git",
   "返回登录": "Girişe dön",
   "这个邮箱不能在此注册": "Bu e-posta adresi burada kayıt olamaz",
+  "这个邮箱已经注册过了，请直接登录": "Bu e-posta zaten kayıtlı. Lütfen doğrudan giriş yapın",
   "这个链接无效、已使用或已过期，请重新获取": "Bu bağlantı geçersiz, kullanılmış ya da süresi dolmuş. Lütfen yenisini iste",
   "邀请码": "Davet kodu",
   "邀请码错误、已用完或已过期": "Davet kodu yanlış, tükenmiş ya da süresi dolmuş",
