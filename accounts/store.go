@@ -542,10 +542,25 @@ func mustAffect(res sql.Result, err error) error {
 
 // ---- additions for the web portal ----
 
-// UserCount is the number of users whose name contains q ("" for all).
-func (s *Store) UserCount(q string) (int64, error) {
+// UserQuery narrows the user listing. Q is part of a name ("" for all); From
+// and To bound created_at in unix nanos (From inclusive, To exclusive, 0 unbounded).
+type UserQuery struct {
+	Q        string
+	From, To int64
+}
+
+func (f UserQuery) to() int64 {
+	if f.To <= 0 {
+		return 1<<63 - 1
+	}
+	return f.To
+}
+
+// UserCount counts what SearchUsers pages through.
+func (s *Store) UserCount(f UserQuery) (int64, error) {
 	var n int64
-	err := s.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE LOWER(username) LIKE ? ESCAPE '!'`, likePattern(q)).Scan(&n)
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE LOWER(username) LIKE ? ESCAPE '!' AND created_at >= ? AND created_at < ?`,
+		likePattern(f.Q), f.From, f.to()).Scan(&n)
 	return n, err
 }
 
@@ -558,15 +573,15 @@ type UserRow struct {
 	Tokens          int64 `json:"tokens"`
 }
 
-// SearchUsers lists users whose name contains q ("" for all), newest first.
-func (s *Store) SearchUsers(q string, limit, offset int) ([]UserRow, error) {
+// SearchUsers lists the users f selects, newest first.
+func (s *Store) SearchUsers(f UserQuery, limit, offset int) ([]UserRow, error) {
 	rows, err := s.DB.Query(`SELECT u.id, u.username, u.is_admin, u.disabled, u.created_at,
 		COALESCE((SELECT balance FROM ledger_accounts WHERE account = CONCAT('user:', u.id)), 0),
 		COALESCE((SELECT SUM(amount) FROM ledger_holds WHERE owner = CONCAT('user:', u.id) AND open = 1), 0),
 		(SELECT COUNT(*) FROM devices WHERE user_id = u.id),
 		(SELECT COUNT(*) FROM api_tokens WHERE user_id = u.id AND revoked = 0 AND (expires_at = 0 OR expires_at > ?))
-		FROM users u WHERE LOWER(u.username) LIKE ? ESCAPE '!' ORDER BY u.id DESC LIMIT ? OFFSET ?`,
-		s.now().UnixNano(), likePattern(q), limit, offset)
+		FROM users u WHERE LOWER(u.username) LIKE ? ESCAPE '!' AND u.created_at >= ? AND u.created_at < ? ORDER BY u.id DESC LIMIT ? OFFSET ?`,
+		s.now().UnixNano(), likePattern(f.Q), f.From, f.to(), limit, offset)
 	if err != nil {
 		return nil, err
 	}

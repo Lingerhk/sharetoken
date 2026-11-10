@@ -64,6 +64,9 @@ type Config struct {
 	// mailed code, and closes sign-up by plain username. It needs Mail.From.
 	EmailVerification bool
 	Mail              MailConfig
+	// PublicURL is this portal's address on the web, for links in mail. Empty: no
+	// password reset by mail.
+	PublicURL string
 	// DownloadsDir holds the client packages offered at /downloads/ (downloads.go).
 	// Empty: none.
 	DownloadsDir string
@@ -85,6 +88,14 @@ type Server struct {
 	mfaKey     []byte
 	mfaMu      sync.Mutex
 	challenges map[string]*mfaChallenge // half-finished admin logins
+
+	setCache settingsCache
+	limiter  rateLimiter
+
+	auditPurgeMu sync.Mutex
+	auditPurged  time.Time
+
+	background sync.WaitGroup // mail that outlives its request
 }
 
 // New prepares the portal on cfg.DB, creating any missing tables.
@@ -115,6 +126,9 @@ func New(cfg Config) (*Server, error) {
 		err := coordinator.Migrate(cfg.DB)
 		if err == nil {
 			err = mailer.Migrate(cfg.DB)
+		}
+		if err == nil {
+			err = mysqldb.Migrate(cfg.DB, "portal", Migrations)
 		}
 		if err == nil {
 			break
@@ -156,8 +170,8 @@ func (s *Server) CreateUser(username, password string, admin bool) (*accounts.Us
 	if err != nil {
 		return nil, err
 	}
-	if s.cfg.SignupCreditMicros > 0 {
-		if err := s.AdjustCredit(u.ID, int64(min(s.cfg.SignupCreditMicros, math.MaxInt64)), "sign-up credit"); err != nil {
+	if credit := s.settings().SignupCreditMicros; credit > 0 {
+		if err := s.AdjustCredit(u.ID, int64(min(credit, math.MaxInt64)), "sign-up credit"); err != nil {
 			return u, err
 		}
 	}
@@ -345,23 +359,24 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.servePages(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) })
-	mux.HandleFunc("GET /api/v1/info", s.handleInfo)
-	mux.HandleFunc("GET /api/v1/network", s.handleNetwork)
-	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
-	mux.HandleFunc("GET /api/v1/downloads", s.handleDownloads)
-	mux.HandleFunc("GET /api/v1/update", s.handleUpdate)
+	mux.HandleFunc("GET /api/v1/info", s.public(s.handleInfo))
+	mux.HandleFunc("GET /api/v1/network", s.public(s.handleNetwork))
+	mux.HandleFunc("GET /api/v1/version", s.public(s.handleVersion))
+	mux.HandleFunc("GET /api/v1/downloads", s.public(s.handleDownloads))
+	mux.HandleFunc("GET /api/v1/update", s.public(s.handleUpdate))
 	mux.HandleFunc("GET /downloads/{file}", s.handleDownloadFile)
-	mux.Handle("POST /api/v1/register", s.clientOnly(http.HandlerFunc(s.handleRegister)))
-	mux.HandleFunc("POST /api/v1/register/code", s.handleRegisterCode) // the web sign-up uses it too; the sign-up itself is what is guarded
-	mux.Handle("POST /api/v1/login", s.clientOnly(http.HandlerFunc(s.handleLogin)))
+	mux.Handle("POST /api/v1/register", s.clientOnly(s.public(s.handleRegister)))
+	mux.HandleFunc("POST /api/v1/register/code", s.public(s.handleRegisterCode)) // the web sign-up uses it too; the sign-up itself is what is guarded
+	mux.Handle("POST /api/v1/login", s.clientOnly(s.public(s.handleLogin)))
+	s.resetRoutes(mux)
 
 	// Browser sessions (cookie): only for the portal's own pages.
-	mux.HandleFunc("POST /api/v1/web/login", webOnly(s.handleWebLogin))
-	mux.HandleFunc("POST /api/v1/web/register", webOnly(s.handleWebRegister))
-	mux.HandleFunc("POST /api/v1/web/mfa", webOnly(s.handleWebMFA))
-	mux.HandleFunc("POST /api/v1/web/mfa/setup", webOnly(s.handleWebMFASetup))
-	mux.HandleFunc("POST /api/v1/web/mfa/confirm", webOnly(s.handleWebMFAConfirm))
-	mux.Handle("POST /api/v1/mfa", s.clientOnly(http.HandlerFunc(s.handleMFA)))
+	mux.HandleFunc("POST /api/v1/web/login", s.public(webOnly(s.handleWebLogin)))
+	mux.HandleFunc("POST /api/v1/web/register", s.public(webOnly(s.handleWebRegister)))
+	mux.HandleFunc("POST /api/v1/web/mfa", s.public(webOnly(s.handleWebMFA)))
+	mux.HandleFunc("POST /api/v1/web/mfa/setup", s.public(webOnly(s.handleWebMFASetup)))
+	mux.HandleFunc("POST /api/v1/web/mfa/confirm", s.public(webOnly(s.handleWebMFAConfirm)))
+	mux.Handle("POST /api/v1/mfa", s.clientOnly(s.public(s.handleMFA)))
 	mux.Handle("POST /api/v1/web/logout", s.auth(s.handleWebLogout))
 
 	mux.Handle("POST /api/v1/logout", s.auth(s.handleLogout))
@@ -411,8 +426,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/disputes/{job}/resolve", s.admin(s.handleResolveDispute))
 	mux.Handle("GET /api/v1/admin/ledger", s.admin(s.handleJournal))
 	mux.Handle("GET /api/v1/admin/accounts", s.admin(s.handleAccounts))
+	mux.Handle("GET /api/v1/admin/oplog", s.admin(s.handleAuditLog))
 	s.mailRoutes(mux)
 	s.feedbackRoutes(mux)
+	s.settingsRoutes(mux)
 	return withLimits(mux)
 }
 
@@ -427,7 +444,11 @@ const (
 
 func withLimits(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+		limit := int64(maxBody)
+		if r.URL.Path == "/api/v1/admin/settings" {
+			limit = maxSettingsBody // the email blocklist; only admins get past the handler
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set(ServerVersionHeader, version.Version)
 		securityHeaders(w, r)
@@ -438,7 +459,8 @@ func withLimits(h http.Handler) http.Handler {
 type ctxUser struct {
 	user    *accounts.User
 	tokenID int64
-	mfa     bool // the token was issued after two-factor verification
+	mfa     bool       // the token was issued after two-factor verification
+	audit   *auditNote // what this request adds to its audit entry; nil when it has none
 }
 
 type authedHandler func(w http.ResponseWriter, r *http.Request, cu ctxUser)
@@ -458,6 +480,9 @@ func (s *Server) auth(h authedHandler) http.Handler {
 			s.internal(w, err)
 			return
 		}
+		if st := s.settings(); !s.userAllowed(w, u, st, "user", st.RateUserRPM) {
+			return
+		}
 		h(w, r, ctxUser{user: u, tokenID: id, mfa: mfa})
 	})
 }
@@ -474,7 +499,11 @@ func (s *Server) admin(h authedHandler) http.Handler {
 			writeErr(w, http.StatusForbidden, "mfa_required", "admin access needs a login with two-factor authentication")
 			return
 		}
-		h(w, r, cu)
+		if r.Method == http.MethodGet {
+			h(w, r, cu)
+			return
+		}
+		s.audited(w, r, cu, h)
 	})
 }
 
@@ -496,8 +525,9 @@ type credentials struct {
 	Username  string `json:"username"`
 	Password  string `json:"password"`
 	TokenName string `json:"token_name"`
-	TOTP      string `json:"totp"` // admins: the current two-factor code (API login in one step)
-	Code      string `json:"code"` // sign-up: the emailed verification code
+	TOTP      string `json:"totp"`        // admins: the current two-factor code (API login in one step)
+	Code      string `json:"code"`        // sign-up: the emailed verification code
+	Invite    string `json:"invite_code"` // sign-up, when the settings require one
 }
 
 type AuthResponse struct {
@@ -520,7 +550,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // register creates the account of a sign-up, writing the error response
 // itself. Sign-ups are rate-limited per IP.
 func (s *Server) register(w http.ResponseWriter, r *http.Request, c credentials) (*accounts.User, bool) {
-	if !s.cfg.OpenRegistration {
+	st := s.settings()
+	if !st.OpenRegistration {
 		writeErr(w, http.StatusForbidden, "registration_closed", "registration is closed; ask an administrator for an account")
 		return nil, false
 	}
@@ -538,7 +569,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request, c credentials)
 			return nil, false
 		}
 	}
-	if s.cfg.EmailVerification {
+	if st.EmailVerification {
 		// With verification on, a plain username would be a way around it.
 		name = accounts.NormalizeEmail(name)
 		if err := accounts.CheckEmail(name); err != nil {
@@ -549,12 +580,29 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request, c credentials)
 			s.accountErr(w, err) // before the code: a short password must not use it up
 			return nil, false
 		}
-		if !s.checkRegisterCode(w, ip, name, c.Code) {
+	}
+	if !s.checkSignupRules(w, ip, name, c.Invite, st) {
+		return nil, false
+	}
+	if st.EmailVerification && !s.checkRegisterCode(w, ip, name, c.Code) {
+		return nil, false
+	}
+	if st.InviteRequired {
+		ok, err := s.useInvite(c.Invite)
+		if err != nil {
+			s.internal(w, err)
+			return nil, false
+		}
+		if !ok {
+			writeErr(w, http.StatusForbidden, "bad_invite", "this invite code is wrong, used up or expired")
 			return nil, false
 		}
 	}
 	u, err := s.CreateUser(name, c.Password, false)
 	if err != nil {
+		if st.InviteRequired && u == nil {
+			s.returnInvite(c.Invite) // the name was taken, or the password too short
+		}
 		s.accountErr(w, err)
 		return nil, false
 	}
@@ -575,7 +623,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.issueLoginToken(w, u, c.TokenName, http.StatusOK, mfa)
 }
 
-// authenticate checks a login, writing the error response itself.
 // authenticate checks a login, writing the error response itself. For an
 // administrator it also runs the second factor (see mfa.go); mfa reports
 // whether one was verified, which the issued token remembers.
@@ -607,7 +654,7 @@ func (s *Server) issueLoginToken(w http.ResponseWriter, u *accounts.User, name s
 	if name = strings.TrimSpace(name); name == "" {
 		name = "login"
 	}
-	plain, _, err := s.store.IssueSessionToken(u.ID, name, s.cfg.LoginTTL, mfa)
+	plain, _, err := s.store.IssueSessionToken(u.ID, name, s.loginTTL(), mfa)
 	if err != nil {
 		s.accountErr(w, err)
 		return
@@ -845,43 +892,11 @@ type LedgerLine struct {
 }
 
 func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request, cu ctxUser) {
-	s.writeLedger(w, r, cu.user.ID)
-}
-
-// writeLedger answers with a user's journal, newest first.
-func (s *Server) writeLedger(w http.ResponseWriter, r *http.Request, userID int64) {
-	before, limit := queryInt(r, "before", 0), queryLimit(r)
-	acct := ledger.UserAccount(userID)
-	var lines []LedgerLine
-	err := s.ledgerRead(func(_ *sql.Tx, led *ledger.Tx) error {
-		es, err := led.AccountEntries(acct, before, limit)
-		for _, e := range es {
-			amt := e.Amount
-			if e.Debit == acct {
-				amt = -amt
-			}
-			lines = append(lines, LedgerLine{Seq: e.Seq, At: e.At, JobID: e.JobID, Amount: amt, Memo: e.Memo})
-		}
-		return err
-	})
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	if lines == nil {
-		lines = []LedgerLine{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"account": acct, "entries": lines})
+	s.ledgerListing(w, r, cu, cu.user.ID, "ledger")
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request, cu ctxUser) {
-	role := r.URL.Query().Get("role")
-	jobs, err := coordinator.AccountJobs(s.db, ledger.UserAccount(cu.user.ID), role, queryInt(r, "before", 0), queryLimit(r))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
+	s.jobsListing(w, r, cu, cu.user.ID, "jobs")
 }
 
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request, cu ctxUser) {
@@ -937,7 +952,10 @@ func (s *Server) handleRelayPass(w http.ResponseWriter, r *http.Request, cu ctxU
 
 // ---- admin ----
 
-func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, _ ctxUser) {
+func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	if st := s.settings(); !s.userAllowed(w, cu.user, st, "heavy", st.RateHeavyRPM) {
+		return
+	}
 	o, err := s.Overview()
 	if err != nil {
 		s.internal(w, err)
@@ -969,6 +987,8 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request, c
 		s.accountErr(w, err)
 		return
 	}
+	cu.setTarget(u.Username)
+	cu.note("is_admin", req.Admin)
 	s.log.Info("user created by admin", "user", u.Username, "admin", cu.user.Username)
 	writeJSON(w, http.StatusCreated, u)
 }
@@ -1019,6 +1039,8 @@ func (s *Server) handleCredit(w http.ResponseWriter, r *http.Request, cu ctxUser
 		s.accountErr(w, err)
 		return
 	}
+	cu.note("micros", req.Micros)
+	cu.note("memo", req.Memo)
 	s.log.Info("credit adjusted", "user", u.Username, "micros", req.Micros, "by", cu.user.Username, "memo", req.Memo)
 	b, err := s.Balance(u.ID)
 	if err != nil {
@@ -1055,7 +1077,7 @@ func (s *Server) handleRelays(w http.ResponseWriter, r *http.Request, _ ctxUser)
 	writeJSON(w, http.StatusOK, map[string]any{"relays": rs})
 }
 
-func (s *Server) handleAddRelay(w http.ResponseWriter, r *http.Request, _ ctxUser) {
+func (s *Server) handleAddRelay(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 	var req struct{ Addr, Name, Region string }
 	if !readJSON(w, r, &req) {
 		return
@@ -1065,6 +1087,9 @@ func (s *Server) handleAddRelay(w http.ResponseWriter, r *http.Request, _ ctxUse
 		s.accountErr(w, err)
 		return
 	}
+	cu.setTarget(strconv.FormatInt(rl.ID, 10))
+	cu.note("addr", rl.Addr)
+	cu.note("name", rl.Name)
 	writeJSON(w, http.StatusCreated, rl)
 }
 

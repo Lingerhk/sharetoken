@@ -7,6 +7,14 @@
   const app = ST.$('app');
 
   await ST.loadInfo().catch(fail);
+  // A reset link pasted into a tab already on this page only changes the hash.
+  window.addEventListener('hashchange', () => { if (location.hash.startsWith('#reset=')) location.reload(); });
+  const resetting = ST.resetToken();
+  if (resetting) {
+    // Whoever is signed in here, a link from a mailbox is about that mailbox's account.
+    await ST.renderReset(app, resetting);
+    await api('POST', '/api/v1/web/logout').catch(() => {});
+  }
   while (!(await ST.loadMe())) {
     await ST.renderLogin(app, { title: 'ShareToken', allowRegister: state.info && state.info.registration_open });
   }
@@ -30,8 +38,6 @@
   // The balance moves while a page stays open; state.me is left alone so a lapsed session cannot pull it from under a page.
   window.addEventListener('hashchange', () => { api('GET', '/api/v1/me').then(showBalance).catch(() => {}); });
 
-  const moreButton = (fn) => h('div', { class: 'row end' }, h('button', { onclick: fn }, tr('加载更多')));
-
   // ---- pages ----
   async function home(m) {
     const d = await ST.loadMe();
@@ -49,29 +55,21 @@
     if (d.devices.length === 0) add(m, h('div', { class: 'card muted' }, parts('还没有绑定设备。在你的机器上运行 {command} 即可把该设备绑定到此账户。', { command: h('code', null, 'sharetoken login -user ' + me().user.username) })));
   }
 
-  function ledgerTable(entries) {
-    return table([
-      { title: tr('时间'), cell: e => time(e.at) },
-      { title: tr('摘要'), cell: e => e.memo },
-      { title: tr('作业'), cell: e => e.job_id ? peer(e.job_id) : '' },
-      { title: tr('金额'), num: true, cell: e => h('span', { class: e.amount_micros > 0 ? 'ok' : 'bad' }, signed(e.amount_micros)) },
-    ], entries, tr('还没有账单记录'));
-  }
+  const ledgerColumns = () => [
+    { title: tr('时间'), cell: e => time(e.at) },
+    { title: tr('摘要'), cell: e => e.memo },
+    { title: tr('作业'), cell: e => e.job_id ? peer(e.job_id) : '' },
+    { title: tr('金额'), num: true, cell: e => h('span', { class: e.amount_micros > 0 ? 'ok' : 'bad' }, signed(e.amount_micros)) },
+  ];
+  const ledgerTable = entries => table(ledgerColumns(), entries, tr('还没有账单记录'));
   async function ledger(m) {
     add(m, pageTitle(tr('账单'), h('small', null, tr('正数入账、负数出账，单位 credit'))));
-    const card = h('div', { class: 'card' }); add(m, card);
-    let all = [];
-    async function load() {
-      const before = all.length ? all[all.length - 1].seq : 0;
-      const r = await api('GET', '/api/v1/ledger?limit=50' + (before ? '&before=' + before : ''));
-      all = all.concat(r.entries);
-      add(clear(card), ledgerTable(all), r.entries.length === 50 ? moreButton(load) : null);
-    }
-    await load();
+    const list = ST.listView({ path: '/api/v1/ledger', key: 'entries', columns: ledgerColumns(), empty: tr('还没有账单记录') });
+    add(m, list.el);
+    await list.reload();
   }
 
-  function jobsTable(jobs) {
-    return table([
+  const jobsColumns = () => [
       { title: tr('时间'), cell: j => time(j.created_at) },
       { title: tr('角色'), cell: j => badge(j.role === 'buy' ? tr('买入') : tr('卖出'), j.role === 'buy' ? 'accent' : 'ok') },
       { title: tr('模型'), cell: j => j.model },
@@ -80,20 +78,13 @@
       { title: 'tokens', num: true, cell: j => num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
       { title: tr('费用'), num: true, cell: j => credit(j.cost_micros) },
       { title: tr('收入'), num: true, cell: j => j.role === 'sell' && j.earned_micros ? h('span', { class: 'ok' }, '+' + credit(j.earned_micros)) : '' },
-    ], jobs, tr('还没有作业'));
-  }
+  ];
+  const jobsTable = rows => table(jobsColumns(), rows, tr('还没有作业'));
   async function jobs(m) {
-    const role = h('select', { onchange: () => { all = []; load(); } }, h('option', { value: '' }, tr('全部')), h('option', { value: 'buy' }, tr('买入')), h('option', { value: 'sell' }, tr('卖出')));
-    add(m, pageTitle(tr('作业')), h('div', { class: 'toolbar' }, h('span', { class: 'muted' }, tr('角色')), role));
-    const card = h('div', { class: 'card' }); add(m, card);
-    let all = [];
-    async function load() {
-      const before = all.length ? all[all.length - 1].created_at : 0;
-      const r = await api('GET', '/api/v1/jobs?limit=50&role=' + role.value + (before ? '&before=' + before : ''));
-      all = all.concat(r.jobs);
-      add(clear(card), jobsTable(all), r.jobs.length === 50 ? moreButton(load) : null);
-    }
-    await load();
+    const role = h('select', { id: 'jobs-role', onchange: () => list.reload() }, h('option', { value: '' }, tr('全部角色')), h('option', { value: 'buy' }, tr('买入')), h('option', { value: 'sell' }, tr('卖出')));
+    const list = ST.listView({ path: '/api/v1/jobs', key: 'jobs', columns: jobsColumns(), empty: tr('还没有作业'), params: () => ({ role: role.value }), tools: role });
+    add(m, pageTitle(tr('作业')), list.el);
+    await list.reload();
   }
 
   async function tokens(m) {
@@ -204,7 +195,13 @@
     const kind = h('select', { id: 'feedback-kind' }, Object.entries(FEEDBACK_KIND).map(([k, label]) => h('option', { value: k }, label())));
     const text = h('textarea', { id: 'feedback-text', rows: 6, maxlength: 4000, dir: 'auto', class: 'wide' });
     const err = h('div', { class: 'error', id: 'feedback-error' });
-    const list = h('div', { class: 'card', id: 'feedback-list' });
+    const list = ST.listView({ path: '/api/v1/feedback', key: 'feedback', dates: false, csv: false, empty: tr('还没有提交过反馈'), columns: [
+      { title: tr('时间'), cell: f => time(f.created_at) },
+      { title: tr('类型'), cell: f => (FEEDBACK_KIND[f.category] || (() => f.category))() },
+      { title: tr('内容'), cell: f => h('div', { class: 'feedback-text', dir: 'auto' }, f.message) },
+      { title: tr('状态'), cell: f => f.status === 'done' ? badge(tr('已处理'), 'ok') : badge(tr('已收到')) },
+    ] });
+    list.el.id = 'feedback-list';
     const form = h('form', {
       class: 'form', id: 'feedback-form', onsubmit: async e => {
         e.preventDefault(); err.textContent = '';
@@ -213,22 +210,13 @@
           await api('POST', '/api/v1/feedback', { category: kind.value, message: text.value, source: 'portal', lang: I18N.lang });
           text.value = '';
           toast(tr('反馈已提交，谢谢！'), 'ok');
-          await load();
+          await list.reload();
         } catch (ex) { err.textContent = ex.code === 'throttled' ? tr('提交太频繁，请稍后再试') : ex.message; }
       }
     }, field(tr('类型'), kind), field(tr('内容'), text), err, h('div', null, h('button', { class: 'primary', type: 'submit', id: 'feedback-send' }, tr('提交反馈'))));
     add(m, pageTitle(tr('反馈')), h('div', { class: 'card' }, h('p', { class: 'muted' }, tr('告诉我们你遇到的问题或建议。请不要填写密码、token 或 prompt 内容。我们可能会通过账户邮箱回复你。')), form),
-      section('chat', tr('我的反馈')), list);
-    async function load() {
-      const r = await api('GET', '/api/v1/feedback');
-      add(clear(list), table([
-        { title: tr('时间'), cell: f => time(f.created_at) },
-        { title: tr('类型'), cell: f => (FEEDBACK_KIND[f.category] || (() => f.category))() },
-        { title: tr('内容'), cell: f => h('div', { class: 'feedback-text', dir: 'auto' }, f.message) },
-        { title: tr('状态'), cell: f => f.status === 'done' ? badge(tr('已处理'), 'ok') : badge(tr('已收到')) },
-      ], r.feedback, tr('还没有提交过反馈')));
-    }
-    await load();
+      section('chat', tr('我的反馈')), list.el);
+    await list.reload();
   }
 
   const go = ST.router({ home, ledger, jobs, tokens, devices, network, account, feedback }, nav, main, 'home');

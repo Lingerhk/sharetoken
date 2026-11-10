@@ -145,6 +145,135 @@ const ST = (() => {
   function field(label, input) { return h('div', { class: 'field' }, h('label', null, label), input); }
   function input(attrs) { return h('input', Object.assign({ autocomplete: 'off' }, attrs)); }
 
+  // ---- listings ----
+  const PAGE_SIZE_KEY = 'st_page_size';
+  const PAGE_SIZES = [10, 20, 50, 100];
+  function storedPageSize() {
+    let n = 0;
+    try { n = Number(localStorage.getItem(PAGE_SIZE_KEY)); } catch (e) { /* the default, then */ }
+    return PAGE_SIZES.includes(n) ? n : (state.info && state.info.default_page_size) || 20;
+  }
+  // download saves what a signed-in endpoint answers as a file.
+  async function download(path, name) {
+    const r = await fetch(path, { headers: { 'X-Sharetoken-Web': '1' }, credentials: 'same-origin', cache: 'no-store' });
+    if (!r.ok) {
+      let msg = 'HTTP ' + r.status;
+      try { msg = (await r.json()).error.message || msg; } catch (e) { /* no JSON body */ }
+      throw new Error(msg);
+    }
+    const disposition = r.headers.get('Content-Disposition') || '';
+    const named = /filename="([^"]+)"/.exec(disposition);
+    const url = URL.createObjectURL(await r.blob());
+    const a = h('a', { href: url, download: name || (named ? named[1] : 'download') });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+  // dateRange is two date inputs and presets. range() gives what listings take:
+  // unix milliseconds of the first day's start and of the day after the last,
+  // in the viewer's time zone.
+  function dateRange(onChange) {
+    const day = v => { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d); };
+    const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    const from = input({ type: 'date', class: 'date-from', 'aria-label': tr('开始日期'), title: tr('开始日期') });
+    const to = input({ type: 'date', class: 'date-to', 'aria-label': tr('结束日期'), title: tr('结束日期') });
+    const preset = h('select', { class: 'date-preset', 'aria-label': tr('时间范围') },
+      h('option', { value: '' }, tr('全部时间')), h('option', { value: '1' }, tr('今天')), h('option', { value: '7' }, tr('最近 7 天')), h('option', { value: '30' }, tr('最近 30 天')), h('option', { value: 'custom', hidden: true }, tr('自定义')));
+    preset.addEventListener('change', () => {
+      if (preset.value === '') { from.value = to.value = ''; }
+      else {
+        const today = new Date(), first = new Date(today);
+        first.setDate(today.getDate() - Number(preset.value) + 1);
+        from.value = iso(first); to.value = iso(today);
+      }
+      onChange();
+    });
+    for (const el of [from, to]) el.addEventListener('change', () => { preset.value = from.value || to.value ? 'custom' : ''; onChange(); });
+    return {
+      el: h('span', { class: 'date-range' }, preset, from, h('span', { class: 'muted' }, '–'), to),
+      range: () => {
+        const r = {};
+        if (from.value) r.from = day(from.value).getTime();
+        if (to.value) { const end = day(to.value); end.setDate(end.getDate() + 1); r.to = end.getTime(); }
+        return r;
+      },
+    };
+  }
+  // pageNumbers: the first, the last and the neighbours of the current page.
+  function pageNumbers(page, pages) {
+    const out = [];
+    for (let p = 1; p <= pages; p++) {
+      if (p === 1 || p === pages || Math.abs(p - page) <= 2) out.push(p);
+      else if (out[out.length - 1] !== 0) out.push(0);
+    }
+    return out;
+  }
+  // listView draws a paged table with its date filter and CSV export.
+  // {path, key, columns, empty, params: () => ({...}), dates, csv, tools, actions, onData, onError, size}
+  // → {el, reload, tools}. reload() goes back to the first page; refresh() stays.
+  function listView(o) {
+    let page = 1, seq = 0, size = o.size || storedPageSize();
+    const body = h('div', { class: 'list-body' }), pager = h('div', { class: 'pager' });
+    const dates = o.dates === false ? null : dateRange(() => reload());
+    const query = extra => {
+      const q = new URLSearchParams();
+      const all = Object.assign({}, o.params ? o.params() : null, dates ? dates.range() : null, extra);
+      for (const [k, v] of Object.entries(all)) if (v !== '' && v !== null && v !== undefined && v !== false) q.set(k, v);
+      return q.toString();
+    };
+    const exportBtn = o.csv === false ? null : h('button', { type: 'button', class: 'small export-csv', onclick: async () => {
+      exportBtn.disabled = true;
+      const label = exportBtn.textContent;
+      exportBtn.textContent = tr('正在导出…');
+      try { await download(o.path + '?' + query({ format: 'csv' })); }
+      catch (ex) { fail(ex); }
+      finally { exportBtn.disabled = false; exportBtn.textContent = label; }
+    } }, tr('导出 CSV'));
+    function drawPager(total) {
+      clear(pager);
+      const pages = Math.max(1, Math.ceil(total / size));
+      const go = p => { page = Math.min(Math.max(1, p), pages); load(); };
+      const jump = input({ type: 'number', min: 1, max: pages, class: 'pager-jump', 'aria-label': tr('跳转到页码') });
+      jump.addEventListener('keydown', e => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const n = Math.trunc(Number(jump.value));
+        if (n >= 1) go(n);
+      });
+      const sizes = h('select', { class: 'pager-size', 'aria-label': tr('每页条数'), onchange: () => {
+        size = Number(sizes.value); page = 1;
+        try { localStorage.setItem(PAGE_SIZE_KEY, String(size)); } catch (e) { /* this visit only */ }
+        load();
+      } }, PAGE_SIZES.map(n => h('option', { value: n, selected: n === size }, tr('{n} 条/页', { n }))));
+      add(pager, h('span', { class: 'muted pager-total' }, tr('共 {n} 条', { n: num(total) })),
+        h('span', { class: 'spacer' }), sizes,
+        h('button', { type: 'button', class: 'small pager-prev', disabled: page <= 1, 'aria-label': tr('上一页'), onclick: () => go(page - 1) }, '‹'),
+        pageNumbers(page, pages).map(p => p === 0 ? h('span', { class: 'muted pager-gap' }, '…')
+          : h('button', { type: 'button', class: 'small pager-num' + (p === page ? ' active' : ''), 'aria-current': p === page ? 'page' : null, onclick: () => go(p) }, String(p))),
+        h('button', { type: 'button', class: 'small pager-next', disabled: page >= pages, 'aria-label': tr('下一页'), onclick: () => go(page + 1) }, '›'),
+        pages > 7 ? h('label', { class: 'muted pager-go' }, tr('跳至'), jump) : null);
+    }
+    async function load() {
+      const mine = ++seq;
+      let r;
+      try { r = await api('GET', o.path + '?' + query({ page, page_size: size })); }
+      catch (ex) {
+        if (mine !== seq) return;
+        if (ex.status === 401) { location.reload(); return; }
+        add(clear(body), h('div', { class: 'empty' }, o.onError ? o.onError(ex) : ex.message)); clear(pager);
+        return;
+      }
+      if (mine !== seq) return; // a newer filter's answer is on its way
+      if (o.onData) o.onData(r);
+      const rows = r[o.key] || [], total = r.total || 0;
+      if (!rows.length && total > 0 && page > 1) { page = Math.ceil(total / size) || 1; return load(); } // the list shrank
+      add(clear(body), table(typeof o.columns === 'function' ? o.columns() : o.columns, rows, o.empty));
+      drawPager(total);
+    }
+    function reload() { page = 1; return load(); }
+    const tools = h('div', { class: 'toolbar list-tools' }, o.tools, dates ? dates.el : null, exportBtn || o.actions ? h('span', { class: 'spacer' }) : null, exportBtn, o.actions);
+    return { el: h('div', { class: 'list-view' }, tools, h('div', { class: 'card' }, body, pager)), reload, refresh: load };
+  }
+
   // ---- icons and page parts ----
   function icon(name, size) { return I18N.svg(ICONS[name], size); }
   // chip is an icon on a tinted square; tone: ok, warn, bad, blue, violet, or none for the accent.
@@ -248,13 +377,16 @@ const ST = (() => {
     return new Promise(resolve => {
       let mode = 'login';
       const err = h('div', { class: 'error' });
-      const user = input({ type: 'text', id: 'login-user', autocomplete: 'username', placeholder: tr('邮箱，或 3-32 位小写字母、数字、_ . -'), required: true });
+      const user = input({ type: 'text', id: 'login-user', autocomplete: 'username', placeholder: tr('请输入你的邮箱'), required: true });
       const pass = input({ type: 'password', id: 'login-pass', autocomplete: 'current-password', placeholder: tr('至少 8 位'), required: true });
       const submit = h('button', { class: 'primary', type: 'submit' }, tr('登录'));
       const verify = () => state.info && state.info.email_verification;
       const mailCode = input({ type: 'text', id: 'login-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 7, placeholder: tr('6 位验证码') });
       const sendCode = h('button', { type: 'button', id: 'send-code', class: 'small', onclick: requestCode }, tr('发送验证码'));
       const codeField = h('div', { class: 'field code-field', hidden: true }, h('label', null, tr('邮箱验证码')), h('div', { class: 'row' }, mailCode, sendCode));
+      const invite = input({ type: 'text', id: 'login-invite', autocomplete: 'off', maxlength: 64, placeholder: tr('管理员发给你的邀请码') });
+      const inviteField = h('div', { class: 'field', hidden: true }, h('label', null, tr('邀请码')), invite);
+      const inviting = () => state.info && state.info.invite_required;
       let cooldown = null;
       async function requestCode() {
         err.textContent = '';
@@ -262,13 +394,13 @@ const ST = (() => {
         if (!email.includes('@')) { err.textContent = tr('请先填写邮箱'); user.focus(); return; }
         sendCode.disabled = true;
         try {
-          const r = await api('POST', '/api/v1/register/code', { email });
+          const r = await api('POST', '/api/v1/register/code', { email, invite_code: invite.value.trim() });
           toast(tr('验证码已发送，请查收邮件（也看看垃圾邮件）'));
           startCooldown(r.cooldown_seconds || 60);
           mailCode.focus();
         } catch (ex) {
           sendCode.disabled = false;
-          err.textContent = ex.code === 'code_cooldown' ? tr('刚发送过，请稍后再试') : ex.code === 'throttled' ? tr('请求太频繁，请稍后再试') : ex.code === 'bad_request' ? tr('邮箱地址格式不正确') : ex.message;
+          err.textContent = ex.code === 'code_cooldown' ? tr('刚发送过，请稍后再试') : ex.code === 'throttled' ? tr('请求太频繁，请稍后再试') : ex.code === 'bad_request' ? tr('邮箱地址格式不正确') : signupError(ex) || ex.message;
         }
       }
       function startCooldown(seconds) {
@@ -281,6 +413,8 @@ const ST = (() => {
           clearInterval(cooldown); sendCode.disabled = false; sendCode.textContent = tr('重新发送');
         }, 1000);
       }
+      const signupError = ex => ex.code === 'email_not_allowed' ? tr('这个邮箱不能在此注册') : ex.code === 'invite_required' ? tr('注册需要邀请码') : ex.code === 'bad_invite' ? tr('邀请码错误、已用完或已过期') : '';
+      const forgot = h('p', { class: 'muted', hidden: true }, h('a', { href: '#', id: 'forgot-link', onclick: e => { e.preventDefault(); showForgot(); } }, tr('忘记密码？')));
       const tabLogin = h('button', { type: 'button', class: 'active', onclick: () => setMode('login') }, tr('登录'));
       const tabReg = h('button', { type: 'button', onclick: () => setMode('register') }, tr('注册'));
       const tabs = h('div', { class: 'tabs' }, tabLogin, opts.allowRegister ? tabReg : null);
@@ -291,6 +425,8 @@ const ST = (() => {
         tabLogin.classList.toggle('active', m === 'login'); tabReg.classList.toggle('active', m === 'register');
         submit.textContent = m === 'login' ? tr('登录') : tr('注册');
         codeField.hidden = !(m === 'register' && verify());
+        inviteField.hidden = !(m === 'register' && inviting());
+        forgot.hidden = !(m === 'login' && state.info && state.info.password_reset);
         userLabel.textContent = m === 'register' && verify() ? tr('邮箱') : tr('用户名');
         pass.autocomplete = m === 'login' ? 'current-password' : 'new-password';
         hint.textContent = m === 'register' && state.info && state.info.signup_credit_micros > 0
@@ -299,6 +435,26 @@ const ST = (() => {
       const codeError = ex => ex.code === 'bad_code' ? tr('验证码错误') : ex.code === 'throttled' ? tr('尝试次数过多，请几分钟后再试') : ex.message;
       const restart = () => renderLogin(root, opts).then(resolve);
       const codeInput = () => input({ type: 'text', id: 'mfa-code', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9 ]*', maxlength: 7, placeholder: tr('6 位验证码'), required: true });
+      // A forgotten password: the answer is the same whether the address has an account.
+      function showForgot() {
+        const email = input({ type: 'email', id: 'forgot-email', autocomplete: 'email', required: true, value: user.value.includes('@') ? user.value.trim() : '' });
+        const e2 = h('div', { class: 'error' });
+        const send = h('button', { class: 'primary', type: 'submit', id: 'forgot-send' }, tr('发送重置链接'));
+        const form2 = h('form', {
+          class: 'form', onsubmit: async e => {
+            e.preventDefault(); e2.textContent = ''; send.disabled = true;
+            try {
+              await api('POST', '/api/v1/password/forgot', { email: email.value.trim() });
+              clear(card2); add(card2, h('h1', null, tr('查看你的邮箱')), h('p', { id: 'forgot-sent' }, tr('如果 {email} 有账户，重置链接已经发出，30 分钟内有效。也看看垃圾邮件。', { email: email.value.trim() })),
+                h('p', { class: 'muted' }, tr('用户名不是邮箱的账户收不到链接，请联系管理员重置。')), h('div', { class: 'row' }, h('button', { type: 'button', onclick: restart }, tr('返回登录'))));
+            } catch (ex) { send.disabled = false; e2.textContent = ex.code === 'throttled' ? tr('请求太频繁，请稍后再试') : ex.message; }
+          }
+        }, h('p', { class: 'muted' }, tr('填写注册时用的邮箱，我们把重置链接发给你。')), field(tr('邮箱'), email), e2,
+          h('div', { class: 'row' }, send, h('button', { type: 'button', onclick: restart }, tr('返回'))));
+        const card2 = h('div', { class: 'card login' }, h('h1', null, tr('找回密码')), form2);
+        clear(root).appendChild(authFrame(card2));
+        email.focus();
+      }
       // Second step of an admin login: a code from the authenticator app.
       function showCode(challenge) {
         const code = codeInput(), e2 = h('div', { class: 'error' });
@@ -339,6 +495,10 @@ const ST = (() => {
           e.preventDefault(); err.textContent = ''; submit.disabled = true;
           try {
             const body = { username: user.value.trim(), password: pass.value };
+            if (mode === 'register' && inviting()) {
+              if (!invite.value.trim()) { err.textContent = tr('注册需要邀请码'); invite.focus(); return; }
+              body.invite_code = invite.value.trim();
+            }
             if (mode === 'register' && verify()) {
               if (!mailCode.value.trim()) { err.textContent = tr('请填写邮箱收到的验证码'); mailCode.focus(); return; }
               body.code = mailCode.value.trim();
@@ -351,14 +511,47 @@ const ST = (() => {
             if (ex.code === 'mfa_setup_required' && ex.data.challenge) { pass.value = ''; showSetup(ex.data.challenge); return; }
             err.textContent = ex.code === 'bad_credentials' ? tr('用户名或密码错误') : ex.code === 'throttled' ? tr('尝试次数过多，请几分钟后再试')
               : ex.code === 'bad_code' ? tr('验证码错误或已过期') : ex.code === 'email_required' ? tr('请用邮箱注册')
-              : ex.code === 'exists' ? tr('用户名已被使用') : ex.code === 'cross_site' ? tr('请求被拒绝（跨站）') : ex.message;
+              : ex.code === 'exists' ? tr('用户名已被使用') : ex.code === 'cross_site' ? tr('请求被拒绝（跨站）') : signupError(ex) || ex.message;
           } finally { submit.disabled = false; }
         }
-      }, h('div', { class: 'field' }, userLabel, withIcon('user', user)), codeField, field(tr('密码'), withIcon('lock', pass)), err, submit);
-      clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, opts.title || 'ShareToken'), tabs, form, hint,
+      }, h('div', { class: 'field' }, userLabel, withIcon('user', user)), inviteField, codeField, field(tr('密码'), withIcon('lock', pass)), err, submit);
+      clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, opts.title || 'ShareToken'), tabs, form, forgot, hint,
         h('p', { class: 'muted' }, h('a', { href: '/' }, tr('← 返回官网'))))));
+      setMode('login');
       if (opts.allowRegister && location.hash === '#register') setMode('register');
       user.focus();
+    });
+  }
+
+  // resetToken takes the token of a password-reset link out of the address, so
+  // that it stays neither in the address bar nor in the browser's history.
+  function resetToken() {
+    const m = /^#reset=([A-Za-z0-9_-]+)$/.exec(location.hash);
+    if (!m) return '';
+    history.replaceState(null, '', location.pathname + location.search);
+    return m[1];
+  }
+  // renderReset asks for the new password of a reset link; it resolves when it is
+  // done or given up on, and the sign-in page comes next.
+  function renderReset(root, token) {
+    return new Promise(resolve => {
+      const p1 = input({ type: 'password', id: 'reset-pass', autocomplete: 'new-password', minlength: 8, maxlength: 256, required: true, placeholder: tr('8-256 位') });
+      const p2 = input({ type: 'password', id: 'reset-pass2', autocomplete: 'new-password', required: true });
+      const err = h('div', { class: 'error', id: 'reset-error' });
+      const form = h('form', {
+        class: 'form', id: 'reset-form', onsubmit: async e => {
+          e.preventDefault(); err.textContent = '';
+          if (p1.value !== p2.value) { err.textContent = tr('两次输入的新密码不一致'); return; }
+          try {
+            await api('POST', '/api/v1/password/reset', { token, new_password: p1.value });
+            toast(tr('密码已重置，请用新密码登录'), 'ok');
+            resolve();
+          } catch (ex) { err.textContent = ex.code === 'bad_reset_link' ? tr('这个链接无效、已使用或已过期，请重新获取') : ex.code === 'throttled' ? tr('尝试次数过多，请几分钟后再试') : ex.message; }
+        }
+      }, h('p', { class: 'muted' }, tr('设置新密码后，这个账户所有设备和浏览器都会退出登录。')), field(tr('新密码'), p1), field(tr('重复新密码'), p2), err,
+        h('div', { class: 'row' }, h('button', { class: 'primary', type: 'submit' }, tr('重置密码')), h('button', { type: 'button', onclick: () => resolve() }, tr('返回登录'))));
+      clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, tr('设置新密码')), form)));
+      p1.focus();
     });
   }
 
@@ -384,5 +577,5 @@ const ST = (() => {
   function param(hash) { return hash; }
 
   return { icon, chip, pageChip, pageTitle, section, tile, shell, authFrame, api, ApiError, h, clear, add, $, credit, signed, num, time, ago, short, peer, status, badge, rtt, toast, fail, modal, confirm, copy, secret,
-    table, kv, field, input, state, loadInfo, loadMe, logout, renderLogin, router, param, STATUS };
+    table, kv, field, input, state, listView, dateRange, download, resetToken, renderReset, loadInfo, loadMe, logout, renderLogin, router, param, STATUS };
 })();

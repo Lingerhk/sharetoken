@@ -50,7 +50,7 @@ func TestFeedback(t *testing.T) {
 	if len(mine.Feedback) != 2 || mine.Feedback[1].Message != hostile || mine.Feedback[0].Status != accounts.FeedbackNew {
 		t.Fatalf("alice's feedback: %+v", mine.Feedback)
 	}
-	a.call("GET", "/api/v1/feedback?limit=1&before="+fmt.Sprint(mine.Feedback[0].ID), alice.Token, nil, 200, &mine)
+	a.call("GET", "/api/v1/feedback?limit=1&page=2", alice.Token, nil, 200, &mine)
 	if len(mine.Feedback) != 1 || mine.Feedback[0].Message != hostile {
 		t.Fatalf("paging: %+v", mine.Feedback)
 	}

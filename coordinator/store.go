@@ -16,11 +16,15 @@ import (
 // coordinator state, as component "core".
 var Migrations = []mysqldb.Migration{
 	{Version: 1, Name: "initial schema", SQL: ledger.Schema + accounts.Schema + Schema},
+	{Version: 2, Name: "date range listings", SQL: ledger.AtIndex + auditsAtIndex},
 }
 
 // Migrate brings the shared database up to date. The portal and the coordinator
 // both call it, so either may start first.
 func Migrate(db *sql.DB) error { return mysqldb.Migrate(db, "core", Migrations) }
+
+// auditsAtIndex lets the audit listing walk a date range in time order.
+const auditsAtIndex = `ALTER TABLE audits ADD KEY audits_by_at (at);`
 
 // Schema holds the coordinator's durable state next to the ledger tables.
 // Offers are deliberately not stored: nodes re-announce them every few seconds.

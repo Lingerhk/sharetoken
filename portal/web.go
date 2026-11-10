@@ -74,12 +74,33 @@ type Info struct {
 	// EmailVerification: sign-ups first ask POST /api/v1/register/code.
 	EmailVerification bool   `json:"email_verification"`
 	SupportEmail      string `json:"support_email,omitempty"`
+	InviteRequired    bool   `json:"invite_required,omitempty"`
+	PasswordReset     bool   `json:"password_reset"`
+	DefaultPageSize   int    `json:"default_page_size"`
 }
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, Info{RegistrationOpen: s.cfg.OpenRegistration, SignupCredit: s.cfg.SignupCreditMicros,
-		SessionHours: int64(s.cfg.WebSessionTTL / time.Hour), PassesEnabled: s.cfg.PassKey != nil,
-		EmailVerification: s.cfg.EmailVerification, SupportEmail: s.supportAddress()})
+	st := s.settings()
+	writeJSON(w, http.StatusOK, Info{RegistrationOpen: st.OpenRegistration, SignupCredit: st.SignupCreditMicros,
+		SessionHours: int64(s.webSessionTTL() / time.Hour), PassesEnabled: s.cfg.PassKey != nil,
+		EmailVerification: st.EmailVerification, SupportEmail: s.supportAddress(), InviteRequired: st.InviteRequired,
+		PasswordReset: s.resetActive(st), DefaultPageSize: st.DefaultPageSize})
+}
+
+// webSessionTTL is the lifetime of a new browser session.
+func (s *Server) webSessionTTL() time.Duration {
+	if h := s.settings().WebSessionHours; h > 0 {
+		return time.Duration(h) * time.Hour
+	}
+	return s.cfg.WebSessionTTL
+}
+
+// loginTTL is the lifetime of the token an API login issues.
+func (s *Server) loginTTL() time.Duration {
+	if h := s.settings().LoginTokenHours; h > 0 {
+		return time.Duration(h) * time.Hour
+	}
+	return s.cfg.LoginTTL
 }
 
 // ---- static pages ----
@@ -221,12 +242,16 @@ func (s *Server) setSession(w http.ResponseWriter, r *http.Request, token string
 }
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, u *accounts.User, status int, mfa bool) {
-	plain, _, err := s.store.IssueSessionToken(u.ID, webTokenName, s.cfg.WebSessionTTL, mfa)
+	ttl := s.webSessionTTL()
+	plain, _, err := s.store.IssueSessionToken(u.ID, webTokenName, ttl, mfa)
 	if err != nil {
 		s.accountErr(w, err)
 		return
 	}
-	s.setSession(w, r, plain, s.cfg.WebSessionTTL)
+	if mfa {
+		s.auditEvent(r, u, actionAdminLogin, u.Username, nil)
+	}
+	s.setSession(w, r, plain, ttl)
 	writeJSON(w, status, map[string]any{"user": u})
 }
 
@@ -278,21 +303,6 @@ func (s *Server) handleRenameDevice(w http.ResponseWriter, r *http.Request, cu c
 
 // ---- admin endpoints beyond the CLI API ----
 
-func (s *Server) handleSearchUsers(w http.ResponseWriter, r *http.Request, _ ctxUser) {
-	q := r.URL.Query().Get("q")
-	us, err := s.store.SearchUsers(q, queryLimit(r), int(max(queryInt(r, "offset", 0), 0)))
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	total, err := s.store.UserCount(q)
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"users": us, "total": total})
-}
-
 func (s *Server) handleSetAdmin(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 	u := s.userByPath(w, r)
 	if u == nil {
@@ -312,6 +322,7 @@ func (s *Server) handleSetAdmin(w http.ResponseWriter, r *http.Request, cu ctxUs
 		s.accountErr(w, err)
 		return
 	}
+	cu.note("is_admin", req.Admin)
 	s.log.Info("admin rights changed", "user", u.Username, "admin", req.Admin, "by", cu.user.Username)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -340,6 +351,7 @@ func (s *Server) handleAdminPassword(w http.ResponseWriter, r *http.Request, cu 
 			return
 		}
 	}
+	cu.note("tokens_revoked", revoked)
 	s.log.Info("password reset by admin", "user", u.Username, "by", cu.user.Username, "tokens_revoked", revoked)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tokens_revoked": revoked})
 }
@@ -385,6 +397,7 @@ func (s *Server) handleAdminRevokeAll(w http.ResponseWriter, r *http.Request, cu
 		s.internal(w, err)
 		return
 	}
+	cu.note("tokens_revoked", n)
 	s.log.Info("all tokens revoked by admin", "user", u.Username, "count", n, "by", cu.user.Username)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tokens_revoked": n})
 }
@@ -402,25 +415,20 @@ func (s *Server) handleAdminUnbind(w http.ResponseWriter, r *http.Request, cu ct
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (s *Server) handleAdminUserLedger(w http.ResponseWriter, r *http.Request, _ ctxUser) {
+func (s *Server) handleAdminUserLedger(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 	u := s.userByPath(w, r)
 	if u == nil {
 		return
 	}
-	s.writeLedger(w, r, u.ID)
+	s.ledgerListing(w, r, cu, u.ID, "user-ledger")
 }
 
-func (s *Server) handleAdminUserJobs(w http.ResponseWriter, r *http.Request, _ ctxUser) {
+func (s *Server) handleAdminUserJobs(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 	u := s.userByPath(w, r)
 	if u == nil {
 		return
 	}
-	jobs, err := coordinator.AccountJobs(s.db, ledger.UserAccount(u.ID), r.URL.Query().Get("role"), queryInt(r, "before", 0), queryLimit(r))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
+	s.jobsListing(w, r, cu, u.ID, "user-jobs")
 }
 
 func (s *Server) handleUpdateRelay(w http.ResponseWriter, r *http.Request, cu ctxUser) {
@@ -437,34 +445,10 @@ func (s *Server) handleUpdateRelay(w http.ResponseWriter, r *http.Request, cu ct
 		s.accountErr(w, err)
 		return
 	}
+	cu.note("name", req.Name)
+	cu.note("region", req.Region)
 	s.log.Info("relay updated", "id", id, "by", cu.user.Username)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-func (s *Server) handleAdminJobs(w http.ResponseWriter, r *http.Request, _ ctxUser) {
-	q := r.URL.Query()
-	status := q.Get("status")
-	switch coordinator.Status(status) {
-	case "", coordinator.StatusHeld, coordinator.StatusPending, coordinator.StatusDisputed, coordinator.StatusFinal, coordinator.StatusReleased, coordinator.StatusRefunded:
-	default:
-		writeErr(w, http.StatusBadRequest, "bad_request", "unknown status")
-		return
-	}
-	acct := q.Get("account")
-	if name := q.Get("user"); name != "" {
-		u, err := s.store.UserByName(name)
-		if err != nil {
-			s.accountErr(w, err)
-			return
-		}
-		acct = ledger.UserAccount(u.ID)
-	}
-	jobs, err := coordinator.QueryJobs(s.db, status, acct, queryInt(r, "before", 0), queryLimit(r))
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
 }
 
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, _ ctxUser) {
@@ -488,24 +472,6 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, _ ctxUser) 
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": out})
 }
 
-func (s *Server) handleAudits(w http.ResponseWriter, r *http.Request, _ ctxUser) {
-	as, err := coordinator.QueryAudits(s.db, queryLimit(r))
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"audits": as})
-}
-
-func (s *Server) handleDisputes(w http.ResponseWriter, r *http.Request, _ ctxUser) {
-	ds, err := coordinator.QueryDisputes(s.db, queryLimit(r))
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"disputes": ds})
-}
-
 func (s *Server) handleResolveDispute(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 	var req struct {
 		Decision string `json:"decision"` // pay | refund
@@ -518,6 +484,7 @@ func (s *Server) handleResolveDispute(w http.ResponseWriter, r *http.Request, cu
 		return
 	}
 	job := r.PathValue("job")
+	cu.note("decision", req.Decision)
 	err := coordinator.ResolveDispute(s.db, job, req.Decision == "pay", s.cfg.Now())
 	switch {
 	case err == nil:
@@ -537,44 +504,6 @@ type JournalLine struct {
 	ledger.Entry
 	FromUser string `json:"from_user,omitempty"`
 	ToUser   string `json:"to_user,omitempty"`
-}
-
-func (s *Server) handleJournal(w http.ResponseWriter, r *http.Request, _ ctxUser) {
-	before, limit := queryInt(r, "before", 0), queryLimit(r)
-	if before <= 0 {
-		before = 1<<63 - 1
-	}
-	const cols = `seq, at, job_id, debit, credit, amount, memo`
-	query, args := `SELECT `+cols+` FROM ledger_entries WHERE seq < ? ORDER BY seq DESC LIMIT ?`, []any{before, limit}
-	if acct := r.URL.Query().Get("account"); acct != "" {
-		query, args = ledger.AccountEntriesSQL, []any{acct, before, limit, acct, before, limit, limit}
-	}
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	defer rows.Close()
-	lines := []JournalLine{}
-	for rows.Next() {
-		var l JournalLine
-		if err := rows.Scan(&l.Seq, &l.At, &l.JobID, &l.Debit, &l.Credit, &l.Amount, &l.Memo); err != nil {
-			s.internal(w, err)
-			return
-		}
-		lines = append(lines, l)
-	}
-	if err := rows.Err(); err != nil {
-		s.internal(w, err)
-		return
-	}
-	rows.Close() // single-connection pool: see handleAccounts
-	names := map[string]string{}
-	for i := range lines {
-		lines[i].FromUser = s.accountUser(names, lines[i].Debit)
-		lines[i].ToUser = s.accountUser(names, lines[i].Credit)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": lines})
 }
 
 // accountUser names the user behind a user:<id> account, caching lookups.

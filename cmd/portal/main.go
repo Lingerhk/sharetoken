@@ -68,6 +68,7 @@ type File struct {
 		ReadTimeout       config.Duration `yaml:"read_timeout"`
 		WriteTimeout      config.Duration `yaml:"write_timeout"`
 		ShutdownTimeout   config.Duration `yaml:"shutdown_timeout"`
+		PublicURL         string          `yaml:"public_url"` // for links in mail (password reset); only here, not on the settings page
 	} `yaml:"http"`
 	TLS struct {
 		Mode            string   `yaml:"mode"` // auto, files, self-signed, proxy, insecure
@@ -297,7 +298,8 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 	p, err := portal.New(portal.Config{DB: db, OpenRegistration: f.Accounts.OpenRegistration, SignupCreditMicros: f.Accounts.SignupCreditMicros,
 		LoginTTL: f.Sessions.LoginTTL.T(), PassKey: passKey, PassTTL: f.Sessions.PassTTL.T(), WebSessionTTL: f.Sessions.WebSessionTTL.T(),
 		SecureCookies: mode == "proxy", TrustedProxies: trustedProxies(f.HTTP.TrustedProxies), MFAKey: mfaKey, Log: lg,
-		EmailVerification: f.Accounts.EmailVerification, Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir})
+		EmailVerification: f.Accounts.EmailVerification, Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir,
+		PublicURL: strings.TrimRight(f.HTTP.PublicURL, "/")})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -410,6 +412,7 @@ func admin(p *portal.Server, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
+		p.AuditCLI("user.create", u.Username, map[string]any{"is_admin": *isAdmin})
 		return printJSON(u)
 	case "passwd":
 		if err := need(1, "<username>"); err != nil {
@@ -423,7 +426,11 @@ func admin(p *portal.Server, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		return st.SetPassword(id, pw)
+		if err := st.SetPassword(id, pw); err != nil {
+			return err
+		}
+		p.AuditCLI("user.set_password", args[0], nil)
+		return nil
 	case "grant":
 		if err := need(2, "<username> <micros> [memo]"); err != nil {
 			return err
@@ -439,6 +446,7 @@ func admin(p *portal.Server, cmd string, args []string) error {
 		if err := p.AdjustCredit(id, micros, strings.Join(args[2:], " ")); err != nil {
 			return err
 		}
+		p.AuditCLI("user.credit", args[0], map[string]any{"micros": micros, "memo": strings.Join(args[2:], " ")})
 		b, err := p.Balance(id)
 		if err != nil {
 			return err
@@ -476,7 +484,11 @@ func admin(p *portal.Server, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		return st.SetDisabled(id, cmd == "disable")
+		if err := st.SetDisabled(id, cmd == "disable"); err != nil {
+			return err
+		}
+		p.AuditCLI("user."+cmd, args[0], nil)
+		return nil
 	case "mfa-reset":
 		// Recovery for an administrator who lost their authenticator: the
 		// secret is removed and every token revoked; the next login enrolls
@@ -495,6 +507,7 @@ func admin(p *portal.Server, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
+		p.AuditCLI("user.mfa_reset", args[0], map[string]any{"tokens_revoked": n})
 		fmt.Printf("two-factor secret cleared, %d tokens revoked; %s enrolls again at the next login\n", n, args[0])
 		return nil
 	case "relay":

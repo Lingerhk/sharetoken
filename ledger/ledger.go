@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 `
 
+// AtIndex is the migration that lets a date range be turned into a seq range.
+const AtIndex = `ALTER TABLE ledger_entries ADD KEY ledger_entries_by_at (at, seq);`
+
 // Entry is one journal line: Amount moved from Debit to Credit.
 type Entry struct {
 	Seq    int64  `json:"seq"`
@@ -344,28 +347,84 @@ func (l *Tx) Journal(afterSeq int64, limit int) ([]Entry, error) {
 	return out, rows.Err()
 }
 
-// AccountEntriesSQL lists an account's entries below a seq, newest first; its
-// arguments are account, seq, limit, account, seq, limit, limit. Two
-// index-ordered scans of at most limit rows each, merged: an OR of the two
-// columns would sort the account's whole history. UNION ALL is exact because
-// transfer refuses debit = credit. The indexes are forced because the optimizer
-// otherwise walks the whole journal looking for an account whose history is old.
+// AccountEntriesSQL lists an account's entries in a seq range [lo, hi), newest
+// first, one page at a time; AccountEntriesArgs builds its arguments. Two
+// index-ordered scans of at most offset+limit rows each, merged: an OR of the
+// two columns would sort the account's whole history. UNION ALL is exact
+// because transfer refuses debit = credit. The indexes are forced because the
+// optimizer otherwise walks the whole journal looking for an account whose
+// history is old.
 const AccountEntriesSQL = `SELECT * FROM (SELECT ` + entryCols + ` FROM ledger_entries FORCE INDEX (ledger_entries_by_debit)
-		WHERE debit = ? AND seq < ? ORDER BY seq DESC LIMIT ?) AS d
+		WHERE debit = ? AND seq >= ? AND seq < ? ORDER BY seq DESC LIMIT ?) AS d
 	UNION ALL SELECT * FROM (SELECT ` + entryCols + ` FROM ledger_entries FORCE INDEX (ledger_entries_by_credit)
-		WHERE credit = ? AND seq < ? ORDER BY seq DESC LIMIT ?) AS c
-	ORDER BY seq DESC LIMIT ?`
+		WHERE credit = ? AND seq >= ? AND seq < ? ORDER BY seq DESC LIMIT ?) AS c
+	ORDER BY seq DESC LIMIT ? OFFSET ?`
+
+// AccountEntriesArgs returns the arguments of AccountEntriesSQL.
+func AccountEntriesArgs(account string, lo, hi int64, limit, offset int) []any {
+	n := offset + limit
+	return []any{account, lo, hi, n, account, lo, hi, n, limit, offset}
+}
 
 const entryCols = `seq, at, job_id, debit, credit, amount, memo`
 
-// AccountEntries returns up to limit journal entries that move money into or
-// out of account, or of its job holds (owner = account), newest first,
-// starting below beforeSeq (0: from the newest).
-func (l *Tx) AccountEntries(account string, beforeSeq int64, limit int) ([]Entry, error) {
-	if beforeSeq <= 0 {
-		beforeSeq = math.MaxInt64
+// Querier is satisfied by *sql.DB and *sql.Tx.
+type Querier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// SeqRange turns a date range (unix nanos, from inclusive, to exclusive, 0
+// unbounded) into a seq range [lo, hi): listings of the journal walk seq, the
+// order the money moved in. A range nothing falls into gives lo = hi.
+func SeqRange(q Querier, from, to int64) (lo, hi int64, err error) {
+	first := func(at int64) (int64, error) {
+		var seq int64
+		err := q.QueryRow(`SELECT seq FROM ledger_entries FORCE INDEX (ledger_entries_by_at) WHERE at >= ? ORDER BY at, seq LIMIT 1`, at).Scan(&seq)
+		if errors.Is(err, sql.ErrNoRows) {
+			return math.MaxInt64, nil
+		}
+		return seq, err
 	}
-	rows, err := l.tx.Query(AccountEntriesSQL, account, beforeSeq, limit, account, beforeSeq, limit, limit)
+	hi = math.MaxInt64
+	if from > 0 {
+		if lo, err = first(from); err != nil {
+			return 0, 0, err
+		}
+	}
+	if to > 0 {
+		if hi, err = first(to); err != nil {
+			return 0, 0, err
+		}
+	}
+	if lo > hi {
+		lo = hi
+	}
+	return lo, hi, nil
+}
+
+// CountEntries counts the journal's entries in a seq range, for one account
+// ("" for all). Each count is answered from an index.
+func CountEntries(q Querier, account string, lo, hi int64) (int64, error) {
+	count := func(query string, args ...any) (int64, error) {
+		var n int64
+		err := q.QueryRow(query, args...).Scan(&n)
+		return n, err
+	}
+	if account == "" {
+		return count(`SELECT COUNT(*) FROM ledger_entries WHERE seq >= ? AND seq < ?`, lo, hi)
+	}
+	d, err := count(`SELECT COUNT(*) FROM ledger_entries FORCE INDEX (ledger_entries_by_debit) WHERE debit = ? AND seq >= ? AND seq < ?`, account, lo, hi)
+	if err != nil {
+		return 0, err
+	}
+	c, err := count(`SELECT COUNT(*) FROM ledger_entries FORCE INDEX (ledger_entries_by_credit) WHERE credit = ? AND seq >= ? AND seq < ?`, account, lo, hi)
+	return d + c, err
+}
+
+// AccountEntries returns one page of the journal entries in the seq range
+// [lo, hi) that move money into or out of account, newest first.
+func (l *Tx) AccountEntries(account string, lo, hi int64, limit, offset int) ([]Entry, error) {
+	rows, err := l.tx.Query(AccountEntriesSQL, AccountEntriesArgs(account, lo, hi, limit, offset)...)
 	if err != nil {
 		return nil, err
 	}

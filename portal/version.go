@@ -51,7 +51,7 @@ func (s *Server) versionInfo() VersionInfo {
 	return VersionInfo{
 		Server: version.Current(), API: version.API,
 		Protocols: Protocols{Ctrl: protocol.CtrlProtocol, Infer: protocol.InferProtocol, InferJob: protocol.SupportedInferVersions, RelayPass: relaypass.Protocol},
-		Schema:    map[string]int{"core": mysqldb.Latest(coordinator.Migrations), "mail": mysqldb.Latest(mailer.Migrations)},
+		Schema:    map[string]int{"core": mysqldb.Latest(coordinator.Migrations), "mail": mysqldb.Latest(mailer.Migrations), "portal": mysqldb.Latest(Migrations)},
 		Client:    ClientVersions{Min: p.MinClient, Recommended: p.RecommendedClient, Latest: p.LatestClient, DownloadURL: p.DownloadURL},
 	}
 }
@@ -129,6 +129,10 @@ func (s *Server) handleSetVersionPolicy(w http.ResponseWriter, r *http.Request, 
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	cu.note("min_client", p.MinClient)
+	cu.note("recommended_client", p.RecommendedClient)
+	cu.note("latest_client", p.LatestClient)
+	cu.note("allow_dev", p.AllowDev)
 	s.log.Info("version policy changed", "by", cu.user.Username, "min_client", p.MinClient, "latest", p.LatestClient, "allow_dev", p.AllowDev)
 	writeJSON(w, http.StatusOK, p)
 }

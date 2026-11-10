@@ -88,20 +88,43 @@ func (s *Store) AddFeedback(userID int64, f Feedback) (*Feedback, error) {
 
 const feedbackColumns = `f.id, f.user_id, u.username, f.category, f.message, f.source, f.app_version, f.os, f.lang, f.status, f.created_at, f.handled_at, f.handled_by`
 
-func (s *Store) queryFeedback(where string, args []any, before int64, limit int) ([]Feedback, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 50
+// FeedbackQuery narrows and pages the feedback listing, newest first.
+type FeedbackQuery struct {
+	UserID   int64  // 0: everyone
+	Status   string // "": any
+	From, To int64  // created_at in unix nanos: From inclusive, To exclusive, 0 unbounded
+	Offset   int
+	Limit    int
+}
+
+func (f FeedbackQuery) where() (string, []any) {
+	to := f.To
+	if to <= 0 {
+		to = 1<<63 - 1
 	}
-	q := `SELECT ` + feedbackColumns + ` FROM feedback f JOIN users u ON u.id = f.user_id WHERE 1 = 1`
-	if where != "" {
-		q += ` AND ` + where
+	q, args := `f.created_at >= ? AND f.created_at < ?`, []any{f.From, to}
+	if f.UserID != 0 {
+		q, args = q+` AND f.user_id = ?`, append(args, f.UserID)
 	}
-	if before > 0 {
-		q += ` AND f.id < ?`
-		args = append(args, before)
+	if f.Status != "" {
+		q, args = q+` AND f.status = ?`, append(args, f.Status)
 	}
-	q += ` ORDER BY f.id DESC LIMIT ?`
-	rows, err := s.DB.Query(q, append(args, limit)...)
+	return q, args
+}
+
+// CountFeedback counts what ListFeedback pages through.
+func (s *Store) CountFeedback(f FeedbackQuery) (int64, error) {
+	where, args := f.where()
+	var n int64
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM feedback f WHERE `+where, args...).Scan(&n)
+	return n, err
+}
+
+// ListFeedback lists the feedback f selects, newest first.
+func (s *Store) ListFeedback(f FeedbackQuery) ([]Feedback, error) {
+	where, args := f.where()
+	rows, err := s.DB.Query(`SELECT `+feedbackColumns+` FROM feedback f JOIN users u ON u.id = f.user_id WHERE `+where+` ORDER BY f.id DESC LIMIT ? OFFSET ?`,
+		append(args, f.Limit, f.Offset)...)
 	if err != nil {
 		return nil, err
 	}
@@ -115,19 +138,6 @@ func (s *Store) queryFeedback(where string, args []any, before int64, limit int)
 		out = append(out, f)
 	}
 	return out, rows.Err()
-}
-
-// UserFeedback lists what one user sent, newest first; before is an ID to page from.
-func (s *Store) UserFeedback(userID, before int64, limit int) ([]Feedback, error) {
-	return s.queryFeedback(`f.user_id = ?`, []any{userID}, before, limit)
-}
-
-// AllFeedback lists everyone's feedback, newest first, optionally by status.
-func (s *Store) AllFeedback(status string, before int64, limit int) ([]Feedback, error) {
-	if status == "" {
-		return s.queryFeedback("", nil, before, limit)
-	}
-	return s.queryFeedback(`f.status = ?`, []any{status}, before, limit)
 }
 
 // NewFeedbackCount is how many messages wait for an admin.

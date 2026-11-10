@@ -72,7 +72,7 @@ func TestPortalSideDisputeResolution(t *testing.T) {
 		t.Fatalf("fee_bps after an admin engine: %q %v", raw, err)
 	}
 	f.booksBalance()
-	jobs, err := QueryJobs(f.eng.db, "", "", 0, 10)
+	jobs, err := QueryJobs(f.eng.db, JobQuery{Limit: 10})
 	if err != nil || len(jobs) != 2 {
 		t.Fatalf("jobs: %+v %v", jobs, err)
 	}
