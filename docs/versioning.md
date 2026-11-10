@@ -21,7 +21,7 @@
 | 客户端本地 API | 路径 | `/api/v1`（OpenAI 接口仍是 `/v1`） |
 | 控制面（客户端↔协调器） | libp2p 协议 ID | `/sharetoken/ctrl/1.0.0` |
 | 数据面（买家↔节点） | libp2p 协议 ID + 每单协商的 `infer_version` | `/sharetoken/infer/1.0.0`，版本 1 |
-| 中继凭证 | libp2p 协议 ID + 签名域 | `/sharetoken/relay-pass/2.0.0`，`relay-pass/v2`（签名覆盖整段 body，新增字段不升版本） |
+| 中继凭证 | libp2p 协议 ID + 签名域 | `/sharetoken/relay-pass/1.0.0`，`relay-pass/v1`（签名覆盖整段 body，新增字段不升版本） |
 | 签名消息 | 签名域 | `offer/v1`、`ticket/v1`、`receipt/v1`、`ack/v1` |
 | 数据库 | `schema_migrations`，按组件编号 | `core` 3，`mail` 1，`portal` 2 |
 | 服务端配置 | YAML 的 `version` | 1 |

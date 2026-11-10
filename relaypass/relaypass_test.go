@@ -63,9 +63,9 @@ func TestPassUnknownClaims(t *testing.T) {
 
 	// Not JSON, too big, or the old version: malformed.
 	for name, body := range map[string][]byte{
-		"garbage": []byte("not json"),
-		"too big": append(bytes.Clone(body[:len(body)-1]), []byte(`,"pad":"`+strings.Repeat("x", MaxBody)+`"}`)...),
-		"v1":      bytes.Replace(body, []byte(Version), []byte("sharetoken/relay-pass/v1"), 1),
+		"garbage":       []byte("not json"),
+		"too big":       append(bytes.Clone(body[:len(body)-1]), []byte(`,"pad":"`+strings.Repeat("x", MaxBody)+`"}`)...),
+		"other version": bytes.Replace(body, []byte(Version), []byte("sharetoken/relay-pass/v0"), 1),
 	} {
 		p := relayed(t, &Pass{Body: body, Sig: ed25519.Sign(priv, signingBytes(body))})
 		if err := p.Verify([]ed25519.PublicKey{pub}, "peerA", now); !errors.Is(err, ErrMalformed) {

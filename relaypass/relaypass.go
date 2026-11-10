@@ -35,7 +35,7 @@ import (
 )
 
 // Protocol is the libp2p protocol a device presents its pass on.
-const Protocol = "/sharetoken/relay-pass/2.0.0"
+const Protocol = "/sharetoken/relay-pass/1.0.0"
 
 // Frame types on Protocol.
 const (
@@ -46,7 +46,7 @@ const (
 // Version doubles as the signing domain. It changes only when a field relays
 // rely on changes meaning; new fields are added to Claims without a new
 // version, and relays that do not know them ignore them.
-const Version = "sharetoken/relay-pass/v2"
+const Version = "sharetoken/relay-pass/v1"
 
 // MaxSkew tolerates clock differences between portal and relay.
 const MaxSkew = time.Minute
