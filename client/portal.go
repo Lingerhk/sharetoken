@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"time"
 
@@ -136,6 +137,7 @@ func (p *PortalClient) Do(ctx context.Context, method, path string, body, out an
 	}
 	req.Header.Set("User-Agent", userAgent())
 	req.Header.Set(portal.ClientVersionHeader, version.Version)
+	req.Header.Set(portal.ClientPlatformHeader, runtime.GOOS)
 	resp, err := p.HTTP.Do(req)
 	if err != nil {
 		return err

@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 	UNIQUE KEY invite_codes_by_code (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
 `},
+	{Version: 2, Name: "relay metric history", SQL: `
+CREATE TABLE IF NOT EXISTS relay_samples (
+	relay   VARCHAR(191) NOT NULL,
+	at      BIGINT NOT NULL,
+	cpu     DOUBLE NOT NULL DEFAULT -1,
+	rss     BIGINT NOT NULL DEFAULT 0,
+	rx_bps  DOUBLE NOT NULL DEFAULT -1,
+	tx_bps  DOUBLE NOT NULL DEFAULT -1,
+	PRIMARY KEY (relay, at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+`},
 }
 
 // Settings is everything the settings page edits.

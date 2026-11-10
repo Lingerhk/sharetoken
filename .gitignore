@@ -17,3 +17,6 @@ reports/
 
 # upstream_proxy.py config: holds API keys
 scripts/upstream_proxy.json
+
+# local working notes, not part of the repo
+workspace/

@@ -25,6 +25,17 @@ curl -s 127.0.0.1:8093/metrics | grep ^sharetoken_relay
 
 另外还有 libp2p 自带的 `libp2p_*`，以及 `go_*`、`process_*`。
 
+## 门户读取指标（管理后台仪表盘）
+
+管理后台的「仪表盘」页显示每台中继的连接、预约、电路、转发速率、拒绝预约、CPU/内存、运行时长和各网络的协调器预约。门户每分钟通过 SSH 登录中继执行一次 `curl 127.0.0.1:8093/metrics`（`portal/relaymetrics.go`），中继上不对外开任何端口。
+
+- **钥匙：** `~/st-test/<env>-keys/relay-metrics.key`，门户专用。中继的 `authorized_keys` 里这一行带 `restrict,command="curl …/metrics"`，只能读指标，开不了 shell、不能转发端口。`scripts/relay/authorize-metrics.sh dev us sg eu cn lab-cn2` 生成钥匙、装到中继并验证；`--remove` 撤销。不重启中继
+- **主机公钥：** 固定在 `scripts/<env>/relay-metrics.known_hosts`，脚本只写入和 Mac 的 `~/.ssh/known_hosts` 一致的公钥；门户不认识的主机直接拒绝
+- **门户配置：** `portal.yaml` 的 `relay_metrics`（`targets` 里 `relay` 是登记表里的中继名称）。门户的 systemd 单元只放行本机，所以中继 IP 要同时写进 `IPAddressAllow`
+- **部署：** `scripts/dev/deploy.sh` 把钥匙和 known_hosts 传上去，`st-host-setup.sh` 装到 `/etc/sharetoken-dev/portal/`（钥匙 st-portal 0600，可覆盖轮换）
+- 读取失败和恢复写进门户日志（`relay metrics unavailable` / `relay metrics read`），页面上该中继显示「指标读取失败」和错误原因
+- 目前只有 dev 配置了；生产要用时跑 `authorize-metrics.sh prod …`（会生成另一把钥匙），再给 `scripts/prod` 的 portal.yaml 和单元做同样的修改
+
 ## 监控项
 
 连续失败才告警：默认 3 轮，TCP 探测 5 轮（每轮 1 分钟）。未恢复的每 60 分钟重发一次，恢复时通知一次。

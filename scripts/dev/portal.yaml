@@ -25,11 +25,26 @@ accounts:
   open_registration: true         # 公网可达，但必须有邮箱验证码；dev 只有 mock 模型
   signup_credit_micros: 5000000
   email_verification: true
+  mfa_issuer: ShareToken-dev      # Google Authenticator 里显示的名称
 mail:
   from: "ShareToken Dev <team-dev@sharetoken.app>"
   support: "ShareToken Dev Support <support-dev@sharetoken.app>"
 downloads:
   dir: /var/lib/sharetoken-dev/portal/downloads   # 客户端安装包，deploy.sh 上传到这里，门户在 /downloads/ 提供下载
+# 管理后台仪表盘经 SSH 读中继的 /metrics。钥匙在中继上被 restrict + command= 锁死，只能读指标
+# （scripts/relay/authorize-metrics.sh dev …）；主机公钥固定在 relay-metrics.known_hosts。
+# 加减中继要同步改 sharetoken-dev-portal.service 的 IPAddressAllow。
+relay_metrics:
+  key_file: /etc/sharetoken-dev/portal/relay-metrics.key
+  known_hosts_file: /etc/sharetoken-dev/portal/relay-metrics.known_hosts
+  interval: 1m
+  timeout: 20s
+  targets:   # relay 是门户登记表里的名称
+    - {relay: relay-us, ssh: s0nnet@165.227.115.27}
+    - {relay: relay-sg, ssh: s0nnet@201.79.122.100}
+    - {relay: relay-eu, ssh: s0nnet@164.92.157.227}
+    - {relay: relay-cn, ssh: s0nnet@119.29.250.173}
+    - {relay: lab-cn2, ssh: orcatermuser@101.43.2.87}
 sessions:
   login_ttl: 720h
   web_session_ttl: 24h

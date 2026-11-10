@@ -56,7 +56,7 @@ func TestAdminLoginRequiresTwoFactor(t *testing.T) {
 	c.call("POST", "/api/v1/web/mfa", map[string]string{"challenge": ch.Challenge, "code": "000000"}, 401, nil)
 	var setup MFASetup
 	c.call("POST", "/api/v1/web/mfa/setup", map[string]string{"challenge": ch.Challenge}, 200, &setup)
-	if !strings.HasPrefix(setup.QR, "data:image/png;base64,") || !strings.Contains(setup.URL, "secret="+setup.Secret) || !strings.Contains(setup.URL, "sharetoken:root") {
+	if !strings.HasPrefix(setup.QR, "data:image/png;base64,") || !strings.Contains(setup.URL, "secret="+setup.Secret) || !strings.Contains(setup.URL, defaultMFAIssuer+":root") {
 		t.Fatalf("setup: %+v", setup)
 	}
 	var again MFASetup

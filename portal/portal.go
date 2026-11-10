@@ -60,6 +60,8 @@ type Config struct {
 	// nil: derived from PassKey. Without either, admins cannot log in, since
 	// two-factor authentication is mandatory for them.
 	MFAKey []byte
+	// MFAIssuer is the name authenticator apps show (default "ShareToken").
+	MFAIssuer string
 	// EmailVerification requires sign-ups to prove their email address with a
 	// mailed code, and closes sign-up by plain username. It needs Mail.From.
 	EmailVerification bool
@@ -70,6 +72,9 @@ type Config struct {
 	// DownloadsDir holds the client packages offered at /downloads/ (downloads.go).
 	// Empty: none.
 	DownloadsDir string
+	// RelayMetrics reads the relays' metrics over SSH for the admin dashboard
+	// (relaymetrics.go). No targets: the dashboard shows the registry only.
+	RelayMetrics RelayMetricsConfig
 	Now          func() time.Time
 	Log          *slog.Logger
 }
@@ -96,6 +101,8 @@ type Server struct {
 	auditPurged  time.Time
 
 	background sync.WaitGroup // mail that outlives its request
+
+	relayMetrics *relayMetrics // nil: not configured
 }
 
 // New prepares the portal on cfg.DB, creating any missing tables.
@@ -149,14 +156,30 @@ func New(cfg Config) (*Server, error) {
 	if key != nil && len(key) != 32 {
 		return nil, errors.New("portal: MFAKey must be 32 bytes")
 	}
-	return &Server{
-		cfg: cfg, db: cfg.DB, log: cfg.Log,
+	rm, err := newRelayMetrics(cfg.RelayMetrics, cfg.Now, cfg.Log)
+	if err != nil {
+		return nil, err
+	}
+	srv := &Server{
+		cfg: cfg, db: cfg.DB, log: cfg.Log, relayMetrics: rm,
 		store:      &accounts.Store{DB: cfg.DB, Now: cfg.Now},
 		mail:       &mailer.Store{DB: cfg.DB, Now: cfg.Now},
 		fails:      make(map[string][]time.Time),
 		mfaKey:     key,
 		challenges: make(map[string]*mfaChallenge),
-	}, nil
+	}
+	if rm != nil {
+		rm.save = srv.saveRelaySample
+	}
+	return srv, nil
+}
+
+// Run does the portal's background work (relay metrics) until ctx ends.
+func (s *Server) Run(ctx context.Context) {
+	if s.relayMetrics != nil {
+		s.log.Info("reading relay metrics over ssh", "relays", len(s.relayMetrics.cfg.Targets), "every", s.relayMetrics.cfg.Interval)
+		s.relayMetrics.run(ctx)
+	}
 }
 
 // Store exposes the account store (admin commands).
@@ -397,6 +420,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/admin/versions", s.admin(s.handleAdminVersions))
 	mux.Handle("PUT /api/v1/admin/version-policy", s.admin(s.handleSetVersionPolicy))
 	mux.Handle("GET /api/v1/admin/overview", s.admin(s.handleOverview))
+	mux.Handle("GET /api/v1/admin/dashboard", s.admin(s.handleDashboard))
+	mux.Handle("GET /api/v1/admin/relay-history", s.admin(s.handleRelayHistory))
 	mux.Handle("GET /api/v1/admin/users", s.admin(s.handleUsers))
 	mux.Handle("GET /api/v1/admin/users/search", s.admin(s.handleSearchUsers))
 	mux.Handle("POST /api/v1/admin/users", s.admin(s.handleAdminCreateUser))
@@ -871,6 +896,9 @@ func (s *Server) handleBindDevice(w http.ResponseWriter, r *http.Request, cu ctx
 	if err := s.store.SetDeviceVersion(d.Peer, r.Header.Get(ClientVersionHeader)); err != nil {
 		s.log.Warn("recording a device's version", "err", err)
 	}
+	if err := s.store.SetDevicePlatform(d.Peer, r.Header.Get(ClientPlatformHeader)); err != nil {
+		s.log.Warn("recording a device's platform", "err", err)
+	}
 	writeJSON(w, http.StatusOK, d)
 }
 
@@ -939,6 +967,9 @@ func (s *Server) handleRelayPass(w http.ResponseWriter, r *http.Request, cu ctxU
 		// their version shows up, once an hour.
 		if err := s.store.SetDeviceVersion(req.Peer, r.Header.Get(ClientVersionHeader)); err != nil {
 			s.log.Warn("recording a device's version", "err", err)
+		}
+		if err := s.store.SetDevicePlatform(req.Peer, r.Header.Get(ClientPlatformHeader)); err != nil {
+			s.log.Warn("recording a device's platform", "err", err)
 		}
 		writeJSON(w, http.StatusOK, p)
 	case errors.Is(err, errNoPasses):

@@ -81,6 +81,7 @@ type File struct {
 		OpenRegistration   bool   `yaml:"open_registration"`
 		SignupCreditMicros uint64 `yaml:"signup_credit_micros"`
 		EmailVerification  bool   `yaml:"email_verification"` // sign-up needs an emailed code (mail.from must be set, mailserver running)
+		MFAIssuer          string `yaml:"mfa_issuer"`         // name shown in authenticator apps (default ShareToken)
 	} `yaml:"accounts"`
 	// Mail is who the portal's mail comes from; cmd/mailserver delivers it (docs/mail.md).
 	Mail struct {
@@ -91,6 +92,19 @@ type File struct {
 	Downloads struct {
 		Dir string `yaml:"dir"`
 	} `yaml:"downloads"`
+	// RelayMetrics: read each relay's /metrics over SSH for the admin dashboard
+	// (scripts/relay/authorize-metrics.sh restricts the key on the relay).
+	RelayMetrics struct {
+		KeyFile        string          `yaml:"key_file"`
+		KnownHostsFile string          `yaml:"known_hosts_file"`
+		Interval       config.Duration `yaml:"interval"`
+		Timeout        config.Duration `yaml:"timeout"`
+		Targets        []struct {
+			Relay   string `yaml:"relay"`   // name in the relay registry
+			SSH     string `yaml:"ssh"`     // user@host[:port]
+			Command string `yaml:"command"` // default: curl of 127.0.0.1:8093/metrics
+		} `yaml:"targets"`
+	} `yaml:"relay_metrics"`
 	Sessions struct {
 		LoginTTL      config.Duration `yaml:"login_ttl"`
 		WebSessionTTL config.Duration `yaml:"web_session_ttl"`
@@ -120,6 +134,16 @@ func (f *File) validate() error {
 	}
 	if f.Keys.PassKeyFile == "" {
 		bad("keys.pass_key_file is empty")
+	}
+	if rm := f.RelayMetrics; len(rm.Targets) > 0 {
+		if rm.KeyFile == "" || rm.KnownHostsFile == "" {
+			bad("relay_metrics needs key_file and known_hosts_file")
+		}
+		for i, t := range rm.Targets {
+			if t.Relay == "" || !strings.Contains(t.SSH, "@") {
+				bad("relay_metrics.targets[%d]: relay and ssh (user@host[:port]) are required", i)
+			}
+		}
 	}
 	switch f.TLS.Mode {
 	case "auto", "self-signed", "proxy", "insecure":
@@ -263,6 +287,15 @@ func serveFlags(f *File, args []string) {
 	}
 }
 
+func relayMetricsConfig(f File) portal.RelayMetricsConfig {
+	rm := f.RelayMetrics
+	c := portal.RelayMetricsConfig{KeyFile: rm.KeyFile, KnownHostsFile: rm.KnownHostsFile, Interval: rm.Interval.T(), Timeout: rm.Timeout.T()}
+	for _, t := range rm.Targets {
+		c.Targets = append(c.Targets, portal.RelayMetricsTarget{Relay: t.Relay, SSH: t.SSH, Command: t.Command})
+	}
+	return c
+}
+
 func loadMFAKey(path string) ([]byte, error) {
 	if path == "" {
 		return nil, nil // derived from the pass key
@@ -299,12 +332,13 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 		LoginTTL: f.Sessions.LoginTTL.T(), PassKey: passKey, PassTTL: f.Sessions.PassTTL.T(), WebSessionTTL: f.Sessions.WebSessionTTL.T(),
 		SecureCookies: mode == "proxy", TrustedProxies: trustedProxies(f.HTTP.TrustedProxies), MFAKey: mfaKey, Log: lg,
 		EmailVerification: f.Accounts.EmailVerification, Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir,
-		PublicURL: strings.TrimRight(f.HTTP.PublicURL, "/")})
+		MFAIssuer: f.Accounts.MFAIssuer, PublicURL: strings.TrimRight(f.HTTP.PublicURL, "/"), RelayMetrics: relayMetricsConfig(f)})
 	if err != nil {
 		log.Fatal(err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go p.Run(ctx)
 	hs := &http.Server{Addr: listen, Handler: p.Handler(), ReadHeaderTimeout: f.HTTP.ReadHeaderTimeout.T(),
 		ReadTimeout: f.HTTP.ReadTimeout.T(), WriteTimeout: f.HTTP.WriteTimeout.T()}
 	go func() {

@@ -10,7 +10,7 @@
 #
 # 布局（prod；dev 的根目录带 -dev 后缀，单元名带 dev-）：
 #   /srv/sharetoken/releases/<版本>/{portal,coordinator,mailserver}   root 所有，只读；/srv/sharetoken/<程序> 是当前版本的软链
-#   /etc/sharetoken/portal/{portal.yaml,db.pass,portal-pass.key}     目录 root:st-portal 0750；yaml 0640；机密 st-portal 0600
+#   /etc/sharetoken/portal/{portal.yaml,db.pass,portal-pass.key,relay-metrics.key,relay-metrics.known_hosts}     目录 root:st-portal 0750；yaml 0640；机密 st-portal 0600
 #   /etc/sharetoken/coordinator/{coordinator.yaml,db.pass,coordinator.key}
 #   /etc/sharetoken/mail/{mail.yaml,db.pass,dkim.key,resend.key,tls/}
 #   /etc/sharetoken-dev/ddns/ddns.env（只有 dev：家宽动态 IP；生产静态 IP，主机上没有 DNS token）
@@ -78,6 +78,13 @@ install_config() { # programs...
       install -o st-mail -g st-mail -m 600 "$STAGE/resend.key" "$d/resend.key"; rm -f "$STAGE/resend.key"
     fi
     if [ "$p" = mailserver ]; then rm -f "$d/smarthost.pass" "$STAGE/smarthost.pass"; fi   # 以前的 Brevo 占位
+    # 门户读中继指标的 SSH 密钥（scripts/relay/authorize-metrics.sh）和中继主机公钥：暂存目录里有就覆盖，可轮换
+    if [ "$p" = portal ] && [ -s "$STAGE/relay-metrics.key" ]; then
+      install -o st-portal -g st-portal -m 600 "$STAGE/relay-metrics.key" "$d/relay-metrics.key"; rm -f "$STAGE/relay-metrics.key"
+    fi
+    if [ "$p" = portal ] && [ -s "$STAGE/relay-metrics.known_hosts" ]; then
+      install -o root -g st-portal -m 640 "$STAGE/relay-metrics.known_hosts" "$d/relay-metrics.known_hosts"
+    fi
   done
 }
 

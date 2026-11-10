@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	mfaIssuer        = "sharetoken"
+	defaultMFAIssuer = "ShareToken"
 	challengeTTL     = 5 * time.Minute
 	challengeTries   = 5 // wrong codes before a challenge is discarded
 	mfaPurposeCode   = "code"
@@ -334,7 +334,7 @@ func (s *Server) handleWebMFASetup(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	u2 := totp.URL(mfaIssuer, u.Username, secret)
+	u2 := totp.URL(s.mfaIssuer(), u.Username, secret)
 	png, err := qrcode.Encode(u2, qrcode.Medium, 220)
 	if err != nil {
 		s.internal(w, err)
@@ -416,3 +416,11 @@ func (s *Server) handleAdminResetMFA(w http.ResponseWriter, r *http.Request, cu 
 
 // mfaCodeField is the JSON field API clients may send with their password.
 func mfaCodeField(c credentials) string { return strings.TrimSpace(c.TOTP) }
+
+// mfaIssuer is the name authenticator apps show for the account.
+func (s *Server) mfaIssuer() string {
+	if s.cfg.MFAIssuer != "" {
+		return s.cfg.MFAIssuer
+	}
+	return defaultMFAIssuer
+}

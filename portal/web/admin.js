@@ -18,7 +18,7 @@
   const { nav, main } = ST.shell(app, {
     title: '管理控制台', role: '管理员',
     items: [
-      { route: 'overview', icon: 'grid', label: '总览' }, { route: 'users', icon: 'users', label: '用户' }, { route: 'relays', icon: 'server', label: '中继' }, { route: 'versions', icon: 'cube', label: '版本' },
+      { route: 'dashboard', icon: 'chart', label: '仪表盘' }, { route: 'overview', icon: 'grid', label: '总览' }, { route: 'users', icon: 'users', label: '用户' }, { route: 'relays', icon: 'server', label: '中继' }, { route: 'versions', icon: 'cube', label: '版本' },
       { route: 'jobs', icon: 'bolt', label: '作业' }, { route: 'nodes', icon: 'cpu', label: '节点' }, { route: 'audits', icon: 'shield', label: '推理审计' }, { route: 'disputes', icon: 'warning', label: '争议' },
       { route: 'ledger', icon: 'database', label: '账本' }, { route: 'mail', icon: 'mail', label: '邮件', badge: mailBadge }, { route: 'feedback', icon: 'chat', label: '反馈', badge: feedbackBadge },
       { route: 'oplog', icon: 'book', label: '操作日志' }, { route: 'settings', icon: 'cog', label: '系统设置' },
@@ -30,6 +30,172 @@
   const acct = (a, user) => user ? [userLink(user), ' ', h('span', { class: 'muted mono' }, a)] : h('code', { class: 'mono' }, a);
   function act(path, body, okMsg, reload) {
     return async () => { try { await api('POST', path, body); toast(okMsg || '已完成'); await reload(); } catch (ex) { fail(ex); } };
+  }
+
+  // ---- dashboard ----
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  function svg(tag, attrs, ...kids) {
+    const el = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) if (v !== null && v !== undefined) el.setAttribute(k, String(v));
+    for (const c of kids.flat()) if (c) el.append(c);
+    return el;
+  }
+  // bars is one series per day: thin bars, rounded tops, a hover tooltip per bar.
+  function bars(days, value, fmt) {
+    const W = 300, H = 130, top = 18, bottom = 22, n = days.length, step = W / n, bw = Math.max(4, Math.min(22, step * 0.55));
+    const max = Math.max(1, ...days.map(value));
+    const plot = H - top - bottom;
+    const tip = h('div', { class: 'dash-tip', hidden: true });
+    const g = svg('svg', { viewBox: '0 0 ' + W + ' ' + H, class: 'dash-chart', role: 'img' });
+    g.append(svg('line', { x1: 0, x2: W, y1: H - bottom + 0.5, y2: H - bottom + 0.5, class: 'dash-axis' }));
+    days.forEach((d, i) => {
+      const v = value(d), x = i * step + (step - bw) / 2, bh = v ? Math.max(3, v / max * plot) : 0, y = H - bottom - bh;
+      if (bh) g.append(svg('path', { class: 'dash-bar', d: 'M' + x + ',' + (H - bottom) + 'V' + (y + 3) + 'q0,-3 3,-3h' + (bw - 6) + 'q3,0 3,3V' + (H - bottom) + 'Z' }));
+      const hit = svg('rect', { x: i * step, y: 0, width: step, height: H, class: 'dash-hit' });
+      hit.addEventListener('mouseenter', () => { tip.hidden = false; tip.textContent = d.day.slice(5) + '  ' + fmt(v); });
+      hit.addEventListener('mouseleave', () => { tip.hidden = true; });
+      g.append(hit);
+      if (i === 0 || i === n - 1 || i === Math.floor(n / 2)) g.append(svg('text', { x: i * step + step / 2, y: H - 6, class: 'dash-label', 'text-anchor': 'middle' }, document.createTextNode(d.day.slice(5))));
+    });
+    const peak = days.reduce((a, d) => value(d) > value(a) ? d : a, days[0]);
+    if (value(peak)) {
+      const i = days.indexOf(peak);
+      g.append(svg('text', { x: Math.min(W - 4, Math.max(4, i * step + step / 2)), y: H - bottom - value(peak) / max * plot - 4, class: 'dash-label strong', 'text-anchor': i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle' }, document.createTextNode(fmt(value(peak)))));
+    }
+    if (!value(peak)) g.append(svg('text', { x: W / 2, y: (H - bottom) / 2, class: 'dash-label', 'text-anchor': 'middle' }, document.createTextNode('近 ' + n + ' 天没有数据')));
+    return h('div', { class: 'dash-chart-wrap' }, g, tip);
+  }
+  // lineChart draws one line per relay over [from, to] (unix nanos). series: [{name, color, points: [{at, v, tip}]}].
+  // A gap longer than 3 buckets breaks the line; hovering shows every relay's value at that moment.
+  function lineChart(series, from, to, bucket, fmt, opts) {
+    const W = 460, H = 170, L = 44, R = 8, T = 10, B = 22, pw = W - L - R, ph = H - T - B;
+    const vals = series.flatMap(s => s.points.map(p => p.v));
+    let max = Math.max(opts && opts.min || 0, ...vals); if (!(max > 0)) max = 1;
+    if (opts && opts.cap) max = Math.min(max, opts.cap);
+    max *= 1.1;
+    const X = t => L + (t - from) / (to - from) * pw, Y = v => T + ph - Math.min(1, v / max) * ph;
+    const g = svg('svg', { viewBox: '0 0 ' + W + ' ' + H, class: 'dash-chart', role: 'img' });
+    for (let i = 0; i <= 3; i++) {
+      const v = max / 1.1 * i / 3, y = Y(v);
+      g.append(svg('line', { x1: L, x2: W - R, y1: y, y2: y, class: 'dash-axis' }),
+        svg('text', { x: L - 5, y: y + 4, class: 'dash-label', 'text-anchor': 'end' }, document.createTextNode(fmt(v))));
+    }
+    const span = (to - from) / 1e9, fmtT = t => { const d = new Date(t / 1e6); return span > 86400 * 1.5 ? (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':00' : d.toLocaleTimeString(undefined, { hour12: false, hour: '2-digit', minute: '2-digit' }); };
+    [0, 1 / 3, 2 / 3, 1].forEach((f, i) => g.append(svg('text', { x: L + f * pw, y: H - 6, class: 'dash-label', 'text-anchor': i === 0 ? 'start' : i === 3 ? 'end' : 'middle' }, document.createTextNode(fmtT(from + f * (to - from))))));
+    let any = false;
+    for (const s of series) {
+      let d = '', prev = null;
+      for (const p of s.points) {
+        any = true;
+        d += (prev === null || p.at - prev > bucket * 3 ? 'M' : 'L') + X(p.at).toFixed(1) + ',' + Y(p.v).toFixed(1);
+        prev = p.at;
+      }
+      if (d) g.append(svg('path', { d, class: 'dash-line', style: 'stroke:' + s.color }));
+      if (s.points.length === 1) g.append(svg('circle', { cx: X(s.points[0].at), cy: Y(s.points[0].v), r: 2.5, style: 'fill:' + s.color }));
+    }
+    if (!any) g.append(svg('text', { x: L + pw / 2, y: T + ph / 2, class: 'dash-label', 'text-anchor': 'middle' }, document.createTextNode('这段时间没有数据')));
+    const tip = h('div', { class: 'dash-tip', hidden: true }), cross = svg('line', { y1: T, y2: T + ph, class: 'dash-cross', visibility: 'hidden' });
+    g.append(cross);
+    const hit = svg('rect', { x: L, y: T, width: pw, height: ph, class: 'dash-hit-all' });
+    hit.addEventListener('mousemove', e => {
+      const r = g.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * W, t = from + Math.min(1, Math.max(0, (x - L) / pw)) * (to - from);
+      const rows = series.map(s => {
+        let best = null;
+        for (const p of s.points) if (!best || Math.abs(p.at - t) < Math.abs(best.at - t)) best = p;
+        return best && Math.abs(best.at - t) <= bucket * 2 ? s.name + ' ' + (best.tip || fmt(best.v)) : null;
+      }).filter(Boolean);
+      cross.setAttribute('x1', x); cross.setAttribute('x2', x); cross.setAttribute('visibility', 'visible');
+      tip.hidden = false; tip.textContent = fmtT(t) + (rows.length ? '  ' + rows.join(' · ') : '');
+    });
+    hit.addEventListener('mouseleave', () => { tip.hidden = true; cross.setAttribute('visibility', 'hidden'); });
+    g.append(hit);
+    return h('div', { class: 'dash-chart-wrap' }, g, tip);
+  }
+  const SERIES_COLORS = ['var(--accent)', 'var(--blue)', 'var(--violet)', 'var(--warn)', 'var(--bad)', 'var(--ok)', '#db2777', '#0891b2'];
+  // meter is used / max as a thin bar; warn at 80%.
+  function meter(used, max) {
+    const pct = max ? Math.min(1, used / max) : 0;
+    return h('span', { class: 'dash-meter' }, svg('svg', { viewBox: '0 0 60 6', width: 60, height: 6 },
+      svg('rect', { x: 0, y: 0, width: 60, height: 6, rx: 3, class: 'dash-meter-bg' }),
+      pct ? svg('rect', { x: 0, y: 0, width: Math.max(3, pct * 60), height: 6, rx: 3, class: 'dash-meter-fill' + (pct >= 0.8 ? ' warn' : '') }) : null),
+    ' ', h('span', { class: 'mono' }, num(used) + ' / ' + (max ? num(max) : '∞')));
+  }
+  function bytes(n) {
+    n = Number(n || 0); const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i ? n.toFixed(n < 10 ? 1 : 0) : String(Math.round(n))) + ' ' + u[i];
+  }
+  function uptime(nanos) {
+    if (!nanos) return '—';
+    const s = Math.max(0, Date.now() / 1000 - nanos / 1e9), d = Math.floor(s / 86400), hh = Math.floor(s % 86400 / 3600), mm = Math.floor(s % 3600 / 60);
+    return d ? d + ' 天 ' + hh + ' 小时' : hh ? hh + ' 小时 ' + mm + ' 分' : mm + ' 分';
+  }
+  function relayHealth(x) {
+    const mt = x.metrics;
+    if (!x.enabled) return ['停用', ''];
+    if (!x.coordinator_ok) return ['协调器不可达', 'bad'];
+    if (mt && mt.error && (!mt.ok_at || Date.now() * 1e6 - mt.ok_at > 5 * 60e9)) return ['指标读取失败', 'warn'];
+    if (mt && mt.ok_at && !mt.service_enabled) return ['服务未运行', 'bad'];
+    if (mt && (mt.networks || []).some(n => n.coordinators_reserved < n.coordinators_expected)) return ['有网络未预约', 'warn'];
+    return ['正常', 'ok'];
+  }
+
+  async function dashboard(m) {
+    const stamp = h('small'), body = h('div');
+    add(m, pageTitle('仪表盘', stamp), body);
+    async function load() {
+      const d = await api('GET', '/api/v1/admin/dashboard');
+      const u = d.users, dv = d.devices, nd = d.nodes, day = d.day;
+      const healthy = d.relays.filter(x => relayHealth(x)[1] === 'ok').length, enabled = d.relays.filter(x => x.enabled).length;
+      const dayStatus = Object.entries(day.by_status || {}).map(([k, v]) => (ST.STATUS[k] ? ST.STATUS[k][0] : k) + ' ' + v).join('，');
+      stamp.textContent = '每 30 秒刷新 · 更新于 ' + new Date(d.now / 1e6).toLocaleTimeString(undefined, { hour12: false }) + (d.relay_metrics ? ' · 中继指标经 SSH 每 ' + d.relay_metrics_interval_s + ' 秒采集' : ' · 未配置中继指标采集');
+      add(clear(body),
+        h('div', { class: 'tiles' },
+          tile('用户', num(u.total), '24 小时新增 ' + u.new_24h + ' · 7 天 ' + u.new_7d + (u.disabled ? ' · 禁用 ' + u.disabled : ''), 'users'),
+          tile('活跃用户（24 小时）', num(u.active_24h), '用过 token 或设备', 'user', 'blue'),
+          tile('在线设备', num(dv.online) + ' / ' + num(dv.total), '10 分钟内在线；24 小时内 ' + dv.seen_24h, 'desktop', 'blue'),
+          tile('接单节点（24 小时）', num(nd.active_24h), '共 ' + nd.total + ' 个' + (nd.suspended ? '，暂停 ' + nd.suspended : ''), 'cpu', 'violet', nd.suspended ? 'warn' : ''),
+          tile('作业（24 小时）', num(day.jobs), dayStatus || '无', 'bolt', 'blue', (day.by_status || {}).disputed ? 'warn' : ''),
+          tile('消费（24 小时）', credit(day.cost_micros, 2), '手续费 ' + credit(day.fee_micros) + ' · 买家 ' + day.buyers, 'dollar', 'ok'),
+          tile('Token（24 小时）', num(day.tokens), '输入 + 输出', 'chart', 'violet'),
+          tile('中继', healthy + ' / ' + enabled, '正常 / 启用（共 ' + d.relays.length + ' 个）', 'server', '', enabled && healthy < enabled ? (healthy ? 'warn' : 'bad') : 'ok')),
+        h('div', { class: 'dash-grid' },
+          h('div', { class: 'card' }, section('users', '每日新增用户'), bars(d.daily, x => x.users, num)),
+          h('div', { class: 'card' }, section('bolt', '每日作业'), bars(d.daily, x => x.jobs, num)),
+          h('div', { class: 'card' }, section('chart', '每日 Token'), bars(d.daily, x => x.tokens, num))),
+        section('server', '中继状态', h('small', null, d.relay_metrics ? '协调器每 15 秒检查可达性；连接、预约、流量来自中继自己的 /metrics' : '只有协调器的可达性检查')),
+        h('div', { class: 'card' }, table([
+          { title: '中继', cell: x => [h('a', { href: '#/relays' }, x.name || '#' + x.id), h('div', { class: 'muted' }, x.region || '')] },
+          { title: '状态', cell: x => { const [t, k] = relayHealth(x); return badge(t, k); } },
+          { title: '版本', cell: x => (x.metrics && x.metrics.version) || x.version || '—' },
+          { title: '延迟', num: true, cell: x => ST.rtt(x.rtt_ms) },
+          { title: '连接', cell: x => x.metrics && x.metrics.ok_at ? meter(x.metrics.connections, x.metrics.max_connections) : '—' },
+          { title: '预约', cell: x => x.metrics && x.metrics.ok_at ? meter(x.metrics.reservations, x.metrics.max_reservations) : '—' },
+          { title: '电路', num: true, cell: x => x.metrics && x.metrics.ok_at ? num(x.metrics.circuits) : '—' },
+          { title: '转发', num: true, cell: x => x.metrics && x.metrics.ok_at ? [x.metrics.relayed_bps >= 0 ? bytes(x.metrics.relayed_bps) + '/s' : '—', h('div', { class: 'muted' }, '累计 ' + bytes(x.metrics.relayed_bytes_total))] : '—' },
+          { title: '拒绝预约', num: true, cell: x => x.metrics && x.metrics.ok_at ? [x.metrics.reservations_denied_per_min >= 0 ? h('span', { class: x.metrics.reservations_denied_per_min >= 60 ? 'warn' : '' }, x.metrics.reservations_denied_per_min.toFixed(1) + '/分') : '—', h('div', { class: 'muted' }, '累计 ' + num(x.metrics.reservations_denied_total))] : '—' },
+          { title: 'CPU / 内存', num: true, cell: x => x.metrics && x.metrics.ok_at ? [(x.metrics.cpu_percent >= 0 ? x.metrics.cpu_percent.toFixed(1) + '%' : '—'), h('div', { class: 'muted' }, bytes(x.metrics.rss_bytes))] : '—' },
+          { title: '运行', cell: x => x.metrics && x.metrics.ok_at ? uptime(x.metrics.started_at) : '—' },
+          { title: '网络预约', cell: x => x.metrics && x.metrics.ok_at ? h('span', { class: 'row' }, (x.metrics.networks || []).map(n =>
+            badge(n.network + ' ' + n.coordinators_reserved + '/' + n.coordinators_expected + (n.max_reservations ? ' · ' + n.reservations + '/' + n.max_reservations : ' · ' + n.reservations), n.coordinators_reserved < n.coordinators_expected ? 'warn' : 'ok'))) : '—' },
+          { title: '采集', cell: x => !x.metrics ? h('span', { class: 'muted' }, d.relay_metrics ? '未配置' : '—')
+            : [ago(x.metrics.ok_at || x.metrics.scraped_at), x.metrics.error ? h('div', { class: 'bad dash-err', title: x.metrics.error }, x.metrics.error) : h('div', { class: 'muted' }, x.metrics.scrape_ms + ' ms')] },
+        ], d.relays, '还没有登记中继')),
+        h('div', { class: 'dash-grid two' },
+          h('div', { class: 'card' }, section('cube', '客户端版本'), table([
+            { title: '版本', cell: x => x.version || '未上报' }, { title: '设备', num: true, cell: x => num(x.devices) },
+          ], d.client_versions || [], '还没有设备')),
+          h('div', { class: 'card' }, section('bolt', '作业（全部）'), table([
+            { title: '状态', cell: x => status(x[0]) }, { title: '数量', num: true, cell: x => num(x[1]) },
+          ], Object.entries(d.jobs || {}).sort((a, b) => b[1] - a[1]), '没有作业'),
+            h('p', { class: 'muted' }, '协调器 ', d.coordinator ? h('code', { class: 'mono' }, ST.short(d.coordinator, 10)) : h('span', { class: 'warn' }, '尚未启动')))));
+    }
+    await load();
+    const timer = setInterval(() => {
+      if (!main.contains(body)) { clearInterval(timer); return; }
+      if (document.hidden) return;
+      load().catch(() => { stamp.textContent = '刷新失败，30 秒后重试'; });
+    }, 30000);
   }
 
   // ---- overview ----
@@ -184,10 +350,18 @@
         { title: '版本', cell: x => x.v ? badge(x.v, same(x.v)) : badge('未上报', 'warn') },
       ], [service('门户', r.server.version), service('协调器', r.coordinator), service('邮件服务', r.mail)].concat(r.relays.map(x => service('中继 ' + (x.name || x.id), x.version))), ''),
       h('p', { class: 'muted' }, 'API v' + r.api + ' · 控制协议 ' + r.protocols.ctrl + ' · 推理协议 ' + r.protocols.infer + ' · 数据库 core ' + r.schema.core + ' / mail ' + r.schema.mail + ' / portal ' + r.schema.portal)),
-      h('div', { class: 'card' }, section('chart', '客户端分布'), table([
-        { title: '版本', cell: x => x.version || '未上报' },
-        { title: '设备数', num: true, cell: x => String(x.devices) },
-      ], r.devices, '还没有设备')));
+      h('div', { class: 'card' }, section('chart', '客户端分布'),
+        h('div', { class: 'tiles' }, [['Windows', 'windows', 'desktop'], ['Linux', 'linux', 'server'], ['macOS', 'macos', 'desktop'], ['未知', 'other', 'cube']].map(([label, k, ic]) =>
+          tile(label, num(r.devices.reduce((n, x) => n + x[k], 0)), '设备（共 ' + num(r.devices.reduce((n, x) => n + x.devices, 0)) + '）', ic, k === 'other' ? '' : 'blue'))),
+        table([
+          { title: '版本', cell: x => x.version || '未上报' },
+          { title: '设备数', num: true, cell: x => String(x.devices) },
+          { title: 'Windows', num: true, cell: x => num(x.windows) },
+          { title: 'Linux', num: true, cell: x => num(x.linux) },
+          { title: 'macOS', num: true, cell: x => num(x.macos) },
+          { title: '未知', num: true, cell: x => num(x.other) },
+        ], r.devices, '还没有设备'),
+        h('p', { class: 'muted' }, '系统由客户端随请求上报；旧版本客户端和只靠协调器上报的设备显示为“未知”，升级并联系门户后补齐。')));
     const min = input({ type: 'text', value: r.policy.min_client || '', placeholder: '1.0.0', maxlength: 32 });
     const rec = input({ type: 'text', value: r.policy.recommended_client || '', placeholder: '1.0.0', maxlength: 32 });
     const latest = input({ type: 'text', value: r.policy.latest_client || '', placeholder: '1.0.0', maxlength: 32 });
@@ -212,7 +386,32 @@
   // ---- relays ----
   async function relays(m) {
     const list = h('div', { class: 'card' });
-    add(m, pageTitle('中继', h('small', null, '协调器每 15 秒同步一次登记表，并回写是否可达')), h('div', { class: 'toolbar' }, h('button', { class: 'primary', onclick: addRelay }, '登记中继')), list);
+    const charts = h('div'), legend = h('div', { class: 'dash-legend' });
+    let range = '24h';
+    const rangeBtns = ['24h', '3d', '7d'].map(k => h('button', { class: k === range ? 'active' : '', onclick: () => { range = k; rangeBtns.forEach(b => b.classList.toggle('active', b.dataset.range === k)); loadCharts().catch(fail); } }, { '24h': '24 小时', '3d': '3 天', '7d': '7 天' }[k]));
+    rangeBtns.forEach((b, i) => b.dataset.range = ['24h', '3d', '7d'][i]);
+    add(m, pageTitle('中继', h('small', null, '协调器每 15 秒同步一次登记表，并回写是否可达')), h('div', { class: 'toolbar' }, h('button', { class: 'primary', onclick: addRelay }, '登记中继')),
+      h('div', { class: 'card' }, section('chart', '资源监控', h('span', { class: 'tabs' }, rangeBtns)), legend, charts), list);
+    async function loadCharts() {
+      const hs = await api('GET', '/api/v1/admin/relay-history?range=' + range);
+      const to = hs.now, from = hs.from, ser = hs.series.map((s, i) => ({ s, color: SERIES_COLORS[i % SERIES_COLORS.length] }));
+      add(clear(legend), ser.map(x => h('span', { class: 'dash-key' }, h('i', { style: 'background:' + x.color }), x.s.relay)));
+      const mk = (pick, fmt, opts) => ser.map(x => ({ name: x.s.relay, color: x.color, points: x.s.points.map(p => pick(p)).filter(Boolean) }));
+      const pct = v => v.toFixed(v < 10 ? 1 : 0) + '%', rate = v => bytes(v) + '/s';
+      const cpu = mk(p => p.cpu_percent >= 0 ? { at: p.at, v: p.cpu_percent } : null);
+      const mem = mk(p => ({ at: p.at, v: p.rss_bytes }));
+      const net = mk(p => p.rx_bps >= 0 && p.tx_bps >= 0 ? { at: p.at, v: p.rx_bps + p.tx_bps, tip: '↓' + rate(p.rx_bps) + ' ↑' + rate(p.tx_bps) } : null);
+      if (!ser.length) { add(clear(charts), h('p', { class: 'muted' }, '还没有历史数据：需要在门户配置中继指标采集，采集成功后每分钟记一个点。')); return; }
+      add(clear(charts), h('div', { class: 'dash-grid' },
+        h('div', null, h('h3', { class: 'dash-sub' }, '网络（收 + 发）'), lineChart(net, from, to, hs.bucket_ns, rate)),
+        h('div', null, h('h3', { class: 'dash-sub' }, '内存（RSS）'), lineChart(mem, from, to, hs.bucket_ns, bytes)),
+        h('div', null, h('h3', { class: 'dash-sub' }, 'CPU'), lineChart(cpu, from, to, hs.bucket_ns, pct, { min: 5 }))));
+    }
+    const chartTimer = setInterval(() => {
+      if (!main.contains(charts)) { clearInterval(chartTimer); return; }
+      if (!document.hidden) loadCharts().catch(() => {});
+    }, 60000);
+    loadCharts().catch(fail);
     async function load() {
       const r = await api('GET', '/api/v1/admin/relays');
       add(clear(list), table([
@@ -701,7 +900,7 @@
       h('div', { class: 'settings-actions' }, saveBtn, updated, err));
   }
 
-  const go = ST.router({ overview, users, relays, versions, jobs, nodes, audits, disputes, ledger, mail, feedback, oplog, settings }, nav, main, 'overview');
+  const go = ST.router({ dashboard, overview, users, relays, versions, jobs, nodes, audits, disputes, ledger, mail, feedback, oplog, settings }, nav, main, 'dashboard');
   refreshUnread();
   await go();
 })();

@@ -134,6 +134,24 @@ func (s *Store) SetDeviceVersion(peer, v string) error {
 	return err
 }
 
+// SetDevicePlatform records the operating system a device runs on (a GOOS
+// name sent by the client); anything else is ignored.
+func (s *Store) SetDevicePlatform(peer, os string) error {
+	if !validPlatform(os) {
+		return nil
+	}
+	_, err := s.DB.Exec(`UPDATE devices SET client_os = ? WHERE peer = ? AND client_os <> ?`, os, peer, os)
+	return err
+}
+
+func validPlatform(os string) bool {
+	switch os {
+	case "windows", "linux", "darwin", "freebsd":
+		return true
+	}
+	return false
+}
+
 // SetDeviceVersionTx is SetDeviceVersion inside a transaction.
 func SetDeviceVersionTx(tx *sql.Tx, peer, v string) error {
 	if v == "" || len(v) > 64 {
@@ -143,15 +161,21 @@ func SetDeviceVersionTx(tx *sql.Tx, peer, v string) error {
 	return err
 }
 
-// VersionCount is how many devices run one version.
+// VersionCount is how many devices run one version, and on which systems.
 type VersionCount struct {
 	Version string `json:"version"`
 	Devices int64  `json:"devices"`
+	Windows int64  `json:"windows"`
+	Linux   int64  `json:"linux"`
+	MacOS   int64  `json:"macos"`
+	Other   int64  `json:"other"` // another system, or one not reported yet
 }
 
-// DeviceVersions counts devices per client version, newest first by count.
+// DeviceVersions counts devices per client version and system, most used first.
 func (s *Store) DeviceVersions() ([]VersionCount, error) {
-	rows, err := s.DB.Query(`SELECT client_version, COUNT(*) FROM devices GROUP BY client_version ORDER BY COUNT(*) DESC, client_version`)
+	rows, err := s.DB.Query(`SELECT client_version, COUNT(*),
+		COALESCE(SUM(client_os = 'windows'), 0), COALESCE(SUM(client_os = 'linux'), 0), COALESCE(SUM(client_os = 'darwin'), 0)
+		FROM devices GROUP BY client_version ORDER BY COUNT(*) DESC, client_version`)
 	if err != nil {
 		return nil, err
 	}
@@ -159,9 +183,10 @@ func (s *Store) DeviceVersions() ([]VersionCount, error) {
 	out := []VersionCount{}
 	for rows.Next() {
 		var c VersionCount
-		if err := rows.Scan(&c.Version, &c.Devices); err != nil {
+		if err := rows.Scan(&c.Version, &c.Devices, &c.Windows, &c.Linux, &c.MacOS); err != nil {
 			return nil, err
 		}
+		c.Other = c.Devices - c.Windows - c.Linux - c.MacOS
 		out = append(out, c)
 	}
 	return out, rows.Err()

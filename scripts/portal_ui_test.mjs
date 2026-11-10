@@ -5,6 +5,7 @@
 // screenshots.
 //
 //   node scripts/portal_ui_test.mjs http://127.0.0.1:8099 ./shots
+//   ST_INSECURE=1 node scripts/portal_ui_test.mjs https://127.0.0.1:18092 ./shots   # self-signed (scripts/gui_stack.sh)
 //
 // Expects: open registration, an admin "root" with password "adminadmin",
 // a user "alice" with password "alicealice", one relay registered.
@@ -19,7 +20,7 @@ mkdirSync(shots, { recursive: true });
 const chrome = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const port = 9333;
 const proc = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--remote-debugging-port=${port}`,
-  `--user-data-dir=${shots}/profile`, '--window-size=1280,900', 'about:blank'], { stdio: 'ignore' });
+  `--user-data-dir=${shots}/profile`, '--window-size=1280,900', ...(process.env.ST_INSECURE ? ['--ignore-certificate-errors'] : []), 'about:blank'], { stdio: 'ignore' });
 process.on('exit', () => proc.kill());
 
 let ws, id = 0; const pending = new Map(); const events = [];
@@ -226,6 +227,12 @@ try {
   await goto(base + '/admin/');
   await login('root', 'adminadmin');
   await waitFor('document.querySelector(".sidenav")');
+  await waitFor('document.querySelector(".dash-chart")');
+  await assertText('中继状态', 'the console opens on the dashboard');
+  check(await evaluate('document.querySelectorAll(".dash-chart").length') === 3, 'dashboard draws the three daily charts');
+  check(await evaluate('document.querySelectorAll("main .card tbody tr").length') >= 1, 'dashboard lists the relays');
+  await shot('06a-admin-dashboard');
+  await goto(base + '/admin/#/overview'); await sleep(700);
   await shot('06-admin-overview');
   await assertText('平台总览');
   await assertText('账户余额');

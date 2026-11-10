@@ -14,8 +14,9 @@ import (
 
 // HTTP headers that carry versions.
 const (
-	ClientVersionHeader = "X-ST-Client-Version" // the desktop client and CLI, on every request
-	ServerVersionHeader = "X-ST-Server-Version" // the portal, on every response
+	ClientVersionHeader  = "X-ST-Client-Version"  // the desktop client and CLI, on every request
+	ClientPlatformHeader = "X-ST-Client-Platform" // their GOOS, beside the version
+	ServerVersionHeader  = "X-ST-Server-Version"  // the portal, on every response
 )
 
 // ClientVersions tells a client where it stands.
