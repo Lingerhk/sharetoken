@@ -80,6 +80,7 @@ type File struct {
 	Accounts struct {
 		OpenRegistration   bool   `yaml:"open_registration"`
 		SignupCreditMicros uint64 `yaml:"signup_credit_micros"`
+		MFAIssuer          string `yaml:"mfa_issuer"`
 		EmailVerification  bool   `yaml:"email_verification"` // sign-up needs an emailed code (mail.from must be set, mailserver running)
 	} `yaml:"accounts"`
 	// Mail is who the portal's mail comes from; cmd/mailserver delivers it (docs/mail.md).
@@ -299,7 +300,7 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 		LoginTTL: f.Sessions.LoginTTL.T(), PassKey: passKey, PassTTL: f.Sessions.PassTTL.T(), WebSessionTTL: f.Sessions.WebSessionTTL.T(),
 		SecureCookies: mode == "proxy", TrustedProxies: trustedProxies(f.HTTP.TrustedProxies), MFAKey: mfaKey, Log: lg,
 		EmailVerification: f.Accounts.EmailVerification, Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir,
-		PublicURL: strings.TrimRight(f.HTTP.PublicURL, "/")})
+		MFAIssuer: f.Accounts.MFAIssuer, PublicURL: strings.TrimRight(f.HTTP.PublicURL, "/")})
 	if err != nil {
 		log.Fatal(err)
 	}

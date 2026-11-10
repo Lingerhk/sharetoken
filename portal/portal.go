@@ -60,6 +60,8 @@ type Config struct {
 	// nil: derived from PassKey. Without either, admins cannot log in, since
 	// two-factor authentication is mandatory for them.
 	MFAKey []byte
+	// MFAIssuer is the name authenticator apps show (default "ShareToken").
+	MFAIssuer string
 	// EmailVerification requires sign-ups to prove their email address with a
 	// mailed code, and closes sign-up by plain username. It needs Mail.From.
 	EmailVerification bool
