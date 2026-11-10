@@ -193,6 +193,35 @@ func accountExistsMail(email string) Message {
 	}
 }
 
+var resetHTML = template.Must(template.New("reset").Parse(`<!doctype html>
+<html lang="en"><body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;color:#1f2933">
+<div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:32px">
+<h1 style="font-size:18px;margin:0 0 16px">Reset your ShareToken password</h1>
+<p style="margin:0 0 16px">Someone (possibly you) asked to reset the password of the ShareToken account with this email address.</p>
+<p style="margin:0 0 16px"><a href="{{.Link}}" style="display:inline-block;padding:10px 18px;background:#0d9488;color:#fff;border-radius:6px;text-decoration:none">Choose a new password</a></p>
+<p style="margin:0 0 16px;word-break:break-all;color:#52606d">{{.Link}}</p>
+<p style="margin:0 0 8px;color:#52606d">The link works once and is valid for {{.Minutes}} minutes. Do not share it with anyone. ShareToken staff will never ask you for it.</p>
+<p style="margin:0;color:#52606d">If this wasn't you, you can ignore this email. Your password has not changed.</p>
+</div></body></html>`))
+
+// ResetMail mails a password-reset link. Like a verification code it is as good
+// as a password while it lives: administrators do not get to read it.
+func ResetMail(to, link string, ttl time.Duration, now time.Time) Message {
+	minutes := int(ttl / time.Minute)
+	var html strings.Builder
+	_ = resetHTML.Execute(&html, map[string]any{"Link": link, "Minutes": minutes})
+	return Message{
+		Kind:      KindVerify,
+		Sensitive: true,
+		ExpiresAt: now.Add(ttl),
+		To:        to,
+		Subject:   "Reset your ShareToken password",
+		Text: fmt.Sprintf("Someone (possibly you) asked to reset the password of the ShareToken account with this email address. To choose a new password, open:\r\n\r\n    %s\r\n\r\nThe link works once and is valid for %d minutes. Do not share it with anyone. ShareToken staff will never ask you for it.\r\nIf this wasn't you, you can ignore this email. Your password has not changed.\r\n",
+			link, minutes),
+		HTML: html.String(),
+	}
+}
+
 // NoticeMail is a short plain-text notification to a user.
 func NoticeMail(to, subject, text string) Message {
 	return Message{Kind: KindNotice, To: to, Subject: subject, Text: text}

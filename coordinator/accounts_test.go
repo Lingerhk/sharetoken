@@ -98,10 +98,16 @@ func TestDevicesShareTheirUsersAccount(t *testing.T) {
 	}
 
 	// History and usage, as the portal reads them.
-	jobs, err := AccountJobs(f.eng.db, ledger.UserAccount(alice.ID), "", 0, 10)
-	if err != nil || len(jobs) != 2 || jobs[0].Role != RoleBuy || jobs[1].Role != RoleSell || jobs[1].EarnedMicros != 1800 ||
-		jobs[1].PromptTokens != 1000 || jobs[1].CompletionTokens != 500 {
+	jobs, err := AccountJobs(f.eng.db, ledger.UserAccount(alice.ID), JobQuery{Limit: 10})
+	if err != nil || len(jobs) != 2 {
 		t.Fatalf("alice's jobs: %+v %v", jobs, err)
+	}
+	if jobs[0].Role == RoleSell { // the fixture's clock stands still, so they tie on time
+		jobs[0], jobs[1] = jobs[1], jobs[0]
+	}
+	if jobs[0].Role != RoleBuy || jobs[1].Role != RoleSell || jobs[1].EarnedMicros != 1800 ||
+		jobs[1].PromptTokens != 1000 || jobs[1].CompletionTokens != 500 {
+		t.Fatalf("alice's jobs: %+v", jobs)
 	}
 	u, err := AccountUsage(f.eng.db, ledger.UserAccount(bobUser.ID))
 	if err != nil || u.Bought.Jobs != 1 || u.Bought.Micros != 2000 || u.Bought.CompletionTokens != 500 || u.Sold.Pending != 1 {

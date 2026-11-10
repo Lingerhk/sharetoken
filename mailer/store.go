@@ -233,16 +233,17 @@ func scanOut(row interface{ Scan(...any) error }, extra ...any) (*OutMail, error
 	return &m, nil
 }
 
-// OutFilter narrows Outbox.
+// OutFilter narrows Outbox. From and To bound created_at in unix seconds: From
+// inclusive, To exclusive, 0 unbounded.
 type OutFilter struct {
 	Status, Kind, Q string
-	Before          int64
+	From, To        int64
+	Offset          int
 	Limit           int
 }
 
-// Outbox lists outgoing mail, newest first.
-func (s *Store) Outbox(f OutFilter) ([]OutMail, error) {
-	q := `SELECT ` + outFields + ` FROM mail_outbox WHERE 1=1`
+func (f OutFilter) where() (string, []any) {
+	q := `1=1`
 	var args []any
 	if f.Status != "" {
 		q += ` AND status = ?`
@@ -257,13 +258,30 @@ func (s *Store) Outbox(f OutFilter) ([]OutMail, error) {
 		p := likePattern(f.Q)
 		args = append(args, p, p)
 	}
-	if f.Before > 0 {
-		q += ` AND id < ?`
-		args = append(args, f.Before)
+	if f.From > 0 {
+		q += ` AND created_at >= ?`
+		args = append(args, f.From)
 	}
-	q += ` ORDER BY id DESC LIMIT ?`
-	args = append(args, pageSize(f.Limit))
-	rows, err := s.DB.Query(q, args...)
+	if f.To > 0 {
+		q += ` AND created_at < ?`
+		args = append(args, f.To)
+	}
+	return q, args
+}
+
+// CountOutbox counts what Outbox pages through.
+func (s *Store) CountOutbox(f OutFilter) (int64, error) {
+	where, args := f.where()
+	var n int64
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM mail_outbox WHERE `+where, args...).Scan(&n)
+	return n, err
+}
+
+// Outbox lists outgoing mail, newest first.
+func (s *Store) Outbox(f OutFilter) ([]OutMail, error) {
+	where, args := f.where()
+	rows, err := s.DB.Query(`SELECT `+outFields+` FROM mail_outbox WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, pageSize(f.Limit), f.Offset)...)
 	if err != nil {
 		return nil, err
 	}
@@ -279,8 +297,11 @@ func (s *Store) Outbox(f OutFilter) ([]OutMail, error) {
 	return out, rows.Err()
 }
 
+// maxPageSize bounds one read: a page, or a batch of an export.
+const maxPageSize = 5000
+
 func pageSize(n int) int {
-	if n <= 0 || n > 200 {
+	if n <= 0 || n > maxPageSize {
 		return 50
 	}
 	return n
@@ -474,19 +495,20 @@ func (s *Store) inboxBytes() (int64, error) {
 	return n.Int64, err
 }
 
-// InFilter narrows Inbox.
+// InFilter narrows Inbox. From and To bound received_at in unix seconds: From
+// inclusive, To exclusive, 0 unbounded.
 type InFilter struct {
 	Mailbox, Status, Q string
 	UnreadOnly         bool
 	IncludeBounces     bool
 	OnlyBounces        bool
-	Before             int64
+	From, To           int64
+	Offset             int
 	Limit              int
 }
 
-// Inbox lists received mail, newest first.
-func (s *Store) Inbox(f InFilter) ([]InMail, error) {
-	q := `SELECT ` + inFields + ` FROM mail_inbox WHERE 1=1`
+func (f InFilter) where() (string, []any) {
+	q := `1=1`
 	var args []any
 	if f.Status != "" {
 		q += ` AND status = ?`
@@ -510,13 +532,30 @@ func (s *Store) Inbox(f InFilter) ([]InMail, error) {
 		p := likePattern(f.Q)
 		args = append(args, p, p)
 	}
-	if f.Before > 0 {
-		q += ` AND id < ?`
-		args = append(args, f.Before)
+	if f.From > 0 {
+		q += ` AND received_at >= ?`
+		args = append(args, f.From)
 	}
-	q += ` ORDER BY id DESC LIMIT ?`
-	args = append(args, pageSize(f.Limit))
-	rows, err := s.DB.Query(q, args...)
+	if f.To > 0 {
+		q += ` AND received_at < ?`
+		args = append(args, f.To)
+	}
+	return q, args
+}
+
+// CountInbox counts what Inbox pages through.
+func (s *Store) CountInbox(f InFilter) (int64, error) {
+	where, args := f.where()
+	var n int64
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM mail_inbox WHERE `+where, args...).Scan(&n)
+	return n, err
+}
+
+// Inbox lists received mail, newest first.
+func (s *Store) Inbox(f InFilter) ([]InMail, error) {
+	where, args := f.where()
+	rows, err := s.DB.Query(`SELECT `+inFields+` FROM mail_inbox WHERE `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, pageSize(f.Limit), f.Offset)...)
 	if err != nil {
 		return nil, err
 	}

@@ -291,7 +291,7 @@ if (process.env.ADMIN) {
   await fill('#mfa-code', totp(secret));
   await ev(`document.querySelector('.login form').requestSubmit()`);
   await waitFor(`document.querySelector('.sidenav a.active') && document.querySelector('main h1')`);
-  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 11, 'all eleven admin modules have icons');
+  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 13, 'all thirteen admin modules have icons');
   await pages('/admin/', ['overview', 'users', 'relays', 'versions', 'jobs', 'nodes', 'audits', 'disputes', 'ledger', 'mail', 'feedback'], 'admin');
   await size(1440, 900);
   await ev(`location.hash = '#/users/' + encodeURIComponent(${JSON.stringify(name)})`);

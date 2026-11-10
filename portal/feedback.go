@@ -46,33 +46,6 @@ func (s *Server) handleSendFeedback(w http.ResponseWriter, r *http.Request, cu c
 	}
 }
 
-func (s *Server) handleMyFeedback(w http.ResponseWriter, r *http.Request, cu ctxUser) {
-	fs, err := s.store.UserFeedback(cu.user.ID, queryInt(r, "before", 0), queryLimit(r))
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	// Who handled it is internal.
-	for i := range fs {
-		fs[i].HandledBy = ""
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"feedback": fs})
-}
-
-func (s *Server) handleAdminFeedback(w http.ResponseWriter, r *http.Request, _ ctxUser) {
-	fs, err := s.store.AllFeedback(r.URL.Query().Get("status"), queryInt(r, "before", 0), queryLimit(r))
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	n, err := s.store.NewFeedbackCount()
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"feedback": fs, "new": n})
-}
-
 func (s *Server) handleFeedbackStatus(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -85,6 +58,7 @@ func (s *Server) handleFeedbackStatus(w http.ResponseWriter, r *http.Request, cu
 	if !readJSON(w, r, &req) {
 		return
 	}
+	cu.note("status", req.Status)
 	err = s.store.SetFeedbackStatus(id, req.Status, cu.user.Username)
 	switch {
 	case errors.Is(err, accounts.ErrInvalid):

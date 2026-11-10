@@ -241,7 +241,7 @@ func TestPlansJobListing(t *testing.T) {
 		// A rare status walks the account's own history, never anybody else's.
 		{"old account, rare status", "disputed", planOld, both, 1, planRows / 2},
 	} {
-		query, args := queryJobsSQL(c.status, c.acct, before, planPage)
+		query, args := queryJobsSQL(JobQuery{Status: c.status, Acct: c.acct, To: before, Limit: planPage})
 		p := explainPlan(t, db, query, args...)
 		if keys := p.keys(t, c.name); keys != c.keys || p.filesorts != c.sorts {
 			t.Errorf("%s: keys %s with %d sorts, want %s with %d", c.name, keys, p.filesorts, c.keys, c.sorts)
@@ -254,11 +254,12 @@ func TestPlansJobListing(t *testing.T) {
 
 func TestPlansDisputes(t *testing.T) {
 	db := planFixture(t)
-	p := explainPlan(t, db, disputesSQL, planPage, planPage, planPage)
+	args := disputesArgs(RangeQuery{Limit: planPage})
+	p := explainPlan(t, db, disputesSQL, args...)
 	if keys := p.keys(t, "disputes"); keys != "jobs_by_status_created,jobs_judged" {
 		t.Errorf("disputes: keys %s:\n%s", keys, p.raw)
 	}
-	if n := rowsRead(t, db, disputesSQL, planPage, planPage, planPage); n > planPageBudget {
+	if n := rowsRead(t, db, disputesSQL, args...); n > planPageBudget {
 		t.Errorf("disputes: a page read %d rows, budget %d", n, planPageBudget)
 	}
 }
@@ -266,7 +267,7 @@ func TestPlansDisputes(t *testing.T) {
 func TestPlansAccountJournal(t *testing.T) {
 	db := planFixture(t)
 	for _, acct := range []string{planBig, planOld, planSmall} {
-		args := []any{acct, int64(1 << 62), planPage, acct, int64(1 << 62), planPage, planPage}
+		args := ledger.AccountEntriesArgs(acct, 0, 1<<62, planPage, 0)
 		p := explainPlan(t, db, ledger.AccountEntriesSQL, args...)
 		if keys := p.keys(t, acct); keys != "ledger_entries_by_debit,ledger_entries_by_credit" {
 			t.Errorf("%s: keys %s:\n%s", acct, keys, p.raw)
@@ -306,5 +307,64 @@ func TestPlansHotQueries(t *testing.T) {
 		} else if c.covering && !p.tables[0].Covering {
 			t.Errorf("%s: reads the rows, the index should cover it:\n%s", c.name, p.raw)
 		}
+	}
+}
+
+// A page deep into an account's jobs reads what precedes it on each side and no
+// more; a date range keeps to the same indexes.
+func TestPlansPagedAccountJobs(t *testing.T) {
+	db := planFixture(t)
+	const both = "jobs_by_buyer_acct,jobs_by_node_acct"
+	for _, acct := range []string{planBig, planOld, planSmall} {
+		query, args, err := accountJobsSQL(acct, JobQuery{Limit: planPage})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p := explainPlan(t, db, query, args...); p.keys(t, acct) != both {
+			t.Errorf("%s: keys %s:\n%s", acct, p.keys(t, acct), p.raw)
+		}
+		if n := rowsRead(t, db, query, args...); n > planPageBudget {
+			t.Errorf("%s: a page read %d rows, budget %d", acct, n, planPageBudget)
+		}
+		query, args, err = accountJobsSQL(acct, JobQuery{Limit: planPage, Offset: 5 * planPage, From: planEpoch, To: planEpoch + planRows})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p := explainPlan(t, db, query, args...); p.keys(t, acct) != both {
+			t.Errorf("%s, deep: keys %s:\n%s", acct, p.keys(t, acct), p.raw)
+		}
+		if n := rowsRead(t, db, query, args...); n > 6*planPageBudget {
+			t.Errorf("%s, deep: a page read %d rows, budget %d", acct, n, 6*planPageBudget)
+		}
+		// Counting reads the account's index entries, never the table's other rows.
+		var total int64
+		if total, err = CountAccountJobs(db, acct, JobQuery{}); err != nil || total == 0 {
+			t.Errorf("%s: count %d %v", acct, total, err)
+		}
+		for _, role := range []string{RoleBuy, RoleSell} {
+			if q, a, err := accountJobsSQL(acct, JobQuery{Role: role, Limit: planPage}); err != nil {
+				t.Error(err)
+			} else if n := rowsRead(t, db, q, a...); n > planPageBudget {
+				t.Errorf("%s as %s: a page read %d rows, budget %d", acct, role, n, planPageBudget)
+			}
+		}
+	}
+}
+
+// Turning a date range into seq bounds costs a look at one index entry per bound,
+// not a walk over the journal.
+func TestPlansJournalDateRange(t *testing.T) {
+	db := planFixture(t)
+	const first = `SELECT seq FROM ledger_entries FORCE INDEX (ledger_entries_by_at) WHERE at >= ? ORDER BY at, seq LIMIT 1`
+	if n := rowsRead(t, db, first, int64(0)); n > 50 { // the counters also tick for the statement's own bookkeeping
+
+		t.Errorf("finding the first entry of a date read %d rows", n)
+	}
+	lo, hi, err := ledger.SeqRange(db, 1, 1<<62)
+	if err != nil || lo <= 0 || lo > hi {
+		t.Fatalf("seq range %d %d %v", lo, hi, err)
+	}
+	if n := rowsRead(t, db, `SELECT seq, at FROM ledger_entries WHERE seq >= ? AND seq < ? ORDER BY seq DESC LIMIT ? OFFSET ?`, lo, hi, planPage, planPage); n > 2*planPageBudget {
+		t.Errorf("a page of the whole journal read %d rows", n)
 	}
 }

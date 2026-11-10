@@ -45,36 +45,78 @@ const (
 	RoleSell = "sell"
 )
 
-// AccountJobs lists an account's jobs, newest first, created before
-// beforeNanos (0: now). role selects jobs it bought ("buy"), sold ("sell"),
-// or both ("").
-func AccountJobs(db *sql.DB, acct, role string, beforeNanos int64, limit int) ([]JobInfo, error) {
-	if beforeNanos <= 0 {
-		beforeNanos = 1<<63 - 1
+// JobQuery narrows and pages a job listing, newest first. From and To bound
+// created_at in unix nanos: From inclusive, To exclusive, 0 unbounded.
+type JobQuery struct {
+	Status string // "" for any (operator listings)
+	Acct   string // "" for any; matches either party (operator listings)
+	Role   string // account listings: "buy", "sell", or "" for both
+	From   int64
+	To     int64
+	Offset int
+	Limit  int
+}
+
+func (f JobQuery) to() int64 {
+	if f.To <= 0 {
+		return 1<<63 - 1
 	}
-	var where string
-	args := []any{}
-	switch role {
-	case RoleBuy:
-		where, args = `buyer_acct = ?`, append(args, acct)
-	case RoleSell:
-		where, args = `node_acct = ?`, append(args, acct)
+	return f.To
+}
+
+const accountJobCols = `job_id, buyer_acct, model, status, buyer, node, prompt_tokens, completion_tokens, cost, fee,
+	dispute_outcome, created_at, done_at`
+
+// accountJobsSQL walks the index of each side in created_at order and stops
+// after the page: an OR of the two columns would sort the account's whole
+// history. Both sides read offset+limit rows at most.
+func accountJobsSQL(acct string, f JobQuery) (string, []any, error) {
+	side := func(col string, n int, tail string) (string, []any) {
+		return `SELECT ` + accountJobCols + ` FROM jobs FORCE INDEX (jobs_by_` + col + `) WHERE ` + col + ` = ? AND created_at >= ? AND created_at < ?
+			ORDER BY created_at DESC, job_id DESC ` + tail, []any{acct, f.From, f.to(), n}
+	}
+	switch f.Role {
+	case RoleBuy, RoleSell:
+		col := "buyer_acct"
+		if f.Role == RoleSell {
+			col = "node_acct"
+		}
+		q, args := side(col, f.Limit, `LIMIT ? OFFSET ?`)
+		return q, append(args, f.Offset), nil
 	case "":
-		where, args = `(buyer_acct = ? OR node_acct = ?)`, append(args, acct, acct)
-	default:
-		return nil, fmt.Errorf("unknown role %q", role)
+		n := f.Offset + f.Limit
+		buy, ba := side("buyer_acct", n, `LIMIT ?`)
+		sell, sa := side("node_acct", n, `LIMIT ?`)
+		return `SELECT * FROM (` + buy + `) AS b UNION ALL SELECT * FROM (` + sell + `) AS s ORDER BY created_at DESC, job_id DESC LIMIT ? OFFSET ?`,
+			append(append(ba, sa...), f.Limit, f.Offset), nil
 	}
-	const cols = `job_id, buyer_acct, model, status, buyer, node, prompt_tokens, completion_tokens, cost, fee,
-		dispute_outcome, created_at, done_at`
-	query := `SELECT ` + cols + ` FROM jobs WHERE ` + where + ` AND created_at < ? ORDER BY created_at DESC LIMIT ?`
-	args = append(args, beforeNanos, limit)
-	if role == "" {
-		// Two index-ordered scans of at most limit rows each, merged: an OR of
-		// the two columns would sort the account's whole history.
-		query = `SELECT * FROM (SELECT ` + cols + ` FROM jobs WHERE buyer_acct = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?) AS b
-			UNION ALL SELECT * FROM (SELECT ` + cols + ` FROM jobs WHERE node_acct = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?) AS s
-			ORDER BY created_at DESC LIMIT ?`
-		args = []any{acct, beforeNanos, limit, acct, beforeNanos, limit, limit}
+	return "", nil, fmt.Errorf("unknown role %q", f.Role)
+}
+
+// CountAccountJobs counts what AccountJobs pages through.
+func CountAccountJobs(db *sql.DB, acct string, f JobQuery) (int64, error) {
+	var total int64
+	for _, side := range []struct{ role, col string }{{RoleBuy, "buyer_acct"}, {RoleSell, "node_acct"}} {
+		if f.Role != "" && f.Role != side.role {
+			continue
+		}
+		var n int64
+		err := db.QueryRow(`SELECT COUNT(*) FROM jobs FORCE INDEX (jobs_by_`+side.col+`) WHERE `+side.col+` = ? AND created_at >= ? AND created_at < ?`,
+			acct, f.From, f.to()).Scan(&n)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// AccountJobs lists an account's jobs, newest first. f.Role selects jobs it
+// bought ("buy"), sold ("sell"), or both ("").
+func AccountJobs(db *sql.DB, acct string, f JobQuery) ([]JobInfo, error) {
+	query, args, err := accountJobsSQL(acct, f)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -201,10 +243,9 @@ type AdminJob struct {
 	DoneAt           int64  `json:"done_at,omitempty"`
 }
 
-// QueryJobs lists jobs newest first, created before beforeNanos (0: now).
-// status ("" for any) and acct ("" for any; matches either party) filter.
-func QueryJobs(q Querier, status, acct string, beforeNanos int64, limit int) ([]AdminJob, error) {
-	query, args := queryJobsSQL(status, acct, beforeNanos, limit)
+// QueryJobs lists jobs newest first, narrowed by f.
+func QueryJobs(q Querier, f JobQuery) ([]AdminJob, error) {
+	query, args := queryJobsSQL(f)
 	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -228,37 +269,62 @@ func QueryJobs(q Querier, status, acct string, beforeNanos int64, limit int) ([]
 }
 
 // queryJobsSQL builds the admin listing. Every branch walks one index in
-// created_at order and stops after limit rows; none of them may sort the
+// created_at order and stops after the page; none of them may sort the
 // table (TestQueryJobsUsesIndexes checks the plans).
-func queryJobsSQL(status, acct string, beforeNanos int64, limit int) (string, []any) {
-	if beforeNanos <= 0 {
-		beforeNanos = 1<<63 - 1
-	}
+func queryJobsSQL(f JobQuery) (string, []any) {
 	const cols = `job_id, model, status, buyer, node, buyer_acct, node_acct, prompt_tokens, completion_tokens,
 		cost, fee, dispute_reason, dispute_outcome, dispute_detail, created_at, started_at, done_at`
 	var statusWhere string
 	var statusArgs []any
-	if status != "" {
-		statusWhere, statusArgs = ` AND status = ?`, []any{status}
+	if f.Status != "" {
+		statusWhere, statusArgs = ` AND status = ?`, []any{f.Status}
 	}
-	if acct == "" {
-		return `SELECT ` + cols + ` FROM jobs WHERE created_at < ?` + statusWhere + ` ORDER BY created_at DESC LIMIT ?`,
-			append(append([]any{beforeNanos}, statusArgs...), limit)
+	if f.Acct == "" {
+		return `SELECT ` + cols + ` FROM jobs WHERE created_at >= ? AND created_at < ?` + statusWhere + ` ORDER BY created_at DESC, job_id DESC LIMIT ? OFFSET ?`,
+			append(append([]any{f.From, f.to()}, statusArgs...), f.Limit, f.Offset)
 	}
-	// Two index-ordered scans of at most limit rows each, merged: an OR of
-	// the two account columns would sort the account's whole history. The
+	// Two index-ordered scans of at most offset+limit rows each, merged: an OR
+	// of the two account columns would sort the account's whole history. The
 	// index is forced because the optimizer otherwise walks all recent jobs
 	// looking for an account whose history is old.
+	n := f.Offset + f.Limit
 	side := func(col string) (string, []any) {
-		return `SELECT ` + cols + ` FROM jobs FORCE INDEX (jobs_by_` + col + `) WHERE ` + col + ` = ? AND created_at < ?` + statusWhere + ` ORDER BY created_at DESC LIMIT ?`,
-			append(append([]any{acct, beforeNanos}, statusArgs...), limit)
+		return `SELECT ` + cols + ` FROM jobs FORCE INDEX (jobs_by_` + col + `) WHERE ` + col + ` = ? AND created_at >= ? AND created_at < ?` + statusWhere + ` ORDER BY created_at DESC, job_id DESC LIMIT ?`,
+			append(append([]any{f.Acct, f.From, f.to()}, statusArgs...), n)
 	}
 	buy, buyArgs := side("buyer_acct")
 	sell, sellArgs := side("node_acct")
 	// UNION ALL is exact: IssueTicket never lets an account buy from itself,
 	// so no job matches both sides.
-	return `SELECT * FROM (` + buy + `) AS b UNION ALL SELECT * FROM (` + sell + `) AS s ORDER BY created_at DESC LIMIT ?`,
-		append(append(buyArgs, sellArgs...), limit)
+	return `SELECT * FROM (` + buy + `) AS b UNION ALL SELECT * FROM (` + sell + `) AS s ORDER BY created_at DESC, job_id DESC LIMIT ? OFFSET ?`,
+		append(append(buyArgs, sellArgs...), f.Limit, f.Offset)
+}
+
+// CountJobs counts what QueryJobs pages through.
+func CountJobs(q Querier, f JobQuery) (int64, error) {
+	var statusWhere string
+	var statusArgs []any
+	if f.Status != "" {
+		statusWhere, statusArgs = ` AND status = ?`, []any{f.Status}
+	}
+	count := func(query string, args ...any) (int64, error) {
+		var n int64
+		err := q.QueryRow(query, args...).Scan(&n)
+		return n, err
+	}
+	if f.Acct == "" {
+		return count(`SELECT COUNT(*) FROM jobs WHERE created_at >= ? AND created_at < ?`+statusWhere, append([]any{f.From, f.to()}, statusArgs...)...)
+	}
+	var total int64
+	for _, col := range []string{"buyer_acct", "node_acct"} {
+		n, err := count(`SELECT COUNT(*) FROM jobs FORCE INDEX (jobs_by_`+col+`) WHERE `+col+` = ? AND created_at >= ? AND created_at < ?`+statusWhere,
+			append([]any{f.Acct, f.From, f.to()}, statusArgs...)...)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, nil
 }
 
 // JobCounts counts jobs by status.
@@ -298,9 +364,36 @@ func QueryNodes(q Querier) ([]NodeStats, error) {
 	return out, rows.Err()
 }
 
+// RangeQuery pages a listing over a date range in unix nanos: From inclusive,
+// To exclusive, 0 unbounded.
+type RangeQuery struct {
+	From, To      int64
+	Offset, Limit int
+}
+
+func (f RangeQuery) to() int64 {
+	if f.To <= 0 {
+		return 1<<63 - 1
+	}
+	return f.To
+}
+
 // QueryAudits lists the most recent audit results.
 func QueryAudits(q Querier, limit int) ([]AuditRecord, error) {
-	rows, err := q.Query(`SELECT job_id, node, model, verdict, similarity, detail, at FROM audits ORDER BY id DESC LIMIT ?`, limit)
+	return QueryAuditsPage(q, RangeQuery{Limit: limit})
+}
+
+// CountAudits counts what QueryAuditsPage pages through.
+func CountAudits(q Querier, f RangeQuery) (int64, error) {
+	var n int64
+	err := q.QueryRow(`SELECT COUNT(*) FROM audits WHERE at >= ? AND at < ?`, f.From, f.to()).Scan(&n)
+	return n, err
+}
+
+// QueryAuditsPage lists audit results over a date range, newest first.
+func QueryAuditsPage(q Querier, f RangeQuery) ([]AuditRecord, error) {
+	rows, err := q.Query(`SELECT job_id, node, model, verdict, similarity, detail, at FROM audits WHERE at >= ? AND at < ? ORDER BY at DESC, id DESC LIMIT ? OFFSET ?`,
+		f.From, f.to(), f.Limit, f.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -321,13 +414,33 @@ func QueryAudits(q Querier, limit int) ([]AuditRecord, error) {
 const disputesCols = `job_id, buyer, node, buyer_acct, node_acct, model, status, cost, dispute_reason, dispute_outcome, dispute_detail,
 	created_at, done_at`
 const disputesSQL = `SELECT ` + disputesCols + ` FROM (
-		SELECT * FROM (SELECT ` + disputesCols + ` FROM jobs WHERE status = 'disputed' ORDER BY created_at DESC LIMIT ?) AS o
-		UNION SELECT * FROM (SELECT ` + disputesCols + ` FROM jobs WHERE dispute_outcome != '' ORDER BY created_at DESC LIMIT ?) AS j) AS d
-	ORDER BY status = 'disputed' DESC, created_at DESC LIMIT ?`
+		SELECT * FROM (SELECT ` + disputesCols + ` FROM jobs WHERE status = 'disputed' AND created_at >= ? AND created_at < ? ORDER BY created_at DESC LIMIT ?) AS o
+		UNION SELECT * FROM (SELECT ` + disputesCols + ` FROM jobs WHERE dispute_outcome != '' AND created_at >= ? AND created_at < ? ORDER BY created_at DESC LIMIT ?) AS j) AS d
+	ORDER BY status = 'disputed' DESC, created_at DESC LIMIT ? OFFSET ?`
+
+func disputesArgs(f RangeQuery) []any {
+	n := f.Offset + f.Limit
+	return []any{f.From, f.to(), n, f.From, f.to(), n, f.Limit, f.Offset}
+}
 
 // QueryDisputes lists jobs awaiting arbitration first, then judged ones, newest first.
 func QueryDisputes(q Querier, limit int) ([]DisputeInfo, error) {
-	rows, err := q.Query(disputesSQL, limit, limit, limit)
+	return QueryDisputesPage(q, RangeQuery{Limit: limit})
+}
+
+// CountDisputes counts what QueryDisputesPage pages through.
+func CountDisputes(q Querier, f RangeQuery) (int64, error) {
+	var n int64
+	err := q.QueryRow(`SELECT COUNT(*) FROM (
+		SELECT job_id FROM jobs WHERE status = 'disputed' AND created_at >= ? AND created_at < ?
+		UNION SELECT job_id FROM jobs WHERE dispute_outcome != '' AND created_at >= ? AND created_at < ?) AS d`,
+		f.From, f.to(), f.From, f.to()).Scan(&n)
+	return n, err
+}
+
+// QueryDisputesPage is QueryDisputes over a date range, one page at a time.
+func QueryDisputesPage(q Querier, f RangeQuery) ([]DisputeInfo, error) {
+	rows, err := q.Query(disputesSQL, disputesArgs(f)...)
 	if err != nil {
 		return nil, err
 	}

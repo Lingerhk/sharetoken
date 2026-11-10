@@ -409,6 +409,7 @@ func (s *Server) handleAdminResetMFA(w http.ResponseWriter, r *http.Request, cu 
 		s.internal(w, err)
 		return
 	}
+	cu.note("tokens_revoked", revoked)
 	s.log.Warn("two-factor reset by admin", "user", u.Username, "by", cu.user.Username, "tokens_revoked", revoked)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tokens_revoked": revoked})
 }

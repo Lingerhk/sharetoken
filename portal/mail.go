@@ -21,11 +21,11 @@ type MailConfig struct {
 	Support string // where users write to and admins answer from, "ShareToken Support <support@…>"
 }
 
-func (s *Server) mailEnabled() bool { return s.cfg.Mail.From != "" }
+func (s *Server) mailEnabled() bool { return s.settings().MailFrom != "" }
 
 // supportAddress is the bare address users are told to write to.
 func (s *Server) supportAddress() string {
-	if a, err := netmail.ParseAddress(s.cfg.Mail.Support); err == nil {
+	if a, err := netmail.ParseAddress(s.settings().MailSupport); err == nil {
 		return a.Address
 	}
 	return ""
@@ -38,7 +38,7 @@ func (s *Server) notify(username, subject, text string) {
 		return
 	}
 	m := mailer.NoticeMail(username, subject, text)
-	m.From, m.ReplyTo = s.cfg.Mail.From, s.supportAddress()
+	m.From, m.ReplyTo = s.settings().MailFrom, s.supportAddress()
 	if _, err := s.mail.Enqueue(m); err != nil {
 		s.log.Warn("queueing a notice", "err", err, "user", username)
 	}
@@ -47,11 +47,12 @@ func (s *Server) notify(username, subject, text string) {
 // handleRegisterCode mails a sign-up code. The answer does not depend on whether
 // the address has an account: the mail does.
 func (s *Server) handleRegisterCode(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.OpenRegistration {
+	st := s.settings()
+	if !st.OpenRegistration {
 		writeErr(w, http.StatusForbidden, "registration_closed", "registration is closed; ask an administrator for an account")
 		return
 	}
-	if !s.cfg.EmailVerification {
+	if !st.EmailVerification {
 		writeErr(w, http.StatusNotFound, "not_supported", "this portal does not verify email addresses")
 		return
 	}
@@ -62,7 +63,8 @@ func (s *Server) handleRegisterCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Email string `json:"email"`
+		Email  string `json:"email"`
+		Invite string `json:"invite_code"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -70,6 +72,10 @@ func (s *Server) handleRegisterCode(w http.ResponseWriter, r *http.Request) {
 	email := accounts.NormalizeEmail(req.Email)
 	if err := accounts.CheckEmail(email); err != nil {
 		s.accountErr(w, err)
+		return
+	}
+	// Mail goes out only to those who could sign up.
+	if !s.checkSignupRules(w, s.clientIP(r), email, req.Invite, st) {
 		return
 	}
 	taken := false
@@ -81,7 +87,7 @@ func (s *Server) handleRegisterCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.mail.RequestCode(mailer.CodeRequest{Purpose: mailer.PurposeRegister, Email: email, IP: s.clientIP(r),
-		From: s.cfg.Mail.From, ReplyTo: s.supportAddress(), Taken: taken})
+		From: st.MailFrom, ReplyTo: s.supportAddress(), Taken: taken})
 	switch {
 	case errors.Is(err, mailer.ErrCodeCooldown):
 		writeErr(w, http.StatusTooManyRequests, "code_cooldown", "a code was just sent to this address; wait a minute before asking again")
@@ -157,30 +163,9 @@ func (s *Server) handleMailStatus(w http.ResponseWriter, r *http.Request, _ ctxU
 		s.mailErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"overview": o, "from": s.cfg.Mail.From, "support": s.cfg.Mail.Support,
-		"email_verification": s.cfg.EmailVerification, "registration_open": s.cfg.OpenRegistration})
-}
-
-func (s *Server) handleMailInbox(w http.ResponseWriter, r *http.Request, _ ctxUser) {
-	q := r.URL.Query()
-	f := mailer.InFilter{Mailbox: q.Get("mailbox"), Q: q.Get("q"), Before: queryInt(r, "before", 0), Limit: int(queryInt(r, "limit", 50)),
-		UnreadOnly: q.Get("unread") == "1", OnlyBounces: q.Get("bounces") == "only"}
-	switch st := q.Get("status"); st {
-	case "", mailer.InboxOpen:
-		f.Status = mailer.InboxOpen
-	case mailer.InboxArchived:
-		f.Status = st
-	case "all":
-	default:
-		writeErr(w, http.StatusBadRequest, "bad_request", "bad status")
-		return
-	}
-	msgs, err := s.mail.Inbox(f)
-	if err != nil {
-		s.mailErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+	st := s.settings()
+	writeJSON(w, http.StatusOK, map[string]any{"overview": o, "from": st.MailFrom, "support": st.MailSupport,
+		"email_verification": st.EmailVerification, "registration_open": st.OpenRegistration})
 }
 
 func (s *Server) handleMailMessage(w http.ResponseWriter, r *http.Request, _ ctxUser) {
@@ -266,7 +251,7 @@ func (s *Server) handleMailRead(w http.ResponseWriter, r *http.Request, _ ctxUse
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (s *Server) handleMailMove(w http.ResponseWriter, r *http.Request, _ ctxUser) {
+func (s *Server) handleMailMove(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 	id, ok := pathID(w, r)
 	if !ok {
 		return
@@ -281,6 +266,7 @@ func (s *Server) handleMailMove(w http.ResponseWriter, r *http.Request, _ ctxUse
 		writeErr(w, http.StatusBadRequest, "bad_request", "status must be inbox or archived")
 		return
 	}
+	cu.note("status", req.Status)
 	if err := s.mail.SetInboxStatus(id, req.Status); err != nil {
 		s.mailErr(w, err)
 		return
@@ -333,7 +319,8 @@ func (s *Server) handleMailReply(w http.ResponseWriter, r *http.Request, cu ctxU
 	if !strings.HasPrefix(strings.ToLower(subject), "re:") {
 		subject = "Re: " + subject
 	}
-	out, err := s.mail.Enqueue(mailer.Message{Kind: mailer.KindReply, From: s.cfg.Mail.Support, To: to, Subject: subject, Text: req.Text, InReplyTo: m.MessageID, CreatedBy: cu.user.Username})
+	cu.note("to", to)
+	out, err := s.mail.Enqueue(mailer.Message{Kind: mailer.KindReply, From: s.settings().MailSupport, To: to, Subject: subject, Text: req.Text, InReplyTo: m.MessageID, CreatedBy: cu.user.Username})
 	if err != nil {
 		s.mailErr(w, err)
 		return
@@ -346,24 +333,11 @@ func (s *Server) handleMailReply(w http.ResponseWriter, r *http.Request, cu ctxU
 }
 
 func (s *Server) mailConfigured(w http.ResponseWriter) bool {
-	if !s.mailEnabled() || s.cfg.Mail.Support == "" {
-		writeErr(w, http.StatusConflict, "mail_not_configured", "mail.from and mail.support are not set in the portal's configuration")
+	if st := s.settings(); st.MailFrom == "" || st.MailSupport == "" {
+		writeErr(w, http.StatusConflict, "mail_not_configured", "no mail sender or support address is set; see the settings page")
 		return false
 	}
 	return true
-}
-
-func (s *Server) handleMailOutbox(w http.ResponseWriter, r *http.Request, _ ctxUser) {
-	q := r.URL.Query()
-	msgs, err := s.mail.Outbox(mailer.OutFilter{Status: q.Get("status"), Kind: q.Get("kind"), Q: q.Get("q"), Before: queryInt(r, "before", 0), Limit: int(queryInt(r, "limit", 50))})
-	if err != nil {
-		s.mailErr(w, err)
-		return
-	}
-	for i := range msgs {
-		maskSensitive(&msgs[i])
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
 }
 
 // maskSensitive hides a code still waiting in the queue: it is as good as a
@@ -434,10 +408,13 @@ func (s *Server) handleMailSend(w http.ResponseWriter, r *http.Request, cu ctxUs
 		writeErr(w, http.StatusBadRequest, "bad_request", "subject and text are required")
 		return
 	}
-	from := s.cfg.Mail.Support
+	st := s.settings()
+	from := st.MailSupport
 	if req.From == "team" {
-		from = s.cfg.Mail.From
+		from = st.MailFrom
 	}
+	cu.note("to", to)
+	cu.note("subject", req.Subject)
 	id, err := s.mail.Enqueue(mailer.Message{Kind: mailer.KindCompose, From: from, To: to, ReplyTo: s.supportAddress(), Subject: req.Subject, Text: req.Text, CreatedBy: cu.user.Username})
 	if err != nil {
 		s.mailErr(w, err)

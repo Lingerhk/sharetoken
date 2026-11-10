@@ -128,3 +128,9 @@ Go 侧用 `os.UserConfigDir/UserCacheDir` + 少量补充；钥匙串用 `github.
 ### mailserver 与门户的邮件配置
 
 `mailserver` 的配置见 `configs/mail.example.yaml`，门户新增 `accounts.email_verification`、`mail.from`、`mail.support`。说明见 [mail.md](mail.md)。
+
+## 门户的系统设置
+
+`/admin/#/settings` 编辑的值存在数据库（`portal_settings` 表），保存后立即生效，不用重启。`portal.yaml` 里的 `accounts.*`、`mail.*`、`sessions.login_ttl`、`sessions.web_session_ttl` 只是**还没保存过设置时**的默认值：第一次保存后以数据库为准，改文件不再起作用。其余配置项（数据库、密钥、监听地址、公网地址、TLS、下载目录）仍只在文件里。
+
+`http.public_url` 是门户的公网地址，用于邮件里的链接，只在配置文件里设置，系统设置页不能改：能改设置的人不应该能把重置链接指向别处。没有它就没有“忘记密码”。门户不用请求的 Host 头拼链接，否则伪造 Host 就能把重置链接指向别的网站。
