@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,9 +16,10 @@ import (
 // daemon is on this machine and the call only reads its state.
 const trayPollEvery = 3 * time.Second
 
-// trayMenu is what the menu shows. The status line is not clickable.
+// trayMenu is what the menu shows. The status line is not clickable; Update,
+// when not empty, is an item that opens the window, where the download is.
 type trayMenu struct {
-	Status, Open, Quit string
+	Status, Update, Open, Quit string
 }
 
 // trayController keeps the native menu in line with the daemon and the language
@@ -28,10 +31,13 @@ type trayController struct {
 	set   func(trayMenu)
 	every time.Duration
 	wake  chan struct{}
+	// notify, when set, shows a system notification and reports whether it did.
+	notify func(title, body string) bool
 
 	mu       sync.Mutex
 	lang     string
-	reported bool // the page has said its language
+	reported bool   // the page has said its language
+	notified string // the update this run has tried to notify about
 }
 
 func newTrayController(start func() error, addr func() string, set func(trayMenu)) *trayController {
@@ -70,7 +76,9 @@ func (t *trayController) run(ctx context.Context) {
 	tick := time.NewTicker(t.every)
 	defer tick.Stop()
 	for {
-		t.show(fetchTrayState(ctx, t.addr()))
+		st := fetchTrayState(ctx, t.addr())
+		t.show(st)
+		t.notifyUpdate(ctx, st.Update)
 		select {
 		case <-ctx.Done():
 			return
@@ -87,6 +95,41 @@ func (t *trayController) show(st trayState) {
 	t.set(renderTray(text, st))
 }
 
+// notifyUpdate shows one notification per offered build: the daemon records it,
+// so a restart does not repeat it. A required upgrade is notified even if the
+// user skipped that build.
+func (t *trayController) notifyUpdate(ctx context.Context, u trayUpdate) {
+	if t.notify == nil || !u.shown() || u.Notified || u.Key == "" {
+		return
+	}
+	t.mu.Lock()
+	tried := t.notified == u.Key
+	t.notified = u.Key
+	text := trayTexts[t.lang]
+	t.mu.Unlock()
+	if tried {
+		return
+	}
+	body := text.NotifyAvailable
+	if u.Required {
+		body = text.NotifyRequired
+	}
+	if !t.notify(windowTitle(), strings.ReplaceAll(text.fill(body), "{version}", u.Latest)) {
+		return
+	}
+	data, _ := json.Marshal(map[string]string{"key": u.Key})
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+t.addr()+"/api/v1/update/notified", bytes.NewReader(data))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+}
+
 // The daemon's session states (client/daemon.go).
 const (
 	stateLoggedOut = "logged_out"
@@ -99,11 +142,25 @@ const (
 // trayState is the part of the daemon's session the menu shows. Down: the daemon
 // does not answer.
 type trayState struct {
-	Down     bool   `json:"-"`
-	State    string `json:"state"`
-	LoggedIn bool   `json:"logged_in"`
-	User     string `json:"user"`
+	Down     bool       `json:"-"`
+	State    string     `json:"state"`
+	LoggedIn bool       `json:"logged_in"`
+	User     string     `json:"user"`
+	Update   trayUpdate `json:"update"`
 }
+
+// trayUpdate is the session's word on a newer release (client/update.go).
+type trayUpdate struct {
+	Available bool   `json:"available"`
+	Required  bool   `json:"required"`
+	Latest    string `json:"latest"`
+	Key       string `json:"key"`
+	Skipped   bool   `json:"skipped"`
+	Notified  bool   `json:"notified"`
+}
+
+// shown: the user is to hear about it.
+func (u trayUpdate) shown() bool { return u.Available && (u.Required || !u.Skipped) }
 
 func fetchTrayState(ctx context.Context, addr string) trayState {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -142,6 +199,13 @@ func renderTray(text trayText, st trayState) trayMenu {
 	}
 	if st.LoggedIn && st.User != "" {
 		m.Status += " · " + st.User
+	}
+	if !st.Down && st.Update.shown() {
+		item := text.UpdateAvailable
+		if st.Update.Required {
+			item = text.UpdateRequired
+		}
+		m.Update = strings.ReplaceAll(item, "{version}", st.Update.Latest)
 	}
 	return m
 }

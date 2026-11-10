@@ -52,11 +52,12 @@ macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘，关
 |---|---|
 | 关闭窗口（红色按钮、X、macOS 的 Cmd+W） | 只隐藏窗口。应用和 daemon 继续运行，共享和本地 API 不中断 |
 | Windows 左键点图标 | 打开窗口（最小化时恢复） |
-| macOS 点图标、Windows 右键点图标 | 菜单：状态行（不可点）、打开、退出 |
+| macOS 点图标、Windows 右键点图标 | 菜单：状态行（不可点）、有新版本时“有新版本 x”（点击打开窗口）、打开、退出 |
 | 菜单里的退出、macOS 的 Cmd+Q | 退出应用；daemon 如果是这个应用启动的，一起停止 |
 | 再次启动程序 | 同一数据目录只保留一个实例：第二个进程唤回窗口后退出。dev 和 prod、不同数据目录互不影响 |
 
 - 状态行每 3 秒从 `GET /api/v1/session` 更新，如 `Connected · a@example.com`、`Not signed in`、`The background service is not running`。
+- 新版本：每个新构建发一次系统通知（`gui/notify.go`，点击打开窗口），Linux 没有托盘也会发。规则见 docs/versioning.md 的“升级提醒”。Windows 上 Wails 会在 HKCU 登记通知激活器，卸载程序会删掉。
 - 菜单文字跟随页面语言：窗口每次加载页面都把语言报给窗口壳（`/__shell/lang`，不到 daemon）。文字在 `gui/tray_text.go`，测试会检查它和页面的语言列表、相同词条的译文是否一致。
 - Windows 11 默认把新图标收进 `^` 溢出区，用户可以拖到任务栏上。
 - 图标由 `go run packaging/gen_tray_icons.go` 生成（在 `gui/` 下运行）。macOS 是模板图，由系统配色；Windows 是彩色 ICO。

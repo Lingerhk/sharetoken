@@ -119,5 +119,9 @@
   "提交时会附带应用版本和操作系统类型。": "Con il feedback vengono inviati la versione dell’app e il tipo di sistema operativo.",
   "这个版本已不再受支持，请升级到最新版本后继续使用": "Questa versione non è più supportata. Aggiorna all'ultima versione per continuare",
   "有新版本 {version} 可用": "La versione {version} è disponibile",
-  "版本 {version}": "Versione {version}"
+  "版本 {version}": "Versione {version}",
+  "升级前不能调用模型或接单，已有作业照常结算。": "Finché non aggiorni non puoi usare modelli né accettare lavori; i lavori già svolti vengono regolati normalmente.",
+  "下载": "Scarica",
+  "更新内容": "Novità",
+  "跳过此版本": "Salta questa versione"
 }

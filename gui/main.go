@@ -132,7 +132,7 @@ func main() {
 			if selftest {
 				runtime.WindowExecJS(ctx, selftestJS)
 			}
-			if useTray {
+			if !selftest { // the tray and the notifications speak the page's language
 				runtime.WindowExecJS(ctx, langReportJS)
 			}
 		},
@@ -142,6 +142,11 @@ func main() {
 			go start()
 			if useTray {
 				nativeTrayStart(windowTitle(), showWindow, func() { runtime.Quit(ctx) })
+			}
+			if !selftest { // without a tray (Linux) it only sends the notifications
+				if !trayCheck {
+					tray.notify = (&desktopNotifier{ctx: ctx, show: showWindow}).send
+				}
 				go tray.run(ctx)
 			}
 			if trayCheck {

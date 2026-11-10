@@ -18,10 +18,11 @@ const trayAvailable = true
 var trayIcon []byte
 
 var winTray struct {
-	mu                 sync.Mutex
-	status, open, quit *systray.MenuItem
-	pending            *trayMenu
-	shown              trayMenu // for the self-test
+	mu             sync.Mutex
+	status, update *systray.MenuItem
+	open, quit     *systray.MenuItem
+	pending        *trayMenu
+	shown          trayMenu // for the self-test
 }
 
 // menuText escapes & , which a Windows menu reads as an accelerator mark.
@@ -40,12 +41,14 @@ func nativeTrayStart(tooltip string, onOpen, onQuit func()) {
 			systray.SetTooltip(tooltip)
 			status := systray.AddMenuItem("sharetoken", "")
 			status.Disable()
+			update := systray.AddMenuItem("update", "")
+			update.Hide()
 			systray.AddSeparator()
 			open := systray.AddMenuItem(tooltip, "")
 			systray.AddSeparator()
 			quit := systray.AddMenuItem(tooltip, "")
 			winTray.mu.Lock()
-			winTray.status, winTray.open, winTray.quit = status, open, quit
+			winTray.status, winTray.update, winTray.open, winTray.quit = status, update, open, quit
 			pending := winTray.pending
 			winTray.mu.Unlock()
 			if pending != nil {
@@ -55,6 +58,8 @@ func nativeTrayStart(tooltip string, onOpen, onQuit func()) {
 				for {
 					select {
 					case <-open.ClickedCh:
+						onOpen()
+					case <-update.ClickedCh:
 						onOpen()
 					case <-quit.ClickedCh:
 						onQuit()
@@ -74,6 +79,12 @@ func nativeTraySet(m trayMenu) {
 	}
 	winTray.shown = m
 	winTray.status.SetTitle(menuText(m.Status))
+	if m.Update == "" {
+		winTray.update.Hide()
+	} else {
+		winTray.update.SetTitle(menuText(m.Update))
+		winTray.update.Show()
+	}
 	winTray.open.SetTitle(menuText(m.Open))
 	winTray.quit.SetTitle(menuText(m.Quit))
 }

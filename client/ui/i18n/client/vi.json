@@ -119,5 +119,9 @@
   "提交时会附带应用版本和操作系统类型。": "Phiên bản ứng dụng và loại hệ điều hành được gửi kèm góp ý của bạn.",
   "这个版本已不再受支持，请升级到最新版本后继续使用": "Phiên bản này không còn được hỗ trợ. Hãy nâng cấp lên phiên bản mới nhất để tiếp tục",
   "有新版本 {version} 可用": "Đã có phiên bản {version}",
-  "版本 {version}": "Phiên bản {version}"
+  "版本 {version}": "Phiên bản {version}",
+  "升级前不能调用模型或接单，已有作业照常结算。": "Trước khi nâng cấp, bạn không thể dùng mô hình hoặc nhận việc; các việc đã thực hiện vẫn được quyết toán bình thường.",
+  "下载": "Tải xuống",
+  "更新内容": "Có gì mới",
+  "跳过此版本": "Bỏ qua phiên bản này"
 }

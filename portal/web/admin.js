@@ -217,6 +217,9 @@
     dev.checked = !!r.policy.allow_dev;
     add(m, h('div', { class: 'card' }, section('cog', '客户端版本策略'),
       h('p', { class: 'muted' }, '低于最低版本的客户端不能登录、绑定设备、发布报价或买入；已有作业的结算和争议不受影响。'),
+      h('p', { class: 'muted', id: 'release-info' }, r.release
+        ? '下载目录里的发布：' + r.release.version + (r.release.commit ? '（' + r.release.commit + '，构建于 ' + (r.release.build_time || '未知') + '）' : '') + '。最新版本留空时用它；客户端还会按提交和构建时间提示同版本号的新构建。'
+        : '下载目录里还没有发布（RELEASE-<版本>.json，由 publish-packages.sh 生成）。'),
       field('最低版本', min), field('推荐版本', rec), field('最新版本', latest), field('下载地址', url),
       h('label', { class: 'check' }, dev, '允许开发构建'),
       h('button', { class: 'primary', onclick: async () => {

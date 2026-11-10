@@ -68,7 +68,7 @@ type Config struct {
 	// Empty: none.
 	DownloadsDir string
 	Now          func() time.Time
-	Log               *slog.Logger
+	Log          *slog.Logger
 }
 
 // Server is the portal.
@@ -349,8 +349,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/network", s.handleNetwork)
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
 	mux.HandleFunc("GET /api/v1/downloads", s.handleDownloads)
+	mux.HandleFunc("GET /api/v1/update", s.handleUpdate)
 	mux.HandleFunc("GET /downloads/{file}", s.handleDownloadFile)
-	mux.Handle("POST /api/v1/register",s.clientOnly(http.HandlerFunc(s.handleRegister)))
+	mux.Handle("POST /api/v1/register", s.clientOnly(http.HandlerFunc(s.handleRegister)))
 	mux.HandleFunc("POST /api/v1/register/code", s.handleRegisterCode) // the web sign-up uses it too; the sign-up itself is what is guarded
 	mux.Handle("POST /api/v1/login", s.clientOnly(http.HandlerFunc(s.handleLogin)))
 

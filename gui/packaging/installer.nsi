@@ -88,4 +88,9 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "${UNINSTKEY}"
   DeleteRegKey HKCU "Software\ShareToken${SUFFIX}"
+  ; what the system notifications registered (Wails: the toast activator of this program)
+  ReadRegStr $0 HKCU "Software\Classes\AppUserModelId\${GUI}.exe" "CustomActivator"
+  StrCmp $0 "" +2
+  DeleteRegKey HKCU "Software\Classes\CLSID\$0"
+  DeleteRegKey HKCU "Software\Classes\AppUserModelId\${GUI}.exe"
 SectionEnd

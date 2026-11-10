@@ -66,7 +66,7 @@ type Daemon struct {
 	agentAPI http.Handler
 	cancel   context.CancelFunc // ends the current run
 	done     chan struct{}      // closed when the current start-up attempts end
-	update   Update
+	updates  *UpdateWatcher
 
 	stopUpdates context.CancelFunc
 }
@@ -104,7 +104,9 @@ type Session struct {
 
 // NewDaemon prepares a daemon with its state in home.
 func NewDaemon(home string) *Daemon {
-	return &Daemon{home: home, log: slog.Default().With("component", "daemon"), state: StateLoggedOut}
+	d := &Daemon{home: home, log: slog.Default().With("component", "daemon"), state: StateLoggedOut}
+	d.updates = NewUpdateWatcher(home, "desktop", d.portalAddr)
+	return d
 }
 
 func (d *Daemon) loadConfig() (Config, error) {
@@ -162,7 +164,7 @@ func (d *Daemon) Start() error {
 	d.telemetry.start()
 	uctx, stopUpdates := context.WithCancel(context.Background())
 	d.stopUpdates = stopUpdates
-	d.bg.Go(func() { d.watchUpdates(uctx) })
+	d.bg.Go(func() { d.updates.Run(uctx) })
 	if cfg.Portal != "" && cfg.Token != "" {
 		if keys, err := p2p.LoadOrCreateKeys(filepath.Join(d.home, KeyFile)); err == nil {
 			d.mu.Lock()
@@ -195,6 +197,13 @@ func (d *Daemon) Close() {
 // Addr is the local API's address (host:port).
 func (d *Daemon) Addr() string { return d.addr }
 
+// portalAddr is the portal the user signed in to, or last used.
+func (d *Daemon) portalAddr() (base, pin string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.cfg.Portal, d.cfg.PortalPin
+}
+
 func (d *Daemon) telemetryStatus() (string, bool) {
 	d.mu.Lock()
 	state, a := d.state, d.agent
@@ -206,7 +215,8 @@ func (d *Daemon) telemetryStatus() (string, bool) {
 func (d *Daemon) Session() Session {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	s := Session{Env: Env, State: d.state, LoggedIn: d.portal != nil, Portal: d.cfg.Portal, User: d.cfg.User, API: "http://" + d.addr + "/v1", Error: d.lastErr, Telemetry: d.telemetry.State(), Version: version.Version, APIVersion: version.API, Update: d.update}
+	s := Session{Env: Env, State: d.state, LoggedIn: d.portal != nil, Portal: d.cfg.Portal, User: d.cfg.User, API: "http://" + d.addr + "/v1", Error: d.lastErr, Telemetry: d.telemetry.State(), Version: version.Version, APIVersion: version.API}
+	s.Update = d.updates.Current()
 	if !s.LoggedIn || s.Portal == "" {
 		s.Portal = PortalAddr() // the sign-in page does not ask for it
 	}
@@ -239,6 +249,7 @@ func (d *Daemon) joinNetwork(ctx context.Context, done chan struct{}, cfg Config
 	for {
 		a := NewAgent(d.home, cfg)
 		a.ExternalAPI = d.addr
+		a.Updates = d.updates
 		a.OnLoginEnded = func() { go d.expire(cfg.Token, "the portal rejected the login (expired or revoked)") }
 		if d.OnAgent != nil {
 			d.OnAgent(a)
@@ -757,6 +768,26 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, d.Session())
 	})
+	mux.HandleFunc("POST /api/v1/update/check", func(w http.ResponseWriter, r *http.Request) {
+		d.updates.Check(r.Context())
+		writeJSON(w, http.StatusOK, d.updates.Current())
+	})
+	updateAction := func(do func(string) error) http.HandlerFunc {
+		return jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
+			Key string `json:"key"`
+		}) {
+			if err := do(req.Key); errors.Is(err, errNotOffered) {
+				writeErrorCode(w, http.StatusConflict, "not_offered", err.Error())
+				return
+			} else if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, d.updates.Current())
+		})
+	}
+	mux.HandleFunc("POST /api/v1/update/skip", updateAction(func(k string) error { return d.updates.Skip(k) }))
+	mux.HandleFunc("POST /api/v1/update/notified", updateAction(func(k string) error { return d.updates.MarkNotified(k) }))
 	mux.HandleFunc("GET /api/v1/telemetry", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.telemetry.State()) })
 	mux.HandleFunc("PUT /api/v1/telemetry", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
 		Enabled bool `json:"enabled"`

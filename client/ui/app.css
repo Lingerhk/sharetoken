@@ -43,6 +43,9 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); }
 .notice.bad { background: var(--bad-bg); color: var(--bad); }
 .notice.ok { color: var(--ok); border: 1px solid var(--line); }
 .notice code { background: transparent; padding: 0; }
+#update-notice > div + div { margin-top: 4px; }
+.update-actions { display: flex; gap: 16px; }
+.notice button.link { font-size: inherit; cursor: pointer; }
 .check { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; color: var(--text); }
 .check input { margin-top: 3px; }
 

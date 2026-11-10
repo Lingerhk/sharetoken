@@ -83,6 +83,86 @@ func TestTrayTextsMatchPageLanguages(t *testing.T) {
 		if !strings.Contains(text.Open, "{app}") || !strings.Contains(text.Quit, "{app}") {
 			t.Errorf("%s: the app's name is missing: %+v", lang, text)
 		}
+		for _, s := range []string{text.UpdateAvailable, text.UpdateRequired, text.NotifyAvailable, text.NotifyRequired} {
+			if !strings.Contains(s, "{version}") && s != text.NotifyRequired {
+				t.Errorf("%s: no {version} in %q", lang, s)
+			}
+		}
+		if !strings.Contains(text.NotifyAvailable+text.NotifyRequired, "{app}") || strings.Contains(text.UpdateAvailable+text.UpdateRequired, "{app}") {
+			t.Errorf("%s: update texts: %+v", lang, text)
+		}
+	}
+}
+
+// The menu shows a new release until the user skips it; a required upgrade
+// stays. The service being down hides it: the information is stale.
+func TestTrayUpdateItem(t *testing.T) {
+	text := trayTexts["en"]
+	avail := trayUpdate{Available: true, Latest: "1.2.0", Key: "1.2.0"}
+	for _, c := range []struct {
+		st   trayState
+		want string
+	}{
+		{trayState{State: stateRunning}, ""},
+		{trayState{State: stateRunning, Update: avail}, "Update available: 1.2.0"},
+		{trayState{State: stateLoggedOut, Update: avail}, "Update available: 1.2.0"},
+		{trayState{State: stateRunning, Update: trayUpdate{Available: true, Latest: "1.2.0", Skipped: true}}, ""},
+		{trayState{State: stateRunning, Update: trayUpdate{Available: true, Required: true, Latest: "1.2.0", Skipped: true}}, "Upgrade required: 1.2.0"},
+		{trayState{Down: true, Update: avail}, ""},
+	} {
+		if got := renderTray(text, c.st).Update; got != c.want {
+			t.Errorf("%+v: %q, want %q", c.st, got, c.want)
+		}
+	}
+}
+
+// One notification per offered build, recorded with the daemon; none for a
+// skipped build, nor again for one the daemon says was notified.
+func TestTrayNotifiesOncePerBuild(t *testing.T) {
+	var mu sync.Mutex
+	var recorded []string
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Key string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		recorded = append(recorded, r.URL.Path+" "+req.Key)
+		mu.Unlock()
+	}))
+	defer daemon.Close()
+	var sent []string
+	deliver := true
+	tc := newTrayController(func() error { return nil }, func() string { return strings.TrimPrefix(daemon.URL, "http://") }, func(trayMenu) {})
+	tc.notify = func(title, body string) bool {
+		sent = append(sent, title+": "+body)
+		return deliver
+	}
+	ctx := context.Background()
+	u := trayUpdate{Available: true, Latest: "1.2.0", Key: "1.2.0+abc"}
+	tc.notifyUpdate(ctx, u)
+	tc.notifyUpdate(ctx, u) // the next poll, before the daemon reports it
+	tc.notifyUpdate(ctx, trayUpdate{Available: true, Latest: "1.3.0", Key: "1.3.0", Skipped: true})
+	tc.notifyUpdate(ctx, trayUpdate{Available: true, Latest: "1.3.0", Key: "1.3.0", Notified: true})
+	if len(sent) != 1 || !strings.Contains(sent[0], "1.2.0") || !strings.HasPrefix(sent[0], windowTitle()+": ") || strings.Contains(sent[0], "{") {
+		t.Fatalf("sent %q", sent)
+	}
+	mu.Lock()
+	got := strings.Join(recorded, ",")
+	mu.Unlock()
+	if got != "/api/v1/update/notified 1.2.0+abc" {
+		t.Fatalf("recorded %q", got)
+	}
+	// Not delivered (no permission): not recorded, and not retried in this run.
+	deliver = false
+	req := trayUpdate{Available: true, Required: true, Latest: "2.0.0", Key: "2.0.0", Skipped: true}
+	tc.notifyUpdate(ctx, req)
+	tc.notifyUpdate(ctx, req)
+	if len(sent) != 2 || !strings.Contains(sent[1], "no longer supported") {
+		t.Fatalf("sent %q", sent)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(recorded) != 1 {
+		t.Fatalf("recorded %q", recorded)
 	}
 }
 

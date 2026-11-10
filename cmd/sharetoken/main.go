@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -68,7 +69,7 @@ Sharing a local model:
   share upstream <url>                  local model server (default Ollama: http://127.0.0.1:11434/v1)
 
   config                                show the configuration file
-  version                               show what this client was built for`
+  version [--check]                     show what this client was built for; --check asks the portal for a newer release`
 
 func main() {
 	home := flag.String("home", client.Home(), "client state directory")
@@ -81,6 +82,12 @@ func main() {
 	cmd, args := flag.Arg(0), flag.Args()[1:]
 	if cmd == "version" { // before LoadConfig: it must not touch the state directory
 		fmt.Printf("%s\napi v%d\nenv %s\nportal %s\nhome %s\nlocal api %s\n", version.String("client"), version.API, client.Env, client.PortalAddr(), *home, client.DefaultHTTP())
+		if len(args) > 0 && (args[0] == "--check" || args[0] == "-check") {
+			if err := checkVersion(*home); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		}
 		return
 	}
 	cfg, err := client.LoadConfig(*home)
@@ -369,6 +376,9 @@ func (c *cmdCtx) up(args []string) error {
 	sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	a := client.NewAgent(c.home, c.cfg)
+	updates := client.NewUpdateWatcher(c.home, "cli", func() (string, string) { return c.cfg.Portal, c.cfg.PortalPin })
+	a.Updates = updates
+	go updates.Run(sctx) // a new release is written to the log
 	var loginEnded atomic.Bool
 	a.OnLoginEnded = func() {
 		loginEnded.Store(true)
@@ -501,7 +511,53 @@ func (c *cmdCtx) status([]string) error {
 	for _, w := range st.Warnings {
 		fmt.Println("warning:", w)
 	}
+	if st.Update != nil {
+		printUpdate(*st.Update)
+	}
 	return nil
+}
+
+// checkVersion asks the portal of this state directory, or the default one,
+// whether a newer release exists. It only reads the configuration.
+func checkVersion(home string) error {
+	base, pin := client.PortalAddr(), ""
+	if _, err := os.Stat(filepath.Join(home, client.ConfigFile)); err == nil {
+		if cfg, err := client.LoadConfig(home); err == nil && cfg.Portal != "" {
+			base, pin = cfg.Portal, cfg.PortalPin
+		}
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	u, err := client.CheckUpdate(cx, base, pin, "cli")
+	if err != nil {
+		return fmt.Errorf("asking %s for the current release: %w", base, err)
+	}
+	if !u.Available {
+		fmt.Println("up to date")
+		return nil
+	}
+	printUpdate(u)
+	return nil
+}
+
+// printUpdate tells the user about a newer release and where to get it.
+func printUpdate(u client.Update) {
+	if u.Required {
+		fmt.Printf("upgrade required: this version is no longer served; jobs already made still settle, but new ones need %s\n", u.Latest)
+	} else {
+		fmt.Printf("update available: %s\n", u.Latest)
+	}
+	if u.Package != nil {
+		fmt.Printf("   download %s\n", u.Package.URL)
+		if u.Package.SHA256 != "" {
+			fmt.Printf("   sha256   %s\n", u.Package.SHA256)
+		}
+	} else if u.DownloadURL != "" {
+		fmt.Printf("   download %s\n", u.DownloadURL)
+	}
+	if u.NotesURL != "" {
+		fmt.Printf("   changes  %s\n", u.NotesURL)
+	}
 }
 
 func short(id string) string {

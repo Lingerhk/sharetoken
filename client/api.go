@@ -33,6 +33,7 @@ type Status struct {
 	Buy         BuyConfig         `json:"buy"`
 	Share       ShareStatus       `json:"share"`
 	Warnings    []string          `json:"warnings,omitempty"`
+	Update      *Update           `json:"update,omitempty"` // a newer release, when there is one
 }
 
 // CoordinatorStatus is the path to the coordinator.
@@ -106,6 +107,11 @@ func (a *Agent) Status() Status {
 		st.Warnings = append(st.Warnings, w)
 	}
 	slices.Sort(st.Warnings)
+	if a.Updates != nil {
+		if u := a.Updates.Current(); u.Available {
+			st.Update = &u
+		}
+	}
 	return st
 }
 

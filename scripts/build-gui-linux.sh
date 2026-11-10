@@ -21,7 +21,7 @@ image "$ARCH"
 mkdir -p "$OUT"
 # Modules and the build cache stay in named volumes; everything else goes with the container.
 git archive HEAD | docker run --rm -i --platform "linux/$ARCH" \
-  -e ST_VERSION="$VERSION" -e ST_COMMIT="$COMMIT" -e TELEMETRY_KEY="${TELEMETRY_KEY:-}" -e TELEMETRY_OFF="${TELEMETRY_OFF:-}" -e TELEMETRY_HOST="${TELEMETRY_HOST:-}" \
+  -e ST_VERSION="$VERSION" -e ST_COMMIT="$COMMIT" -e ST_BUILD_TIME="${ST_BUILD_TIME:-}" -e TELEMETRY_KEY="${TELEMETRY_KEY:-}" -e TELEMETRY_OFF="${TELEMETRY_OFF:-}" -e TELEMETRY_HOST="${TELEMETRY_HOST:-}" \
   -v st-gui-gomod:/root/go/pkg/mod -v "st-gui-gocache-$ARCH:/root/.cache/go-build" \
   "sharetoken-gui-builder:$ARCH" \
   sh -c "mkdir /src && cd /src && tar -x && scripts/build-gui.sh $ENV >&2 && cat dist/$DEB" > "$OUT/$DEB.tmp"

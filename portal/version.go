@@ -87,6 +87,7 @@ type VersionsReport struct {
 	Relays      []accounts.Relay        `json:"relays"`
 	Devices     []accounts.VersionCount `json:"devices"`
 	Policy      accounts.VersionPolicy  `json:"policy"`
+	Release     *Release                `json:"release,omitempty"` // what the downloads directory offers
 }
 
 // Versions builds the operator's report.
@@ -102,6 +103,7 @@ func (s *Server) Versions() (*VersionsReport, error) {
 	if rep.Devices, err = s.store.DeviceVersions(); err != nil {
 		return nil, err
 	}
+	rep.Release = s.currentRelease()
 	rep.Coordinator, _ = coordinator.RunningVersion(s.db)
 	if ov, err := (&mailer.Store{DB: s.db}).ServerVersion(); err == nil {
 		rep.Mail = ov

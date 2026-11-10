@@ -5,7 +5,7 @@ package main
 #cgo LDFLAGS: -framework Cocoa
 #include <stdlib.h>
 void stTrayStart(const void *png, int length, const char *tooltip);
-void stTraySet(const char *status, const char *open, const char *quit);
+void stTraySet(const char *status, const char *update, const char *open, const char *quit);
 void stTrayStop(void);
 void stTrayRaise(void);
 */
@@ -37,11 +37,12 @@ func nativeTrayStart(tooltip string, onOpen, onQuit func()) {
 }
 
 func nativeTraySet(m trayMenu) {
-	status, open, quit := C.CString(m.Status), C.CString(m.Open), C.CString(m.Quit)
+	status, update, open, quit := C.CString(m.Status), C.CString(m.Update), C.CString(m.Open), C.CString(m.Quit)
 	defer C.free(unsafe.Pointer(status))
+	defer C.free(unsafe.Pointer(update))
 	defer C.free(unsafe.Pointer(open))
 	defer C.free(unsafe.Pointer(quit))
-	C.stTraySet(status, open, quit)
+	C.stTraySet(status, update, open, quit)
 }
 
 func nativeTrayStop() { C.stTrayStop() }

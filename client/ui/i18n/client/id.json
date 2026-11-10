@@ -119,5 +119,9 @@
   "提交时会附带应用版本和操作系统类型。": "Versi aplikasi dan jenis sistem operasi dikirim bersama masukan Anda.",
   "这个版本已不再受支持，请升级到最新版本后继续使用": "Versi ini tidak lagi didukung. Tingkatkan ke versi terbaru untuk melanjutkan",
   "有新版本 {version} 可用": "Versi {version} tersedia",
-  "版本 {version}": "Versi {version}"
+  "版本 {version}": "Versi {version}",
+  "升级前不能调用模型或接单，已有作业照常结算。": "Sebelum memperbarui, Anda tidak dapat memakai model atau menerima pekerjaan; pekerjaan yang sudah ada tetap diselesaikan seperti biasa.",
+  "下载": "Unduh",
+  "更新内容": "Yang baru",
+  "跳过此版本": "Lewati versi ini"
 }

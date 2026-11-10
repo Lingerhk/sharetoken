@@ -429,16 +429,35 @@ I18N.ready.then(() => {
         h('p', { class: 'small muted' }, tr('在支持 OpenAI 协议的工具里把 base URL 改成这个地址即可使用。')));
     }
 
-    // What a new release means for this client. The link shows its address:
-    // not every platform's window can open it, and then it can be copied.
+    // What a new release means for this client. Links show their address: not
+    // every platform's window can open them, and then they can be copied. The
+    // box is rebuilt only when the offer changes, so a click is not lost.
+    let shownUpdate = '';
     function renderUpdate(s) {
       const u = s.update || {};
       versionLabel.textContent = tr('版本 {version}', { version: s.version || '' });
-      if (!u.available) { updateBox.replaceChildren(); return; }
-      const text = u.required ? tr('这个版本已不再受支持，请升级到最新版本后继续使用') : tr('有新版本 {version} 可用', { version: u.latest || '' });
-      const body = [h('span', { id: 'update-text' }, text)];
-      if (u.download_url && /^https:\/\//.test(u.download_url)) body.push(' ', h('a', { id: 'update-link', href: u.download_url, target: '_blank', rel: 'noopener' }, u.download_url));
-      updateBox.replaceChildren(h('div', { class: 'notice ' + (u.required ? 'bad' : 'warn'), id: 'update-notice' }, ...body));
+      const web = x => typeof x === 'string' && /^https?:\/\//.test(x) ? x : '';
+      const show = u.available && (u.required || !u.skipped);
+      const sig = show ? u.key + '|' + u.required : '';
+      if (sig === shownUpdate) return;
+      shownUpdate = sig;
+      if (!show) { updateBox.replaceChildren(); return; }
+      const lines = [h('div', null,
+        h('strong', { id: 'update-text' }, u.required ? tr('这个版本已不再受支持，请升级到最新版本后继续使用') : tr('有新版本 {version} 可用', { version: u.latest || '' })))];
+      if (u.required) lines.push(h('div', { id: 'update-required' }, tr('升级前不能调用模型或接单，已有作业照常结算。')));
+      const pkg = u.package && web(u.package.url), page = web(u.download_url), notes = web(u.notes_url);
+      const dl = pkg || page;
+      if (dl) lines.push(h('div', null, tr('下载'), ' ', h('a', { id: 'update-link', href: dl, target: '_blank', rel: 'noopener' }, dl)));
+      const actions = [];
+      if (notes) actions.push(h('a', { id: 'update-notes', href: notes, target: '_blank', rel: 'noopener' }, tr('更新内容')));
+      if (!u.required && u.key) actions.push(h('button', { type: 'button', class: 'link', id: 'update-skip', onclick: async () => {
+        try {
+          const next = await api('POST', '/api/v1/update/skip', { key: u.key });
+          renderUpdate(Object.assign({}, s, { update: next }));
+        } catch (e) { setBanner(message(e)); }
+      } }, tr('跳过此版本')));
+      if (actions.length) lines.push(h('div', { class: 'update-actions' }, ...actions));
+      updateBox.replaceChildren(h('div', { class: 'notice ' + (u.required ? 'bad' : 'warn'), id: 'update-notice' }, ...lines));
     }
 
     function setBanner(text) {

@@ -15,7 +15,7 @@
 @end
 
 static NSStatusItem *statusItem;
-static NSMenuItem *statusLine, *openItem, *quitItem;
+static NSMenuItem *statusLine, *updateItem, *openItem, *quitItem;
 static STTrayTarget *target;
 
 static void onMain(dispatch_block_t block) {
@@ -39,6 +39,9 @@ void stTrayStart(const void *png, int length, const char *tooltip) {
         menu.autoenablesItems = NO;
         statusLine = [menu addItemWithTitle:tip action:nil keyEquivalent:@""];
         statusLine.enabled = NO;
+        updateItem = [menu addItemWithTitle:@"" action:@selector(open:) keyEquivalent:@""];
+        updateItem.target = target;
+        updateItem.hidden = YES;
         [menu addItem:[NSMenuItem separatorItem]];
         openItem = [menu addItemWithTitle:tip action:@selector(open:) keyEquivalent:@""];
         openItem.target = target;
@@ -53,12 +56,15 @@ void stTrayStart(const void *png, int length, const char *tooltip) {
     });
 }
 
-void stTraySet(const char *status, const char *open, const char *quit) {
+void stTraySet(const char *status, const char *update, const char *open, const char *quit) {
     NSString *s = [NSString stringWithUTF8String:status];
+    NSString *u = [NSString stringWithUTF8String:update];
     NSString *o = [NSString stringWithUTF8String:open];
     NSString *q = [NSString stringWithUTF8String:quit];
     onMain(^{
         statusLine.title = s;
+        updateItem.title = u;
+        updateItem.hidden = u.length == 0;
         openItem.title = o;
         quitItem.title = q;
     });

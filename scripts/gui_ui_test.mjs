@@ -258,6 +258,30 @@ await sleep(1500);
 ok(collected.length === before, 'with it off, logging out and in again sends nothing');
 await shot('13-telemetry-off');
 
+console.log('a newer build is published');
+ok(!(await has('#update-notice')), 'no update notice before a release');
+{
+  const s0 = await ev(`fetch('/api/v1/session').then(r => r.json())`);
+  const sys = { darwin: 'macos', win32: 'windows', linux: 'linux' }[process.platform];
+  const arch = process.arch === 'x64' ? 'amd64' : process.arch;
+  const pkg = `sharetoken${s0.env === 'dev' ? '-dev' : ''}-1.0.0-${sys}-${arch}.${{ macos: 'dmg', windows: 'exe', linux: 'deb' }[sys]}`;
+  writeFileSync(`${env.DOWNLOADS}/${pkg}`, 'package');
+  writeFileSync(`${env.DOWNLOADS}/SHA256SUMS-1.0.0`, `abcd  ${pkg}\n`);
+  writeFileSync(`${env.DOWNLOADS}/RELEASE-1.0.0.json`, JSON.stringify({ version: '1.0.0', commit: 'newbuild', build_time: new Date().toISOString().replace(/\.\d+Z$/, 'Z') }));
+  const u = await ev(`fetch('/api/v1/update/check', { method: 'POST' }).then(r => r.json())`);
+  ok(u.available && !u.required && u.key === '1.0.0+newbuild' && u.package?.url === env.PORTAL + '/downloads/' + pkg && u.package.sha256 === 'abcd', 'the daemon finds the newer build of its version and the package for this system');
+  await waitFor(el('#update-notice'), 10000);
+  ok((await text('#update-text')).includes('1.0.0'), 'the page shows the new version');
+  ok((await ev(`${el('#update-link')}.href`)) === u.package.url && (await ev(`${el('#update-notes')}.href`)) === env.PORTAL + '/changelog/#v1.0.0', 'with the download and what changed');
+  await shot('13b-update');
+  await click('#update-skip');
+  await waitFor(`!${el('#update-notice')}`, 10000);
+  const s1 = await ev(`fetch('/api/v1/session').then(r => r.json())`);
+  ok(s1.update.skipped && JSON.parse(readFileSync(env.DESKTOP_HOME + '/update.json', 'utf8')).skipped === u.key, 'skipping hides it and is remembered');
+  await cdp('Page.reload'); await waitFor(el('#tiles .tile')); await sleep(500);
+  ok(!(await has('#update-notice')), 'and it stays hidden after a reload');
+}
+
 console.log('portal goes away');
 process.kill(Number(env.PORTAL_PID));
 await waitFor(`${el('#banner-text')}?.textContent.includes('连不上门户')`, 25000);

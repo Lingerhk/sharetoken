@@ -119,5 +119,9 @@
   "提交时会附带应用版本和操作系统类型。": "Geri bildiriminizle birlikte uygulama sürümü ve işletim sistemi türü gönderilir.",
   "这个版本已不再受支持，请升级到最新版本后继续使用": "Bu sürüm artık desteklenmiyor. Devam etmek için en son sürüme yükseltin",
   "有新版本 {version} 可用": "{version} sürümü kullanılabilir",
-  "版本 {version}": "Sürüm {version}"
+  "版本 {version}": "Sürüm {version}",
+  "升级前不能调用模型或接单，已有作业照常结算。": "Yükseltene kadar model kullanamaz ve iş alamazsınız; yapılmış işler normal şekilde hesaplaşılır.",
+  "下载": "İndir",
+  "更新内容": "Yenilikler",
+  "跳过此版本": "Bu sürümü atla"
 }

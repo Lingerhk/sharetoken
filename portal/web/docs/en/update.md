@@ -6,6 +6,12 @@
 {{exe}} version
 ```
 
+The client checks for new versions itself: the desktop app shows them at the top of its page, in the tray menu and as a system notification, and the command-line client writes them to its log. `{{exe}} status` shows them too. To check by hand:
+
+```bash
+{{exe}} version --check
+```
+
 See the [download section](/#download) for the latest version. If the client is older than the minimum version the network requires, sign-in and model calls return `upgrade_required` (HTTP 426). Settlement and account queries are not affected, and your existing credit is not affected.
 
 ## Update {#upgrade}

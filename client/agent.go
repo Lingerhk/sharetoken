@@ -53,6 +53,8 @@ type Agent struct {
 	// runs and mounts Handler on (see Daemon): the agent opens no listener of
 	// its own and leaves the run file to the embedder.
 	ExternalAPI string
+	// Updates, when set, is checking for new releases; the status reports it.
+	Updates *UpdateWatcher
 
 	home string
 	log  *slog.Logger

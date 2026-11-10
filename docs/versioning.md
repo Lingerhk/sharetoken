@@ -51,7 +51,28 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
 | `settle`、`started`、`abandon`、`dispute`、`evidence`、`relay-pass`、账户查询 | **永不拦截**：结算和争议涉及资金 |
 | 网页登录和注册（`/api/v1/web/*`）、`/api/v1/register/code` | 不受影响 |
 
-客户端启动时和之后每小时查 `GET /api/v1/version`，结果放在本地 `GET /api/v1/session` 的 `update` 里，界面显示升级提示。版本号是客户端自报的，这套校验只为兼容，不作安全手段。库里没有策略时不拦任何客户端。
+版本号是客户端自报的，这套校验只为兼容，不作安全手段。库里没有策略时不拦任何客户端。
+
+## 升级提醒
+
+客户端（桌面应用的 daemon 和 `sharetoken up`）启动时和之后每小时查 `GET /api/v1/update?kind=desktop|cli&channel=prod|dev&os=…&arch=…`，门户返回：
+
+- 版本策略（`min`、`recommended`、`latest`、`download_url`）。`latest` 留空时用下载目录里的发布；`download_url` 留空时是 `/#download`。
+- `release`：下载目录里的 `RELEASE-<版本>.json`（`publish-packages.sh` 生成，含版本、提交、构建时间），加上更新日志链接 `/changelog/#v<版本>`。
+- `package`：这个发布里对应客户端种类、构建类型、系统和架构的安装包，带大小和 sha256。dev 客户端拿到 `sharetoken-cli-dev-*`；dev 桌面安装包不发布，所以没有。
+
+客户端判断“有新版本”：版本号低于 `min`（必须升级）、`recommended` 或 `latest`；或者**同一版本号的新构建**：发布的提交不同、构建时间更晚，而且有这个客户端的安装包。上线前版本号一直是 1.0.0，靠后一条提醒。一次发布的所有包共用 `ST_BUILD_TIME`，`ldflags.sh` 写进 `version.BuildTime`。
+
+提醒出现在：
+
+- 桌面应用页面顶部：版本、下载链接（本系统的安装包，没有就是下载页）、“更新内容”、“跳过此版本”。必须升级时是红色，说明已有作业照常结算，而且不能跳过。
+- 托盘菜单：“有新版本 x” 或 “需要升级到 x”，点击打开窗口。
+- 系统通知：每个新构建一次（Wails 的通知接口；macOS 首次会请求权限，没有 bundle 的程序不发）。daemon 在数据目录的 `update.json` 里记下跳过的和已通知的构建，重启不重复。
+- 命令行：`sharetoken up` 在日志里写一行 WARN；`sharetoken status` 显示；`sharetoken version --check` 直接问门户，不需要客户端在运行。
+
+本地 API：`GET /api/v1/session` 的 `update`、`GET /api/v1/status` 的 `update`（有新版本时），`POST /api/v1/update/check`、`POST /api/v1/update/skip`、`POST /api/v1/update/notified`（参数 `{"key"}`，不是当前提供的构建返回 409 `not_offered`）。
+
+**还没做：** 下载和安装仍由用户手动完成；更新清单没有签名，客户端只显示链接和 sha256，不自动执行下载的文件。自动升级之前要先给清单加离线密钥签名。
 
 开发构建 `1.2.3-dev.x` 按 `1.2.3` 比较。dev 环境设 `allow_dev: true`，prod 设 `false`。
 
