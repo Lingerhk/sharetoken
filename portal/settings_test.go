@@ -392,6 +392,14 @@ func TestAuditLogRecordsAdminActions(t *testing.T) {
 	if err := json.Unmarshal(es[4].Detail, &credit); err != nil || credit.Micros != 5 || credit.Memo != "gift" {
 		t.Fatalf("detail: %s", es[4].Detail)
 	}
+	// Each entry names its request, and a refusal says why.
+	var req struct{ Method, Path, Error string }
+	if err := json.Unmarshal(es[4].Detail, &req); err != nil || req.Method != "POST" || req.Path != "/api/v1/admin/users/alice/credit" || req.Error != "" {
+		t.Fatalf("request: %s", es[4].Detail)
+	}
+	if err := json.Unmarshal(es[1].Detail, &req); err != nil || !strings.HasPrefix(req.Error, "not_found") {
+		t.Fatalf("refusal: %s", es[1].Detail)
+	}
 	// A password never reaches the log.
 	var n int
 	if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM admin_audit_log WHERE detail LIKE '%SECRET%'`).Scan(&n); err != nil || n != 0 {

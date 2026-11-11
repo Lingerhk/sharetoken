@@ -595,6 +595,34 @@ func (s *Store) SetRead(id int64, read bool) error {
 	return mustAffect(res, err)
 }
 
+// SetReadMany marks several messages read or unread and returns how many it
+// found. Unknown ids are skipped, not an error: a batch from a stale page should
+// still mark the rest.
+func (s *Store) SetReadMany(ids []int64, read bool) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var at int64
+	if read {
+		at = s.now().Unix()
+	}
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, at)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	in := `id IN (?` + strings.Repeat(", ?", len(ids)-1) + `)`
+	if _, err := s.DB.Exec(`UPDATE mail_inbox SET read_at = ? WHERE `+in, args...); err != nil {
+		return 0, err
+	}
+	// MySQL reports changed rows; a message that already had this state counts as found.
+	var n int64
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM mail_inbox WHERE `+in, args[1:]...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // MarkReplied records that an administrator answered a message.
 func (s *Store) MarkReplied(id int64) error {
 	res, err := s.DB.Exec(`UPDATE mail_inbox SET replied_at = ? WHERE id = ?`, s.now().Unix(), id)

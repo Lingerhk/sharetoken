@@ -355,3 +355,20 @@ button.dash-key-all { color: var(--accent); }
 .dash-sub { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
 .dash-chart-wrap .dash-tip { left: 0; right: auto; max-width: 100%; white-space: normal; }
 .section-title .tabs { margin-left: auto; }
+
+/* list row selection */
+th.pick, td.pick { width: 1%; padding-inline-end: 0; }
+th.pick input, td.pick input { margin: 0; vertical-align: middle; cursor: pointer; }
+tr.picked td { background: var(--hover); }
+/* breadcrumb count (unread mail) */
+.crumb-count { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft, var(--hover)); color: var(--accent); font-size: 12px; font-weight: 600; }
+.crumb-count[hidden] { display: none; }
+/* audit log */
+.audit-summary { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.modal:has(.audit-modal) { width: min(620px, calc(100vw - 32px)); }
+.audit-modal .kv { grid-template-columns: max-content minmax(0, 1fr); }
+.audit-modal .kv dd { min-width: 0; overflow-wrap: anywhere; }
+.audit-ua { font-size: 12px; }
+/* actions on a list's selection */
+.bulk-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 8px 12px; border-radius: 10px; background: var(--accent-soft); }
+.bulk-bar[hidden] { display: none; }

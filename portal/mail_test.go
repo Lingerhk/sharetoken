@@ -214,6 +214,22 @@ func TestAdminMail(t *testing.T) {
 	}
 	a.call("POST", base+"/read", root, map[string]bool{"read": true}, 200, nil)
 
+	// A selection is marked at once; unknown ids are skipped, empty or huge batches refused.
+	var batch struct {
+		Updated int64 `json:"updated"`
+	}
+	a.call("POST", "/api/v1/admin/mail/inbox/read", root, map[string]any{"ids": []int64{id, 99999}, "read": false}, 200, &batch)
+	if m, _ := s.mail.InMessage(id); batch.Updated != 1 || m.ReadAt != 0 {
+		t.Fatalf("batch unread: %+v %+v", batch, m)
+	}
+	a.call("POST", "/api/v1/admin/mail/inbox/read", root, map[string]any{"ids": []int64{id}, "read": true}, 200, &batch)
+	if m, _ := s.mail.InMessage(id); batch.Updated != 1 || m.ReadAt == 0 {
+		t.Fatalf("batch read: %+v %+v", batch, m)
+	}
+	a.call("POST", "/api/v1/admin/mail/inbox/read", root, map[string]any{"ids": []int64{}, "read": true}, 400, nil)
+	a.call("POST", "/api/v1/admin/mail/inbox/read", root, map[string]any{"ids": make([]int64, maxMailBatch+1), "read": true}, 400, nil)
+	a.call("POST", "/api/v1/admin/mail/inbox/read", userTok, map[string]any{"ids": []int64{id}, "read": true}, 403, nil)
+
 	// A file from a stranger is an opaque download, whatever it claims to be.
 	req, _ := http.NewRequest("GET", a.url+base+"/attachments/0", nil)
 	req.Header.Set("Authorization", "Bearer "+root)

@@ -41,6 +41,7 @@ var auditActions = map[string]string{
 	"DELETE /api/v1/admin/relays/{id}":                 "relay.remove",
 	"POST /api/v1/admin/disputes/{job}/resolve":        "dispute.resolve",
 	"POST /api/v1/admin/mail/inbox/{id}/read":          "", // opening a message marks it read
+	"POST /api/v1/admin/mail/inbox/read":               "mail.mark_read",
 	"POST /api/v1/admin/mail/inbox/{id}/status":        "mail.move",
 	"POST /api/v1/admin/mail/inbox/{id}/reply":         "mail.reply",
 	"DELETE /api/v1/admin/mail/inbox/{id}":             "mail.delete",
@@ -88,11 +89,15 @@ func (cu ctxUser) setTarget(target string) {
 	}
 }
 
-// statusWriter remembers the status a handler answered with.
+// statusWriter remembers the status a handler answered with, and the start of
+// the body of an error answer, so the log can say why a request was refused.
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status  int
+	errBody []byte
 }
+
+const auditErrBody = 2048
 
 func (w *statusWriter) WriteHeader(code int) {
 	if w.status == 0 {
@@ -105,7 +110,23 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
+	if w.status >= 400 && len(w.errBody) < auditErrBody {
+		w.errBody = append(w.errBody, b[:min(len(b), auditErrBody-len(w.errBody))]...)
+	}
 	return w.ResponseWriter.Write(b)
+}
+
+// refusal is why an error answer refused the request: its error code and
+// message, or "" when the body is not one of ours.
+func (w *statusWriter) refusal() string {
+	var b ErrorBody
+	if w.status < 400 || json.Unmarshal(w.errBody, &b) != nil || b.Error.Code == "" {
+		return ""
+	}
+	if b.Error.Message == "" {
+		return b.Error.Code
+	}
+	return b.Error.Code + ": " + b.Error.Message
 }
 
 // audited runs h and writes the audit entry of a writing admin request.
@@ -136,6 +157,9 @@ func (s *Server) audited(w http.ResponseWriter, r *http.Request, cu ctxUser, h a
 			cu.note(name, v)
 		}
 	}
+	if why := rec.refusal(); why != "" {
+		cu.note("error", cut(why, 300))
+	}
 	s.writeAudit(r, cu.user.ID, cu.user.Username, action, target, cu.audit.detail, rec.status)
 }
 
@@ -160,6 +184,14 @@ func cut(v string, maxRunes int) string {
 // writeAudit appends an entry. What it records has already happened and cannot
 // be undone from here, so a failure is logged at error level and not returned.
 func (s *Server) writeAudit(r *http.Request, actorID int64, actor, action, target string, detail map[string]any, status int) {
+	// The request itself: method and path, so an entry says exactly which call it was.
+	if r != nil {
+		if detail == nil {
+			detail = map[string]any{}
+		}
+		detail["method"] = r.Method
+		detail["path"] = cut(r.URL.Path, 200)
+	}
 	raw := []byte("{}")
 	if len(detail) > 0 {
 		var err error
