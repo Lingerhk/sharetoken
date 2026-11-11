@@ -8,6 +8,7 @@
 #   scripts/prod/deploy.sh --mail     # 只更新门户和邮件服务，不动协调器
 #   scripts/prod/deploy.sh --mail-server  # 只更新邮件服务：门户、协调器都不动
 #   scripts/prod/deploy.sh --portal   # 只更新门户和客户端安装包，协调器、邮件服务都不动（改网页、文档时用）
+#   scripts/prod/deploy.sh --web      # 只更新门户程序（网页、文档改动），安装包也不动
 # 服务器上的布局和权限由 scripts/ops/st-host-setup.sh 负责：三个服务各自的系统用户，机密在 /etc/sharetoken/<服务>/，
 # 二进制在 /srv/sharetoken/，MySQL root 密码只有 root 可读（/usr/local/sbin/st-mysql-root）。这里只把文件上传到
 # 暂存目录 ~/sharetoken-prod 再调用它。
@@ -85,11 +86,13 @@ N
   rsh "sudo test -s /etc/letsencrypt/live/mail.sharetoken.app/fullchain.pem || sudo certbot certonly --webroot -w /var/www/html -d mail.sharetoken.app --email $EMAIL --agree-tos --no-eff-email --non-interactive"
 }
 
-if [ "$MODE" = --portal ]; then
+if [ "$MODE" = --portal ] || [ "$MODE" = --web ]; then
   echo "== build and upload (linux/$ARCH)"
   release portal
-  echo "== client packages"
-  "$REPO/scripts/publish-packages.sh" "$V" "$RUSER@$HOST" /var/lib/sharetoken/portal/downloads --owner st-portal
+  if [ "$MODE" = --portal ]; then
+    echo "== client packages"
+    "$REPO/scripts/publish-packages.sh" "$V" "$RUSER@$HOST" /var/lib/sharetoken/portal/downloads --owner st-portal
+  fi
   echo "== install and restart portal"
   rsh "$SETUP bins $V portal"
   exit 0
