@@ -78,8 +78,11 @@ Once you are signed in and connected to the network, click "Sharing" at the top:
 - **Provider APIs**: click "Add provider", choose the provider, and enter an API key or sign in with an account. After saving, choose the models to sell and set each one's model ID on the network and its prices. Each provider can be turned off, given new credentials or deleted, and each model can be tested, repriced or removed.
 - **Local model server**: enter the model server's address under "Settings", then click "Add model"; the app lists the models that server offers.
 - **Sharing status**: once there is at least one model, click "Start sharing" to take jobs. Sharing turns itself off when there is no model left to sell.
+- **Pairing**: click "Create pairing code", choose how long it lasts (1, 7 or 30 days) and how many buyers it admits, and give the code to your buyers. The panel lists your codes and your buyers, and lets you revoke a code or remove a buyer. Tick "Private mode" to serve only the buyers paired with you.
 
 Prices are in credit per million tokens. API keys and login tokens are stored only on this computer, and the page shows keys masked. For notes on each provider, see [Share a hosted API](/docs/share#providers).
+
+To buy only from sellers you know, use "Paired sellers" on the Overview: click "Enter pairing code" and type the code a seller gave you. See [Buy only from sellers you know](/docs/use-models#pairing).
 
 ## Graphical interface without the app {#browser-ui}
 

@@ -172,6 +172,10 @@ The client is still connecting, or cannot reach a relay. Run `{{exe}} relays -me
 
 No node offers this model right now. Run `{{exe}} models` to check the model ID, and mind the capitalization.
 
+If your account is paired with sellers, only they count: the message then ends with `of the sellers you are paired with`. Run `{{exe}} pair` to see them. Wait for one of them to come online, or leave them to buy from the whole network again. See [Buy only from sellers you know](/docs/use-models#pairing).
+
+A seller in private mode is hidden from every buyer that is not paired with it, so a model you saw earlier can disappear from `models`.
+
 ### `capacity` {#capacity}
 
 All nodes are full. Retry later, or raise `queue_seconds` in the configuration.
@@ -223,6 +227,8 @@ The coordinator rejected the offer, and the reason follows. Common causes are a 
 ### No jobs come in {#no-jobs}
 
 Run `{{exe}} models` to see the existing nodes and prices. The coordinator picks nodes by price, reputation, latency and success rate. You can try lowering your price.
+
+If private mode is on, only the buyers paired with you can buy from you. `{{exe}} pair` shows whether it is on and who your buyers are; `{{exe}} pair private off` opens you to everyone again. See [Pair with your buyers](/docs/share#pairing).
 
 ## Getting help {#feedback}
 

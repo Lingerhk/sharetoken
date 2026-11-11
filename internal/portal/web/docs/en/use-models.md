@@ -166,13 +166,35 @@ The operator of an ordinary node can in principle read the prompt. For sensitive
 
 If no node qualifies, the request fails instead of falling back to an ordinary node. The `TEE` column of `models` shows how many TEE nodes exist.
 
+## Buy only from sellers you know {#pairing}
+
+By default your requests go to whichever node the coordinator picks. To send them only to sellers you know, pair with those sellers. A seller gives you a pairing code, and you join with it:
+
+```bash
+{{exe}} pair join ABCD-EFGH-IJKL-MNOP
+```
+
+From then on this account buys only from the sellers it is paired with, on all of its devices. `models` and `/v1/models` list only their models.
+
+| Action | Command |
+|---|---|
+| See the sellers you are paired with | `{{exe}} pair` |
+| End the pairing with a seller | `{{exe}} pair leave 42` |
+
+- **Limit:** you can be paired with at most three sellers at a time. Leave one to join another.
+- **When your sellers are away:** if none of them offers the model, or all of them are offline or full, the request fails with `no_offers` or `capacity`. It is not sent to another seller.
+- **Back to the whole network:** leave every seller, and requests go to any node again.
+- **What it does not change:** prices, billing and receipt checks stay the same. A paired seller still reads the prompt unless it is a TEE node.
+
+You can do the same in the desktop app under **Overview → Paired sellers**, and on the portal's [pairing page](/app/#/pairing). For the seller's side, see [Pair with your buyers](/docs/share#pairing).
+
 ## Errors and retries {#errors}
 
 Errors always have the form `{"error":{"code","message"}}`.
 
 | Code | HTTP | Meaning and what to do |
 |---|---|---|
-| `no_offers` | 503 | No node offers this model. Check the model ID or pick another model |
+| `no_offers` | 503 | No node offers this model. Check the model ID or pick another model. If you are [paired](#pairing), only your paired sellers count |
 | `capacity` | 503 | All nodes are full, and there was still no free slot after waiting 30 seconds. Retry after `Retry-After` |
 | `insufficient_funds` | 402 | The balance is not enough for the hold. Set a smaller `max_tokens`, or earn some credit |
 | `budget` | 400 | The cost of this request may exceed `buy.budget_micros`. Lower `max_tokens` or raise the budget |

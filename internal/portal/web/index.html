@@ -204,7 +204,32 @@ sharetoken up
 <span class="c"># 查看收益</span>
 sharetoken balance</code></pre>
     </div>
+    <div class="term" id="pair-seller">
+      <h3>留住自己的买家</h3>
+      <p>生成配对码发给你的买家，他们的请求只会发给和自己配对的卖家。开启私有模式后，你只为配对的买家服务。</p>
+      <pre><code><span class="c"># 生成配对码，发给你的买家</span>
+sharetoken pair code -label team
+
+<span class="c"># 只为配对的买家服务</span>
+sharetoken pair private on
+
+<span class="c"># 查看买家和配对码</span>
+sharetoken pair</code></pre>
+    </div>
+    <div class="term" id="pair-buyer">
+      <h3>只向认识的卖家购买</h3>
+      <p>用卖家给的配对码配对，之后这个账户只向配对的卖家购买，最多同时配对三个。</p>
+      <pre><code><span class="c"># 用卖家给的配对码配对</span>
+sharetoken pair join K7QF-2MXA-9RTD-H3WC
+
+<span class="c"># 查看配对的卖家</span>
+sharetoken pair
+
+<span class="c"># 解除后恢复为向整个网络购买</span>
+sharetoken pair leave 42</code></pre>
+    </div>
   </div>
+  <p class="vendor-note">配对由协调器在撮合时执行，改客户端绕不过去。桌面应用和门户里也能操作。 <a href="/docs/share#pairing">查看配对说明</a></p>
 </section>
 
 <section class="block" id="models">

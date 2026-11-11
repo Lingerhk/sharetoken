@@ -190,5 +190,17 @@
   "# 看可用的模型，选一个共享": "# Verfügbare Modelle auflisten und eines teilen",
   "# 添加任何 OpenAI 兼容的 API": "# Eine beliebige OpenAI-kompatible API hinzufügen",
   "请求以明文发给厂商，用量记在你的厂商账户上。共享前请确认厂商的服务条款允许这样使用。": "Anfragen gehen im Klartext an den Anbieter, die Nutzung wird über dein Konto beim Anbieter abgerechnet. Prüfe vor dem Teilen, ob die Nutzungsbedingungen des Anbieters das erlauben.",
-  "查看完整说明": "Vollständige Anleitung lesen"
+  "查看完整说明": "Vollständige Anleitung lesen",
+  "留住自己的买家": "Eigene Käufer an sich binden",
+  "生成配对码发给你的买家，他们的请求只会发给和自己配对的卖家。开启私有模式后，你只为配对的买家服务。": "Erstellen Sie einen Kopplungscode und geben Sie ihn Ihren Käufern: Deren Anfragen gehen dann nur an die Verkäufer, mit denen sie gekoppelt sind. Im Privatmodus bedienen Sie nur Ihre gekoppelten Käufer.",
+  "# 生成配对码，发给你的买家": "# Kopplungscode für Ihre Käufer erstellen",
+  "# 只为配对的买家服务": "# Nur gekoppelte Käufer bedienen",
+  "# 查看买家和配对码": "# Käufer und Codes anzeigen",
+  "只向认识的卖家购买": "Nur bei Verkäufern kaufen, die Sie kennen",
+  "用卖家给的配对码配对，之后这个账户只向配对的卖家购买，最多同时配对三个。": "Koppeln Sie sich mit dem Code, den Ihnen ein Verkäufer gegeben hat. Danach kauft dieses Konto nur bei seinen gekoppelten Verkäufern, höchstens drei gleichzeitig.",
+  "# 用卖家给的配对码配对": "# Mit dem Code eines Verkäufers koppeln",
+  "# 查看配对的卖家": "# Gekoppelte Verkäufer anzeigen",
+  "# 解除后恢复为向整个网络购买": "# Entkoppeln, um wieder im ganzen Netzwerk zu kaufen",
+  "配对由协调器在撮合时执行，改客户端绕不过去。桌面应用和门户里也能操作。": "Der Koordinator setzt die Kopplung beim Zuordnen der Anfragen durch, ein veränderter Client kommt nicht daran vorbei. Die Desktop-App und das Portal bieten dasselbe.",
+  "查看配对说明": "Mehr zur Kopplung"
 }

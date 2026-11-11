@@ -172,6 +172,10 @@ Get-NetTCPConnection -LocalPort {{port}} -State Listen | Select-Object OwningPro
 
 此刻没有节点提供这个模型。运行 `{{exe}} models` 确认模型 ID，注意大小写。
 
+如果你的账户已经和卖家配对，就只有这些卖家算数，这时错误消息以 `of the sellers you are paired with` 结尾。运行 `{{exe}} pair` 查看他们。等其中一个上线，或者解除配对，恢复为向整个网络购买。见[只向认识的卖家购买](/docs/use-models#pairing)。
+
+开启了私有模式的卖家对所有没有和它配对的买家隐藏，所以之前看到过的模型可能从 `models` 里消失。
+
 ### `capacity` {#capacity}
 
 节点都满载。稍后重试，或者在配置里调大 `queue_seconds`。
@@ -223,6 +227,8 @@ curl.exe -s http://127.0.0.1:11434/v1/models
 ### 一直没有订单 {#no-jobs}
 
 运行 `{{exe}} models` 看看现有的节点和价格。协调器综合价格、信誉、延迟和成功率选择节点，可以试试调低价格。
+
+如果开启了私有模式，只有和你配对的买家能向你购买。`{{exe}} pair` 显示它是否开启以及你有哪些买家；`{{exe}} pair private off` 恢复为向所有人出售。见[和买家配对](/docs/share#pairing)。
 
 ## 需要帮助 {#feedback}
 

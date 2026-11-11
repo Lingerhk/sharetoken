@@ -190,5 +190,17 @@
   "# 看可用的模型，选一个共享": "# List the available models and share one",
   "# 添加任何 OpenAI 兼容的 API": "# Add any OpenAI-compatible API",
   "请求以明文发给厂商，用量记在你的厂商账户上。共享前请确认厂商的服务条款允许这样使用。": "Requests go to the provider in plaintext, and usage is charged to your account with the provider. Before sharing, check that the provider's terms of service allow this use.",
-  "查看完整说明": "Read the full guide"
+  "查看完整说明": "Read the full guide",
+  "留住自己的买家": "Keep your own buyers",
+  "生成配对码发给你的买家，他们的请求只会发给和自己配对的卖家。开启私有模式后，你只为配对的买家服务。": "Create a pairing code and give it to your buyers: their requests then go only to the sellers they are paired with. Turn on private mode and you serve only your paired buyers.",
+  "# 生成配对码，发给你的买家": "# Create a pairing code for your buyers",
+  "# 只为配对的买家服务": "# Serve only your paired buyers",
+  "# 查看买家和配对码": "# See your buyers and codes",
+  "只向认识的卖家购买": "Buy only from sellers you know",
+  "用卖家给的配对码配对，之后这个账户只向配对的卖家购买，最多同时配对三个。": "Pair with the code a seller gave you. From then on this account buys only from its paired sellers, up to three at a time.",
+  "# 用卖家给的配对码配对": "# Pair with the code a seller gave you",
+  "# 查看配对的卖家": "# See your paired sellers",
+  "# 解除后恢复为向整个网络购买": "# Leave to buy from the whole network again",
+  "配对由协调器在撮合时执行，改客户端绕不过去。桌面应用和门户里也能操作。": "The coordinator applies pairing when it matches requests, so a modified client cannot get around it. The desktop app and the portal offer the same.",
+  "查看配对说明": "Read about pairing"
 }

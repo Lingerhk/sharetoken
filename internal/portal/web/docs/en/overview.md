@@ -37,11 +37,12 @@ Use the system switch at the top of the page and the commands change to match. P
 | Name | Meaning |
 |---|---|
 | credit | The unit of account in the network. 1 credit = 1,000,000 micro-credit. Prices are in micro-credit per million tokens |
-| portal | [This website](/app/). Sign-up, sign-in, bills, devices and API tokens live here |
+| portal | [This website](/app/). Sign-up, sign-in, bills, devices, pairing and API tokens live here |
 | device | One device key on one machine, bound to your account. It spends your credit, and its earnings go to your account |
 | relay | A public node that forwards encrypted traffic. It cannot read the content and keeps no accounts |
 | coordinator | Handles matching, settlement and disputes, and keeps the ledger |
 | job | One model call. The node signs a receipt, and the buyer checks it before settlement |
+| pairing | A tie between a buyer and a seller, made with the seller's pairing code. A paired buyer buys only from its sellers. See [Buy only from sellers you know](/docs/use-models#pairing) |
 
 ## Privacy boundary {#privacy}
 

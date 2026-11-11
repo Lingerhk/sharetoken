@@ -214,7 +214,7 @@ The command prints the code, for example `ABCD-EFGH-IJKL-MNOP`. It lasts 24 hour
 - **Who sees what:** you see part of each buyer's account name, and they see part of yours.
 - **Ending it:** either side can end a pairing at any time. A buyer with no pairings left buys from any seller again.
 
-The desktop app has the same under **Sharing → Pairing** for sellers and **Overview → Paired sellers** for buyers, and so does the **Pairing** page of the web portal.
+The desktop app has the same under **Sharing → Pairing** for sellers and **Overview → Paired sellers** for buyers, and so does the portal's [pairing page](/app/#/pairing).
 
 ## Concurrency and performance {#tuning}
 

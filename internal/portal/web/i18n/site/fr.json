@@ -190,5 +190,17 @@
   "# 看可用的模型，选一个共享": "# Lister les modèles disponibles et en partager un",
   "# 添加任何 OpenAI 兼容的 API": "# Ajouter n'importe quelle API compatible OpenAI",
   "请求以明文发给厂商，用量记在你的厂商账户上。共享前请确认厂商的服务条款允许这样使用。": "Les requêtes sont envoyées en clair au fournisseur et l'usage est facturé sur votre compte chez lui. Avant de partager, vérifiez que ses conditions d'utilisation autorisent cet usage.",
-  "查看完整说明": "Lire le guide complet"
+  "查看完整说明": "Lire le guide complet",
+  "留住自己的买家": "Gardez vos propres acheteurs",
+  "生成配对码发给你的买家，他们的请求只会发给和自己配对的卖家。开启私有模式后，你只为配对的买家服务。": "Créez un code d'appairage et donnez-le à vos acheteurs : leurs requêtes ne vont alors qu'aux vendeurs avec lesquels ils sont appairés. Activez le mode privé et vous ne servez que vos acheteurs appairés.",
+  "# 生成配对码，发给你的买家": "# Créer un code d'appairage pour vos acheteurs",
+  "# 只为配对的买家服务": "# Ne servir que vos acheteurs appairés",
+  "# 查看买家和配对码": "# Voir vos acheteurs et vos codes",
+  "只向认识的卖家购买": "N'achetez qu'aux vendeurs que vous connaissez",
+  "用卖家给的配对码配对，之后这个账户只向配对的卖家购买，最多同时配对三个。": "Appairez-vous avec le code qu'un vendeur vous a donné. Dès lors, ce compte n'achète qu'à ses vendeurs appairés, trois au maximum à la fois.",
+  "# 用卖家给的配对码配对": "# S'appairer avec le code d'un vendeur",
+  "# 查看配对的卖家": "# Voir vos vendeurs appairés",
+  "# 解除后恢复为向整个网络购买": "# Se désappairer pour acheter de nouveau sur tout le réseau",
+  "配对由协调器在撮合时执行，改客户端绕不过去。桌面应用和门户里也能操作。": "Le coordinateur applique l'appairage lorsqu'il attribue les requêtes : un client modifié ne peut pas le contourner. L'application de bureau et le portail proposent la même chose.",
+  "查看配对说明": "En savoir plus sur l'appairage"
 }

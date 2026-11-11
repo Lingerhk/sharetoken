@@ -172,7 +172,7 @@ func firstDiff(a, b string) string {
 // Every internal link goes to a page that exists and, when it names one, to a heading on it.
 func TestDocsLinksResolve(t *testing.T) {
 	pages := docsNav(t)
-	app := map[string]bool{"": true, "#register": true, "#/devices": true, "#/ledger": true, "#/jobs": true, "#/tokens": true, "#/account": true, "#/feedback": true}
+	app := map[string]bool{"": true, "#register": true, "#/devices": true, "#/ledger": true, "#/jobs": true, "#/tokens": true, "#/account": true, "#/feedback": true, "#/pairing": true}
 	for _, lang := range docsLangs {
 		ids := map[string]map[string]bool{}
 		for _, p := range pages {

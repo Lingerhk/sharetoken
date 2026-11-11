@@ -190,5 +190,17 @@
   "# 看可用的模型，选一个共享": "# Liste os modelos disponíveis e compartilhe um",
   "# 添加任何 OpenAI 兼容的 API": "# Adicione qualquer API compatível com OpenAI",
   "请求以明文发给厂商，用量记在你的厂商账户上。共享前请确认厂商的服务条款允许这样使用。": "As solicitações vão para o provedor em texto simples, e o uso é cobrado na sua conta com o provedor. Antes de compartilhar, confirme que os termos de serviço dele permitem esse uso.",
-  "查看完整说明": "Ler o guia completo"
+  "查看完整说明": "Ler o guia completo",
+  "留住自己的买家": "Mantenha seus próprios compradores",
+  "生成配对码发给你的买家，他们的请求只会发给和自己配对的卖家。开启私有模式后，你只为配对的买家服务。": "Crie um código de pareamento e entregue-o aos seus compradores: as solicitações deles passam a ir apenas para os vendedores com quem estão pareados. Ative o modo privado e você atende só os compradores pareados.",
+  "# 生成配对码，发给你的买家": "# Crie um código de pareamento para seus compradores",
+  "# 只为配对的买家服务": "# Atenda apenas os compradores pareados",
+  "# 查看买家和配对码": "# Veja seus compradores e códigos",
+  "只向认识的卖家购买": "Compre apenas de vendedores que você conhece",
+  "用卖家给的配对码配对，之后这个账户只向配对的卖家购买，最多同时配对三个。": "Pareie com o código que um vendedor lhe deu. A partir daí, esta conta compra apenas dos vendedores pareados, até três ao mesmo tempo.",
+  "# 用卖家给的配对码配对": "# Pareie com o código de um vendedor",
+  "# 查看配对的卖家": "# Veja seus vendedores pareados",
+  "# 解除后恢复为向整个网络购买": "# Despareie para voltar a comprar de toda a rede",
+  "配对由协调器在撮合时执行，改客户端绕不过去。桌面应用和门户里也能操作。": "O coordenador aplica o pareamento ao distribuir as solicitações, então um cliente modificado não consegue contorná-lo. O aplicativo de desktop e o portal oferecem o mesmo.",
+  "查看配对说明": "Leia sobre o pareamento"
 }

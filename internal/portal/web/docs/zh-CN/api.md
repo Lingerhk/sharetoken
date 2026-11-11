@@ -28,6 +28,12 @@
 | `POST /api/v1/share/start`、`POST /api/v1/share/stop` | 打开或暂停共享 |
 | `POST /api/v1/share/reload` | 从 `config.json` 重新加载共享设置 |
 | `GET /api/v1/share/detect` | 列出本机模型服务的模型 |
+| `GET /api/v1/pairing` | 你配对的卖家、你的买家、你的配对码，以及私有模式是否开启 |
+| `POST /api/v1/pairing/redeem` | 买家：和一个卖家配对。请求体：`{"code": "…"}` |
+| `DELETE /api/v1/pairing/sellers/{id}` | 买家：解除和某个卖家的配对 |
+| `POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}` | 卖家：生成配对码（`label`、`ttl_hours`、`max_uses`），或撤销一个 |
+| `DELETE /api/v1/pairing/buyers/{id}` | 卖家：移除一个买家 |
+| `PUT /api/v1/pairing/private` | 卖家：开启或关闭私有模式。请求体：`{"enabled": true}` |
 
 ## 示例 {#examples}
 

@@ -28,6 +28,12 @@ For usage, see [Call models](/docs/use-models).
 | `POST /api/v1/share/start`, `POST /api/v1/share/stop` | Turn sharing on or pause it |
 | `POST /api/v1/share/reload` | Reload the sharing settings from `config.json` |
 | `GET /api/v1/share/detect` | List the models of the local model server |
+| `GET /api/v1/pairing` | The sellers you are paired with, your buyers, your pairing codes, and whether private mode is on |
+| `POST /api/v1/pairing/redeem` | Buyer: pair with a seller. Body: `{"code": "…"}` |
+| `DELETE /api/v1/pairing/sellers/{id}` | Buyer: end the pairing with a seller |
+| `POST /api/v1/pairing/codes`, `DELETE /api/v1/pairing/codes/{id}` | Seller: make a pairing code (`label`, `ttl_hours`, `max_uses`), or revoke one |
+| `DELETE /api/v1/pairing/buyers/{id}` | Seller: remove one of your buyers |
+| `PUT /api/v1/pairing/private` | Seller: turn private mode on or off. Body: `{"enabled": true}` |
 
 ## Examples {#examples}
 
