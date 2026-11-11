@@ -15,8 +15,7 @@ const I18N = (() => {
   const SOURCE = 'zh-CN', FALLBACK = 'en', KEY = 'st_lang';
   const LANGS = {
     en: 'English', 'zh-CN': '简体中文', 'zh-TW': '繁體中文', es: 'Español', fr: 'Français', de: 'Deutsch',
-    'pt-BR': 'Português (Brasil)', ru: 'Русский', ja: '日本語', ko: '한국어', ar: 'العربية', hi: 'हिन्दी',
-    bn: 'বাংলা', ur: 'اردو', id: 'Bahasa Indonesia', vi: 'Tiếng Việt', tr: 'Türkçe', it: 'Italiano', pl: 'Polski', th: 'ไทย',
+    'pt-BR': 'Português', ru: 'Русский', ja: '日本語', ko: '한국어',
   };
   const RTL = new Set(['ar', 'ur']);
 

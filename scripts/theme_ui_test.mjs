@@ -138,7 +138,7 @@ console.log('language menu');
 ok((await ev(`document.getElementById('lang-select').textContent`)).includes('简体中文'), 'the button shows the current language');
 ok(await ev(`!!document.querySelector('#lang-select svg')`), 'with an icon');
 await ev(`document.getElementById('lang-select').click()`);
-ok(await ev(`document.querySelectorAll('.lang-item').length`) === 20, 'the menu lists 20 languages');
+ok(await ev(`document.querySelectorAll('.lang-item').length`) === 10, 'the menu lists 10 languages');
 ok(await ev(`document.activeElement.getAttribute('lang')`) === 'zh-CN', 'focus starts on the current language');
 await shot('lang-dark');
 await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
@@ -181,6 +181,18 @@ await sleep(400);
 const inked = await ev(`(() => { const c = document.getElementById('mesh'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let dark = 0, light = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 40) { const l = d[i] + d[i + 1] + d[i + 2]; if (l < 380) dark++; else if (l > 650) light++; } return { dark, light }; })()`);
 ok(inked.dark > inked.light, 'the hero animation redraws in dark ink');
 await wholePage('site-light');
+// the vendors are tabs over one set of commands
+await ev(`document.getElementById('models').scrollIntoView({ behavior: 'instant' })`); await sleep(900);
+const vendorCode = () => ev(`document.getElementById('vendor-code').textContent`);
+ok(await ev(`document.querySelectorAll('.vendor svg').length`) === 7 && (await vendorCode()).includes('provider login anthropic'), 'seven model sources with logos, the first one open');
+await ev(`document.getElementById('vendor-deepseek').click()`);
+ok((await vendorCode()).includes('provider add deepseek') && !(await vendorCode()).includes('login'), 'a vendor without account login shows only the API key');
+ok(await ev(`document.getElementById('vendor-deepseek').getAttribute('aria-selected')`) === 'true' && await ev(`document.querySelectorAll('.vendor[aria-selected=true]').length`) === 1, 'and is the one selected tab');
+await ev(`document.getElementById('vendor-ollama').click()`);
+ok((await vendorCode()).includes('share add gemma4:e4b') && !(await vendorCode()).includes('provider'), 'the local source shows the local commands');
+await ev(`document.getElementById('vendor-openai').click()`);
+await sleep(300); // the border is still changing colour
+await shot('site-models-light');
 await ev(`document.getElementById('security').scrollIntoView({ behavior: 'instant' })`); await sleep(1500);
 await shot('site-security-light');
 for (const mode of ['light', 'dark']) {
@@ -263,14 +275,7 @@ await ev(`document.querySelector('.sidenav a[href="#/jobs"]').click()`);
 await sleep(350);
 ok(await ev(`!document.querySelector('.shell').classList.contains('nav-open')`), 'choosing a module closes it');
 
-// ---- right-to-left ----
-console.log('right-to-left');
 await size(1440, 900);
-await go(`${portal}/app/?lang=ar`);
-await waitFor(`document.querySelector('.sidenav a.active') && document.querySelector('main h1')`);
-ok(await ev(`document.querySelector('.sidebar').getBoundingClientRect().right`) === 1440, 'the sidebar moves to the right');
-ok(await overflow() <= 0, 'nothing runs off the screen');
-await shot('rtl');
 await ev(`localStorage.setItem('st_lang', 'zh-CN')`);
 
 // ---- the admin console ----
@@ -291,7 +296,7 @@ if (process.env.ADMIN) {
   await fill('#mfa-code', totp(secret));
   await ev(`document.querySelector('.login form').requestSubmit()`);
   await waitFor(`document.querySelector('.sidenav a.active') && document.querySelector('main h1')`);
-  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 13, 'all thirteen admin modules have icons');
+  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 14, 'all fourteen admin modules have icons');
   await pages('/admin/', ['overview', 'users', 'relays', 'versions', 'jobs', 'nodes', 'audits', 'disputes', 'ledger', 'mail', 'feedback'], 'admin');
   await size(1440, 900);
   await ev(`location.hash = '#/users/' + encodeURIComponent(${JSON.stringify(name)})`);

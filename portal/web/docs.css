@@ -179,3 +179,21 @@ code, pre, kbd { font-family: var(--mono); }
 
 html.i18n-pending body { visibility: hidden; }
 :is(:lang(ar), :lang(ur), :lang(hi), :lang(bn), :lang(th)) * { letter-spacing: 0 !important; }
+
+/* light mode only: soft colour and depth on the off-white. Dark mode has none of this. */
+[data-theme=light] { --lift: 0 1px 2px rgba(17, 24, 39, .04), 0 6px 18px rgba(17, 24, 39, .045); }
+[data-theme=light] .nav-group a[aria-current=page] { background: linear-gradient(90deg, rgba(var(--lime-rgb), .17), rgba(var(--lime-rgb), .05)); box-shadow: inset 3px 0 0 var(--lime); }
+[dir=rtl][data-theme=light] .nav-group a[aria-current=page] { background: linear-gradient(270deg, rgba(var(--lime-rgb), .17), rgba(var(--lime-rgb), .05)); box-shadow: inset -3px 0 0 var(--lime); }
+[data-theme=light] .doc h2::before { content: ""; position: absolute; top: -1px; inset-inline-start: 0; width: 44px; height: 2px; background: #a3d623; }
+[data-theme=light] :is(.code, .table, .card, .pager a, .os-tabs) { box-shadow: var(--lift); }
+[data-theme=light] .code-head { background: #f6f7f1; border-radius: 10px 10px 0 0; }
+[data-theme=light] .table th { background: #f4f6ec; }
+[data-theme=light] .table td { background: var(--panel); }
+[data-theme=light] .table tbody tr:hover td { background: #fbfdf4; }
+[data-theme=light] .card { background-image: radial-gradient(150px 90px at 100% 0, rgba(198, 242, 78, .2), transparent 72%); }
+[dir=rtl][data-theme=light] .card { background-image: radial-gradient(150px 90px at 0 0, rgba(198, 242, 78, .2), transparent 72%); }
+[data-theme=light] .pager a { background: var(--panel); }
+[data-theme=light] .callout { border-inline-start-width: 3px; }
+[data-theme=light] .callout.tip { border-inline-start-color: var(--lime); }
+[data-theme=light] .callout.warning { border-inline-start-color: var(--amber); }
+[data-theme=light] .callout.note { border-inline-start-color: var(--blue); }

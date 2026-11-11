@@ -316,6 +316,49 @@ I18N.ready.then(() => {
     });
   })();
 
+  // ---- models: each vendor is a tab, the panel shows its commands ----
+  (function vendors() {
+    // login: the vendor also takes an account login; model: one it offers, as an example.
+    const VENDORS = {
+      anthropic: { login: true, model: 'claude-fable-5-2' },
+      openai: { login: true, model: 'gpt-6-astra' },
+      gemini: { login: true, model: 'gemini-4-argon' },
+      grok: { login: true, model: 'grok-4.7' },
+      deepseek: { model: 'deepseek-flash' },
+    };
+    const tabs = [...document.querySelectorAll('.vendor')], panel = $('vendor-panel'), code = $('vendor-code');
+    const UP = [tr('# 上线接单，按实际 token 结算'), 'sharetoken up'];
+    // A line that starts with # is a comment; an empty one separates the steps.
+    function lines(kind) {
+      if (kind === 'ollama') return [tr('# 共享一个本地模型'), 'sharetoken share add gemma4:e4b -id gemma-4-e4b', '', ...UP];
+      if (kind === 'custom') return [tr('# 添加任何 OpenAI 兼容的 API'), 'sharetoken provider add custom -name myapi -url https://api.example.com/v1', '',
+        tr('# 看可用的模型，选一个共享'), 'sharetoken provider models myapi', 'sharetoken share add my-model -provider myapi', '', ...UP];
+      const v = VENDORS[kind];
+      return [tr('# 用 API key 添加，输入时不显示'), 'sharetoken provider add ' + kind,
+        ...(v.login ? [tr('# 或者登录订阅账号，按提示在浏览器里完成'), 'sharetoken provider login ' + kind] : []), '',
+        tr('# 看可用的模型，选一个共享'), 'sharetoken provider models ' + kind, `sharetoken share add ${v.model} -provider ${kind}`, '', ...UP];
+    }
+    function select(i, focus) {
+      tabs.forEach((t, j) => { t.setAttribute('aria-selected', String(i === j)); t.tabIndex = i === j ? 0 : -1; });
+      panel.setAttribute('aria-labelledby', tabs[i].id);
+      code.replaceChildren(...lines(tabs[i].dataset.vendor).flatMap((line, n, all) => {
+        const end = n < all.length - 1 ? '\n' : '';
+        if (line[0] !== '#') return [line + end];
+        const c = document.createElement('span');
+        c.className = 'c'; c.textContent = line;
+        return [c, end];
+      }));
+      if (focus) tabs[i].focus();
+    }
+    tabs.forEach((t, i) => {
+      t.addEventListener('click', () => select(i));
+      t.addEventListener('keydown', e => {
+        const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (step) { e.preventDefault(); select((i + step + tabs.length) % tabs.length, true); }
+      });
+    });
+  })();
+
   // ---- downloads: the packages the portal actually has ----
   (function downloads() {
     const OS_NAMES = { macos: 'macOS', windows: 'Windows', linux: 'Linux' };

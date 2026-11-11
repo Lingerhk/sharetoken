@@ -372,3 +372,28 @@ tr.picked td { background: var(--hover); }
 /* actions on a list's selection */
 .bulk-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 8px 12px; border-radius: 10px; background: var(--accent-soft); }
 .bulk-bar[hidden] { display: none; }
+
+/* light mode only: a little colour on the white. Dark mode has none of this. */
+[data-theme=light] { --line-soft: #edf1f5; --shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 4px 14px rgba(15, 23, 42, .035); }
+[data-theme=light] .frame { background: radial-gradient(900px 400px at 88% -120px, rgba(45, 212, 191, .13), transparent 70%), radial-gradient(760px 360px at 6% -140px, rgba(96, 165, 250, .1), transparent 70%); background-repeat: no-repeat; }
+[data-theme=light] .side-head { background: linear-gradient(135deg, rgba(45, 212, 191, .12), transparent 62%); }
+[data-theme=light] .sidenav a { position: relative; }
+[data-theme=light] .sidenav a.active { background: linear-gradient(90deg, var(--accent-hover), var(--accent-soft)); font-weight: 600; }
+[data-theme=light] .sidenav a.active::before { content: ""; position: absolute; inset-block: 10px; inset-inline-start: 0; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+[dir=rtl][data-theme=light] .sidenav a.active::before { border-radius: 3px 0 0 3px; }
+[data-theme=light] .chip { background-image: linear-gradient(135deg, rgba(255, 255, 255, .6), rgba(255, 255, 255, 0) 65%); box-shadow: inset 0 0 0 1px rgba(15, 23, 42, .045); }
+[data-theme=light] .page-title > .chip { color: #fff; background: linear-gradient(135deg, #14a394, var(--btn-to)); box-shadow: var(--glow); }
+/* each tile picks up the colour of its icon in one corner */
+[data-theme=light] .tile { --tint: var(--accent-soft); background-image: radial-gradient(170px 110px at 100% 0, var(--tint), transparent 72%); }
+[dir=rtl][data-theme=light] .tile { background-image: radial-gradient(170px 110px at 0 0, var(--tint), transparent 72%); }
+[data-theme=light] .tile:has(> .chip.ok) { --tint: var(--ok-soft); }
+[data-theme=light] .tile:has(> .chip.warn) { --tint: var(--warn-soft); }
+[data-theme=light] .tile:has(> .chip.bad) { --tint: var(--bad-soft); }
+[data-theme=light] .tile:has(> .chip.blue) { --tint: var(--blue-soft); }
+[data-theme=light] .tile:has(> .chip.violet) { --tint: var(--violet-soft); }
+[data-theme=light] .tile:hover { border-color: var(--accent-hover); }
+[data-theme=light] th { background: #f3f7f9; color: #5b6676; }
+[data-theme=light] tbody tr:hover td { background: #f4faf9; }
+[data-theme=light] tr.picked td { background: var(--accent-soft); }
+[data-theme=light] .balance-pill { box-shadow: inset 0 0 0 1px rgba(13, 148, 136, .14); }
+[data-theme=light] .empty svg { color: var(--accent); }

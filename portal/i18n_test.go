@@ -94,8 +94,8 @@ func i18nLangs(t *testing.T) []string {
 	for _, m := range langRe.FindAllStringSubmatch(block, -1) {
 		langs = append(langs, m[1])
 	}
-	if len(langs) != 20 {
-		t.Fatalf("want 20 languages, parsed %d: %v", len(langs), langs)
+	if len(langs) != 10 {
+		t.Fatalf("want 10 languages, parsed %d: %v", len(langs), langs)
 	}
 	return langs
 }

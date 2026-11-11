@@ -176,5 +176,19 @@
   "账户和网站": "Cuentas y sitio web",
   "邮箱注册和登录，在用户页面管理 API token、设备、credit 和账单。": "Registro e inicio de sesión con correo electrónico, y gestión de API tokens, dispositivos, credit y facturas en la página de usuario.",
   "使用文档介绍安装、登录、调用和共享模型，提供英文和简体中文版本。": "Una guía de uso explica cómo instalar, iniciar sesión, llamar a modelos y compartirlos, en inglés y chino simplificado.",
-  "网站支持浅色和深色模式。": "El sitio web tiene modo claro y oscuro."
+  "网站支持浅色和深色模式。": "El sitio web tiene modo claro y oscuro.",
+  "模型": "Modelos",
+  "本机模型和厂商 API，都能共享。": "Comparte tanto modelos locales como API de proveedores.",
+  "接入你在模型厂商开通的 API key 或订阅服务。买家即可用 API key 调用，原生支持 Anthropic、OpenAI、Gemini 消息格式和 OpenAI 兼容协议。": "Conecta las API key o suscripciones que tengas con proveedores de modelos. Los compradores ya pueden llamar con una API key, con soporte nativo para los formatos de mensajes de Anthropic, OpenAI y Gemini y para el protocolo compatible con OpenAI.",
+  "模型来源": "Orígenes de modelos",
+  "API key · 订阅": "API key · Suscripción",
+  "本机模型": "Modelos locales",
+  "自定义": "Personalizado",
+  "OpenAI 兼容 API": "API compatible con OpenAI",
+  "# 用 API key 添加，输入时不显示": "# Añade con una API key; no se muestra al escribirla",
+  "# 或者登录订阅账号，按提示在浏览器里完成": "# O inicia sesión en tu cuenta de suscripción y termina en el navegador según se indique",
+  "# 看可用的模型，选一个共享": "# Consulta los modelos disponibles y comparte uno",
+  "# 添加任何 OpenAI 兼容的 API": "# Añade cualquier API compatible con OpenAI",
+  "请求以明文发给厂商，用量记在你的厂商账户上。共享前请确认厂商的服务条款允许这样使用。": "Las solicitudes se envían al proveedor en texto plano y el uso se carga a tu cuenta con el proveedor. Antes de compartir, comprueba que sus condiciones de servicio permiten este uso.",
+  "查看完整说明": "Ver la guía completa"
 }

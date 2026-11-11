@@ -4,6 +4,7 @@
 #   scripts/dev/deploy.sh            # 全部
 #   scripts/dev/deploy.sh --bins     # 只更新二进制和配置并重启（含邮件服务）
 #   scripts/dev/deploy.sh --portal   # 只更新门户和客户端安装包，协调器、邮件服务都不动
+#   scripts/dev/deploy.sh --web      # 只更新门户程序（网页、文档改动），安装包也不动
 # 服务器上的布局和权限由 scripts/ops/st-host-setup.sh 负责：三个服务各自的系统用户，机密在 /etc/sharetoken-dev/<服务>/，
 # 二进制在 /srv/sharetoken-dev/。这里只把文件上传到暂存目录 ~/sharetoken-dev 再调用它。
 # 不碰中继（scripts/relay/），也不碰生产。armbian 上别的站点和容器（sgvpn、homebridge、anylink）不受影响。
@@ -14,6 +15,7 @@ ETC=/etc/sharetoken-dev; SETUP="sudo bash $DIR/st-host-setup.sh dev $DIR"
 DOMAIN=dev.sharetoken.app; EMAIL=${LE_EMAIL:-lingerhk@gmail.com}
 BINS_ONLY=0; [ "${1:-}" = "--bins" ] && BINS_ONLY=1
 PORTAL_ONLY=0; [ "${1:-}" = "--portal" ] && PORTAL_ONLY=1
+WEB_ONLY=0; [ "${1:-}" = "--web" ] && { PORTAL_ONLY=1; WEB_ONLY=1; }
 Q="-o LogLevel=ERROR -o ConnectTimeout=10"
 rsh() { ssh $Q -n "$RUSER@$HOST" "$@"; }
 W=${ST_TESTENV_WORK:-$HOME/st-test}; KEYS=$W/dev-keys
@@ -46,8 +48,10 @@ if [ $PORTAL_ONLY = 1 ]; then
   echo "== build and upload (linux/arm64)"
   GOOS=linux GOARCH=arm64 scripts/build.sh portal >/dev/null
   upload_common portal
-  echo "== client packages"
-  scripts/publish-packages.sh "$V" "$RUSER@$HOST" /var/lib/sharetoken-dev/portal/downloads --with-dev-cli --owner st-portal
+  if [ $WEB_ONLY = 0 ]; then
+    echo "== client packages"
+    scripts/publish-packages.sh "$V" "$RUSER@$HOST" /var/lib/sharetoken-dev/portal/downloads --with-dev-cli --owner st-portal
+  fi
   echo "== install and restart portal"
   rsh "$SETUP bins $V portal"
   exit 0

@@ -525,11 +525,6 @@ await go('/docs/quickstart?os=macos');
 ok((await ev('document.documentElement.lang')) === 'ja', 'a Japanese visitor gets Japanese navigation text');
 ok(!CHINESE.test(await text('#doc')) && (await text('#doc h1')).startsWith('Quick start'), 'and the English guide');
 ok(await visible('#lang-note'), 'with a note about the languages of the guide');
-await setLang('ar');
-await go('/docs/quickstart?os=macos');
-ok((await ev('document.documentElement.dir')) === 'rtl' && (await ev(`${el('#doc')}.dir`)) === 'ltr', 'Arabic: the page is right-to-left, the English guide left-to-right');
-ok(await overflow() <= 0, 'and fits');
-await shot('rtl');
 await setLang('zh-TW');
 await go('/docs/quickstart?os=macos');
 ok((await text('#doc h1')).startsWith('快速开始'), 'Traditional Chinese readers get the Simplified guide');
@@ -542,7 +537,7 @@ ok(!CHINESE.test(await text('#download')), 'English: the download section is tra
 await ev(`document.getElementById('download').scrollIntoView()`);
 await sleep(300);
 await shot('download-en');
-for (const l of ['ja', 'de', 'ar', 'th', 'ru']) {
+for (const l of ['ja', 'de', 'ko', 'ru']) {
   await setLang(l);
   await go('/', FRONT);
   const bad = await ev(`document.getElementById('download').innerText`);

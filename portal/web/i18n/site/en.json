@@ -176,5 +176,19 @@
   "账户和网站": "Accounts and website",
   "邮箱注册和登录，在用户页面管理 API token、设备、credit 和账单。": "Sign up and log in with email, and manage API tokens, devices, credit and bills on the user page.",
   "使用文档介绍安装、登录、调用和共享模型，提供英文和简体中文版本。": "A user guide covers installing, logging in, calling models and sharing them, in English and Simplified Chinese.",
-  "网站支持浅色和深色模式。": "The website has light and dark modes."
+  "网站支持浅色和深色模式。": "The website has light and dark modes.",
+  "模型": "Models",
+  "本机模型和厂商 API，都能共享。": "Share local models and provider APIs alike.",
+  "接入你在模型厂商开通的 API key 或订阅服务。买家即可用 API key 调用，原生支持 Anthropic、OpenAI、Gemini 消息格式和 OpenAI 兼容协议。": "Connect the API keys or subscriptions you have with model providers. Buyers can then call with an API key, with native support for the Anthropic, OpenAI and Gemini message formats and the OpenAI-compatible protocol.",
+  "模型来源": "Model sources",
+  "API key · 订阅": "API key · Subscription",
+  "本机模型": "Local models",
+  "自定义": "Custom",
+  "OpenAI 兼容 API": "OpenAI-compatible API",
+  "# 用 API key 添加，输入时不显示": "# Add with an API key; it is hidden as you type",
+  "# 或者登录订阅账号，按提示在浏览器里完成": "# Or log in to your subscription account and finish in the browser as prompted",
+  "# 看可用的模型，选一个共享": "# List the available models and share one",
+  "# 添加任何 OpenAI 兼容的 API": "# Add any OpenAI-compatible API",
+  "请求以明文发给厂商，用量记在你的厂商账户上。共享前请确认厂商的服务条款允许这样使用。": "Requests go to the provider in plaintext, and usage is charged to your account with the provider. Before sharing, check that the provider's terms of service allow this use.",
+  "查看完整说明": "Read the full guide"
 }
