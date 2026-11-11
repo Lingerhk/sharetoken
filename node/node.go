@@ -56,6 +56,12 @@ type ModelConfig struct {
 	UpstreamModel  string `json:"upstream_model"`
 	PriceInMicros  uint64 `json:"price_in"`
 	PriceOutMicros uint64 `json:"price_out"`
+	// MaxOutputTokens caps a job's output below the node-wide limit, for a
+	// model whose server refuses larger requests (0: no cap of its own).
+	MaxOutputTokens uint64 `json:"max_output,omitempty"`
+	// Upstream serves this model instead of Config.Upstream: a node can sell
+	// models of several servers at once.
+	Upstream Upstream `json:"-"`
 }
 
 // Config configures a node. Zero durations get defaults.
@@ -136,9 +142,6 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 	if cfg.Coordinator.ID == "" {
 		return nil, errors.New("node: coordinator address is required")
 	}
-	if cfg.Upstream == nil {
-		return nil, errors.New("node: upstream is required")
-	}
 	if len(cfg.Models) == 0 {
 		return nil, errors.New("node: at least one model is required")
 	}
@@ -146,6 +149,11 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 	for _, m := range cfg.Models {
 		if m.ID == "" || m.UpstreamModel == "" {
 			return nil, fmt.Errorf("node: model %+v needs both id and upstream_model", m)
+		}
+		if m.Upstream == nil {
+			if m.Upstream = cfg.Upstream; m.Upstream == nil {
+				return nil, fmt.Errorf("node: model %s has no upstream", m.ID)
+			}
 		}
 		if _, dup := models[m.ID]; dup {
 			return nil, fmt.Errorf("node: duplicate model id %q", m.ID)
@@ -341,7 +349,7 @@ func (s *Service) handleInfer(st network.Stream) {
 		usage *protocol.Usage
 		text  strings.Builder
 	)
-	err = s.cfg.Upstream.Stream(ctx, body, func(payload []byte) error {
+	err = mc.Upstream.Stream(ctx, body, func(payload []byte) error {
 		info, perr := protocol.ParseChunk(payload)
 		sealed, err := box.Seal(req.BuyerBoxPub, payload, protocol.ChunkAAD(t, seq))
 		if err != nil {

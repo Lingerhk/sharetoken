@@ -130,6 +130,23 @@ func ReadPassword(prompt string, confirm bool) (string, error) {
 	return pw, nil
 }
 
+// ReadSecret reads a secret such as an API key: from the terminal without
+// echo, or one line from stdin when stdin is not a terminal.
+func ReadSecret(prompt string) (string, error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && line == "" {
+			return "", err
+		}
+		return strings.TrimSpace(line), nil
+	}
+	fmt.Fprint(os.Stderr, prompt)
+	b, err := term.ReadPassword(fd)
+	fmt.Fprintln(os.Stderr)
+	return strings.TrimSpace(string(b)), err
+}
+
 // Prompt asks for one line of input on the terminal.
 func Prompt(prompt string) (string, error) {
 	fmt.Fprint(os.Stderr, prompt)

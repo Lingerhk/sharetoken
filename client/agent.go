@@ -32,6 +32,7 @@ import (
 	"sharetoken/node"
 	"sharetoken/p2p"
 	"sharetoken/portal"
+	"sharetoken/provider"
 	"sharetoken/relaypass"
 )
 
@@ -75,6 +76,7 @@ type Agent struct {
 	buyer    *buyer.Client
 	proxy    *buyer.Proxy
 	share    *shareState
+	tokens   *provider.Tokens // OAuth logins of the providers
 	warnings map[string]string
 
 	passMu sync.Mutex
@@ -92,6 +94,7 @@ type Agent struct {
 
 type shareState struct {
 	cfg      ShareConfig
+	models   []node.ModelConfig // everything sold: local models and the providers'
 	node     *node.Service
 	reserver *p2p.Reserver
 	cancel   context.CancelFunc
@@ -100,7 +103,7 @@ type shareState struct {
 // NewAgent prepares an agent with the configuration in home.
 func NewAgent(home string, cfg Config) *Agent {
 	cfg.fill()
-	return &Agent{home: home, cfg: cfg, log: slog.Default().With("component", "client"), warnings: map[string]string{}, kick: make(chan struct{}, 1), loginKick: make(chan struct{}, 1),
+	return &Agent{home: home, cfg: cfg, tokens: &provider.Tokens{Home: home}, log: slog.Default().With("component", "client"), warnings: map[string]string{}, kick: make(chan struct{}, 1), loginKick: make(chan struct{}, 1),
 		link: p2p.NewLinkMonitor(linkWindow), avoid: map[string]time.Time{}}
 }
 
@@ -295,6 +298,9 @@ func (a *Agent) Addr() string { return a.addr }
 
 // PeerID is this device's peer ID.
 func (a *Agent) PeerID() string { return a.keys.ID() }
+
+// Home is the client's state directory.
+func (a *Agent) Home() string { return a.home }
 
 // Host is the agent's libp2p host (tests).
 func (a *Agent) Host() host.Host { return a.h }
@@ -839,12 +845,12 @@ func (a *Agent) startShareLocked(sc ShareConfig) error {
 	} else if u.Scheme == "http" && !cli.IsLocalURL(sc.Upstream) {
 		a.warn("upstream", "prompts travel unencrypted to "+sc.Upstream+"; use https or keep the model server local")
 	}
-	var apiKey string
-	if sc.UpstreamKeyEnv != "" {
-		apiKey = os.Getenv(sc.UpstreamKeyEnv)
+	models, err := a.shareModelsLocked(sc)
+	if err != nil {
+		return err
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
-	st := &shareState{cfg: sc, cancel: cancel}
+	st := &shareState{cfg: sc, models: models, cancel: cancel}
 	st.reserver = p2p.NewReserver(a.h, func() {
 		if st.node != nil {
 			st.node.Announce() // advertise the new relay addresses at once
@@ -856,8 +862,7 @@ func (a *Agent) startShareLocked(sc ShareConfig) error {
 	h := a.h
 	svc, err := node.NewService(ctx, h, a.keys, node.Config{
 		Coordinator:              peer.AddrInfo{ID: a.coord},
-		Models:                   sc.Models,
-		Upstream:                 &node.OpenAICompat{BaseURL: sc.Upstream, APIKey: apiKey},
+		Models:                   models,
 		MaxConcurrency:           sc.Concurrency,
 		Quote:                    a.quote,
 		OnCoordinatorUnreachable: a.Kick,
@@ -876,10 +881,101 @@ func (a *Agent) startShareLocked(sc ShareConfig) error {
 	st.node = svc
 	a.share = st
 	a.warn("share", "")
-	for _, m := range sc.Models {
+	for _, m := range models {
 		a.log.Info("sharing", "model", m.ID, "upstream", m.UpstreamModel, "in", m.PriceInMicros, "out", m.PriceOutMicros)
 	}
 	return nil
+}
+
+// localSource names the model server on this machine among the sources of
+// models; the others are named after their provider.
+const localSource = "local"
+
+// shareModelsLocked collects what this node sells: the models of the local
+// model server and those of every provider that is on. A provider that cannot
+// be used is left out with a warning; the rest is sold all the same.
+func (a *Agent) shareModelsLocked(sc ShareConfig) ([]node.ModelConfig, error) {
+	for key := range a.warnings {
+		if strings.HasPrefix(key, "source:") {
+			delete(a.warnings, key)
+		}
+	}
+	var models []node.ModelConfig
+	seen := map[string]string{}
+	add := func(source string, up node.Upstream, ms []node.ModelConfig) {
+		up = &watchedUpstream{a: a, source: source, up: up}
+		for _, m := range ms {
+			if other, dup := seen[m.ID]; dup {
+				a.warn("source:"+source+":"+m.ID, fmt.Sprintf("%s: model ID %s is already sold from %s; not sold twice", source, m.ID, other))
+				continue
+			}
+			seen[m.ID] = source
+			m.Upstream = up
+			models = append(models, m)
+		}
+	}
+	if len(sc.Models) > 0 {
+		if u, err := url.Parse(sc.Upstream); err != nil || u.Scheme == "" {
+			return nil, fmt.Errorf("bad upstream URL %q", sc.Upstream)
+		} else if u.Scheme == "http" && !cli.IsLocalURL(sc.Upstream) {
+			a.warn("upstream", "prompts travel unencrypted to "+sc.Upstream+"; use https or keep the model server local")
+		}
+		var apiKey string
+		if sc.UpstreamKeyEnv != "" {
+			apiKey = os.Getenv(sc.UpstreamKeyEnv)
+		}
+		add(localSource, &node.OpenAICompat{BaseURL: sc.Upstream, APIKey: apiKey}, sc.Models)
+	}
+	file, err := provider.Load(a.home)
+	if err != nil {
+		a.warn("source:providers", "providers are not sold: "+err.Error())
+		file = &provider.File{}
+	}
+	for _, e := range file.Providers {
+		if !e.Selling() {
+			continue
+		}
+		up, err := e.Upstream(a.tokens.For(e.Name))
+		if err != nil {
+			a.warn("source:"+e.Name, fmt.Sprintf("provider %s is not sold: %v", e.Name, err))
+			continue
+		}
+		add(e.Name, up, e.Models)
+	}
+	if len(models) == 0 {
+		return nil, errors.New("sharing is on but there is no model to share (`sharetoken share add <model>`, or `sharetoken provider` for a hosted API)")
+	}
+	return models, nil
+}
+
+// watchedUpstream tells the user when a source of models refuses its
+// credentials or runs out of balance: every job fails until that is fixed,
+// and each failure counts against this node.
+type watchedUpstream struct {
+	a      *Agent
+	source string
+	up     node.Upstream
+}
+
+func (w *watchedUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
+	err := w.up.Stream(ctx, body, emit)
+	msg := ""
+	var se *node.StatusError
+	if errors.As(err, &se) {
+		switch se.Status {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			msg = fmt.Sprintf("%s refused its credentials (HTTP %d): jobs fail until they are replaced", w.source, se.Status)
+		case http.StatusPaymentRequired:
+			msg = w.source + " is out of balance (HTTP 402): jobs fail until the account is topped up"
+		}
+	}
+	if err != nil && msg == "" {
+		return err // other failures say nothing about the credentials
+	}
+	w.a.mu.Lock()
+	w.a.warn("source:"+w.source+":credentials", msg)
+	w.a.mu.Unlock()
+	return err
 }
 
 // renewPassBefore fetches a new relay pass when the current one has less

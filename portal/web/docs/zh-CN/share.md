@@ -3,11 +3,11 @@
 把本机的模型共享到网络，按实际 token 赚 credit。不需要公网 IP，也不需要开端口。
 
 > [!WARNING]
-> **运行模型必须解密，你的机器能看到别人发来的 prompt。** 请不要记录或保存这些内容。只共享你本机运行、并且有权共享的模型。
+> **运行模型必须解密，你的机器能看到别人发来的 prompt。** 请不要记录或保存这些内容。只共享你有权共享的模型。
 
 ## 第 1 步：准备模型服务 {#server}
 
-默认对接本机的 Ollama。其他 OpenAI 兼容的模型服务见[使用其他模型服务](#other-server)。
+默认对接本机的 Ollama。其他 OpenAI 兼容的模型服务见[使用其他模型服务](#other-server)；共享在模型厂商开通的服务见[共享托管 API](#providers)。
 
 ::: macos
 ```bash
@@ -108,7 +108,82 @@ ollama pull gemma4:e4b
 {{exe}} share add my-local-model -id my-model
 ```
 
-模型服务需要 API key 时，把 key 放在一个环境变量里，再在[配置文件](/docs/config#share)的 `share.upstream_key_env` 里写上变量名。
+本机的模型服务需要 API key 时，把 key 放在一个环境变量里，再在[配置文件](/docs/config#share)的 `share.upstream_key_env` 里写上变量名。
+
+## 共享托管 API {#providers}
+
+除了本机运行的模型，也可以共享你在模型厂商开通的服务：客户端把买家的请求转给厂商，再把回答转回去。买家始终用 OpenAI 格式，各家格式的差别由客户端转换。每个这样的来源叫一个 provider，可以配置多个，各自开关。
+
+> [!WARNING]
+> 请求以明文发给厂商，用量记在你在厂商的账户上。请先确认厂商的服务条款允许这样使用，并把价格定在成本之上。
+
+| 类型 | API key | 登录（OAuth） |
+|---|---|---|
+| `anthropic` | 支持 | — |
+| `openai` | 支持 | 支持（ChatGPT 账号） |
+| `gemini` | 支持 | 支持（Google 账号） |
+| `antigravity` | — | 支持（Google 账号） |
+| `grok` | 支持 | 支持 |
+| `deepseek` | 支持 | — |
+| `custom` | 支持：任何 OpenAI 兼容的 API，用 `-url` 给出地址 | — |
+
+### 用 API key 添加 {#provider-key}
+
+```bash
+{{exe}} provider add deepseek
+```
+
+客户端会提示输入 API key（输入时不显示），向厂商确认 key 可用后保存：
+
+```text
+DeepSeek API key:
+saved provider deepseek (DeepSeek, apikey) sk-…9b35
+   models: deepseek-flash, deepseek-v4-pro
+   balance 327.18 CNY
+```
+
+然后添加要共享的模型并上线：
+
+```bash
+{{exe}} share add deepseek-flash -provider deepseek -in 100000 -out 200000
+{{exe}} up
+```
+
+其他 OpenAI 兼容的 API 用 `custom`，同一类型要配多个账号时用 `-name` 起不同的名字：
+
+```bash
+{{exe}} provider add custom -name myapi -url https://api.example.com/v1
+{{exe}} provider add openai -name openai-team2
+```
+
+- **脚本里使用：** 没有终端时从标准输入读一行，也可以放在环境变量 `SHARETOKEN_PROVIDER_KEY` 里。不提供命令行参数，是为了不让 key 留在命令历史里。
+- **Anthropic 的 key 没有绑定工作区时：** 加上 `-header anthropic-workspace-id=工作区ID`。
+- **模型的输出上限：** 厂商因为输出上限拒绝请求时，客户端会按厂商给出的上限自动重发，之后一直沿用。想预先指定，在 `share add` 时用 `-max-output`。
+- **看不见的推理不计费：** 有些模型的推理过程不返回给调用方，但厂商照样计入用量。买家只为收到的输出付费，所以这部分 token 不会计入收益。`{{exe}} provider test` 会提示这种情况，定价时请考虑进去。
+
+### 用账号登录添加 {#provider-login}
+
+```bash
+{{exe}} provider login openai
+```
+
+客户端显示一个登录地址。在任意一台电脑的浏览器里打开并登录，然后按提示把授权码、或者浏览器最后跳转到的那个打不开的页面的完整地址粘贴回来。登录凭据会自动续期。
+
+Google 账号没有自带项目时，`gemini` 和 `antigravity` 需要用 `-project` 指定一个 Google Cloud 项目 ID。
+
+### 管理 provider {#provider-manage}
+
+| 操作 | 命令 |
+|---|---|
+| 查看可添加的类型和已配置的 provider | `{{exe}} provider` |
+| 列出 provider 可用的模型 | `{{exe}} provider models deepseek` |
+| 发一条测试请求 | `{{exe}} provider test deepseek -model deepseek-flash` |
+| 暂停、恢复一个 provider | `{{exe}} provider off deepseek`、`{{exe}} provider on deepseek` |
+| 换 key（重新添加同名的，模型保留） | `{{exe}} provider add deepseek` |
+| 删除 provider 及其凭据 | `{{exe}} provider rm deepseek` |
+
+- **凭据的保存：** key 和登录凭据写在状态目录的 `providers.json` 里，和 `config.json` 分开，文件只有你的账户能读。命令和本机 API 都不显示完整的 key。
+- **凭据失效或余额用完：** 作业会失败，`{{exe}} status` 里出现 `warning: deepseek refused its credentials ...` 或 `... is out of balance ...`。失败的作业记在你的节点上，请尽快处理。
 
 ## 并发和性能 {#tuning}
 

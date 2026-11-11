@@ -66,7 +66,9 @@ type BuyConfig struct {
 	IdleSeconds      int `json:"idle_seconds,omitempty"`
 }
 
-// ShareConfig tunes sharing a local model.
+// ShareConfig tunes sharing models. Upstream and Models are the model server
+// on this machine; hosted APIs the user sells through are kept apart, with
+// their keys, in the providers file (package provider).
 type ShareConfig struct {
 	Enabled        bool               `json:"enabled"`
 	Upstream       string             `json:"upstream"`                   // OpenAI-compatible base URL of the local model server
@@ -143,9 +145,6 @@ func (c *Config) fill() {
 
 // Validate checks a share configuration.
 func (s *ShareConfig) Validate() error {
-	if s.Enabled && len(s.Models) == 0 {
-		return errors.New("sharing is on but no model is configured (sharetoken share add <model>)")
-	}
 	seen := map[string]bool{}
 	for _, m := range s.Models {
 		if m.ID == "" || m.UpstreamModel == "" {

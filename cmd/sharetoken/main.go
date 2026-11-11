@@ -3,6 +3,7 @@
 //
 //	sharetoken register -user alice     # or: login
 //	sharetoken share add qwen2.5:7b                            # optional: share a local model
+//	sharetoken provider add deepseek                           # or a hosted API, with your own API key
 //	sharetoken up                                              # run; OpenAI endpoint at http://127.0.0.1:9787/v1
 //	sharetoken status | balance | models | relays | jobs
 //
@@ -22,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -37,6 +39,7 @@ import (
 	"sharetoken/node"
 	"sharetoken/p2p"
 	"sharetoken/protocol"
+	"sharetoken/provider"
 )
 
 const usage = `usage: sharetoken [-home DIR] <command> [flags]
@@ -60,13 +63,27 @@ Account (portal):
   jobs [-role buy|sell] [-n 20]         recent jobs
   logout
 
-Sharing a local model:
+Sharing a model:
   share                                 show the sharing settings
   share detect                          list the models of the local model server
-  share add <model> [-id ID] [-in P] [-out P]   share a model (prices: micro-credits per million tokens)
+  share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-max-output N]
+                                        share a model of the local model server, or of a provider
+                                        (prices: micro-credits per million tokens)
   share rm <id>
   share on | off
   share upstream <url>                  local model server (default Ollama: http://127.0.0.1:11434/v1)
+
+Hosted APIs to share (kept in providers.json, apart from the configuration):
+  provider                              the kinds that can be added, and those configured
+  provider add <kind> [-name N] [-url URL] [-header K=V] [-no-check]
+                                        add one with an API key (asked for; or stdin, or $SHARETOKEN_PROVIDER_KEY):
+                                        anthropic, openai, gemini, grok, deepseek, or custom with -url
+  provider login <kind> [-name N] [-project ID]
+                                        add one with an OAuth login: openai, gemini, antigravity, grok
+  provider models <name>                models its credentials may use
+  provider test <name> [-model M]       send one small request through it
+  provider on | off <name>              sell its models, or stop
+  provider rm <name>
 
   config                                show the configuration file
   version [--check]                     show what this client was built for; --check asks the portal for a newer release`
@@ -119,6 +136,8 @@ func main() {
 		run = c.jobs
 	case "share":
 		run = c.share
+	case "provider":
+		run = c.provider
 	case "config":
 		run = c.showConfig
 	default:
@@ -394,7 +413,7 @@ func (c *cmdCtx) up(args []string) error {
 		fmt.Printf("   coordinator via relay %s\n", st.Coordinator.Via)
 	}
 	if st.Share.Running {
-		for _, m := range st.Share.Models {
+		for _, m := range st.Share.Serving {
 			fmt.Printf("   sharing %s (upstream %s) at in=%d out=%d micro-credits/Mtok\n", m.ID, m.UpstreamModel, m.PriceInMicros, m.PriceOutMicros)
 		}
 	} else {
@@ -501,7 +520,7 @@ func (c *cmdCtx) status([]string) error {
 	if st.Share.Running && st.Share.Stats != nil {
 		s := st.Share.Stats
 		fmt.Printf("sharing %d model(s): %d jobs served, %d failed, %d active, earned %s (acked)\n",
-			len(st.Share.Models), s.JobsServed, s.JobsFailed, s.Active, credits(int64(s.EarnedMicros)))
+			len(st.Share.Serving), s.JobsServed, s.JobsFailed, s.Active, credits(int64(s.EarnedMicros)))
 		if s.AnnounceError != "" {
 			fmt.Println("   offer not accepted:", s.AnnounceError)
 		}
@@ -734,38 +753,54 @@ func (c *cmdCtx) share(args []string) error {
 		id := fs.String("id", "", "model ID on the network (default: the server's model name)")
 		in := fs.Uint64("in", client.DefaultPriceInMicros, "price per million prompt tokens, micro-credits")
 		out := fs.Uint64("out", client.DefaultPriceOut, "price per million completion tokens, micro-credits")
+		from := fs.String("provider", "", "the provider whose model this is (default: the local model server)")
+		maxOut := fs.Uint64("max-output", 0, "the model's own limit of output tokens per request, if it refuses the usual one")
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
-			return errors.New("usage: sharetoken share add <model> [-id ID] [-in P] [-out P]")
+			return errors.New("usage: sharetoken share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-max-output N]")
 		}
 		upstreamModel := args[1]
 		_ = fs.Parse(args[2:])
 		if *id == "" {
 			*id = upstreamModel
 		}
-		var kept []node.ModelConfig
-		for _, m := range sc.Models {
-			if m.ID != *id {
-				kept = append(kept, m)
+		m := node.ModelConfig{ID: *id, UpstreamModel: upstreamModel, PriceInMicros: *in, PriceOutMicros: *out, MaxOutputTokens: *maxOut}
+		if *from != "" && *from != "local" {
+			var local []string
+			for _, lm := range sc.Models {
+				local = append(local, lm.ID)
 			}
+			if _, err := provider.SetModel(c.home, *from, m, local); err != nil {
+				return err
+			}
+		} else {
+			if f, err := provider.Load(c.home); err != nil {
+				return err
+			} else {
+				for _, e := range f.Providers {
+					for _, pm := range e.Models {
+						if pm.ID == *id {
+							return fmt.Errorf("provider %s already sells %s: choose another ID with -id", e.Name, *id)
+						}
+					}
+				}
+			}
+			sc.Models = append(slices.DeleteFunc(sc.Models, func(o node.ModelConfig) bool { return o.ID == *id }), m)
 		}
-		sc.Models = append(kept, node.ModelConfig{ID: *id, UpstreamModel: upstreamModel, PriceInMicros: *in, PriceOutMicros: *out})
 		sc.Enabled = true
 	case "rm":
 		if len(args) != 2 {
 			return errors.New("usage: sharetoken share rm <id>")
 		}
-		var kept []node.ModelConfig
-		for _, m := range sc.Models {
-			if m.ID != args[1] {
-				kept = append(kept, m)
+		n := len(sc.Models)
+		sc.Models = slices.DeleteFunc(sc.Models, func(o node.ModelConfig) bool { return o.ID == args[1] })
+		if len(sc.Models) == n {
+			from, err := provider.RemoveModel(c.home, args[1])
+			if err != nil {
+				return err
 			}
-		}
-		if len(kept) == len(sc.Models) {
-			return fmt.Errorf("not sharing %q", args[1])
-		}
-		sc.Models = kept
-		if len(kept) == 0 {
-			sc.Enabled = false
+			if from == "" {
+				return fmt.Errorf("not sharing %q", args[1])
+			}
 		}
 	case "on":
 		sc.Enabled = true
@@ -786,10 +821,18 @@ func (c *cmdCtx) share(args []string) error {
 		return err
 	}
 	// Apply to a running client, if any.
+	if err := c.reload(); err != nil {
+		return err
+	}
+	return c.showShare()
+}
+
+// reload has a running client take up changed sharing settings.
+func (c *cmdCtx) reload() error {
 	if err := c.daemon(http.MethodPost, "/api/v1/share/reload", nil, nil); err != nil && !strings.Contains(err.Error(), "not running") {
 		return fmt.Errorf("saved, but the running client refused it: %w", err)
 	}
-	return c.showShare()
+	return nil
 }
 
 func (c *cmdCtx) showShare() error {
@@ -798,13 +841,265 @@ func (c *cmdCtx) showShare() error {
 	if sc.Enabled {
 		state = "on"
 	}
-	fmt.Printf("sharing %s, upstream %s, concurrency %d, relays %d\n", state, sc.Upstream, sc.Concurrency, sc.Relays)
-	for _, m := range sc.Models {
-		fmt.Printf("   %s (upstream %s) in=%d out=%d micro-credits/Mtok\n", m.ID, m.UpstreamModel, m.PriceInMicros, m.PriceOutMicros)
+	fmt.Printf("sharing %s, concurrency %d, relays %d\n", state, sc.Concurrency, sc.Relays)
+	printModels := func(ms []node.ModelConfig) {
+		for _, m := range ms {
+			limit := ""
+			if m.MaxOutputTokens > 0 {
+				limit = fmt.Sprintf(" max-output=%d", m.MaxOutputTokens)
+			}
+			fmt.Printf("      %s (upstream %s) in=%d out=%d micro-credits/Mtok%s\n", m.ID, m.UpstreamModel, m.PriceInMicros, m.PriceOutMicros, limit)
+		}
 	}
-	if len(sc.Models) == 0 {
-		fmt.Println("   no models: `sharetoken share detect`, then `sharetoken share add <model>`")
+	total := len(sc.Models)
+	if len(sc.Models) > 0 {
+		fmt.Printf("   local model server %s\n", sc.Upstream)
+		printModels(sc.Models)
 	}
+	views, err := provider.Views(c.home)
+	if err != nil {
+		return err
+	}
+	for _, v := range views {
+		state := "on"
+		if !v.Enabled {
+			state = "off"
+		}
+		fmt.Printf("   provider %s (%s, %s) %s\n", v.Name, v.TypeName, v.Auth, state)
+		printModels(v.Models)
+		if len(v.Models) == 0 {
+			fmt.Printf("      no models: `sharetoken provider models %s`, then `sharetoken share add <model> -provider %s`\n", v.Name, v.Name)
+		}
+		total += len(v.Models)
+	}
+	if total == 0 && len(views) == 0 {
+		fmt.Println("   no models: `sharetoken share detect`, then `sharetoken share add <model>`; for a hosted API see `sharetoken provider`")
+	}
+	return nil
+}
+
+// ---- providers ----
+
+func (c *cmdCtx) provider(args []string) error {
+	if len(args) == 0 {
+		return c.showProviders()
+	}
+	usageErr := func(u string) error { return errors.New("usage: sharetoken provider " + u) }
+	switch args[0] {
+	case "add":
+		fs := flag.NewFlagSet("provider add", flag.ExitOnError)
+		name := fs.String("name", "", "your name for it (default: the kind)")
+		base := fs.String("url", "", "base URL of the API (needed for custom; otherwise the kind's own)")
+		noCheck := fs.Bool("no-check", false, "save it without asking the provider whether the key works")
+		var headers cli.Repeated
+		fs.Var(&headers, "header", "an extra request header as Name=value (repeatable)")
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return usageErr("add <kind> [-name N] [-url URL] [-header K=V] [-no-check]")
+		}
+		_ = fs.Parse(args[2:])
+		kind, ok := provider.LookupKind(args[1])
+		if !ok {
+			return fmt.Errorf("unknown kind %q: `sharetoken provider` lists them", args[1])
+		}
+		if !kind.APIKey {
+			return fmt.Errorf("%s has no API-key access: `sharetoken provider login %s`", kind.Name, kind.ID)
+		}
+		req := provider.AddRequest{Type: kind.ID, Name: *name, BaseURL: *base, NoCheck: *noCheck}
+		for _, h := range headers {
+			k, v, ok := strings.Cut(h, "=")
+			if !ok {
+				return fmt.Errorf("-header wants Name=value, got %q", h)
+			}
+			if req.Headers == nil {
+				req.Headers = map[string]string{}
+			}
+			req.Headers[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+		if kind.BaseURL == "" && req.BaseURL == "" {
+			return fmt.Errorf("%s needs the base URL of the API: -url https://…/v1", kind.Name)
+		}
+		// Not a flag: arguments show up in the process list and the shell history.
+		req.APIKey = strings.TrimSpace(os.Getenv("SHARETOKEN_PROVIDER_KEY"))
+		if req.APIKey == "" {
+			prompt := kind.Name + " API key: "
+			if kind.KeyOptional {
+				prompt = kind.Name + " API key (empty if the API needs none): "
+			}
+			var err error
+			if req.APIKey, err = cli.ReadSecret(prompt); err != nil && !kind.KeyOptional {
+				return err
+			}
+		}
+		cx, cancel := ctx()
+		defer cancel()
+		added, err := provider.AddWithKey(cx, c.home, req)
+		if err != nil {
+			if errors.Is(err, provider.ErrKeyRefused) {
+				return fmt.Errorf("%w; nothing was saved", err)
+			}
+			if strings.Contains(err.Error(), "anthropic-workspace-id") {
+				return fmt.Errorf("%w\n   this key is not tied to a workspace: add -header anthropic-workspace-id=<workspace ID>", err)
+			}
+			return err
+		}
+		printAdded(added)
+	case "login":
+		fs := flag.NewFlagSet("provider login", flag.ExitOnError)
+		name := fs.String("name", "", "your name for it (default: the kind)")
+		project := fs.String("project", "", "Google Cloud project ID, for a Google account that has no Code Assist project of its own")
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return usageErr("login <kind> [-name N] [-project ID]")
+		}
+		_ = fs.Parse(args[2:])
+		login, err := provider.StartLogin(args[1], *project)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Open this address in a browser and sign in:\n\n%s\n\n%s\n", login.URL, login.Hint)
+		input, err := cli.Prompt("Paste it here: ")
+		if err != nil {
+			return err
+		}
+		cx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		tok, kind, err := login.Finish(cx, input)
+		if err != nil {
+			return err
+		}
+		added, err := provider.SaveLogin(cx, c.home, kind, *name, tok)
+		if err != nil {
+			return err
+		}
+		printAdded(added)
+	case "rm":
+		if len(args) != 2 {
+			return usageErr("rm <name>")
+		}
+		if err := provider.Remove(c.home, args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("removed %s with its credentials\n", args[1])
+	case "on", "off":
+		if len(args) != 2 {
+			return usageErr(args[0] + " <name>")
+		}
+		if _, err := provider.SetEnabled(c.home, args[1], args[0] == "on"); err != nil {
+			return err
+		}
+	case "models":
+		if len(args) != 2 {
+			return usageErr("models <name>")
+		}
+		cx, cancel := ctx()
+		defer cancel()
+		ms, err := provider.Models(cx, c.home, args[1])
+		if err != nil {
+			return err
+		}
+		for _, m := range ms {
+			fmt.Println(m)
+		}
+		return nil
+	case "test":
+		fs := flag.NewFlagSet("provider test", flag.ExitOnError)
+		model := fs.String("model", "", "the provider's model to ask (default: the first one it sells)")
+		prompt := fs.String("prompt", "", "what to ask")
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return usageErr("test <name> [-model M] [-prompt TEXT]")
+		}
+		_ = fs.Parse(args[2:])
+		cx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		res, used, err := provider.Test(cx, c.home, args[1], *model, *prompt)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s answered: %q\n", used, strings.TrimSpace(res.Text))
+		fmt.Printf("   finish %s, %d prompt + %d completion tokens, %d chunks\n", res.FinishReason, res.PromptTokens, res.CompletionTokens, res.Chunks)
+		if res.Reported > 0 {
+			fmt.Printf("   note: the provider counted %d completion tokens, more than the answer shows (hidden reasoning); buyers pay for at most %d of them\n", res.Reported, res.CompletionTokens)
+		}
+		if res.PromptTokens == 0 && res.CompletionTokens == 0 {
+			fmt.Println("   warning: no token counts came back: jobs would be billed by estimate")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown provider command %q", args[0])
+	}
+	if err := c.reload(); err != nil {
+		return err
+	}
+	return c.showProviders()
+}
+
+func printAdded(a *provider.Added) {
+	v := a.Provider
+	who := v.Key
+	if v.Account != "" {
+		who = v.Account
+	}
+	fmt.Printf("saved provider %s (%s, %s) %s\n", v.Name, v.TypeName, v.Auth, who)
+	if a.Check != nil {
+		fmt.Printf("   models: %s\n", strings.Join(a.Check.Models, ", "))
+		if a.Check.Balance != "" {
+			fmt.Println("   balance", a.Check.Balance)
+		}
+		if a.Check.Unusable {
+			fmt.Println("   warning: the account cannot pay for requests now; jobs will fail until it is topped up")
+		}
+	}
+	if len(v.Models) == 0 {
+		fmt.Printf("next: `sharetoken share add <model> -provider %s`\n", v.Name)
+	}
+}
+
+// showProviders lists the kinds that can be added and the providers configured.
+func (c *cmdCtx) showProviders() error {
+	views, err := provider.Views(c.home)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	if len(views) > 0 {
+		fmt.Fprintln(tw, "NAME\tKIND\tAUTH\tSTATE\tACCOUNT\tMODELS")
+		for _, v := range views {
+			state := "on"
+			if !v.Enabled {
+				state = "off"
+			}
+			who := v.Key
+			if v.Auth == provider.AuthOAuth {
+				who = cmpOr(v.Account, "logged in")
+				if v.Plan != "" {
+					who += " (" + v.Plan + ")"
+				}
+			}
+			var ids []string
+			for _, m := range v.Models {
+				ids = append(ids, m.ID)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, v.Type, v.Auth, state, cmpOr(who, "-"), cmpOr(strings.Join(ids, ","), "-"))
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		fmt.Println()
+	}
+	fmt.Fprintln(tw, "KIND\tADD WITH\tNOTE")
+	for _, k := range provider.KindViews() {
+		var how []string
+		if k.APIKey {
+			how = append(how, "provider add "+k.ID)
+		}
+		if k.OAuth {
+			how = append(how, "provider login "+k.ID)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", k.ID, strings.Join(how, " | "), k.Note)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	fmt.Printf("credentials are kept in %s\n", provider.Path(c.home))
 	return nil
 }
 

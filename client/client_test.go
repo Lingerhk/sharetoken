@@ -84,11 +84,7 @@ func TestConfigRoundTripAndValidation(t *testing.T) {
 	if err != nil || back.Portal != "http://portal" || back.Token != "st_x" || len(back.Share.Models) != 1 || !back.Share.Enabled {
 		t.Fatalf("round trip: %+v %v", back, err)
 	}
-	bad := ShareConfig{Enabled: true}
-	if bad.Validate() == nil {
-		t.Fatal("sharing with no model must be refused")
-	}
-	bad = ShareConfig{Models: []node.ModelConfig{{ID: "m", UpstreamModel: "x"}, {ID: "m", UpstreamModel: "y"}}}
+	bad := ShareConfig{Models: []node.ModelConfig{{ID: "m", UpstreamModel: "x"}, {ID: "m", UpstreamModel: "y"}}}
 	if bad.Validate() == nil {
 		t.Fatal("duplicate ids must be refused")
 	}

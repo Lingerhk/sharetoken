@@ -106,11 +106,13 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 |---|---|---|
 | `enabled` | Whether to take jobs | `false` |
 | `upstream` | The OpenAI-compatible address of the local model server | Ollama: `http://127.0.0.1:11434/v1` |
-| `upstream_key_env` | The name of the environment variable that holds the model server's API key | Empty |
+| `upstream_key_env` | The name of the environment variable that holds the local model server's API key | Empty |
 | `concurrency` | Number of requests handled at the same time | `2` |
 | `relays` | How many relays to register on | `2` |
 | `models` | The models you share. Usually managed with `share add` | Empty |
 | `tee` | Confidential VM type: `off`, `auto`, `sev-snp`, `tdx` | `off` |
+
+Hosted APIs you share (providers) are not in this file: they are kept, with their API keys and logins, in `providers.json` in the same directory. Manage them with the [`provider` command](/docs/share#providers) rather than editing the file.
 
 When you change settings with the `share` subcommands, the running client applies them immediately. After you edit the file by hand, run `{{exe}} share on` once more to reload it.
 

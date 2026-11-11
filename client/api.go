@@ -17,6 +17,7 @@ import (
 	"sharetoken/internal/cli"
 	"sharetoken/node"
 	"sharetoken/p2p"
+	"sharetoken/provider"
 )
 
 // Status is the agent's state, for the CLI and a GUI.
@@ -62,20 +63,25 @@ type RelayView struct {
 // ShareStatus is the sharing side.
 type ShareStatus struct {
 	ShareConfig
-	Running      bool              `json:"running"`
-	Stats        *node.Stats       `json:"stats,omitempty"`
-	Reservations []p2p.RelayStatus `json:"reservations,omitempty"`
+	Providers []provider.View `json:"providers"` // hosted APIs, without their keys
+	// Serving is what the running node sells: the local models and those of
+	// the providers that are on.
+	Serving      []node.ModelConfig `json:"serving"`
+	Running      bool               `json:"running"`
+	Stats        *node.Stats        `json:"stats,omitempty"`
+	Reservations []p2p.RelayStatus  `json:"reservations,omitempty"`
 }
 
 // Status reports the agent's state.
 func (a *Agent) Status() Status {
+	views, _ := provider.Views(a.home)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st := Status{
 		Peer: a.keys.ID(), User: a.cfg.User, Portal: a.cfg.Portal, Started: a.started,
 		Version: version.Version, API: "http://" + a.addr + "/v1", MeasuredAt: a.measured, Buy: a.cfg.Buy,
 		Coordinator: CoordinatorStatus{Peer: a.coord.String(), Via: a.current, Link: a.link.Quality()},
-		Share:       ShareStatus{ShareConfig: a.cfg.Share},
+		Share:       ShareStatus{ShareConfig: a.cfg.Share, Providers: views},
 	}
 	for _, c := range a.h.Network().ConnsToPeer(a.coord) {
 		st.Coordinator.Connected = true
@@ -84,6 +90,7 @@ func (a *Agent) Status() Status {
 	reserved := map[string]bool{}
 	if a.share != nil {
 		st.Share.Running = true
+		st.Share.Serving = a.share.models
 		s := a.share.node.Stats()
 		st.Share.Stats = &s
 		st.Share.Reservations = a.share.reserver.Status()
@@ -141,6 +148,7 @@ func (a *Agent) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, a.Status().Share)
 	})
 	mux.HandleFunc("GET /api/v1/share/detect", a.handleDetect)
+	a.providerRoutes(mux)
 	mux.HandleFunc("POST /api/v1/login/check", func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case a.loginKick <- struct{}{}:

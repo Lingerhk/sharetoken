@@ -17,6 +17,10 @@ sharetoken up
 # 想赚 credit：共享本机模型（默认上游是 Ollama http://127.0.0.1:11434/v1）
 sharetoken share detect                     # 列出本机模型
 sharetoken share add qwen2.5:7b             # 网络上的模型 ID 默认同名；-id 改名，-in/-out 定价
+#   或者共享托管 API（provider，可配多个、各自开关；凭据存 providers.json，与 config.json 分开）：
+sharetoken provider add deepseek            # API key：anthropic / openai / gemini / grok / deepseek / custom（-url）
+sharetoken provider login openai            # OAuth 登录：openai / gemini / antigravity / grok
+sharetoken share add deepseek-flash -provider deepseek
 sharetoken up                               # 已在运行时 share 命令会立即生效，无需重启
 ```
 
@@ -30,6 +34,7 @@ sharetoken up                               # 已在运行时 share 命令会立
 | `balance` | 余额、冻结额、买入/卖出的单数和 token 数 |
 | `jobs [-role buy\|sell] [-n 20]` | 最近的作业 |
 | `share` / `share on\|off\|rm <id>\|upstream <url>` | 共享设置 |
+| `provider` / `provider add <类型> [-name N] [-url URL] [-header K=V] [-no-check]` / `provider login <类型> [-name N] [-project ID]` / `provider models\|test\|on\|off\|rm <名字>` | 托管 API：列出、用 API key 添加（key 从提示、标准输入或 `$SHARETOKEN_PROVIDER_KEY` 读取）、OAuth 登录（打开地址登录后把授权码或回调地址粘贴回来）、查看可用模型、发测试请求、开关、删除。本机 API 对应 `/api/v1/providers…`（见 `client/providers.go` 文件头），返回里不含 key，带 `Origin` 的网页请求一律 403 |
 | `logout` | 吊销本机 token |
 | `login/register -portal-pin sha256:…` | 门户地址内置（测试网用 `SHARETOKEN_PORTAL`），没有 `-portal` 参数；`-portal-pin` 信任门户的自签名证书（指纹存入配置）；`-allow-http` 允许明文门户（仅测试网） |
 | `config` | 查看配置（token 打码） |

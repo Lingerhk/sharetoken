@@ -106,11 +106,13 @@
 |---|---|---|
 | `enabled` | 是否接单 | `false` |
 | `upstream` | 本机模型服务的 OpenAI 兼容地址 | Ollama：`http://127.0.0.1:11434/v1` |
-| `upstream_key_env` | 保存模型服务 API key 的环境变量名 | 空 |
+| `upstream_key_env` | 保存本机模型服务 API key 的环境变量名 | 空 |
 | `concurrency` | 同时处理的请求数 | `2` |
 | `relays` | 在几个中继上预约 | `2` |
 | `models` | 共享的模型。一般用 `share add` 管理 | 空 |
 | `tee` | 机密虚拟机类型：`off`、`auto`、`sev-snp`、`tdx` | `off` |
+
+共享的托管 API（provider）不在这个文件里：它们连同 API key 和登录凭据保存在同一目录的 `providers.json`，用 [`provider` 命令](/docs/share#providers)管理，不建议手动编辑。
 
 用 `share` 子命令修改时，运行中的客户端立即生效。手动编辑文件后，再运行一次 `{{exe}} share on` 让它重新加载。
 

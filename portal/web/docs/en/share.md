@@ -3,11 +3,11 @@
 Share a model on your machine with the network and earn credit for the tokens actually served. You do not need a public IP or open ports.
 
 > [!WARNING]
-> **Running a model requires decrypting the request, so your machine can see the prompts that others send.** Do not log or store them. Share only models that run on your own machine and that you have the right to share.
+> **Running a model requires decrypting the request, so your machine can see the prompts that others send.** Do not log or store them. Share only models that you have the right to share.
 
 ## Step 1: Prepare a model server {#server}
 
-By default the client works with Ollama on your machine. For other OpenAI-compatible model servers, see [Use another model server](#other-server).
+By default the client works with Ollama on your machine. For other OpenAI-compatible model servers, see [Use another model server](#other-server). To share a service you have an account for at a model provider, see [Share a hosted API](#providers).
 
 ::: macos
 ```bash
@@ -92,7 +92,7 @@ If you see `sharing 1 model(s): ...`, you are online. If there is an `offer not 
 | Action | Command |
 |---|---|
 | View settings | `{{exe}} share` |
-| List local models | `{{exe}} share detect` |
+| List the local models | `{{exe}} share detect` |
 | Change a price (add the same ID again) | `{{exe}} share add gemma4:e4b -id gemma-4-e4b -in 80000 -out 150000` |
 | Remove a model | `{{exe}} share rm gemma-4-e4b` |
 | Pause taking jobs | `{{exe}} share off` |
@@ -108,7 +108,82 @@ Any local service with an OpenAI-compatible interface works, such as LM Studio, 
 {{exe}} share add my-local-model -id my-model
 ```
 
-If the model server needs an API key, put the key in an environment variable and write the variable's name in `share.upstream_key_env` in the [configuration file](/docs/config#share).
+If the local model server needs an API key, put the key in an environment variable and write the variable's name in `share.upstream_key_env` in the [configuration file](/docs/config#share).
+
+## Share a hosted API {#providers}
+
+Besides models that run on your machine, you can share a service you have an account for at a model provider: the client forwards buyers' requests to the provider and the answers back. Buyers always use the OpenAI format; the client converts between it and each provider's own. Each such source is called a provider. You can set up several and turn each on or off.
+
+> [!WARNING]
+> Requests go to the provider in plain text, and the usage counts against your account there. Check that the provider's terms allow this use, and set your prices above your cost.
+
+| Kind | API key | Login (OAuth) |
+|---|---|---|
+| `anthropic` | Yes | — |
+| `openai` | Yes | Yes (ChatGPT account) |
+| `gemini` | Yes | Yes (Google account) |
+| `antigravity` | — | Yes (Google account) |
+| `grok` | Yes | Yes |
+| `deepseek` | Yes | — |
+| `custom` | Yes: any OpenAI-compatible API, with its address in `-url` | — |
+
+### Add one with an API key {#provider-key}
+
+```bash
+{{exe}} provider add deepseek
+```
+
+The client asks for the API key (it is not shown as you type), asks the provider whether the key works, and saves it:
+
+```text
+DeepSeek API key:
+saved provider deepseek (DeepSeek, apikey) sk-…9b35
+   models: deepseek-flash, deepseek-v4-pro
+   balance 327.18 CNY
+```
+
+Then add the models to share and go online:
+
+```bash
+{{exe}} share add deepseek-flash -provider deepseek -in 100000 -out 200000
+{{exe}} up
+```
+
+For any other OpenAI-compatible API, use `custom`. To set up several accounts of one kind, give each a name with `-name`:
+
+```bash
+{{exe}} provider add custom -name myapi -url https://api.example.com/v1
+{{exe}} provider add openai -name openai-team2
+```
+
+- **In scripts:** without a terminal, the client reads one line from standard input. You can also put the key in the environment variable `SHARETOKEN_PROVIDER_KEY`. There is no command-line argument for it, so that the key does not stay in your shell history.
+- **An Anthropic key that is not tied to a workspace:** add `-header anthropic-workspace-id=WORKSPACE_ID`.
+- **A model's output limit:** when the provider refuses a request because of the output limit, the client sends it again within the limit the provider named, and keeps to it afterwards. To set a limit in advance, use `-max-output` in `share add`.
+- **Hidden reasoning is not billed:** some models do not return their reasoning, but the provider still counts it as usage. Buyers pay only for the output they receive, so these tokens earn nothing. `{{exe}} provider test` tells you when this happens. Take it into account in your prices.
+
+### Add one with a login {#provider-login}
+
+```bash
+{{exe}} provider login openai
+```
+
+The client shows a sign-in address. Open it in a browser on any computer and sign in. Then, as the client tells you, paste back the authorization code, or the whole address of the page the browser ends on (that page does not load). The login is renewed automatically.
+
+If a Google account has no project of its own, `gemini` and `antigravity` need a Google Cloud project ID in `-project`.
+
+### Manage providers {#provider-manage}
+
+| Action | Command |
+|---|---|
+| List the kinds and the providers you set up | `{{exe}} provider` |
+| List the models a provider can use | `{{exe}} provider models deepseek` |
+| Send one test request | `{{exe}} provider test deepseek -model deepseek-flash` |
+| Pause or resume a provider | `{{exe}} provider off deepseek`, `{{exe}} provider on deepseek` |
+| Change the key (add it again under the same name; the models stay) | `{{exe}} provider add deepseek` |
+| Delete a provider and its credentials | `{{exe}} provider rm deepseek` |
+
+- **Where credentials are kept:** keys and logins are in `providers.json` in the state directory, apart from `config.json`. Only your account can read the file. Neither the commands nor the local API show a whole key.
+- **Refused credentials or an empty account:** jobs fail, and `{{exe}} status` shows `warning: deepseek refused its credentials ...` or `... is out of balance ...`. Failed jobs count against your node, so fix it soon.
 
 ## Concurrency and performance {#tuning}
 

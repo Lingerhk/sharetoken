@@ -258,7 +258,7 @@ func TestDocsCommandsExist(t *testing.T) {
 		t.Fatalf("parsed only %v", commands)
 	}
 	shareSubs := map[string]bool{"detect": true, "add": true, "rm": true, "on": true, "off": true, "upstream": true}
-	flags := map[string]bool{"home": true}
+	flags := map[string]bool{"home": true, "header": true}
 	for _, m := range regexp.MustCompile(`fs\.(?:String|Bool|Int|Uint64)\("([a-z-]+)"`).FindAllStringSubmatch(main, -1) {
 		flags[m[1]] = true
 	}
