@@ -79,9 +79,10 @@ sharetoken up                               # 客户端已在运行时，share �
 | `provider models <name>`、`provider test <name> [-model M] [-prompt TEXT]` | 列出凭据可用的模型；经该 provider 发一个小请求。 |
 | `provider on <name>`、`provider off <name>`、`provider rm <name>` | 开始出售它的模型、停止，或连同凭据一起删除。 |
 | `pair` | 本账户和谁配对，以及它的配对码。 |
-| `pair code [-label L] [-ttl 24h] [-uses N]` | 卖家：生成一个配对码发给买家。默认有效 24 小时，`-ttl` 可改（最长 90 天）；默认不限买家数，`-uses` 可限制。 |
+| `pair code [-label L] [-ttl 24h] [-uses N]` | 卖家：生成一个配对码发给买家。默认有效 24 小时，`-ttl` 可改（最长 30 天）；默认不限买家数，`-uses` 可限制。 |
 | `pair join <code>` | 买家：和生成这个配对码的卖家配对。此后本账户只向配对的卖家购买。 |
 | `pair leave <seller id>`、`pair rm <buyer id>`、`pair revoke <code id>` | 买家一侧或卖家一侧解除配对；让一个配对码不再接纳新买家。 |
+| `pair private on\|off` | 卖家：私有模式。开启期间，只有和本账户配对的买家会被撮合过来，也只有他们能看到它的模型。 |
 | `logout` | 吊销本机的 token。运行中的客户端随即停止。 |
 | `config` | 查看配置（token 打码）。 |
 | `version [--check]` | 本客户端的构建信息；`--check` 向门户查询是否有新版本。 |
@@ -93,7 +94,7 @@ sharetoken up                               # 客户端已在运行时，share �
 - 客户端默认同时监听 IPv4 和 IPv6、TCP 和 QUIC（`/ip4/0.0.0.0`、`/ip6/::`，端口由系统分配）。没有 IPv6 的机器自动跳过对应监听。
 - 不需要开放任何端口。卖家在中继上预约，买家经中继或打洞连过来。
 - 出售托管 API 的卖家模式见 [providers.md](providers.md)。
-- 配对发生在账户之间，不是设备之间。一个买家最多配对 20 个卖家，一个卖家最多 1000 个买家。买家只要有一个配对，就只会被撮合到配对的卖家，`models` 也只列出他们出售的模型；没有配对的买家可以向任何人购买。卖家照常服务没有配对的买家。双方看到的对方账户名是打码的（`al***@example.com`）。见 [architecture.md](architecture.md) 第 2.13 节。
+- 配对发生在账户之间，不是设备之间。一个买家最多配对 3 个卖家，一个卖家最多 1000 个买家。买家只要有一个配对，就只会被撮合到配对的卖家，`models` 也只列出他们出售的模型；没有配对的买家可以向任何人购买。卖家照常服务没有配对的买家，除非开启了私有模式。双方看到的对方账户名是打码的（`al***@example.com`）。见 [architecture.md](architecture.md) 第 2.13 节。
 
 ### 1.4 状态目录里的文件
 
@@ -278,8 +279,8 @@ coordinator -db $DSN -fee-bps 500 \
 | `/` | 所有人 | 官网：项目介绍、安全设计、下载。 |
 | `/docs/`、`/changelog/` | 所有人 | 用户指南和更新日志。 |
 | `/downloads/<file>` | 所有人 | `downloads.dir` 目录里的客户端安装包；`GET /api/v1/downloads` 列出每一类的最新版本，官网显示实际存在的包。没有配置目录时不提供下载。 |
-| `/app/`（`/login` 跳转到这里） | 用户 | 注册和登录；总览（余额、冻结额、买卖汇总）；账单；作业（按买入或卖出筛选）；API token（明文只显示一次）及其吊销；设备改名和解绑；网络（协调器、中继可达性）；账户（改密码，可同时吊销其它会话）；反馈。 |
-| `/admin/` | 管理员 | 仪表盘和总览（账本回放、流通额、手续费、中继、作业统计、各账户余额）；用户（搜索、新建、发放或扣减 credit、禁用、设置或撤销管理员、重置密码、吊销 token、解绑设备、账单与作业）；中继（登记、编辑、启用、停用、删除）；客户端版本；全部作业（按状态和用户筛选）；节点记录；推理审计；争议及其人工裁决（付款给节点或退款给买家）；全局账本；邮件；反馈；操作日志；系统设置。 |
+| `/app/`（`/login` 跳转到这里） | 用户 | 注册和登录；总览（余额、冻结额、买卖汇总）；账单；作业（按买入或卖出筛选）；API token（明文只显示一次）及其吊销；设备改名和解绑；配对（兑换配对码、解除卖家；生成和撤销配对码、移除买家、私有模式）；网络（协调器、中继可达性）；账户（改密码，可同时吊销其它会话）；反馈。 |
+| `/admin/` | 管理员 | 仪表盘和总览（账本回放、流通额、手续费、中继、作业统计、各账户余额）；用户（搜索、新建、发放或扣减 credit、禁用、设置或撤销管理员、重置密码、吊销 token、解绑设备、账单与作业）；中继（登记、编辑、启用、停用、删除）；客户端版本；全部作业（按状态和用户筛选）；节点记录；推理审计；争议及其人工裁决（付款给节点或退款给买家）；配对（谁只向谁购买、私有卖家）；全局账本；邮件；反馈；操作日志；系统设置。 |
 
 - 浏览器会话默认 24 小时（`serve -session-ttl`，或系统设置页）。它存放在 HttpOnly cookie 里，页面脚本读不到。在 API Token 页上它显示为「web session」，当前会话有标记，任何一个都可以吊销。
 - 管理员用同一个账号进入 `/admin/`。其他人打开它只会看到「不是管理员」。
@@ -306,7 +307,7 @@ coordinator -db $DSN -fee-bps 500 \
 | `POST /api/v1/share/reload` | 从 `config.json` 重新加载共享设置。 |
 | `GET /api/v1/share/detect[?upstream=]` | 列出本机模型服务上的模型。 |
 | `/api/v1/providers…` | 托管 API 的 provider：列出、添加、开关、删除、可用模型、测试请求、OAuth 登录。路由列在 [`internal/client/providers.go`](../../internal/client/providers.go) 的文件头。返回内容里从不包含 key；`Origin` 不是 API 自身地址的请求一律 403。 |
-| `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`POST /api/v1/pairing/redeem`、`DELETE /api/v1/pairing/sellers/{id}`、`DELETE /api/v1/pairing/buyers/{id}` | 配对，带着用户的 token 转给门户的同名接口（[`internal/client/pairing.go`](../../internal/client/pairing.go)）。 |
+| `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`POST /api/v1/pairing/redeem`、`DELETE /api/v1/pairing/sellers/{id}`、`DELETE /api/v1/pairing/buyers/{id}`、`PUT /api/v1/pairing/private` | 配对，带着用户的 token 转给门户的同名接口（[`internal/client/pairing.go`](../../internal/client/pairing.go)）。 |
 | `POST /api/v1/login/check` | 立即检查登录是否仍然有效（`sharetoken logout` 会调用）。平时每分钟检查一次；登录失效后，`up` 退出，daemon 转为 `expired` 状态。 |
 | `POST /v1/chat/completions`、`GET /v1/models` | OpenAI 兼容端点。响应带有 `X-Sharetoken-Job`、`X-Sharetoken-Node`、`X-Sharetoken-Verified`、`X-Sharetoken-Cost-Micros` 这几个头，节点经过证明时还有 `X-Sharetoken-TEE`。 |
 
@@ -350,10 +351,12 @@ coordinator -db $DSN -fee-bps 500 \
 | `GET /api/v1/jobs?role=&limit=&before=` | 是 | 作业：角色、模型、状态、token 数、费用、收入。 |
 | `GET /api/v1/usage` | 是 | 买入和卖出汇总。 |
 | `POST /api/v1/feedback`、`GET /api/v1/feedback` | 是 | 提交反馈；列出自己的反馈。 |
-| `GET /api/v1/pairing` | 是 | 调用者的配对：`sellers[]` 和 `buyers[]`（`id`、打码的 `username`、`label`、`since`），有效的 `codes[]`（`id`、`code`、`label`、`max_uses`、`used`、`expires_at`），以及 `restricted`（为 true 时只向 `sellers` 购买）。 |
-| `POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}` | 是 | 生成配对码（`label`、`ttl_hours`、`max_uses`；0 表示一天、不限人数）和撤销配对码。用被撤销的码建立的配对保留。有效配对码达到 20 个时 409 `limit`。 |
+| `GET /api/v1/pairing` | 是 | 调用者的配对：`sellers[]` 和 `buyers[]`（`id`、打码的 `username`、`label`、`since`），有效的 `codes[]`（`id`、`code`、`label`、`max_uses`、`used`、`expires_at`），`restricted`（为 true 时只向 `sellers` 购买）、`private`（为 true 时只卖给 `buyers`）和 `max_sellers`。 |
+| `POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}` | 是 | 生成配对码（`label`、`ttl_hours` 最大 720、`max_uses`；0 表示一天、不限人数）和撤销配对码。用被撤销的码建立的配对保留。有效配对码达到 20 个时 409 `limit`。 |
 | `POST /api/v1/pairing/redeem` | 是 | `{code}`：调用者作为买家和配对码的卖家配对。404 `bad_code`（错误、过期、已撤销或已用完；和登录失败一样计数，之后 429 `throttled`），409 `own_code`，409 `limit`。 |
 | `DELETE /api/v1/pairing/sellers/{id}`、`DELETE /api/v1/pairing/buyers/{id}` | 是 | 以买家或卖家身份解除一个配对。 |
+| `PUT /api/v1/pairing/private` | 是 | `{enabled}`：开启或关闭调用者的私有模式。 |
+| `GET /api/v1/admin/pairings?user=` | 管理员 | 全部配对：买家、卖家（完整账户名）、配对码备注、时间、卖家是否私有。`user` 匹配任一方账户名的一部分。 |
 | `GET /api/v1/admin/overview`、`GET /api/v1/admin/dashboard`、`GET /api/v1/admin/relay-history?range=` | 管理员 | 平台汇总与账本回放；仪表盘数据；中继历史。 |
 | `GET /api/v1/admin/users`、`POST /api/v1/admin/users`、`GET /api/v1/admin/users/{name}` | 管理员 | 用户列表、创建用户、用户详情（余额、用量、设备、token）。 |
 | `GET /api/v1/admin/users/search?q=&limit=&offset=` | 管理员 | 按用户名搜索（通配符按字面匹配）。每行带余额、冻结额、设备数和 token 数；同时返回总数。 |

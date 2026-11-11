@@ -193,7 +193,7 @@ Pairing ties buyers to you. Make a pairing code and hand it to the people you wa
 {{exe}} pair code -label team
 ```
 
-The command prints the code, for example `ABCD-EFGH-IJKL-MNOP`. It lasts 24 hours unless you pass `-ttl`, and admits any number of buyers unless you pass `-uses`. Each buyer then runs:
+The command prints the code, for example `ABCD-EFGH-IJKL-MNOP`. It lasts 24 hours unless you pass `-ttl` (30 days at most), and admits any number of buyers unless you pass `-uses`. Each buyer then runs:
 
 ```bash
 {{exe}} pair join ABCD-EFGH-IJKL-MNOP
@@ -204,14 +204,17 @@ The command prints the code, for example `ABCD-EFGH-IJKL-MNOP`. It lasts 24 hour
 | See your buyers, the sellers you are paired with, and your codes | `{{exe}} pair` |
 | Remove one of your buyers | `{{exe}} pair rm 42` |
 | Stop a code from admitting more buyers | `{{exe}} pair revoke 7` |
+| Serve only your paired buyers (private mode), or anyone again | `{{exe}} pair private on`, `{{exe}} pair private off` |
 | As a buyer, end the pairing with a seller | `{{exe}} pair leave 42` |
 
 - **What a paired buyer sees:** only the models of the sellers it is paired with. When none of them offers a model, or all of them are offline, the request fails. It is not sent to another seller.
-- **What does not change:** prices, billing, receipts and audits work as for any other job. Pairing does not make you a private seller: buyers that are not paired with anyone can still be matched to you.
+- **What does not change:** prices, billing, receipts and audits work as for any other job. Pairing alone does not close you to others: buyers that are not paired with anyone can still be matched to you.
+- **Private mode:** turn it on and only the buyers paired with you are matched to you and see your models. Everyone else is sent elsewhere. Turn it off to sell to anyone again.
+- **A buyer's limit:** one buyer can be paired with at most three sellers at a time.
 - **Who sees what:** you see part of each buyer's account name, and they see part of yours.
 - **Ending it:** either side can end a pairing at any time. A buyer with no pairings left buys from any seller again.
 
-The desktop app has the same under **Sharing → Pairing** for sellers and **Overview → Paired sellers** for buyers.
+The desktop app has the same under **Sharing → Pairing** for sellers and **Overview → Paired sellers** for buyers, and so does the **Pairing** page of the web portal.
 
 ## Concurrency and performance {#tuning}
 

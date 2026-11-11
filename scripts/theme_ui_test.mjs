@@ -95,7 +95,7 @@ await waitFor(`document.querySelector('.sidenav a.active') && document.querySele
 // ---- the frame ----
 console.log('frame');
 ok(await ev(`[...document.querySelectorAll('.sidenav a')].every(a => a.querySelector('svg') && a.textContent.trim())`), 'every module has an icon and a name');
-ok(await ev(`document.querySelectorAll('.sidenav a').length`) === 8, 'the user portal lists its eight modules');
+ok(await ev(`document.querySelectorAll('.sidenav a').length`) === 9, 'the user portal lists its nine modules');
 ok(await ev(`!!document.querySelector('main h1 .chip svg')`), 'the page title carries the icon of its module');
 ok((await ev(`document.querySelector('.crumb').textContent`)).includes('总览'), 'the top bar names the current module');
 ok(await ev(`document.querySelectorAll('.tile .chip svg').length`) === await ev(`document.querySelectorAll('.tile').length`), 'every tile has an icon');
@@ -237,7 +237,7 @@ await waitFor(`document.querySelector('.sidenav')`);
 ok(await theme() === 'light', 'the choice carries back to the portal');
 
 // ---- every user page, both themes, phone and desktop ----
-const USER = ['home', 'ledger', 'jobs', 'tokens', 'devices', 'network', 'account', 'feedback'];
+const USER = ['home', 'ledger', 'jobs', 'tokens', 'devices', 'pairing', 'network', 'account', 'feedback'];
 async function pages(path, routes, label) {
   for (const [w, h, phone] of [[1440, 900, false], [390, 780, true]]) {
     await size(w, h, phone);
@@ -296,8 +296,8 @@ if (process.env.ADMIN) {
   await fill('#mfa-code', totp(secret));
   await ev(`document.querySelector('.login form').requestSubmit()`);
   await waitFor(`document.querySelector('.sidenav a.active') && document.querySelector('main h1')`);
-  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 14, 'all fourteen admin modules have icons');
-  await pages('/admin/', ['overview', 'users', 'relays', 'versions', 'jobs', 'nodes', 'audits', 'disputes', 'ledger', 'mail', 'feedback'], 'admin');
+  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 15, 'all fifteen admin modules have icons');
+  await pages('/admin/', ['overview', 'users', 'relays', 'versions', 'jobs', 'nodes', 'audits', 'disputes', 'pairings', 'ledger', 'mail', 'feedback'], 'admin');
   await size(1440, 900);
   await ev(`location.hash = '#/users/' + encodeURIComponent(${JSON.stringify(name)})`);
   await waitFor(`document.querySelector('main h1 .chip') && document.querySelector('main .tile')`);

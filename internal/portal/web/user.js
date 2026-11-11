@@ -29,7 +29,7 @@
     title: tr('用户门户'), role: me().user.is_admin ? tr('管理员') : tr('普通用户'), extra: balancePill,
     items: [
       { route: 'home', icon: 'grid', label: tr('总览') }, { route: 'ledger', icon: 'creditCard', label: tr('账单') }, { route: 'jobs', icon: 'bolt', label: tr('作业') },
-      { route: 'tokens', icon: 'key', label: 'API Token' }, { route: 'devices', icon: 'desktop', label: tr('设备') }, { route: 'network', icon: 'globe', label: tr('网络') },
+      { route: 'tokens', icon: 'key', label: 'API Token' }, { route: 'devices', icon: 'desktop', label: tr('设备') }, { route: 'pairing', icon: 'swap', label: tr('配对') }, { route: 'network', icon: 'globe', label: tr('网络') },
       { route: 'account', icon: 'user', label: tr('账户') }, { route: 'feedback', icon: 'chat', label: tr('反馈') },
     ],
     links: [{ href: '/docs/', icon: 'book', label: tr('文档') }, me().user.is_admin ? { href: '/admin/', icon: 'shield', label: tr('管理控制台') } : null].filter(Boolean),
@@ -189,6 +189,94 @@
     add(m, section('lock', tr('修改密码')), h('div', { class: 'card' }, form));
   }
 
+  // Pairing: as a buyer, the sellers this account buys from; as a seller, its
+  // codes, its buyers and private mode. The coordinator applies it.
+  async function pairing(m) {
+    const pairErr = ex => ({
+      bad_code: tr('配对码不对，或者已经过期、被撤销或用完'),
+      own_code: tr('这是你自己的配对码，请把它发给要配对的买家'),
+      limit: tr('已达到数量上限，请先解除或撤销一些'),
+      throttled: tr('尝试次数太多，请几分钟后再试'),
+    })[ex.code] || ex.message;
+    const bad = ex => toast(pairErr(ex), 'bad');
+    add(m, pageTitle(tr('配对'), h('small', null, tr('卖家发出配对码，买家兑换后只向和它配对的卖家购买'))));
+    const buying = h('div', { id: 'pair-buying' }), selling = h('div', { id: 'pair-selling' });
+    add(m, buying, selling);
+
+    const code = input({ type: 'text', id: 'pair-code', maxlength: 64, placeholder: 'XXXX-XXXX-XXXX-XXXX', class: 'mono', autocapitalize: 'characters', spellcheck: 'false', required: true });
+    const joinForm = h('form', { class: 'form', id: 'pair-join-form', onsubmit: async e => {
+      e.preventDefault();
+      try {
+        const seller = await api('POST', '/api/v1/pairing/redeem', { code: code.value.trim() });
+        code.value = '';
+        toast(tr('已和卖家 {name} 配对', { name: seller.username }));
+        await load();
+      } catch (ex) { bad(ex); }
+    } }, h('div', { class: 'row' }, field(tr('配对码'), code)), h('div', null, h('button', { class: 'primary', type: 'submit', id: 'pair-join' }, tr('配对'))));
+
+    const label = input({ type: 'text', id: 'pair-label', maxlength: 64, dir: 'auto' });
+    const ttl = h('select', { id: 'pair-ttl' }, h('option', { value: '24' }, tr('1 天')), h('option', { value: '168' }, tr('7 天')), h('option', { value: '720' }, tr('30 天')));
+    const uses = input({ type: 'number', id: 'pair-uses', min: 1, max: 1000, step: 1, placeholder: tr('不限') });
+    const codeForm = h('form', { class: 'form', id: 'pair-code-form', onsubmit: async e => {
+      e.preventDefault();
+      try {
+        const c = await api('POST', '/api/v1/pairing/codes', { label: label.value.trim(), ttl_hours: Number(ttl.value), max_uses: Number(uses.value) || 0 });
+        label.value = uses.value = '';
+        await load();
+        await modal({ title: tr('配对码已生成'), cancel: false, okText: tr('完成'), body: h('div', { id: 'pair-new' },
+          h('p', null, tr('把它发给要配对的买家。拿到它的人都能和你配对，请只发给你信任的人。')), secret(c.code),
+          h('p', { class: 'muted' }, tr('到期时间：{time}', { time: time(c.expires_at) }))) });
+      } catch (ex) { bad(ex); }
+    } }, h('div', { class: 'row' }, field(tr('备注（配对的买家也会看到，可不填）'), label), field(tr('有效期'), ttl), field(tr('可配对的买家数'), uses)),
+      h('div', null, h('button', { class: 'primary', type: 'submit', id: 'pair-new-code' }, tr('生成配对码'))));
+
+    const who = u => [u.username, u.disabled ? [' ', badge(tr('已停用'), 'bad')] : null];
+    const end = (cls, text, title, question, path) => h('button', { class: 'small danger ' + cls, onclick: async () => {
+      if (!await confirm(title, question, text)) return;
+      try { await api('DELETE', path); await load(); } catch (ex) { bad(ex); }
+    } }, text);
+
+    async function load() {
+      const v = await api('GET', '/api/v1/pairing');
+      add(clear(buying),
+        section('swap', tr('配对的卖家'), h('small', null, tr('最多同时配对 {n} 个卖家', { n: num(v.max_sellers) }))),
+        h('div', { class: 'card' }, joinForm),
+        v.restricted ? h('div', { class: 'card warn', id: 'pair-restricted' }, tr('这个账户现在只向下面的卖家购买。全部解除后，恢复为向整个网络购买。')) : null,
+        h('div', { class: 'card', id: 'pair-sellers' }, table([
+          { title: tr('卖家'), cell: who },
+          { title: tr('备注'), cell: u => u.label || '—' },
+          { title: tr('配对时间'), cell: u => time(u.since) },
+          { title: '', cell: u => end('pair-leave', tr('解除'), tr('解除配对'), tr('解除和卖家 {name} 的配对？之后这个账户不再向他购买，除非重新配对。', { name: u.username }), '/api/v1/pairing/sellers/' + u.id) },
+        ], v.sellers, tr('还没有配对卖家，可以向网络上所有卖家购买'))));
+
+      const priv = h('input', { type: 'checkbox', id: 'pair-private', checked: v.private, onchange: async () => {
+        priv.disabled = true;
+        try { await api('PUT', '/api/v1/pairing/private', { enabled: priv.checked }); toast(priv.checked ? tr('私有模式已开启') : tr('私有模式已关闭')); }
+        catch (ex) { bad(ex); }
+        await load();
+      } });
+      add(clear(selling),
+        section('users', tr('我的买家'), h('small', null, tr('生成配对码发给你的买家'))),
+        h('div', { class: 'card' }, h('label', { class: 'check' }, priv, h('span', null, h('b', null, tr('私有模式')), ' ',
+          h('span', { class: 'muted' }, tr('只为和你配对的买家服务。开启后，其他买家看不到你的模型，也不能向你购买。'))))),
+        h('div', { class: 'card' }, codeForm),
+        h('div', { class: 'card', id: 'pair-codes' }, table([
+          { title: tr('配对码'), cell: c => secret(c.code) },
+          { title: tr('备注'), cell: c => c.label || '—' },
+          { title: tr('已配对'), num: true, cell: c => c.max_uses ? num(c.used) + ' / ' + num(c.max_uses) : tr('{n}（不限）', { n: num(c.used) }) },
+          { title: tr('到期时间'), cell: c => time(c.expires_at) },
+          { title: '', cell: c => end('pair-revoke', tr('撤销'), tr('撤销配对码'), tr('撤销配对码 {code}？它不能再用来配对，已经配对的买家不受影响。', { code: c.code }), '/api/v1/pairing/codes/' + c.id) },
+        ], v.codes, tr('没有有效的配对码'))),
+        h('div', { class: 'card', id: 'pair-buyers' }, table([
+          { title: tr('买家'), cell: who },
+          { title: tr('备注'), cell: u => u.label || '—' },
+          { title: tr('配对时间'), cell: u => time(u.since) },
+          { title: '', cell: u => end('pair-remove', tr('移除'), tr('移除买家'), tr('移除买家 {name}？如果这是他唯一配对的卖家，他会恢复为向整个网络购买。', { name: u.username }), '/api/v1/pairing/buyers/' + u.id) },
+        ], v.buyers, tr('还没有买家和你配对'))));
+    }
+    await load();
+  }
+
   const FEEDBACK_KIND = { bug: () => tr('问题'), idea: () => tr('建议'), other: () => tr('其他') };
 
   async function feedback(m) {
@@ -219,6 +307,6 @@
     await list.reload();
   }
 
-  const go = ST.router({ home, ledger, jobs, tokens, devices, network, account, feedback }, nav, main, 'home');
+  const go = ST.router({ home, ledger, jobs, tokens, devices, pairing, network, account, feedback }, nav, main, 'home');
   await go();
 })();

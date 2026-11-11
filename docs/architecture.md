@@ -174,9 +174,9 @@ The portal serves its pages from the binary: the public site (`/`), the user pag
 
 ### 2.13 Pairing: a buyer bound to its sellers
 
-A seller can keep a group of buyers to itself, and a buyer can limit whom its prompts go to, without a separate network. The seller makes a pairing code (`internal/accounts/pairing.go`): 80 random bits written as 16 base32 characters, valid for a day by default and at most 90 days, for any number of buyers or a set number. A buyer redeems it at the portal and the two accounts are paired. One seller can have many buyers (up to 1000) and one buyer several sellers (up to 20). Either side can end a pairing, and revoking a code leaves the pairings made with it.
+A seller can keep a group of buyers to itself, and a buyer can limit whom its prompts go to, without a separate network. The seller makes a pairing code (`internal/accounts/pairing.go`): 80 random bits written as 16 base32 characters, valid for a day by default and at most 30 days, for any number of buyers or a set number. A buyer redeems it at the portal and the two accounts are paired. One seller can have many buyers (up to 1000) and one buyer up to three sellers. Either side can end a pairing, and revoking a code leaves the pairings made with it.
 
-The coordinator enforces it, not the client. When it issues a ticket or lists models for a peer, it looks up the sellers the peer's account is paired with; if there are any, every node of another account is left out, also when the request names a node. A buyer with no pairing is matched as before, and a seller keeps serving buyers that are not paired with it. Pairings are read from the database on each request, so a change takes effect on the next request.
+The coordinator enforces it, not the client. When it issues a ticket or lists models for a peer, it looks up the sellers the peer's account is paired with; if there are any, every node of another account is left out, also when the request names a node. A buyer with no pairing is matched as before, and a seller keeps serving buyers that are not paired with it, unless it has turned on private mode: then only its paired buyers are matched to it and see its models. Private sellers are still audited: an audit identity is matched to them like a paired buyer. Pairings are read from the database on each request, so a change takes effect on the next request.
 
 Pairing is between accounts: every device of the buyer is bound by it and every device of the seller serves it. The portal shows each side only a masked form of the other's account name, because a code can travel further than its seller intended. Wrong codes are throttled like failed logins.
 
@@ -187,7 +187,7 @@ The portal, the coordinator and the mail server share one MySQL 8 (InnoDB) datab
 | Tables | Written by | Read by |
 |---|---|---|
 | `users`, `api_tokens`, `devices` | Portal | Coordinator (`devices`, to resolve accounts), portal |
-| `pairing_codes`, `pairings` | Portal | Coordinator (`pairings`, to match), portal |
+| `pairing_codes`, `pairings`, `pairing_private` | Portal | Coordinator (`pairings` and `pairing_private`, to match), portal |
 | `relays` | Portal (registry), coordinator (reachability) | Portal, coordinator |
 | `ledger_accounts`, `ledger_holds`, `ledger_entries` | Portal (grants and deductions), coordinator (holds, settlements, refunds) | Both |
 | `jobs`, `nodes`, `audits`, `peers`, `meta` | Coordinator | Portal (billing, usage, coordinator ID) |

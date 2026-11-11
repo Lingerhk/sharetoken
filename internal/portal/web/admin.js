@@ -19,7 +19,7 @@
     title: '管理控制台', role: '管理员',
     items: [
       { route: 'dashboard', icon: 'chart', label: '仪表盘' }, { route: 'overview', icon: 'grid', label: '总览' }, { route: 'users', icon: 'users', label: '用户' }, { route: 'relays', icon: 'server', label: '中继' }, { route: 'versions', icon: 'cube', label: '版本' },
-      { route: 'jobs', icon: 'bolt', label: '作业' }, { route: 'nodes', icon: 'cpu', label: '节点' }, { route: 'audits', icon: 'shield', label: '推理审计' }, { route: 'disputes', icon: 'warning', label: '争议' },
+      { route: 'jobs', icon: 'bolt', label: '作业' }, { route: 'nodes', icon: 'cpu', label: '节点' }, { route: 'audits', icon: 'shield', label: '推理审计' }, { route: 'disputes', icon: 'warning', label: '争议' }, { route: 'pairings', icon: 'swap', label: '配对' },
       { route: 'ledger', icon: 'database', label: '账本' }, { route: 'mail', icon: 'mail', label: '邮件', badge: mailBadge }, { route: 'feedback', icon: 'chat', label: '反馈', badge: feedbackBadge },
       { route: 'oplog', icon: 'book', label: '操作日志' }, { route: 'settings', icon: 'cog', label: '系统设置' },
     ],
@@ -797,6 +797,23 @@
   }
   api('GET', '/api/v1/admin/feedback?limit=1&status=new').then(r => setFeedbackNew(r.new)).catch(() => { /* the page itself reports errors */ });
 
+  // ---- pairings ----
+  // Who buys only from whom: every pairing, with both account names in full.
+  async function pairings(m) {
+    const user = input({ type: 'search', id: 'pairings-user', placeholder: '买家或卖家的账户名' });
+    let timer;
+    user.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => list.reload(), 300); });
+    const list = ST.listView({ path: '/api/v1/admin/pairings', key: 'pairings', empty: '没有配对关系', params: () => ({ user: user.value.trim() }), tools: [user],
+      columns: [
+        { title: '配对时间', cell: p => ST.time(p.since) },
+        { title: '买家', cell: p => userLink(p.buyer) },
+        { title: '卖家', cell: p => [userLink(p.seller), p.seller_private ? [' ', badge('私有', 'warn')] : null] },
+        { title: '配对码备注', cell: p => p.label || h('span', { class: 'muted' }, '—') },
+      ] });
+    add(m, pageTitle('配对', h('small', null, '买家只向和它配对的卖家购买；标记「私有」的卖家只为配对的买家服务')), list.el);
+    await list.reload();
+  }
+
   // ---- audit log ----
   const AUDIT_ACTIONS = {
     'auth.admin_login': '管理员登录', 'user.create': '创建用户', 'user.credit': '调整 credit', 'user.disable': '禁用用户', 'user.enable': '启用用户', 'user.set_admin': '变更管理员权限',
@@ -1013,7 +1030,7 @@
       h('div', { class: 'settings-actions' }, saveBtn, updated, err));
   }
 
-  const go = ST.router({ dashboard, overview, users, relays, versions, jobs, nodes, audits, disputes, ledger, mail, feedback, oplog, settings }, nav, main, 'dashboard');
+  const go = ST.router({ dashboard, overview, users, relays, versions, jobs, nodes, audits, disputes, pairings, ledger, mail, feedback, oplog, settings }, nav, main, 'dashboard');
   refreshUnread();
   await go();
 })();

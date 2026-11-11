@@ -129,14 +129,22 @@ models. The rule is applied by the coordinator on every request, for every
 device of the account, also when the request names a node, so a modified client
 cannot step around it.
 
-- A code is 80 random bits, expires (one day by default, 90 days at most) and
+- A code is 80 random bits, expires (one day by default, 30 days at most) and
   can be limited to a number of buyers and revoked. Wrong codes are throttled
   per account and per address, like failed logins.
 - Each side sees the other's account name masked. A code that leaks lets a
-  stranger pair with the seller, which gives the stranger nothing beyond what an
-  unpaired buyer already has; the seller sees the pairing and can remove it.
-- Pairing restricts the buyer, not the seller: a paired seller still serves
-  buyers that are not paired with it.
+  stranger pair with the seller. With an open seller that gives the stranger
+  nothing beyond what an unpaired buyer already has; with a private seller it
+  lets the stranger buy. The seller sees every pairing and can remove it, and
+  can limit a code to a number of buyers.
+- Pairing restricts the buyer. A seller still serves buyers that are not paired
+  with it, unless it turns on private mode: then the coordinator matches only
+  its paired buyers to it and hides its models from everyone else.
+- A buyer can be paired with three sellers at most.
+- Private sellers are audited like any other: the coordinator's audit
+  identities are matched to them. A private seller with few buyers can guess
+  that an unknown peer is an audit, so audits of such a seller prove less.
+- Administrators see every pairing with both account names in full.
 
 ## 3. Accounts, devices and the platform
 

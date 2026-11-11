@@ -22,6 +22,7 @@ import (
 //	POST   /api/v1/pairing/redeem           {code} → the seller now paired with (buyer)
 //	DELETE /api/v1/pairing/sellers/{id}     leave a seller (buyer)
 //	DELETE /api/v1/pairing/buyers/{id}      remove a buyer (seller)
+//	PUT    /api/v1/pairing/private          {enabled}: serve only paired buyers (seller)
 
 // Pairing returns who the signed-in user is paired with, and its codes.
 func (p *PortalClient) Pairing(ctx context.Context) (*portal.PairingView, error) {
@@ -60,6 +61,12 @@ func (p *PortalClient) RemoveBuyer(ctx context.Context, id int64) error {
 	return p.Do(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/pairing/buyers/%d", id), nil, nil)
 }
 
+// SetPrivateSeller turns private mode on or off: a private seller serves only
+// the buyers paired with it.
+func (p *PortalClient) SetPrivateSeller(ctx context.Context, on bool) error {
+	return p.Do(ctx, http.MethodPut, "/api/v1/pairing/private", map[string]bool{"enabled": on}, nil)
+}
+
 func (a *Agent) pairingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/pairing", a.portalPassthrough("/api/v1/pairing"))
 	mux.HandleFunc("POST /api/v1/pairing/codes", a.portalForward)
@@ -67,6 +74,7 @@ func (a *Agent) pairingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/pairing/redeem", a.portalForward)
 	mux.HandleFunc("DELETE /api/v1/pairing/sellers/{id}", a.portalForward)
 	mux.HandleFunc("DELETE /api/v1/pairing/buyers/{id}", a.portalForward)
+	mux.HandleFunc("PUT /api/v1/pairing/private", a.portalForward)
 }
 
 // portalForward sends r to the portal under the same path, with the user's

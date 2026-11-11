@@ -106,11 +106,12 @@ A seller hands out a pairing code. A buyer that joins with it buys only from the
 | Command | What it does |
 |---|---|
 | `pair` | Show who you are paired with, and your pairing codes |
-| `pair code [-label L] [-ttl 24h] [-uses N]` | Seller: make a code for your buyers. It lasts 24 hours and admits any number of buyers unless you say otherwise |
+| `pair code [-label L] [-ttl 24h] [-uses N]` | Seller: make a code for your buyers. It lasts 24 hours (30 days at most) and admits any number of buyers unless you say otherwise |
 | `pair join <code>` | Buyer: pair with the seller that made the code |
 | `pair leave <seller id>` | Buyer: end the pairing with a seller |
 | `pair rm <buyer id>` | Seller: remove one of your buyers |
 | `pair revoke <code id>` | Seller: stop a code from admitting more buyers. Buyers already paired stay |
+| `pair private on\|off` | Seller: serve only the buyers paired with you, or anyone again |
 
 ```bash
 {{exe}} pair code -label team -ttl 72h

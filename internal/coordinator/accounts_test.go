@@ -227,3 +227,93 @@ func TestPairedBuyersBuyOnlyFromTheirSellers(t *testing.T) {
 		t.Fatalf("after leaving: matched %s", tk.Node)
 	}
 }
+
+// A private seller serves only the buyers paired with it; the platform's
+// audits still reach it.
+func TestPrivateSellersServeOnlyTheirBuyers(t *testing.T) {
+	f := newStrictFixture(t, Config{})
+	st := f.store()
+	aliceNode, carolNode, bob, dave, auditor := mustKeys(t), mustKeys(t), mustKeys(t), mustKeys(t), mustKeys(t)
+	alice := f.bind(st, "alice", aliceNode)
+	f.bind(st, "carol", carolNode)
+	bobUser := f.bind(st, "bob", bob)
+	f.bind(st, "dave", dave)
+	for _, k := range []*p2p.Keys{bob, dave} {
+		if err := f.eng.Deposit(k.ID(), 1_000_000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.eng.RegisterAuditor(auditor.ID(), 100_000); err != nil {
+		t.Fatal(err)
+	}
+	// Alice is the cheaper one and the only seller of "x".
+	ao := f.signedOffer(aliceNode, "m", priceIn/2, priceOut/2, 64)
+	ao.Models = append(ao.Models, protocol.ModelPrice{Model: "x", PriceInMicros: priceIn, PriceOutMicros: priceOut})
+	ao.Sign(aliceNode.Signer)
+	if err := f.eng.UpsertOffer(ao); err != nil {
+		t.Fatal(err)
+	}
+	f.offer(carolNode, "m", priceIn, priceOut, 64)
+	req := func(model, node string) protocol.TicketRequest {
+		return protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: model, BudgetMicros: 1000, Node: node}
+	}
+	if tk := f.ticket(dave, 1000); tk.Node != aliceNode.ID() {
+		t.Fatalf("before private mode: matched %s", tk.Node)
+	}
+
+	if err := st.SetPrivateSeller(alice.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	// Dave is not paired with Alice: he is matched elsewhere and does not see her models.
+	for i := 0; i < 3; i++ {
+		if tk := f.ticket(dave, 1000); tk.Node != carolNode.ID() {
+			t.Fatalf("unpaired buyer matched the private seller %s", tk.Node)
+		}
+	}
+	if _, err := f.eng.IssueTicket(dave.ID(), req("x", "")); protocol.CodeOf(err) != protocol.CodeNoOffers {
+		t.Fatalf("a model only the private seller has: %v", err)
+	}
+	if _, err := f.eng.IssueTicket(dave.ID(), req("m", aliceNode.ID())); protocol.CodeOf(err) != protocol.CodeNoOffers {
+		t.Fatalf("pinned to the private seller: %v", err)
+	}
+	if ms, err := f.eng.ModelsFor(dave.ID()); err != nil || len(ms) != 1 || ms[0].Model != "m" || ms[0].Nodes != 1 || ms[0].MinPriceIn != priceIn {
+		t.Fatalf("dave's models: %+v %v", ms, err)
+	}
+	// A peer that is nobody's device sees nothing of her either.
+	if ms, _ := f.eng.ModelsFor(mustKeys(t).ID()); len(ms) != 1 {
+		t.Fatalf("a stranger's models: %+v", ms)
+	}
+	// Alice sees her own offers, and audits reach her.
+	if ms, _ := f.eng.ModelsFor(aliceNode.ID()); len(ms) != 2 {
+		t.Fatalf("the private seller's own models: %+v", ms)
+	}
+	if ms, _ := f.eng.ModelsFor(auditor.ID()); len(ms) != 2 {
+		t.Fatalf("the auditor's models: %+v", ms)
+	}
+	if _, err := f.eng.IssueTicket(auditor.ID(), req("x", "")); err != nil {
+		t.Fatalf("an audit of the private seller: %v", err)
+	}
+
+	// Bob pairs with her and buys from her; that also limits him to her.
+	code, err := st.CreatePairingCode(alice.ID, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RedeemPairingCode(bobUser.ID, code.Code); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.eng.IssueTicket(bob.ID(), req("x", "")); err != nil {
+		t.Fatalf("a paired buyer at the private seller: %v", err)
+	}
+	if ms, _ := f.eng.ModelsFor(bob.ID()); len(ms) != 2 || ms[0].Nodes != 1 {
+		t.Fatalf("bob's models: %+v", ms)
+	}
+
+	// Private mode off: everyone is served again.
+	if err := st.SetPrivateSeller(alice.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.eng.IssueTicket(dave.ID(), req("x", "")); err != nil {
+		t.Fatalf("after private mode: %v", err)
+	}
+}

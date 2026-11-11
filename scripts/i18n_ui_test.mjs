@@ -159,7 +159,7 @@ await go(`${portal}/app/?lang=en`);
 await waitFor(`document.getElementById('login-user')`);
 const user = 'i18n' + Date.now();
 await ev(`ST.api('POST', '/api/v1/web/register', { username: ${JSON.stringify(user)}, password: 'translated-pass' }).then(() => true)`);
-const ROUTES = ['home', 'ledger', 'jobs', 'tokens', 'devices', 'network', 'account', 'feedback'];
+const ROUTES = ['home', 'ledger', 'jobs', 'tokens', 'devices', 'pairing', 'network', 'account', 'feedback'];
 for (const lang of LANGS) {
   await size(1280, 900);
   await go(`${portal}/app/?lang=${lang}`);

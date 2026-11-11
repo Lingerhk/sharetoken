@@ -850,10 +850,10 @@ I18N.ready.then(() => {
     const flashLine = (f, id) => f ? h('div', { class: 'notice ' + f.cls, id }, f.text) : null;
 
     function render() {
-      const v = view || { sellers: [], buyers: [], codes: [], restricted: false };
-      sellers.set([v.sellers, v.restricted, error, flash.sellers, !view],
+      const v = view || { sellers: [], buyers: [], codes: [], restricted: false, private: false, max_sellers: 0 };
+      sellers.set([v.sellers, v.restricted, v.max_sellers, error, flash.sellers, !view],
         h('div', { class: 'share-line' },
-          h('p', { class: 'small muted' }, tr('输入卖家给你的配对码。配对后，这个账户只向配对的卖家购买；可以同时配对多个卖家。')),
+          h('p', { class: 'small muted' }, v.max_sellers ? tr('输入卖家给你的配对码。配对后，这个账户只向配对的卖家购买；最多同时配对 {n} 个卖家。', { n: num(v.max_sellers) }) : tr('输入卖家给你的配对码。配对后，这个账户只向配对的卖家购买。')),
           h('button', { type: 'button', id: 'pair-join', onclick: joinDialog }, tr('输入配对码'))),
         failed(),
         flashLine(flash.sellers, 'pair-join-flash'),
@@ -865,12 +865,13 @@ I18N.ready.then(() => {
           { title: '', get: u => h('button', { type: 'button', class: 'mini danger pair-leave', 'data-id': String(u.id), onclick: () => leave(u) }, tr('解除')) },
         ], v.sellers));
 
-      buyers.set([v.buyers, v.codes, error, flash.buyers, !view],
+      buyers.set([v.buyers, v.codes, v.private, error, flash.buyers, !view],
         h('div', { class: 'share-line' },
           h('p', { class: 'small muted' }, tr('生成配对码发给你的买家。对方输入后，他的账户只向和他配对的卖家购买。没有配对的买家仍然可以向你购买。')),
           h('button', { type: 'button', id: 'pair-new-code', onclick: codeDialog }, tr('生成配对码'))),
         failed(),
         flashLine(flash.buyers, 'pair-code-flash'),
+        privateToggle(v),
         h('h3', { class: 'sub-title' }, tr('有效的配对码')),
         v.codes.length === 0 ? h('div', { class: 'empty', id: 'pair-codes-empty' }, tr('没有有效的配对码')) : table([
           { title: tr('配对码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'pair-copy-' + c.id)) },
@@ -888,6 +889,21 @@ I18N.ready.then(() => {
         ], v.buyers));
     }
 
+    // Private mode: this account, as a seller, serves only its paired buyers.
+    function privateToggle(v) {
+      const box = h('input', { type: 'checkbox', id: 'pair-private', checked: v.private, disabled: !view, onchange: async () => {
+        box.disabled = true;
+        flash.buyers = null;
+        try { await api('PUT', '/api/v1/pairing/private', { enabled: box.checked }); }
+        catch (e) { flash.buyers = { cls: 'bad', text: pairError(e) }; box.checked = v.private; }
+        box.disabled = false;
+        await reload();
+      } });
+      return h('label', { class: 'check pair-private' }, box, h('span', null,
+        h('strong', null, tr('私有模式')), ' ',
+        h('span', { class: 'small muted' }, tr('只为和你配对的买家服务。开启后，其他买家看不到你的模型，也不能向你购买。'))));
+    }
+
     function joinDialog() {
       const code = h('input', { type: 'text', id: 'pair-code-input', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', maxlength: '64', placeholder: 'XXXX-XXXX-XXXX-XXXX', class: 'mono' });
       const err = errorBox('pair-join-error');
@@ -903,7 +919,7 @@ I18N.ready.then(() => {
         err.el, okBtn));
     }
 
-    const TTLS = [[1, tr('1 小时')], [24, tr('1 天')], [168, tr('7 天')], [720, tr('30 天')], [2160, tr('90 天')]];
+    const TTLS = [[24, tr('1 天')], [168, tr('7 天')], [720, tr('30 天')]];
     function codeDialog() {
       const label = h('input', { type: 'text', id: 'pair-label', maxlength: '64', dir: 'auto' });
       const ttl = h('select', { id: 'pair-ttl' }, TTLS.map(([hours, text]) => h('option', { value: String(hours), selected: hours === 24 }, text)));

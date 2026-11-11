@@ -21,6 +21,9 @@ import (
 //
 // Pairing is between user accounts, not devices: all of a buyer's devices are
 // bound by it, and all of a seller's devices serve it. Either side can end it.
+//
+// A seller can also go private: then only the buyers paired with it are
+// matched to it and see its models. Without that, a seller serves anyone.
 
 // PairingSchema holds pairing codes and the pairings made with them.
 const PairingSchema = `
@@ -47,15 +50,20 @@ CREATE TABLE IF NOT EXISTS pairings (
 	FOREIGN KEY (buyer_id) REFERENCES users(id),
 	FOREIGN KEY (seller_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS pairing_private (
+	user_id BIGINT PRIMARY KEY,
+	since   BIGINT NOT NULL,
+	FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 `
 
 // Limits on pairing.
 const (
 	MaxPairingCodes    = 20                  // live codes one seller may hold
-	MaxPairedSellers   = 20                  // sellers one buyer may be paired with
+	MaxPairedSellers   = 3                   // sellers one buyer may be paired with
 	MaxPairedBuyers    = 1000                // buyers one seller may have
 	DefaultPairingTTL  = 24 * time.Hour      // lifetime of a code when none is asked for
-	MaxPairingTTL      = 90 * 24 * time.Hour // longest lifetime of a code
+	MaxPairingTTL      = 30 * 24 * time.Hour // longest lifetime of a code
 	minPairingTTL      = time.Minute
 	pairingCodeBytes   = 10 // 80 bits: 16 base32 characters
 	maxPairingLabelLen = 64
@@ -309,7 +317,45 @@ func (s *Store) Unpair(buyerID, sellerID int64) error {
 func PairedSellers(q interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }, buyerID int64) ([]int64, error) {
-	rows, err := q.Query(`SELECT seller_id FROM pairings WHERE buyer_id = ?`, buyerID)
+	return queryIDs(q, `SELECT seller_id FROM pairings WHERE buyer_id = ?`, buyerID)
+}
+
+// SetPrivateSeller turns userID's private mode on or off: a private seller
+// serves only the buyers paired with it.
+func (s *Store) SetPrivateSeller(userID int64, on bool) error {
+	now := s.now().UnixNano()
+	return s.tx(func(tx *sql.Tx) error {
+		if !on {
+			_, err := tx.Exec(`DELETE FROM pairing_private WHERE user_id = ?`, userID)
+			return err
+		}
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM pairing_private WHERE user_id = ?`, userID).Scan(&n); err != nil || n > 0 {
+			return err
+		}
+		_, err := tx.Exec(`INSERT INTO pairing_private (user_id, since) VALUES (?, ?)`, userID, now)
+		return err
+	})
+}
+
+// PrivateSeller reports whether userID sells to its paired buyers only.
+func (s *Store) PrivateSeller(userID int64) (bool, error) {
+	var n int
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM pairing_private WHERE user_id = ?`, userID).Scan(&n)
+	return n > 0, err
+}
+
+// PrivateSellers returns every user that sells to its paired buyers only.
+func PrivateSellers(q interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}) ([]int64, error) {
+	return queryIDs(q, `SELECT user_id FROM pairing_private`)
+}
+
+func queryIDs(q interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}, query string, args ...any) ([]int64, error) {
+	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -321,6 +367,75 @@ func PairedSellers(q interface {
 			return nil, err
 		}
 		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// Pairing is one pairing as an administrator sees it: both account names in
+// full, the label of the code it was made with, and whether the seller is
+// private.
+type Pairing struct {
+	BuyerID       int64  `json:"buyer_id"`
+	Buyer         string `json:"buyer"`
+	SellerID      int64  `json:"seller_id"`
+	Seller        string `json:"seller"`
+	Label         string `json:"label"`
+	Since         int64  `json:"since"`
+	SellerPrivate bool   `json:"seller_private"`
+}
+
+// PairingQuery selects pairings: User matches part of either account name,
+// From and To bound when the pairing was made (unix nanoseconds, To exclusive).
+type PairingQuery struct {
+	User          string
+	From, To      int64
+	Offset, Limit int
+}
+
+func (f PairingQuery) where() (string, []any) {
+	where, args := `p.created_at >= ?`, []any{f.From}
+	if f.To > 0 {
+		where += ` AND p.created_at < ?`
+		args = append(args, f.To)
+	}
+	if u := strings.TrimSpace(f.User); u != "" {
+		like := likePattern(u)
+		where += ` AND (LOWER(b.username) LIKE ? ESCAPE '!' OR LOWER(s.username) LIKE ? ESCAPE '!')`
+		args = append(args, like, like)
+	}
+	return where, args
+}
+
+const pairingJoin = ` FROM pairings p JOIN users b ON b.id = p.buyer_id JOIN users s ON s.id = p.seller_id `
+
+// CountPairings counts the pairings f selects.
+func (s *Store) CountPairings(f PairingQuery) (int64, error) {
+	where, args := f.where()
+	var n int64
+	err := s.DB.QueryRow(`SELECT COUNT(*)`+pairingJoin+`WHERE `+where, args...).Scan(&n)
+	return n, err
+}
+
+// ListPairings lists the pairings f selects, newest first.
+func (s *Store) ListPairings(f PairingQuery) ([]Pairing, error) {
+	where, args := f.where()
+	rows, err := s.DB.Query(`SELECT p.buyer_id, b.username, p.seller_id, s.username, COALESCE(c.label, ''), p.created_at,
+		EXISTS (SELECT 1 FROM pairing_private v WHERE v.user_id = p.seller_id)`+pairingJoin+`
+		LEFT JOIN pairing_codes c ON c.id = p.code_id
+		WHERE `+where+` ORDER BY p.created_at DESC, p.buyer_id DESC, p.seller_id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Pairing{}
+	for rows.Next() {
+		var p Pairing
+		var private int
+		if err := rows.Scan(&p.BuyerID, &p.Buyer, &p.SellerID, &p.Seller, &p.Label, &p.Since, &private); err != nil {
+			return nil, err
+		}
+		p.SellerPrivate = private != 0
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }

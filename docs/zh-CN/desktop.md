@@ -59,7 +59,7 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（internal/cl
 | 厂商 API | 添加厂商（API key 或账号登录）、启用停用、更换凭据、删除 | `/api/v1/providers`、`/api/v1/providers/oauth/start`、`/finish` |
 | 厂商的模型 | 从厂商的模型列表里选（或手填），设网络 ID、输入输出价、输出上限；测试、编辑、移除 | `/api/v1/providers/{name}/models`、`/test` |
 | 本机模型服务 | 地址和并发数；探测模型后添加、编辑、移除 | `PUT /api/v1/share`、`GET /api/v1/share/detect` |
-| 配对 | 生成配对码（备注、有效期、可配对的买家数）、复制、撤销；和本账户配对的买家，以及移除其中一个 | `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`DELETE /api/v1/pairing/buyers/{id}` |
+| 配对 | 私有模式（只为配对的买家服务）。生成配对码（备注；有效期 1、7 或 30 天；可配对的买家数）、复制、撤销；和本账户配对的买家，以及移除其中一个 | `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`DELETE /api/v1/pairing/buyers/{id}`、`PUT /api/v1/pairing/private` |
 
 - 数据来自每 5 秒一次的 `GET /api/v1/status`（`share.providers`、`share.serving`、`warnings`）。列表内容没变就不重绘。表单都在对话框里，轮询不会动它，输入不会丢。
 - 这些接口由 Agent 提供，所以在接入网络之前，共享页只提示连接网络后才能设置共享。
@@ -221,6 +221,6 @@ scripts/gui_stack.sh stop DIR
 | 全链路 API | `scripts/test.sh -race -run Daemon ./test/e2e` | 在真实的 libp2p 拓扑上：注册、经中继接入、购买模型、记账、重启后恢复、退出、网络恢复后自动接入 |
 | 使用统计 | `scripts/test.sh -race -run Telemetry ./internal/client` | 用假收集器验证：事件格式、不含个人信息、没有 key 时不发送、开关和环境变量、每日和每小时去重、收集器宕机或挂起时不影响客户端 |
 | 窗口壳 | `cd gui && go test -tags desktop,production .`（Linux 再加 `webkit2_41`） | 启动、连接、停止 daemon；端口冲突；转发 |
-| 页面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调。配对：错误的码和自己的码，和不卖任何模型的卖家配对（没有模型、请求被拒）以及和有模型的卖家配对，生成和撤销配对码，买家加入和被移除 |
+| 页面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调。配对：错误的码和自己的码，和不卖任何模型的卖家配对（没有模型、请求被拒）以及和有模型的卖家配对，生成和撤销配对码，买家加入和被移除，在页面上开关私有模式及其对未配对买家的效果 |
 | 真实 WebView | `scripts/gui_shell_test.sh <dev\|prod> <程序目录>` | 不显示窗口，用系统 WebView 加载页面并向真实 daemon 发 POST；检查应用退出时 daemon 一起停止 |
 | 菜单栏和托盘 | `scripts/gui_tray_test.sh <dev\|prod> <程序目录>`（macOS） | 窗口和图标会显示约 15 秒。经系统路径操作真实的图标、菜单和窗口：关闭、打开、最小化和恢复、快速连点、语言跟随、再次启动、退出后 daemon 停止。Windows 上用 `SHARETOKEN_GUI_SELFTEST=tray` 启动应用即可运行同一套自检 |

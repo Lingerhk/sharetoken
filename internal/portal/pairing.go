@@ -26,6 +26,10 @@ type PairingView struct {
 	Codes  []accounts.PairingCode `json:"codes"`
 	// Restricted says the caller's purchases are limited to Sellers.
 	Restricted bool `json:"restricted"`
+	// Private says the caller, as a seller, serves only Buyers.
+	Private bool `json:"private"`
+	// MaxSellers is how many sellers one buyer may be paired with.
+	MaxSellers int `json:"max_sellers"`
 }
 
 func (s *Server) pairingRoutes(mux *http.ServeMux) {
@@ -35,6 +39,8 @@ func (s *Server) pairingRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/pairing/redeem", s.auth(s.handleRedeemPairingCode))
 	mux.Handle("DELETE /api/v1/pairing/sellers/{id}", s.auth(s.handleUnpair(false)))
 	mux.Handle("DELETE /api/v1/pairing/buyers/{id}", s.auth(s.handleUnpair(true)))
+	mux.Handle("PUT /api/v1/pairing/private", s.auth(s.handlePrivateSeller))
+	mux.Handle("GET /api/v1/admin/pairings", s.admin(s.handleAdminPairings))
 }
 
 // maskName hides most of an account name from the other side of a pairing. A
@@ -77,7 +83,12 @@ func (s *Server) pairingView(userID int64) (*PairingView, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &PairingView{Sellers: maskPaired(sellers), Buyers: maskPaired(buyers), Codes: formatCodes(codes), Restricted: len(sellers) > 0}, nil
+	private, err := s.store.PrivateSeller(userID)
+	if err != nil {
+		return nil, err
+	}
+	return &PairingView{Sellers: maskPaired(sellers), Buyers: maskPaired(buyers), Codes: formatCodes(codes), Restricted: len(sellers) > 0,
+		Private: private, MaxSellers: accounts.MaxPairedSellers}, nil
 }
 
 func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request, cu ctxUser) {
@@ -183,4 +194,47 @@ func (s *Server) handleUnpair(asSeller bool) authedHandler {
 		s.log.Info("unpaired", "buyer", buyer, "seller", seller, "by", cu.user.ID)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
+}
+
+// handlePrivateSeller turns the caller's private mode on or off: a private
+// seller serves only the buyers paired with it.
+func (s *Server) handlePrivateSeller(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if err := s.store.SetPrivateSeller(cu.user.ID, req.Enabled); err != nil {
+		s.internal(w, err)
+		return
+	}
+	s.log.Info("private seller", "user", cu.user.ID, "enabled", req.Enabled)
+	writeJSON(w, http.StatusOK, map[string]bool{"private": req.Enabled})
+}
+
+// handleAdminPairings lists every pairing, with both account names in full.
+// ?user= matches part of either name.
+func (s *Server) handleAdminPairings(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	p, ok := parseList(w, r)
+	if !ok {
+		return
+	}
+	f := accounts.PairingQuery{User: r.URL.Query().Get("user"), From: p.From, To: p.To}
+	serveList(s, w, r, cu, p, listing[accounts.Pairing]{
+		Key: "pairings", File: "pairings",
+		Columns: []csvColumn[accounts.Pairing]{
+			{"paired", func(p accounts.Pairing) string { return csvTime(p.Since) }, true},
+			{"buyer", func(p accounts.Pairing) string { return p.Buyer }, false},
+			{"seller", func(p accounts.Pairing) string { return p.Seller }, false},
+			{"seller_private", func(p accounts.Pairing) string { return strconv.FormatBool(p.SellerPrivate) }, true},
+			{"label", func(p accounts.Pairing) string { return p.Label }, false},
+		},
+		Count: func() (int64, error) { return s.store.CountPairings(f) },
+		Fetch: func(offset, limit int) ([]accounts.Pairing, error) {
+			q := f
+			q.Offset, q.Limit = offset, limit
+			return s.store.ListPairings(q)
+		},
+	})
 }

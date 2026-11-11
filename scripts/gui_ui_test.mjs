@@ -347,7 +347,7 @@ const buyOnce = async () => {
 };
 const clickRow = (panel, needle, button) => ev(`[...document.querySelectorAll(${q(panel + ' tbody tr')})].find(r => r.textContent.includes(${q(needle)})).querySelector(${q(button)}).click()`);
 await waitFor(el('#pair-sellers-empty'));
-ok(!(await has('#pair-restricted')), 'an account that is not paired buys from everyone');
+ok(!(await has('#pair-restricted')) && (await text('#paired-sellers-body')).includes('3'), 'an account that is not paired buys from everyone; it may pair with three sellers');
 await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
 await click('#pair-join-ok');
 await waitFor(`${el('#pair-join-error')}.textContent.includes('请输入')`);
@@ -380,8 +380,17 @@ ok(await has('#pair-restricted') && (await text('#paired-sellers-body')).include
 
 await click('#nav-share'); await waitFor(el('#pair-new-code'));
 ok(await has('#pair-codes-empty') && await has('#pair-buyers-empty'), 'the sharing view starts with no codes and no buyers');
+const isPrivate = async () => JSON.parse(await ev(`fetch('/api/v1/pairing').then(r => r.text())`)).private;
+ok(!(await ev(`${el('#pair-private')}.checked`)) && !(await isPrivate()), 'private mode is off at first');
+await click('#pair-private');
+await waitFor(`${el('#pair-private')}.checked && !${el('#pair-private')}.disabled`);
+ok(await isPrivate(), 'the switch turns private mode on at the portal');
+await shot('23c-pair-private');
+await click('#pair-private');
+await waitFor(`!${el('#pair-private')}.checked && !${el('#pair-private')}.disabled`);
+ok(!(await isPrivate()), 'and off again');
 await click('#pair-new-code'); await waitFor(el('#dlg-pair-code'));
-ok(await ev(`${el('#pair-ttl')}.value`) === '24', 'a code lasts a day unless chosen otherwise');
+ok(await ev(`${el('#pair-ttl')}.value`) === '24' && await ev(`[...${el('#pair-ttl')}.options].map(o => o.value).join()`) === '24,168,720', 'a code lasts one day, or seven or thirty when chosen');
 await fill('#pair-uses', 'many'); await click('#pair-code-ok');
 await waitFor(`${el('#pair-code-error')}.textContent.includes('整数')`);
 await fill('#pair-label', 'friends'); await choose('#pair-ttl', '168'); await fill('#pair-uses', '2'); await click('#pair-code-ok');
@@ -425,6 +434,13 @@ await click('#paired-sellers .pair-leave'); await waitFor(el('#dlg-confirm'));
 await click('#confirm-ok');
 await waitFor(el('#pair-sellers-empty'));
 ok(!(await has('#pair-restricted')), 'with the last seller gone, the account buys from everyone again');
+await waitFor(`${el('#models-body')}.textContent.includes('mock-fast')`, 40000);
+ok(cli('seller', 'pair', 'private', 'on').includes('private mode on'), 'the seller goes private');
+await waitFor(el('#models-empty'), 40000);
+ok((await buyOnce()).status !== 200, "a private seller's models are hidden from a buyer that is not paired with it, and it cannot buy them");
+cli('seller', 'pair', 'private', 'off');
+await waitFor(`${el('#models-body')}.textContent.includes('mock-fast')`, 40000);
+ok((await buyOnce()).status === 200, 'with private mode off the seller serves everyone again');
 
 console.log('languages');
 await cdp('Page.navigate', { url: env.DAEMON + '/?lang=en' });

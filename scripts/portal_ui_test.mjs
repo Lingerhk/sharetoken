@@ -214,6 +214,52 @@ try {
   check(await evaluate(`document.querySelector('.feedback-text').textContent`) === HOSTILE && !(await evaluate(`!!document.querySelector('#feedback-list img') || !!window.__fb`)), 'feedback is listed as text, not markup');
   await assertText('已收到', 'and shows that it was received');
   await shot('05b-feedback');
+
+  // ---- pairing ----
+  console.log('pairing');
+  const q = sel => `document.querySelector(${JSON.stringify(sel)})`;
+  await goto(base + '/app/#/pairing');
+  await waitFor(q('#pair-code-form'));
+  await assertText('最多同时配对 3 个卖家', 'the pairing page states the limit of three sellers');
+  check(await evaluate(`[...${q('#pair-ttl')}.options].map(o => o.value).join()`) === '24,168,720', 'a code lasts one, seven or thirty days');
+  check(!(await evaluate(`!!${q('#pair-restricted')}`)) && !(await evaluate(`${q('#pair-private')}.checked`)), 'not paired and not private at first');
+  await click('#pair-private');
+  await waitFor(`${q('#pair-private')}?.checked && !${q('#pair-private')}.disabled`);
+  await assertText('私有模式已开启', 'private mode is switched on from the page');
+  const LABEL = '<b onclick="window.__pl=1">team</b>';
+  await type('#pair-label', LABEL); await type('#pair-uses', '5');
+  await evaluate(`(() => { const t = ${q('#pair-ttl')}; t.value = '720'; t.dispatchEvent(new Event('change')); return true; })()`);
+  await click('#pair-new-code');
+  await waitFor(q('#pair-new .secret code'));
+  const pairCode = await evaluate(`${q('#pair-new .secret code')}.textContent`);
+  check(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){3}$/.test(pairCode), 'a new pairing code is shown');
+  await shot('05c-pairing-code');
+  await click('.modal .actions button.primary');
+  check((await evaluate(`${q('#pair-codes')}.textContent`)).includes(pairCode) && (await evaluate(`${q('#pair-codes')}.textContent`)).includes('0 / 5')
+    && (await evaluate(`${q('#pair-codes')}.textContent`)).includes(LABEL) && !(await evaluate(`!!${q('#pair-codes b')} || !!window.__pl`)), 'the code is listed with its uses, and its label as text');
+  const days = await evaluate(`fetch('/api/v1/pairing', { headers: { 'X-Sharetoken-Web': '1' }, credentials: 'same-origin' }).then(r => r.json()).then(v => (v.codes[0].expires_at / 1e6 - Date.now()) / 86400e3)`);
+  check(days > 29.9 && days < 30.1, 'and lasts the thirty days chosen');
+  await type('#pair-code', pairCode); await click('#pair-join');
+  await assertText('自己的配对码', 'nobody pairs with their own code');
+  await clickText('.topbar button', '退出'); await sleep(800);
+  await login(newUser, 'webuserpass');
+  await waitFor('document.querySelector(".sidenav")');
+  await goto(base + '/app/#/pairing');
+  await waitFor(q('#pair-join-form'));
+  await type('#pair-code', 'AAAA-AAAA-AAAA-AAAA'); await click('#pair-join');
+  await assertText('配对码不对', 'a wrong code is refused');
+  await type('#pair-code', pairCode.toLowerCase()); await click('#pair-join');
+  await waitFor(q('#pair-restricted'));
+  check((await evaluate(`${q('#pair-sellers')}.textContent`)).includes('al***') && !(await evaluate(`${q('#pair-sellers')}.textContent`)).includes('alice'), "the buyer is paired and sees the seller's masked name");
+  await shot('05d-pairing-buyer');
+  await noNull('pairing');
+  await clickText('.topbar button', '退出'); await sleep(800);
+  await login('alice', 'alicealice');
+  await waitFor('document.querySelector(".sidenav")');
+  await goto(base + '/app/#/pairing');
+  await waitFor(q('#pair-buyers table'));
+  check((await evaluate(`${q('#pair-buyers')}.textContent`)).includes('we***') && (await evaluate(`${q('#pair-codes')}.textContent`)).includes('1 / 5'), 'the seller sees its buyer, and the code counts it');
+  await shot('05e-pairing-seller');
   await clickText('.topbar button', '退出'); await sleep(800);
 
   // ---- admin console ----
@@ -311,6 +357,17 @@ try {
   check(!(await text()).includes('反馈内容'), 'a handled message leaves the waiting list');
   await evaluate(`(() => { const s = document.querySelector('#feedback-status'); s.value = 'done'; s.dispatchEvent(new Event('change')); return true; })()`); await sleep(500);
   await assertText('反馈内容', 'and is under handled');
+
+  // pairings: full names, the private seller marked, search
+  await goto(base + '/admin/#/pairings');
+  await waitFor(`document.querySelector('main .list-body table')`);
+  check((await evaluate(`document.querySelector('main .list-body').textContent`)).includes(newUser) && (await evaluate(`document.querySelector('main .list-body').textContent`)).includes('alice')
+    && (await evaluate(`document.querySelector('main .list-body').textContent`)).includes('私有'), 'the admin sees who is paired with whom, and that the seller is private');
+  check((await evaluate(`document.querySelector('main .list-body').textContent`)).includes('<b onclick') && !(await evaluate(`!!document.querySelector('main .list-body b') || !!window.__pl`)), 'with the code label as text');
+  await shot('10b-admin-pairings');
+  await noNull('admin pairings');
+  await evaluate(`(() => { const i = document.querySelector('#pairings-user'); i.value = 'no-such-user'; i.dispatchEvent(new Event('input')); return true; })()`); await sleep(900);
+  await assertText('没有配对关系', 'searching the pairings by account name');
 
   // read-only pages render
   for (const [page, label] of [['jobs', '作业'], ['nodes', '节点'], ['audits', '审计'], ['disputes', '争议'], ['ledger', '账本']]) {

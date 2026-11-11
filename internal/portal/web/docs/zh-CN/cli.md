@@ -106,11 +106,12 @@
 | 命令 | 作用 |
 |---|---|
 | `pair` | 显示你和谁配对，以及你的配对码 |
-| `pair code [-label L] [-ttl 24h] [-uses N]` | 卖家：生成一个给买家用的配对码。默认 24 小时有效，不限买家数量 |
+| `pair code [-label L] [-ttl 24h] [-uses N]` | 卖家：生成一个给买家用的配对码。默认 24 小时有效（最长 30 天），不限买家数量 |
 | `pair join <code>` | 买家：和生成这个配对码的卖家配对 |
 | `pair leave <seller id>` | 买家：解除和某个卖家的配对 |
 | `pair rm <buyer id>` | 卖家：移除一个买家 |
 | `pair revoke <code id>` | 卖家：让配对码不再接纳新买家，已配对的买家不受影响 |
+| `pair private on\|off` | 卖家：只为和你配对的买家服务，或者恢复为向所有人出售 |
 
 ```bash
 {{exe}} pair code -label team -ttl 72h

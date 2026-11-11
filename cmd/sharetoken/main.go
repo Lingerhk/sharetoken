@@ -94,6 +94,7 @@ Pairing (a buyer that pairs with a seller buys only from the sellers it is paire
   pair leave <seller id>                buyer: end the pairing with a seller
   pair rm <buyer id>                    seller: remove one of your buyers
   pair revoke <code id>                 seller: stop a code from admitting more buyers
+  pair private on|off                   seller: serve only the buyers paired with you, or anyone
 
   config                                show the configuration file
   version [--check]                     show what this client was built for; --check asks the portal for a newer release`
@@ -421,7 +422,7 @@ func (c *cmdCtx) pair(args []string) error {
 	case "code", "new":
 		fs := flag.NewFlagSet("pair code", flag.ExitOnError)
 		label := fs.String("label", "", "a note for yourself: who the code is for")
-		ttl := fs.Duration("ttl", 0, "how long the code can be used (default 24h, at most 2160h)")
+		ttl := fs.Duration("ttl", 0, "how long the code can be used (default 24h, at most 720h)")
 		uses := fs.Int64("uses", 0, "how many buyers it admits (default: any number)")
 		_ = fs.Parse(args)
 		code, err := pc.NewPairingCode(cx, *label, ttl.Hours(), *uses)
@@ -474,8 +475,21 @@ func (c *cmdCtx) pair(args []string) error {
 		}
 		fmt.Println("revoked code", n, "(the buyers already paired with it stay)")
 		return nil
+	case "private":
+		if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
+			return errors.New("usage: sharetoken pair private on|off")
+		}
+		if err := pc.SetPrivateSeller(cx, args[0] == "on"); err != nil {
+			return err
+		}
+		if args[0] == "on" {
+			fmt.Println("private mode on: only the buyers paired with you are matched to you and see your models")
+		} else {
+			fmt.Println("private mode off: any buyer can buy from you")
+		}
+		return nil
 	}
-	return fmt.Errorf("unknown: pair %s (pair | pair code | pair join <code> | pair leave <id> | pair rm <id> | pair revoke <id>)", sub)
+	return fmt.Errorf("unknown: pair %s (pair | pair code | pair join <code> | pair leave <id> | pair rm <id> | pair revoke <id> | pair private on|off)", sub)
 }
 
 func usesText(maxUses, used int64) string {
@@ -503,10 +517,14 @@ func showPairing(cx context.Context, pc *client.PortalClient) error {
 		_ = tw.Flush()
 	}
 	fmt.Println()
+	open := "anyone else can buy too"
+	if v.Private {
+		open = "private mode: nobody else can buy"
+	}
 	if len(v.Buyers) == 0 {
-		fmt.Println("selling: no paired buyers")
+		fmt.Printf("selling: no paired buyers (%s)\n", open)
 	} else {
-		fmt.Printf("selling: %d paired buyers\n", len(v.Buyers))
+		fmt.Printf("selling: %d paired buyers (%s)\n", len(v.Buyers), open)
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "  ID\tBUYER\tSINCE\tCODE")
 		for _, b := range v.Buyers {
