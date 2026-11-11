@@ -341,6 +341,14 @@ type tokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 	Error        any    `json:"error"`
 	ErrorDesc    string `json:"error_description"`
+	// Anthropic names the account beside the token.
+	Organization *struct {
+		UUID string `json:"uuid"`
+	} `json:"organization"`
+	Account *struct {
+		UUID  string `json:"uuid"`
+		Email string `json:"email_address"`
+	} `json:"account"`
 }
 
 func (r *tokenResponse) token() *Token {

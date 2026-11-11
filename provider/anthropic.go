@@ -42,6 +42,11 @@ func (u *anthropicUpstream) Stream(ctx context.Context, body []byte, emit func([
 		}
 		if u.oauth {
 			req["system"] = claudeCodeSystem(req["system"])
+			if m, ok := req["model"].(string); ok {
+				if full := claudeOAuthModelIDs[m]; full != "" {
+					req["model"] = full
+				}
+			}
 		}
 		out, err := json.Marshal(req)
 		if err != nil {
@@ -65,6 +70,14 @@ func (u *anthropicUpstream) Stream(ctx context.Context, body []byte, emit func([
 		}
 		return send(u.header.Clone())
 	}, body)
+}
+
+// claudeOAuthModelIDs gives the dated ID of the short model names a
+// subscription login does not take.
+var claudeOAuthModelIDs = map[string]string{
+	"claude-sonnet-4-5": "claude-sonnet-4-5-20250929",
+	"claude-opus-4-5":   "claude-opus-4-5-20251101",
+	"claude-haiku-4-5":  "claude-haiku-4-5-20251001",
 }
 
 // claudeCodeSystem puts the Claude Code identity line before whatever system

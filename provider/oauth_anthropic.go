@@ -9,7 +9,7 @@ import (
 )
 
 // Anthropic: the Claude subscription login of Claude Code. A Claude Pro or
-// Max account signs in through claude.ai, approves, and the page shows a
+// Max account signs in through claude.com, approves, and the page shows a
 // "code#state" to paste back. Requests then go to the Messages API as that
 // account, carrying the bearer token and the beta that makes the API take it
 // in place of an API key. The API serves such a token to Claude Code only,
@@ -18,19 +18,20 @@ import (
 
 const (
 	claudeClientID  = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	claudeAuthURL   = "https://claude.ai/oauth/authorize"
-	claudeTokenURL  = "https://console.anthropic.com/v1/oauth/token"
-	claudeRedirect  = "https://console.anthropic.com/oauth/code/callback"
-	claudeScope     = "org:create_api_key user:profile user:inference"
+	claudeAuthURL   = "https://claude.com/cai/oauth/authorize"
+	claudeTokenURL  = "https://platform.claude.com/v1/oauth/token"
+	claudeRedirect  = "https://platform.claude.com/oauth/code/callback"
+	claudeScope     = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 	claudeOAuthBeta = "oauth-2025-04-20" // without this the API will not take an OAuth token
 )
 
 // claudeOAuthModels is what a subscription login may use when the models
 // endpoint cannot be listed with it.
 var claudeOAuthModels = []string{
-	"claude-opus-4-1", "claude-opus-4-0",
-	"claude-sonnet-4-5", "claude-sonnet-4-0",
-	"claude-3-7-sonnet-latest", "claude-3-5-haiku-latest",
+	"claude-fable-5-1", "claude-fable-5",
+	"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5-20251101",
+	"claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929",
+	"claude-haiku-5-5", "claude-haiku-4-5-20251001",
 }
 
 func init() {
@@ -63,7 +64,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return r.token(), nil
+			return claudeToken(r), nil
 		},
 		refresh: func(ctx context.Context, old *Token) (*Token, error) {
 			r, err := postToken(ctx, claudeTokenURL, claudeOAuthUserAgent(), url.Values{
@@ -74,7 +75,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return r.token(), nil
+			return claudeToken(r), nil
 		},
 		upstream: func(e *Entry, ts TokenSource) (node.Upstream, error) {
 			return &anthropicUpstream{base: e.URL(), limits: outputLimits{set: e.caps()}, ts: ts, oauth: true}, nil
@@ -95,6 +96,19 @@ func init() {
 			return ids, nil
 		},
 	}
+}
+
+// claudeToken is the token of an answer from the token server, with the
+// account it names: the email address, and the organization the login acts for.
+func claudeToken(r *tokenResponse) *Token {
+	t := r.token()
+	if r.Account != nil {
+		t.Email = r.Account.Email
+	}
+	if r.Organization != nil {
+		t.AccountID = r.Organization.UUID
+	}
+	return t
 }
 
 // claudeOAuthUserAgent names this client to the token server, which refuses a
