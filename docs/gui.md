@@ -1,6 +1,6 @@
 # 桌面客户端（macOS / Linux / Windows）
 
-第一版范围：邮箱注册、登录、退出，查看账户和网络的基本信息。共享模型的设置仍用命令行（`/api/v1/share` 已可用，界面以后加）。
+范围：邮箱注册、登录、退出，查看账户和网络的基本信息，以及卖家模式的设置（“共享”页，见下）。
 
 ## 构建类型
 
@@ -43,6 +43,30 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（client/daem
 - 已有 daemon 在运行时窗口直接连上去，退出时不动它。
 - 默认端口 9787 被无关程序占用时（比如另一个数据目录上的 `sharetoken up`），daemon 改用 9788–9797 中第一个空闲端口，页面上显示实际地址。`config.json` 里写了其他端口时不换，直接报错。同一数据目录上已有 `sharetoken up` 时也报错，否则同一把设备密钥会同时在线两次。
 - 窗口启动的 daemon 由它持有 stdin（`-stop-on-stdin-eof`）：窗口退出或崩溃时管道关闭，daemon 正常收尾后退出。
+
+## 共享页（卖家模式）
+
+主界面顶部有“概览”和“共享”两个页签（`client/ui/app.js` 的 `shareView`），选择记在 `localStorage.st_view`。共享页只调用已有的本机 API，和命令行改的是同一份 `config.json` 和 `providers.json`，两边的修改互相可见。实现说明见 [providers.md](providers.md)。
+
+| 区域 | 功能 | 接口 |
+|---|---|---|
+| 共享状态 | 开启、停止共享；数据卡片：在售模型、已完成和失败的作业、进行中 / 并发数、本次运行收益和最近报价时间、账户累计卖出收益；daemon 的告警 | `POST /api/v1/share/start`、`/stop`，`GET /api/v1/status`、`/api/v1/account` |
+| 中继预约 | 共享运行时显示：每个中继是否已预约、延迟、到期时间 | `GET /api/v1/status` 的 `share.reservations` |
+| 最近卖出的作业 | 最近 10 条卖出作业的模型、状态、tokens 和收益 | `GET /api/v1/jobs?role=sell&limit=10` |
+| 厂商 API | 添加厂商（API key 或账号登录）、启用停用、更换凭据、删除 | `/api/v1/providers`、`/api/v1/providers/oauth/start`、`/finish` |
+| 厂商的模型 | 从厂商的模型列表里选（或手填），设网络 ID、输入输出价、输出上限；测试、编辑、移除 | `/api/v1/providers/{name}/models`、`/test` |
+| 本机模型服务 | 地址和并发数；探测模型后添加、编辑、移除 | `PUT /api/v1/share`、`GET /api/v1/share/detect` |
+
+- 数据来自每 5 秒一次的 `GET /api/v1/status`（`share.providers`、`share.serving`、`warnings`），列表内容没变就不重绘。表单都在对话框里，轮询不会动它，输入不会丢。
+- 这些接口由 Agent 提供，所以没连上网络时共享页只显示“连接网络后才能设置共享”。
+- 价格在界面上按 credit / 百万 tokens 输入，保存为 micro-credit；默认 0.1 和 0.2，和 `share add` 相同。添加模型时，如果网络上已有同名模型，会显示它的最低价。
+- 账号登录分两步：页面显示登录地址（可复制，也可点击打开），用户登录后把授权码或回调地址粘贴回来。
+- 界面上的保护：没有模型时不能开启共享；同一个模型 ID 不能来自两个来源；新增厂商的名称和已有的重复时要求改名（接口会按“更换凭据”处理）；最后一个可出售的模型被移除或其厂商被停用时，共享一起关闭。
+- 和命令行的差别：`share add` 会顺带开启共享，界面不会，由用户点“开启共享”。
+- 模型表里的“网络最低价”来自 `GET /api/v1/models`（包含本机自己的报价）；厂商卡片显示登录令牌的有效期和附加请求头的名称。概览页多了一张“共享”卡片，点击进入共享页；网络区域显示到协调器的链路质量（平均延迟、抖动、丢包）。
+- 界面只有英语和简体中文，没有保存过选择时跟随系统语言，其余语言一律英语（见 [i18n.md](i18n.md)）。
+- 密钥只在提交时经过页面，接口返回的是打码后的形式；界面测试会检查页面和 `/api/v1/status` 里都没有密钥。
+- daemon 的告警和厂商返回的错误是英文原文，界面原样显示。
 
 ## 菜单栏和托盘
 
@@ -170,6 +194,6 @@ Ubuntu 上的测试环境见 [linux-env.md](linux-env.md)。
 | 全链路 API | `go test -race -run Daemon ./e2e` | 真实 libp2p 拓扑上：注册、经中继接入、买模型、记账、重启恢复、退出、网络恢复后自动接入 |
 | 使用统计 | `go test -race -run Telemetry ./client` | 用假收集器验证事件格式、不含个人信息、无 key 时不发送、开关和环境变量、每日/每小时去重、收集器宕机或挂起时不影响使用 |
 | 窗口壳 | `cd gui && go test -tags desktop,production .`（Linux 再加 `webkit2_41`） | 启动、连接、停止 daemon，端口冲突，转发 |
-| 界面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走全部界面流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon） |
+| 界面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走全部界面流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除；账号登录只验证到登录地址和错误的回调 |
 | 真实 WebView | `scripts/gui_shell_test.sh <dev\|prod> <程序目录>` | 不显示窗口，用系统 WebView 加载页面并 POST 到真实 daemon，验证退出时 daemon 一起停 |
 | 菜单栏和托盘 | `scripts/gui_tray_test.sh <dev\|prod> <程序目录>`（macOS；Windows 见 [windows-env.md](windows-env.md)） | 窗口和图标会显示约 15 秒。经系统路径操作真实的图标、菜单和窗口：关闭、打开、最小化恢复、快速连点、语言跟随、再次启动、退出后 daemon 停止 |

@@ -15,10 +15,13 @@ import (
 var i18nBundles = map[string]struct {
 	dir   string // holds i18n/<bundle>/<lang>.json
 	files []string
+	// langs are the bundle's languages besides the source one; nil: all of them.
+	langs []string
 }{
-	"site":   {"web", []string{"web/index.html", "web/site.js", "web/docs.html", "web/docs.js", "web/changelog.html", "web/changelog.js"}},
-	"app":    {"web", []string{"web/app.html", "web/common.js", "web/user.js"}},
-	"client": {"../client/ui", []string{"../client/ui/index.html", "../client/ui/app.js"}},
+	"site": {"web", []string{"web/index.html", "web/site.js", "web/docs.html", "web/docs.js", "web/changelog.html", "web/changelog.js"}, nil},
+	"app":  {"web", []string{"web/app.html", "web/common.js", "web/user.js"}, nil},
+	// The desktop client is in English and Simplified Chinese only (index.html: data-langs).
+	"client": {"../client/ui", []string{"../client/ui/index.html", "../client/ui/app.js"}, []string{"en"}},
 }
 
 var (
@@ -88,7 +91,7 @@ func i18nLangs(t *testing.T) []string {
 		t.Fatal(err)
 	}
 	src := string(raw)
-	block := src[strings.Index(src, "const LANGS = {"):]
+	block := src[strings.Index(src, "const ALL_LANGS = {"):]
 	block = block[:strings.Index(block, "};")]
 	var langs []string
 	for _, m := range langRe.FindAllStringSubmatch(block, -1) {
@@ -120,7 +123,13 @@ func TestI18nDictionaries(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		for _, lang := range i18nLangs(t) {
+		langs := b.langs
+		if langs == nil {
+			langs = i18nLangs(t)
+		} else if found, _ := filepath.Glob(filepath.Join(b.dir, "i18n", bundle, "*.json")); len(found) != len(langs) {
+			t.Errorf("%s: want dictionaries for %v only, found %v", bundle, langs, found)
+		}
+		for _, lang := range langs {
 			if lang == "zh-CN" { // the source language has no dictionary
 				continue
 			}

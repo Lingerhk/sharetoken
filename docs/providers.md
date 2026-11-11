@@ -145,7 +145,7 @@ sharetoken provider add anthropic -header anthropic-workspace-id=<工作区 ID>
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET | `/api/v1/providers` | 可添加的类型和已配置的 provider |
+| GET | `/api/v1/providers` | 可添加的类型（含 `needs_url`、`key_optional`，界面据此决定显示哪些输入框）和已配置的 provider |
 | POST | `/api/v1/providers` | 用 API key 添加（`provider.AddRequest`） |
 | PATCH | `/api/v1/providers/{name}` | `{"enabled": bool}` |
 | DELETE | `/api/v1/providers/{name}` | 删除 |
@@ -234,7 +234,7 @@ dev 端到端：卖家在 st-db 上挂 deepseek 和 openai 两个 provider，卖
 ## 10. 已知限制
 
 - `PUT /api/v1/share` 仍然可以改 `upstream_key_env`（[security-audit.md](security-audit.md) 第 1 项），与本功能无关但同属凭据面。
-- GUI 还没有 provider 的配置界面，API 已备好。
+- 桌面应用的“共享”页覆盖了这些操作（见 [gui.md](gui.md)）；各家的账号登录在界面上只验证到生成登录地址，换取令牌仍待手动验证。
 - Codex 后端没有可靠的模型列表接口，取不到时用内置列表，新模型需要更新代码。
 - 不同 provider 不能卖同一个网络模型 ID：后加载的那个被跳过并告警，`share add` 会提示改用 `-id`。
 - 隐藏推理的 token 不计费（§7）。

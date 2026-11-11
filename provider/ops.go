@@ -241,7 +241,9 @@ type KindView struct {
 	BaseURL  string `json:"base_url,omitempty"`
 	KeyPage  string `json:"key_page,omitempty"`
 	NeedsURL bool   `json:"needs_url,omitempty"`
-	Note     string `json:"note,omitempty"`
+	// KeyOptional: the API may need no key (a server on the local network).
+	KeyOptional bool   `json:"key_optional,omitempty"`
+	Note        string `json:"note,omitempty"`
 }
 
 // KindViews lists the kinds.
@@ -249,7 +251,7 @@ func KindViews() []KindView {
 	var out []KindView
 	for _, k := range kinds {
 		out = append(out, KindView{ID: k.ID, Name: k.Name, APIKey: k.APIKey, OAuth: k.OAuth && OAuthSupported(k.ID),
-			BaseURL: k.BaseURL, KeyPage: k.KeyPage, NeedsURL: k.BaseURL == "" && k.APIKey, Note: k.Note})
+			BaseURL: k.BaseURL, KeyPage: k.KeyPage, NeedsURL: k.BaseURL == "" && k.APIKey, KeyOptional: k.KeyOptional, Note: k.Note})
 	}
 	return out
 }

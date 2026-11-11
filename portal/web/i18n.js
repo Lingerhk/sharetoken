@@ -9,11 +9,15 @@
 // A script tag selects the dictionary: <script src="…/i18n.js" data-bundle="site">
 // loads …/i18n/site/<lang>.json. Dictionaries hold plain text; only rich() below
 // understands markup, and it builds <br>, <em> and <strong> without parsing HTML.
+//
+// data-langs="en,zh-CN" limits a page to those languages, and data-detect="system"
+// lets the browser's (for the desktop client: the system's) language choose when
+// the user has not; the desktop client sets both.
 'use strict';
 
 const I18N = (() => {
   const SOURCE = 'zh-CN', FALLBACK = 'en', KEY = 'st_lang';
-  const LANGS = {
+  const ALL_LANGS = {
     en: 'English', 'zh-CN': '简体中文', 'zh-TW': '繁體中文', es: 'Español', fr: 'Français', de: 'Deutsch',
     'pt-BR': 'Português', ru: 'Русский', ja: '日本語', ko: '한국어',
   };
@@ -22,6 +26,9 @@ const I18N = (() => {
   const script = document.currentScript;
   const base = script.src.replace(/[^/]*$/, '') + 'i18n/' + script.dataset.bundle + '/';
   const fixed = script.dataset.lang || '';
+  const only = (script.dataset.langs || '').split(',').map(x => x.trim()).filter(x => ALL_LANGS[x]);
+  const LANGS = only.length ? Object.fromEntries(only.map(x => [x, ALL_LANGS[x]])) : ALL_LANGS;
+  const detect = script.dataset.detect === 'system';
 
   function stored() { try { return localStorage.getItem(KEY) || ''; } catch (e) { return ''; } }
   function store(lang) { try { localStorage.setItem(KEY, lang); } catch (e) { /* this visit only */ } }
@@ -29,8 +36,11 @@ const I18N = (() => {
   // match maps a browser language tag to a supported language, or ''.
   function match(tag) {
     const lc = String(tag || '').toLowerCase(), primary = lc.split('-')[0];
-    if (primary === 'zh') return /hant|-tw|-hk|-mo/.test(lc) ? 'zh-TW' : 'zh-CN';
-    if (primary === 'pt') return 'pt-BR';
+    if (primary === 'zh') {
+      const zh = /hant|-tw|-hk|-mo/.test(lc) ? 'zh-TW' : 'zh-CN';
+      return LANGS[zh] ? zh : LANGS['zh-CN'] ? 'zh-CN' : LANGS['zh-TW'] ? 'zh-TW' : '';
+    }
+    if (primary === 'pt') return LANGS['pt-BR'] ? 'pt-BR' : '';
     return Object.keys(LANGS).find(l => l.toLowerCase() === lc) || (LANGS[primary] ? primary : '');
   }
   function choose() {
@@ -39,6 +49,11 @@ const I18N = (() => {
     if (asked) { store(asked); return asked; }
     const saved = match(stored());
     if (saved) return saved;
+    if (detect) {
+      // The first preferred language decides: a Chinese system gets Chinese, any other English.
+      const first = (navigator.languages && navigator.languages[0]) || navigator.language;
+      return match(first) || FALLBACK;
+    }
     return FALLBACK;
   }
 
