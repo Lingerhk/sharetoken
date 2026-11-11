@@ -55,9 +55,7 @@ func (e *Entry) Upstream(ts TokenSource) (node.Upstream, error) {
 	var up node.Upstream
 	switch e.Type {
 	case KindAnthropic:
-		up = &anthropicUpstream{base: e.URL(), limits: outputLimits{set: e.caps()}, header: func(context.Context) (http.Header, error) {
-			return e.keyHeader(), nil
-		}}
+		up = &anthropicUpstream{base: e.URL(), limits: outputLimits{set: e.caps()}, header: e.keyHeader()}
 	case KindOpenAI:
 		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}, tokensField: "max_completion_tokens"}
 	default:

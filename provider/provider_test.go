@@ -451,6 +451,7 @@ func TestParseCallback(t *testing.T) {
 
 func TestLoginAddresses(t *testing.T) {
 	for kind, wants := range map[string][]string{
+		KindAnthropic:   {"https://claude.ai/oauth/authorize?", "client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e", "redirect_uri=https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback", "scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference", "code_challenge_method=S256"},
 		KindOpenAI:      {"https://auth.openai.com/oauth/authorize?", "client_id=app_EMoamEEZ73f0CkXaXp7hrann", "redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback", "codex_cli_simplified_flow=true", "code_challenge_method=S256"},
 		KindGemini:      {"https://accounts.google.com/o/oauth2/v2/auth?", "redirect_uri=https%3A%2F%2Fcodeassist.google.com%2Fauthcode", "access_type=offline", "prompt=consent"},
 		KindAntigravity: {"redirect_uri=http%3A%2F%2Flocalhost%3A8085%2Fcallback", "client_id=1071006060591-"},
@@ -471,9 +472,6 @@ func TestLoginAddresses(t *testing.T) {
 	}
 	if _, err := StartLogin(KindDeepSeek, ""); err == nil {
 		t.Error("deepseek has no login")
-	}
-	if _, err := StartLogin(KindAnthropic, ""); !errors.Is(err, ErrOAuthUnavailable) {
-		t.Errorf("anthropic login: %v", err)
 	}
 }
 

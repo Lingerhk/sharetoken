@@ -15,10 +15,19 @@ import (
 
 const anthropicVersion = "2023-06-01"
 
+// claudeCodeIdentity is the first system block an OAuth (subscription) request
+// must carry: the Messages API serves such a login to Claude Code only, and
+// refuses one whose system prompt does not lead with this line.
+const claudeCodeIdentity = "You are Claude Code, Anthropic's official CLI for Claude."
+
 type anthropicUpstream struct {
 	base   string // without /v1
-	header func(ctx context.Context) (http.Header, error)
 	limits outputLimits
+	// API-key path: header carries the key. OAuth path: ts gives the bearer
+	// token, oauth makes requests lead with the Claude Code system line.
+	header http.Header
+	ts     TokenSource
+	oauth  bool
 }
 
 func (u *anthropicUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
@@ -31,24 +40,41 @@ func (u *anthropicUpstream) Stream(ctx context.Context, body []byte, emit func([
 		if err != nil {
 			return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 		}
+		if u.oauth {
+			req["system"] = claudeCodeSystem(req["system"])
+		}
 		out, err := json.Marshal(req)
 		if err != nil {
 			return err
 		}
-		h, err := u.header(ctx)
-		if err != nil {
-			return err
+		send := func(h http.Header) error {
+			h.Set("anthropic-version", anthropicVersion)
+			st := &anthropicStream{out: newChunks(chat.Model, emit), tool: map[int]int{}}
+			if err := postSSE(ctx, u.base+"/v1/messages", h, out, st.event); err != nil {
+				return err
+			}
+			if !st.done {
+				return fmt.Errorf("the stream ended before the message did")
+			}
+			return nil
 		}
-		h.Set("anthropic-version", anthropicVersion)
-		st := &anthropicStream{out: newChunks(chat.Model, emit), tool: map[int]int{}}
-		if err := postSSE(ctx, u.base+"/v1/messages", h, out, st.event); err != nil {
-			return err
+		if u.ts != nil {
+			return withToken(ctx, u.ts, func(tok *Token) error {
+				return send(anthropicOAuthHeader(tok))
+			})
 		}
-		if !st.done {
-			return fmt.Errorf("the stream ended before the message did")
-		}
-		return nil
+		return send(u.header.Clone())
 	}, body)
+}
+
+// claudeCodeSystem puts the Claude Code identity line before whatever system
+// blocks anthropicRequest built (which may be none).
+func claudeCodeSystem(system any) []any {
+	id := map[string]any{"type": "text", "text": claudeCodeIdentity}
+	if blocks, ok := system.([]any); ok {
+		return append([]any{id}, blocks...)
+	}
+	return []any{id}
 }
 
 // anthropicMaxOutput is the output limit of a Claude model, for those that
