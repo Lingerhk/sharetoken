@@ -248,5 +248,6 @@
   "网络最低价": "Lowest on network",
   "还没有卖出的作业": "No jobs sold yet",
   "链路质量：平均 {avg} ms · 抖动 {jitter} ms · 丢包 {loss}%": "Link quality: average {avg} ms · jitter {jitter} ms · loss {loss}%",
-  "附加请求头：{names}": "Extra headers: {names}"
+  "附加请求头：{names}": "Extra headers: {names}",
+  "先在下面添加厂商 API 或本机模型，再开启共享。": "First add a provider API or a local model below, then start sharing."
 }

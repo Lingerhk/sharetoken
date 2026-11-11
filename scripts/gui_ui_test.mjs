@@ -51,6 +51,9 @@ async function shot(name) {
   if (bad) throw new Error(`the page at ${name} shows a stray "${bad}":\n` + await ev('document.body.innerText'));
   const r = await cdp('Page.captureScreenshot', { format: 'png' }); writeFileSync(`${shots}/${name}.png`, Buffer.from(r.data, 'base64'));
 }
+async function fullShot(name) {
+  const r = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }); writeFileSync(`${shots}/${name}.png`, Buffer.from(r.data, 'base64'));
+}
 async function waitFor(expr, ms = 15000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) { if (await ev(`!!(${expr})`)) return; await sleep(100); }
@@ -264,7 +267,13 @@ ok(await ev(`${el('#md-id')}.disabled && ${el('#md-in')}.value === '0.3' && ${el
 await fill('#md-in', '0.5'); await click('#md-save');
 await waitFor(`${el('#prov-lab')}.textContent.includes('0.5 / M')`);
 ok(providersFile().providers[0].models[0].price_in === 500000 && providersFile().providers[0].models.length === 1, 'a new price replaces the old one');
+await waitFor(`${el('#share-relays-body')}.textContent.includes('已预约')`, 30000);
+ok((await text('#share-relays-body')).includes('relay-local'), 'the relay reservation is shown');
+ok((await text('#share-tile-active .value')).includes('/') && await has('#share-tile-total') && await has('#sold-empty'), 'tiles show the run and the account totals; no jobs sold yet');
+await waitFor(`${el('#prov-lab')}.textContent.includes('0.5 / 0.6')`, 40000);
+ok(true, "the network's lowest price stands beside the model's own");
 await shot('20-share-on');
+await fullShot('20b-share-on-full');
 
 console.log('sharing: the local model server');
 await click('#local-settings'); await waitFor(el('#dlg-local'));
@@ -285,6 +294,11 @@ ok(!(await has('#view-share img')) && !(await ev('window.__xss === 2')), 'a host
 await waitFor(`${el('#local-models-body')}.textContent.includes('在售')`);
 const cfgShare = () => JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8')).share;
 ok(cfgShare().enabled && cfgShare().models[0].id === hostileModel && cfgShare().concurrency === 3, 'config.json has the local model');
+await click('#nav-overview');
+ok((await text('#tile-share .value')) === '正在共享', 'the overview has a sharing tile');
+await fullShot('20c-overview-full');
+await click('#tile-share');
+ok(await shown('#view-share'), 'which opens the sharing view');
 await click('#nav-overview');
 await waitFor(`${el('#models-body')}.textContent.includes('desk-mock')`, 40000);
 ok(true, 'the network lists the model this device sells');
@@ -321,6 +335,23 @@ await waitFor(el('#providers-empty'));
 ok(providersFile().providers.length === 0, 'removing a provider removes its credentials');
 await click('#nav-overview');
 ok(await shown('#tiles'), 'back on the overview');
+
+console.log('languages');
+await cdp('Page.navigate', { url: env.DAEMON + '/?lang=en' });
+await waitFor(`${el('#nav-share')}?.textContent === 'Sharing'`);
+ok(await ev(`document.documentElement.lang`) === 'en' && !/[\u4e00-\u9fff]/.test(await ev(`${el('#app')}.innerText`)), 'the app is fully in English');
+await click('#lang-select');
+ok(await ev(`[...document.querySelectorAll('.lang-item')].map(e => e.lang).join()`) === 'en,zh-CN', 'the language menu lists English and Simplified Chinese only');
+await click('#nav-share'); await waitFor(el('#provider-add')); await sleep(300);
+await fullShot('22-share-english');
+await click('#provider-add'); await waitFor(el('#dlg-provider'));
+await shot('22b-provider-english');
+await click('#dlg-provider-close');
+await click('#nav-overview');
+await fullShot('22c-overview-english');
+ok(await ev(`fetch('/ui/i18n/client/de.json').then(r => r.status)`) === 404, 'the other dictionaries are gone');
+await cdp('Page.navigate', { url: env.DAEMON + '/?lang=zh-CN' });
+await waitFor(`${el('#nav-share')}?.textContent === '共享'`);
 
 console.log('reload and logout');
 await cdp('Page.reload'); await waitFor(el('#tiles .tile'));
