@@ -13,7 +13,7 @@
     return;
   }
 
-  const mailBadge = h('span', { class: 'nav-count', id: 'mail-unread', hidden: true });
+  const mailBadge = h('span', { class: 'nav-count', id: 'mail-unread', hidden: true, title: '未读邮件', 'data-unit': '{n} 封未读' });
   const feedbackBadge = h('span', { class: 'nav-count', id: 'feedback-new', hidden: true });
   const { nav, main } = ST.shell(app, {
     title: '管理控制台', role: '管理员',
@@ -36,7 +36,11 @@
   const SVGNS = 'http://www.w3.org/2000/svg';
   function svg(tag, attrs, ...kids) {
     const el = document.createElementNS(SVGNS, tag);
-    for (const [k, v] of Object.entries(attrs || {})) if (v !== null && v !== undefined) el.setAttribute(k, String(v));
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v === null || v === undefined) continue;
+      if (k === 'style') ST.setStyle(el, v); // CSP drops style attributes
+      else el.setAttribute(k, String(v));
+    }
     for (const c of kids.flat()) if (c) el.append(c);
     return el;
   }
@@ -387,21 +391,31 @@
   async function relays(m) {
     const list = h('div', { class: 'card' }), clients = h('div', { class: 'card', id: 'relay-clients' });
     const charts = h('div'), legend = h('div', { class: 'dash-legend' });
-    let range = '24h';
-    const rangeBtns = ['24h', '3d', '7d'].map(k => h('button', { class: k === range ? 'active' : '', onclick: () => { range = k; rangeBtns.forEach(b => b.classList.toggle('active', b.dataset.range === k)); loadCharts().catch(fail); } }, { '24h': '24 小时', '3d': '3 天', '7d': '7 天' }[k]));
+    let range = '24h', hs = null;
+    // Clicking a relay in the legend picks it; with any picked, only those are drawn.
+    const picked = new Set();
+    const rangeBtns = ['24h', '3d', '7d'].map(k => h('button', { class: k === range ? 'active' : '', onclick: () => { range = k; rangeBtns.forEach(b => b.classList.toggle('active', b.dataset.range === k)); loadCharts().catch(fail); } }, { '24h': '1 天', '3d': '3 天', '7d': '7 天' }[k]));
     rangeBtns.forEach((b, i) => b.dataset.range = ['24h', '3d', '7d'][i]);
     add(m, pageTitle('中继', h('small', null, '协调器每 15 秒同步一次登记表，并回写是否可达')), h('div', { class: 'toolbar' }, h('button', { class: 'primary', onclick: addRelay }, '登记中继')),
-      h('div', { class: 'card' }, section('chart', '资源监控', h('span', { class: 'tabs' }, rangeBtns)), legend, charts), clients, list);
+      h('div', { class: 'card' }, section('chart', '资源监控', h('span', { class: 'tabs tabs-sm' }, rangeBtns)), legend, charts), clients, list);
     async function loadCharts() {
-      const hs = await api('GET', '/api/v1/admin/relay-history?range=' + range);
-      const to = hs.now, from = hs.from, ser = hs.series.map((s, i) => ({ s, color: SERIES_COLORS[i % SERIES_COLORS.length] }));
-      add(clear(legend), ser.map(x => h('span', { class: 'dash-key' }, h('i', { style: 'background:' + x.color }), x.s.relay)));
+      hs = await api('GET', '/api/v1/admin/relay-history?range=' + range);
+      drawCharts();
+    }
+    function drawCharts() {
+      const to = hs.now, from = hs.from, all = hs.series.map((s, i) => ({ s, color: SERIES_COLORS[i % SERIES_COLORS.length] }));
+      for (const r of [...picked]) if (!all.some(x => x.s.relay === r)) picked.delete(r);
+      const shown = x => !picked.size || picked.has(x.s.relay);
+      add(clear(legend), all.map(x => h('button', { type: 'button', class: 'dash-key' + (shown(x) ? '' : ' off'), title: picked.has(x.s.relay) ? '再点一次取消' : '只看这台（可多选）',
+        onclick: () => { picked.has(x.s.relay) ? picked.delete(x.s.relay) : picked.add(x.s.relay); drawCharts(); } }, h('i', { style: 'background:' + x.color }), x.s.relay)),
+        picked.size ? h('button', { type: 'button', class: 'dash-key dash-key-all', onclick: () => { picked.clear(); drawCharts(); } }, '显示全部') : null);
+      const ser = all.filter(shown);
       const mk = (pick, fmt, opts) => ser.map(x => ({ name: x.s.relay, color: x.color, points: x.s.points.map(p => pick(p)).filter(Boolean) }));
       const pct = v => v.toFixed(v < 10 ? 1 : 0) + '%', rate = v => bytes(v) + '/s';
       const cpu = mk(p => p.cpu_percent >= 0 ? { at: p.at, v: p.cpu_percent } : null);
       const mem = mk(p => ({ at: p.at, v: p.rss_bytes }));
       const net = mk(p => p.rx_bps >= 0 && p.tx_bps >= 0 ? { at: p.at, v: p.rx_bps + p.tx_bps, tip: '↓' + rate(p.rx_bps) + ' ↑' + rate(p.tx_bps) } : null);
-      if (!ser.length) { add(clear(charts), h('p', { class: 'muted' }, '还没有历史数据：需要在门户配置中继指标采集，采集成功后每分钟记一个点。')); return; }
+      if (!all.length) { add(clear(charts), h('p', { class: 'muted' }, '还没有历史数据：需要在门户配置中继指标采集，采集成功后每分钟记一个点。')); return; }
       add(clear(charts), h('div', { class: 'dash-grid' },
         h('div', null, h('h3', { class: 'dash-sub' }, '网络（收 + 发）'), lineChart(net, from, to, hs.bucket_ns, rate)),
         h('div', null, h('h3', { class: 'dash-sub' }, '内存（RSS）'), lineChart(mem, from, to, hs.bucket_ns, bytes)),
@@ -611,11 +625,25 @@
   async function inbox(root, sub) {
     const q = input({ type: 'search', id: 'mail-search', placeholder: '搜索发件人、主题' });
     const unread = h('input', { type: 'checkbox', id: 'mail-unread-only' });
+    const markRead = h('button', { type: 'button', class: 'small', id: 'mail-mark-read', disabled: true, onclick: () => mark(true) }, '标为已读');
+    const markUnread = h('button', { type: 'button', class: 'small', id: 'mail-mark-unread', disabled: true, onclick: () => mark(false) }, '标为未读');
+    const picked = h('span', { class: 'strong', id: 'mail-picked' });
+    const bulk = h('div', { class: 'bulk-bar', hidden: true }, picked, markRead, markUnread);
+    async function mark(read) {
+      const ids = list.selected();
+      if (!ids.length) return;
+      markRead.disabled = markUnread.disabled = true;
+      try { const r = await api('POST', '/api/v1/admin/mail/inbox/read', { ids, read }); toast((read ? '已标为已读 ' : '已标为未读 ') + r.updated + ' 封'); }
+      catch (ex) { fail(ex); }
+      await list.refresh(); refreshUnread();
+    }
     const list = ST.listView({ path: '/api/v1/admin/mail/inbox', key: 'messages', empty: sub === 'bounces' ? '没有退信' : '没有邮件',
+      select: { key: x => x.id, label: '选择这封邮件', allLabel: '全选本页', onChange: ids => { markRead.disabled = markUnread.disabled = !ids.length; bulk.hidden = !ids.length; picked.textContent = '已选 ' + ids.length + ' 封'; } },
+      bulk,
       params: () => Object.assign({ q: q.value.trim(), unread: unread.checked ? '1' : '' }, sub === 'archived' ? { status: 'archived' } : sub === 'bounces' ? { status: 'all', bounces: 'only' } : {}),
       tools: [q, sub === 'inbox' ? h('label', { class: 'check' }, unread, '只看未读') : null],
       columns: [
-        { title: '发件人', cell: x => h('span', { class: x.read_at ? '' : 'strong' }, x.from || x.mail_from || '（未知）') },
+        { title: '发件人', cell: x => h('span', { class: 'muted', title: x.from || x.mail_from || '' }, mailAddr(x.from) || x.mail_from || '（未知）') },
         { title: '主题', cell: x => h('a', { href: '#/mail/' + sub + '/' + x.id, class: x.read_at ? '' : 'strong' }, x.subject || '（无主题）') },
         { title: '收件地址', cell: x => h('span', { class: 'muted' }, x.mailbox) },
         { title: '发件人验证', cell: x => authBadge(x) },
@@ -629,6 +657,8 @@
     await list.reload();
   }
 
+  // mailAddr is the bare address of a From header: 'Name <a@b>' → 'a@b'.
+  const mailAddr = from => { if (!from) return ''; const m = /<([^<>\s]+@[^<>\s]+)>\s*$/.exec(from); return m ? m[1] : from.trim(); };
   const authBadge = x => x.is_bounce ? badge('退信', 'warn') : x.verified ? badge('已验证', 'ok') : badge('未验证', 'warn');
 
   async function inMessage(root, id, sub) {
@@ -772,11 +802,48 @@
     'auth.admin_login': '管理员登录', 'user.create': '创建用户', 'user.credit': '调整 credit', 'user.disable': '禁用用户', 'user.enable': '启用用户', 'user.set_admin': '变更管理员权限',
     'user.set_password': '重置用户密码', 'user.password_reset_by_mail': '用户邮件重置密码', 'user.mfa_reset': '重置两步验证', 'user.token_revoke': '吊销 token', 'user.tokens_revoke_all': '吊销全部 token', 'user.device_unbind': '解绑设备',
     'relay.add': '登记中继', 'relay.update': '编辑中继', 'relay.enable': '启用中继', 'relay.disable': '停用中继', 'relay.remove': '删除中继', 'dispute.resolve': '裁决争议', 'version_policy.set': '修改版本策略',
-    'mail.send': '写邮件', 'mail.reply': '回复邮件', 'mail.delete': '删除邮件', 'mail.move': '归档 / 移回邮件', 'mail.retry': '重发邮件', 'mail.cancel': '取消发送', 'mail.test': '发送测试邮件',
+    'mail.send': '写邮件', 'mail.reply': '回复邮件', 'mail.mark_read': '批量标记已读 / 未读', 'mail.delete': '删除邮件', 'mail.move': '归档 / 移回邮件', 'mail.retry': '重发邮件', 'mail.cancel': '取消发送', 'mail.test': '发送测试邮件',
     'feedback.status': '处理反馈', 'settings.update': '修改系统设置', 'settings.apply_blocklist': '禁用黑名单用户', 'invite.create': '创建邀请码', 'invite.disable': '停用邀请码',
     'export.users': '导出用户', 'export.jobs': '导出作业', 'export.journal': '导出账本', 'export.user-ledger': '导出用户账单', 'export.user-jobs': '导出用户作业', 'export.inference-audits': '导出推理审计', 'export.disputes': '导出争议',
     'export.mail-inbox': '导出收件箱', 'export.mail-outbox': '导出发件箱', 'export.feedback': '导出反馈', 'export.audit-log': '导出操作日志',
   };
+  // Labels for the keys handlers note; anything else shows its raw key.
+  const AUDIT_KEYS = { is_admin: '管理员', memo: '备注', micros: '金额（micro）', count: '数量', found: '找到', read: '已读', status: '状态', subject: '主题', to: '收件人',
+    name: '名称', region: '地区', addr: '地址', note: '说明', decision: '裁决', disabled: '已禁用', dry_run: '仅预览', changed: '改动', max_uses: '可用次数',
+    tokens_revoked: '吊销 token 数', min_client: '最低版本', recommended_client: '推荐版本', latest_client: '最新版本', allow_dev: '允许开发构建', rows: '行数', query: '筛选条件', id: 'ID', peer: '设备' };
+  const AUDIT_REQ = ['method', 'path', 'error'];
+  const auditVal = v => v === true ? '是' : v === false ? '否' : typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v);
+  const auditFields = e => Object.entries(e.detail || {}).filter(([k]) => !AUDIT_REQ.includes(k));
+  const auditSummary = e => [e.detail && e.detail.error ? '原因：' + e.detail.error : null]
+    .concat(auditFields(e).map(([k, v]) => (AUDIT_KEYS[k] || k) + '：' + auditVal(v))).filter(Boolean).join('；');
+  // uaShort names the browser and system of a user agent, or the program for non-browsers.
+  function uaShort(ua) {
+    if (!ua) return '—';
+    const os = /Windows/.test(ua) ? 'Windows' : /iPhone|iPad/.test(ua) ? 'iOS' : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Android/.test(ua) ? 'Android' : /Linux/.test(ua) ? 'Linux' : '';
+    let m = /Edg\/(\d+)/.exec(ua) || null, b = m ? 'Edge ' + m[1] : '';
+    if (!b && (m = /Firefox\/(\d+)/.exec(ua))) b = 'Firefox ' + m[1];
+    if (!b && (m = /Chrome\/(\d+)/.exec(ua))) b = 'Chrome ' + m[1];
+    if (!b && /Safari\//.test(ua) && (m = /Version\/(\d+)/.exec(ua))) b = 'Safari ' + m[1];
+    if (!b) b = ua.split(/[\s(]/)[0];
+    return os ? b + ' · ' + os : b;
+  }
+  function auditDetail(e) {
+    const d = e.detail || {};
+    const ok = e.status < 400;
+    const body = h('div', { class: 'audit-modal' }, kv([
+      ['时间', new Date(e.at / 1e6).toLocaleString('zh-CN', { hour12: false })],
+      ['操作人', e.actor === 'cli' ? '服务器命令行' : [e.actor, e.actor_id ? h('span', { class: 'muted' }, '（ID ' + e.actor_id + '）') : null]],
+      ['操作', [AUDIT_ACTIONS[e.action] || e.action, ' ', h('code', { class: 'mono muted' }, e.action)]],
+      ['对象', e.target ? h('code', { class: 'mono' }, e.target) : '—'],
+      ['结果', [ok ? badge('成功', 'ok') : badge('失败', 'bad'), ' ', h('span', { class: 'muted' }, 'HTTP ' + e.status)]],
+      ['原因', d.error ? h('span', { class: 'bad' }, d.error) : '—'],
+      ['请求', d.method ? h('code', { class: 'mono' }, d.method + ' ' + (d.path || '')) : e.actor === 'cli' ? '服务器上的 portal 命令' : '—'],
+      ['IP', e.ip ? h('code', { class: 'mono' }, e.ip) : '—'],
+      ['客户端', e.user_agent ? [uaShort(e.user_agent), h('div', { class: 'muted audit-ua' }, e.user_agent)] : '—'],
+      ['记录 ID', String(e.id)],
+    ].concat(auditFields(e).map(([k, v]) => [AUDIT_KEYS[k] || k, h('span', { class: 'audit-val' }, auditVal(v))]))));
+    modal({ title: '操作详情', body, okText: '关闭', cancel: false });
+  }
   async function oplog(m) {
     const actor = input({ type: 'search', id: 'oplog-actor', placeholder: '操作人（完整用户名）' });
     const action = h('select', { id: 'oplog-action', onchange: () => list.reload() }, h('option', { value: '' }, '全部操作'), Object.entries(AUDIT_ACTIONS).map(([k, v]) => h('option', { value: k }, v)));
@@ -784,11 +851,12 @@
     const list = ST.listView({ path: '/api/v1/admin/oplog', key: 'entries', empty: '没有操作记录', params: () => ({ actor: actor.value.trim(), action: action.value, target: target.value.trim() }), tools: [actor, action, target], columns: [
       { title: '时间', cell: e => h('span', { class: 'nowrap' }, time(e.at)) },
       { title: '操作人', cell: e => e.actor === 'cli' ? badge('服务器命令行') : userLink(e.actor) },
-      { title: '操作', cell: e => h('span', { class: 'nowrap', title: e.action }, AUDIT_ACTIONS[e.action] || e.action) },
+      { title: '操作', cell: e => h('a', { href: '#', class: 'nowrap audit-open', title: e.action + ' · 点击查看详情', onclick: ev => { ev.preventDefault(); auditDetail(e); } }, AUDIT_ACTIONS[e.action] || e.action) },
       { title: '对象', cell: e => e.target ? h('code', { class: 'mono audit-target', title: e.target }, e.target) : '' },
       { title: '结果', cell: e => e.status < 400 ? badge('成功', 'ok') : badge('失败 ' + e.status, 'bad') },
-      { title: '详情', cell: e => Object.keys(e.detail || {}).length ? h('code', { class: 'audit-detail' }, JSON.stringify(e.detail)) : '' },
-      { title: 'IP', cell: e => h('span', { class: 'muted', title: e.user_agent || '' }, e.ip || '—') },
+      { title: '详情', cell: e => { const t = auditSummary(e); return t ? h('span', { class: 'audit-summary', title: t }, t) : h('span', { class: 'muted' }, '—'); } },
+      { title: '来源', cell: e => e.actor === 'cli' ? h('span', { class: 'muted' }, '服务器') : h('div', { class: 'nowrap', title: e.user_agent || '' },
+        h('div', { class: 'mono' }, e.ip || '—'), h('div', { class: 'muted audit-ua' }, uaShort(e.user_agent))) },
     ] });
     add(m, pageTitle('操作日志', h('small', null, '谁在何时对什么做了什么。只追加，不能在控制台修改或删除')), list.el);
     let timer; for (const el of [actor, target]) el.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => list.reload(), 250); });

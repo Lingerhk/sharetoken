@@ -136,6 +136,7 @@ func (s *Server) mailRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/admin/mail/inbox/{id}", s.admin(s.handleMailMessage))
 	mux.Handle("GET /api/v1/admin/mail/inbox/{id}/raw", s.admin(s.handleMailRaw))
 	mux.Handle("GET /api/v1/admin/mail/inbox/{id}/attachments/{n}", s.admin(s.handleMailAttachment))
+	mux.Handle("POST /api/v1/admin/mail/inbox/read", s.admin(s.handleMailReadMany))
 	mux.Handle("POST /api/v1/admin/mail/inbox/{id}/read", s.admin(s.handleMailRead))
 	mux.Handle("POST /api/v1/admin/mail/inbox/{id}/status", s.admin(s.handleMailMove))
 	mux.Handle("POST /api/v1/admin/mail/inbox/{id}/reply", s.admin(s.handleMailReply))
@@ -256,6 +257,34 @@ func (s *Server) handleMailRead(w http.ResponseWriter, r *http.Request, _ ctxUse
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// maxMailBatch bounds one batch request: a page of the inbox is at most 100.
+const maxMailBatch = 500
+
+// handleMailReadMany is POST /api/v1/admin/mail/inbox/read: {ids, read} marks a
+// selection of messages at once.
+func (s *Server) handleMailReadMany(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	var req struct {
+		IDs  []int64 `json:"ids"`
+		Read bool    `json:"read"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if len(req.IDs) == 0 || len(req.IDs) > maxMailBatch {
+		writeErr(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("ids must list 1 to %d messages", maxMailBatch))
+		return
+	}
+	cu.note("count", len(req.IDs))
+	cu.note("read", req.Read)
+	n, err := s.mail.SetReadMany(req.IDs, req.Read)
+	if err != nil {
+		s.mailErr(w, err)
+		return
+	}
+	cu.note("found", n)
+	writeJSON(w, http.StatusOK, map[string]int64{"updated": n})
 }
 
 func (s *Server) handleMailMove(w http.ResponseWriter, r *http.Request, cu ctxUser) {

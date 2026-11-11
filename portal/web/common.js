@@ -37,10 +37,20 @@ const ST = (() => {
       else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
       else if (k === 'checked' || k === 'disabled' || k === 'selected') el[k] = !!v;
       else if (k === 'value') el.value = v;
+      // CSP (style-src 'self') drops style attributes; CSSOM properties are allowed.
+      else if (k === 'style') setStyle(el, v);
       else el.setAttribute(k, String(v));
     }
     append(el, children);
     return el;
+  }
+  // setStyle applies 'prop: value; …' through CSSOM, since the page's CSP
+  // ignores style attributes set with setAttribute.
+  function setStyle(el, css) {
+    for (const decl of String(css).split(';')) {
+      const i = decl.indexOf(':');
+      if (i > 0) el.style.setProperty(decl.slice(0, i).trim(), decl.slice(i + 1).trim());
+    }
   }
   function append(el, children) {
     for (const c of children) {
@@ -135,8 +145,9 @@ const ST = (() => {
   // table(columns, rows): columns = [{title, cell(row) → node|string, num?}]
   function table(columns, rows, empty) {
     if (!rows || rows.length === 0) return h('div', { class: 'empty' }, icon('inbox', 30), h('span', null, empty || tr('暂无数据')));
-    const thead = h('thead', null, h('tr', null, columns.map(c => h('th', { class: c.num ? 'num' : null }, c.title))));
-    const tbody = h('tbody', null, rows.map(r => h('tr', null, columns.map(c => h('td', { class: c.num ? 'num' : null }, c.cell(r))))));
+    const cls = c => c.pick ? 'pick' : c.num ? 'num' : null;
+    const thead = h('thead', null, h('tr', null, columns.map(c => h('th', { class: cls(c) }, c.title))));
+    const tbody = h('tbody', null, rows.map(r => h('tr', null, columns.map(c => h('td', { class: cls(c) }, c.cell(r))))));
     return h('div', { class: 'table-wrap' }, h('table', null, thead, tbody));
   }
   function kv(pairs) {
@@ -210,8 +221,34 @@ const ST = (() => {
   // listView draws a paged table with its date filter and CSV export.
   // {path, key, columns, empty, params: () => ({...}), dates, csv, tools, actions, onData, onError, size}
   // → {el, reload, tools}. reload() goes back to the first page; refresh() stays.
+  // o.select: {key: row => id, label, allLabel (the caller's translated checkbox labels),
+  // onChange: ids => …} adds a checkbox per row and a select-all box; o.bulk is a bar
+  // shown above the table for acting on the selection. The
+  // selection resets whenever the page reloads.
   function listView(o) {
     let page = 1, seq = 0, size = o.size || storedPageSize();
+    const picked = new Set();
+    const pickChanged = () => { if (o.select && o.select.onChange) o.select.onChange([...picked]); };
+    function selectColumn(rows) {
+      const keys = rows.map(o.select.key);
+      const boxes = [];
+      const all = h('input', { type: 'checkbox', class: 'row-pick-all', 'aria-label': o.select.allLabel, onchange: () => {
+        for (const k of keys) all.checked ? picked.add(k) : picked.delete(k);
+        boxes.forEach(b => { b.checked = all.checked; b.closest('tr').classList.toggle('picked', all.checked); });
+        pickChanged();
+      } });
+      const sync = () => { const n = keys.filter(k => picked.has(k)).length; all.checked = n > 0 && n === keys.length; all.indeterminate = n > 0 && n < keys.length; };
+      return { title: all, pick: true, cell: r => {
+        const k = o.select.key(r);
+        const b = h('input', { type: 'checkbox', class: 'row-pick', 'aria-label': o.select.label, checked: picked.has(k), onchange: () => {
+          b.checked ? picked.add(k) : picked.delete(k);
+          b.closest('tr').classList.toggle('picked', b.checked);
+          sync(); pickChanged();
+        } });
+        boxes.push(b);
+        return b;
+      } };
+    }
     const body = h('div', { class: 'list-body' }), pager = h('div', { class: 'pager' });
     const dates = o.dates === false ? null : dateRange(() => reload());
     const query = extra => {
@@ -266,12 +303,14 @@ const ST = (() => {
       if (o.onData) o.onData(r);
       const rows = r[o.key] || [], total = r.total || 0;
       if (!rows.length && total > 0 && page > 1) { page = Math.ceil(total / size) || 1; return load(); } // the list shrank
-      add(clear(body), table(typeof o.columns === 'function' ? o.columns() : o.columns, rows, o.empty));
+      const cols = typeof o.columns === 'function' ? o.columns() : o.columns;
+      picked.clear(); pickChanged();
+      add(clear(body), table(o.select && rows.length ? [selectColumn(rows)].concat(cols) : cols, rows, o.empty));
       drawPager(total);
     }
     function reload() { page = 1; return load(); }
     const tools = h('div', { class: 'toolbar list-tools' }, o.tools, dates ? dates.el : null, exportBtn || o.actions ? h('span', { class: 'spacer' }) : null, exportBtn, o.actions);
-    return { el: h('div', { class: 'list-view' }, tools, h('div', { class: 'card' }, body, pager)), reload, refresh: load };
+    return { el: h('div', { class: 'list-view' }, tools, h('div', { class: 'card' }, o.bulk || null, body, pager)), reload, refresh: load, selected: () => [...picked] };
   }
 
   // ---- icons and page parts ----
@@ -331,7 +370,22 @@ const ST = (() => {
 
     const place = h('b');
     const crumb = h('div', { class: 'crumb' }, h('span', null, o.title), h('i', null, '/'), place);
-    onRoute = (link, name) => { state.routeIcon = link ? link.dataset.icon : null; place.textContent = link ? link.textContent : name; closeDrawer(); };
+    // The page name comes from the link's label only; a count badge on the link
+    // (unread mail) is mirrored as a separate pill and follows its updates.
+    const crumbCount = h('span', { class: 'crumb-count', hidden: true });
+    crumb.append(crumbCount);
+    let watch = null;
+    onRoute = (link, name) => {
+      state.routeIcon = link ? link.dataset.icon : null;
+      const label = link && link.querySelector('.nav-label');
+      place.textContent = label ? label.textContent : link ? link.textContent : name;
+      if (watch) { watch.disconnect(); watch = null; }
+      const badge = link && link.querySelector('.nav-count');
+      const mirror = () => { const n = badge && !badge.hidden ? badge.textContent.trim() : ''; crumbCount.hidden = !n; crumbCount.textContent = n ? (badge.dataset.unit || '{n}').replace('{n}', n) : ''; };
+      mirror();
+      if (badge) { watch = new MutationObserver(mirror); watch.observe(badge, { attributes: true, childList: true, characterData: true, subtree: true }); }
+      closeDrawer();
+    };
 
     const username = state.me.user.username;
     const userBtn = h('button', { type: 'button', class: 'user-btn', id: 'user-menu', title: username },
@@ -576,6 +630,6 @@ const ST = (() => {
   }
   function param(hash) { return hash; }
 
-  return { icon, chip, pageChip, pageTitle, section, tile, shell, authFrame, api, ApiError, h, clear, add, $, credit, signed, num, time, ago, short, peer, status, badge, rtt, toast, fail, modal, confirm, copy, secret,
+  return { icon, setStyle, chip, pageChip, pageTitle, section, tile, shell, authFrame, api, ApiError, h, clear, add, $, credit, signed, num, time, ago, short, peer, status, badge, rtt, toast, fail, modal, confirm, copy, secret,
     table, kv, field, input, state, listView, dateRange, download, resetToken, renderReset, loadInfo, loadMe, logout, renderLogin, router, param, STATUS };
 })();
