@@ -246,7 +246,10 @@ func (s *Service) handleCtrl(st network.Stream) {
 			}
 		}
 	case protocol.TypeModels:
-		resp, respType = protocol.ModelsResponse{Models: s.Engine.Models()}, protocol.TypeModels
+		var ms []protocol.ModelSummary
+		if ms, herr = s.Engine.ModelsFor(remote); herr == nil {
+			resp, respType = protocol.ModelsResponse{Models: ms}, protocol.TypeModels
+		}
 	case protocol.TypeBalance:
 		var b protocol.BalanceResponse
 		if b, herr = s.Engine.Balance(remote); herr == nil {

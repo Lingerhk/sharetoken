@@ -454,6 +454,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/admin/oplog", s.admin(s.handleAuditLog))
 	s.mailRoutes(mux)
 	s.feedbackRoutes(mux)
+	s.pairingRoutes(mux)
 	s.settingsRoutes(mux)
 	return withLimits(mux)
 }

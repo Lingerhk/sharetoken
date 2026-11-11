@@ -6,7 +6,7 @@
 //   scripts/gui_stack.sh start /tmp/guitest
 //   node scripts/gui_ui_test.mjs /tmp/guitest /tmp/guitest/shots
 //   scripts/gui_stack.sh stop /tmp/guitest
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -335,6 +335,96 @@ await waitFor(el('#providers-empty'));
 ok(providersFile().providers.length === 0, 'removing a provider removes its credentials');
 await click('#nav-overview');
 ok(await shown('#tiles'), 'back on the overview');
+
+console.log('pairing');
+// The other accounts of the stack act through the command line: `seller` sells
+// mock-fast, `idle` sells nothing.
+const cli = (home, ...args) => execFileSync(`${dir}/bin/sharetoken`, ['-home', `${dir}/${home}`, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+const codeOf = out => out.match(/[A-Z2-7]{4}(?:-[A-Z2-7]{4}){3}/)[0];
+const buyOnce = async () => {
+  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
+  return { status: r.status, body: await r.text() };
+};
+const clickRow = (panel, needle, button) => ev(`[...document.querySelectorAll(${q(panel + ' tbody tr')})].find(r => r.textContent.includes(${q(needle)})).querySelector(${q(button)}).click()`);
+await waitFor(el('#pair-sellers-empty'));
+ok(!(await has('#pair-restricted')), 'an account that is not paired buys from everyone');
+await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
+await click('#pair-join-ok');
+await waitFor(`${el('#pair-join-error')}.textContent.includes('请输入')`);
+await fill('#pair-code-input', 'AAAA-AAAA-AAAA-AAAA'); await click('#pair-join-ok');
+await waitFor(`${el('#pair-join-error')}.textContent.includes('配对码不对')`);
+ok(true, 'an empty and a wrong pairing code are refused');
+const idleCode = codeOf(cli('idle', 'pair', 'code', '-label', '<b>idle</b> team'));
+await fill('#pair-code-input', idleCode.toLowerCase().replaceAll('-', ' ')); await click('#pair-join-ok');
+await waitFor(el('#pair-restricted'));
+ok((await text('#pair-join-flash')).includes('id***') && !(await text('#paired-sellers')).includes('idle-') && !/\bidle\b/.test((await text('#paired-sellers')).replace('<b>idle</b>', '')), "pairing shows the seller's masked name");
+ok((await text('#paired-sellers-body')).includes('<b>idle</b> team') && !(await has('#paired-sellers b')), 'and the label of the code, as text');
+await waitFor(el('#models-empty'), 40000);
+ok(true, 'paired with a seller that sells nothing, the buyer sees no models');
+const refused = await buyOnce();
+ok(refused.status !== 200 && refused.body.includes('paired'), 'and a request is refused, with the reason');
+await shot('23-paired-restricted');
+await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
+await fill('#pair-code-input', codeOf(cli('seller', 'pair', 'code'))); await click('#pair-join-ok');
+await waitFor(`${el('#paired-sellers-body')}.textContent.includes('se***')`);
+await waitFor(`${el('#models-body')}.textContent.includes('mock-fast')`, 40000);
+ok((await buyOnce()).status === 200, 'paired with a second seller, the buyer buys what that one sells');
+await fullShot('23b-paired-two');
+await clickRow('#paired-sellers', 'id***', '.pair-leave'); await waitFor(el('#dlg-confirm'));
+await click('#confirm-cancel');
+ok((await text('#paired-sellers-body')).includes('id***'), 'cancelling leaves the pairing');
+await clickRow('#paired-sellers', 'id***', '.pair-leave'); await waitFor(el('#dlg-confirm'));
+await click('#confirm-ok');
+await waitFor(`!${el('#paired-sellers-body')}.textContent.includes('id***')`);
+ok(await has('#pair-restricted') && (await text('#paired-sellers-body')).includes('se***'), 'leaving one seller keeps the other');
+
+await click('#nav-share'); await waitFor(el('#pair-new-code'));
+ok(await has('#pair-codes-empty') && await has('#pair-buyers-empty'), 'the sharing view starts with no codes and no buyers');
+await click('#pair-new-code'); await waitFor(el('#dlg-pair-code'));
+ok(await ev(`${el('#pair-ttl')}.value`) === '24', 'a code lasts a day unless chosen otherwise');
+await fill('#pair-uses', 'many'); await click('#pair-code-ok');
+await waitFor(`${el('#pair-code-error')}.textContent.includes('整数')`);
+await fill('#pair-label', 'friends'); await choose('#pair-ttl', '168'); await fill('#pair-uses', '2'); await click('#pair-code-ok');
+await waitFor(el('#dlg-pair-shown'));
+const ownCode = await text('#pair-shown-code');
+ok(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){3}$/.test(ownCode), 'a new code is shown once it is made');
+await shot('24-pair-code');
+await click('#pair-shown-done');
+const pairingText = () => text('#pairing-body');
+ok((await pairingText()).includes(ownCode) && (await pairingText()).includes('friends') && (await pairingText()).includes('0 / 2'), 'and listed with its label and uses');
+const days = (JSON.parse(await ev(`fetch('/api/v1/pairing').then(r => r.text())`)).codes[0].expires_at / 1e6 - Date.now()) / 86400e3;
+ok(days > 6.9 && days < 7.1, 'it lasts the seven days chosen');
+await click('#nav-overview'); await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
+await fill('#pair-code-input', ownCode); await click('#pair-join-ok');
+await waitFor(`${el('#pair-join-error')}.textContent.includes('自己的配对码')`);
+ok(true, "nobody pairs with their own code");
+await click('#dlg-pair-join-close');
+ok(cli('seller', 'pair', 'join', ownCode).includes('paired with seller de***@example.com'), "another account redeems it and sees this account's masked name");
+await click('#nav-share');
+await waitFor(`${el('#pairing-body')}.textContent.includes('se***')`, 40000);
+ok((await pairingText()).includes('1 / 2') && !(await has('#pair-buyers-empty')), 'the buyer appears, and the code counts it');
+await fullShot('24b-pair-buyers');
+await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 760, deviceScaleFactor: 1, mobile: false });
+await sleep(300);
+ok(await ev('document.documentElement.scrollWidth <= window.innerWidth'), 'no sideways scrolling with pairings at the smallest window');
+await shot('24c-pair-narrow');
+await cdp('Emulation.clearDeviceMetricsOverride');
+await clickRow('#pairing', 'se***', '.pair-remove'); await waitFor(el('#dlg-confirm'));
+await click('#confirm-ok');
+await waitFor(el('#pair-buyers-empty'));
+ok((await pairingText()).includes(ownCode), 'removing a buyer keeps the code');
+await click('#pairing .pair-revoke'); await waitFor(el('#dlg-confirm'));
+ok((await text('#confirm-text')).includes(ownCode), 'revoking asks first');
+await click('#confirm-ok');
+await waitFor(el('#pair-codes-empty'));
+let revoked = false;
+try { cli('seller', 'pair', 'join', ownCode); } catch (e) { revoked = true; }
+ok(revoked, 'a revoked code pairs nobody');
+await click('#nav-overview');
+await click('#paired-sellers .pair-leave'); await waitFor(el('#dlg-confirm'));
+await click('#confirm-ok');
+await waitFor(el('#pair-sellers-empty'));
+ok(!(await has('#pair-restricted')), 'with the last seller gone, the account buys from everyone again');
 
 console.log('languages');
 await cdp('Page.navigate', { url: env.DAEMON + '/?lang=en' });

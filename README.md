@@ -145,6 +145,14 @@ Please do not open a public issue for it.
    sharetoken share add deepseek-chat -provider deepseek
    ```
 
+5. To keep a group to itself, a seller hands out a pairing code. A buyer that
+   redeems it buys only from the sellers it is paired with:
+
+   ```bash
+   sharetoken pair code                    # seller: prints a code such as K7QF-2MXA-9RTD-H3WC
+   sharetoken pair join K7QF-2MXA-9RTD-H3WC   # buyer: pair with that seller
+   ```
+
 The full walkthrough is in the [user guide](https://sharetoken.app/docs/). The
 command reference is [docs/guide.md](docs/guide.md).
 

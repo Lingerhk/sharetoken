@@ -364,13 +364,21 @@ I18N.ready.then(() => {
     return { el, say(msg) { el.textContent = msg || ''; el.hidden = !msg; } };
   }
   // run does one request for a button: the button waits, a failure is explained in err.
-  async function run(btn, err, fn) {
+  // explain turns an API error into a sentence (shareError when not given).
+  async function run(btn, err, fn, explain) {
     if (btn.disabled) return;
     btn.disabled = true;
     err.say('');
     try { await fn(); }
-    catch (e) { err.say(e instanceof ApiError ? shareError(e) : (e.message || String(e))); }
+    catch (e) { err.say(e instanceof ApiError ? (explain || shareError)(e) : (e.message || String(e))); }
     finally { btn.disabled = false; }
+  }
+  // Asks before something is removed: fn does it, after follows a success.
+  function confirmBox(text, label, fn, after, explain) {
+    const err = errorBox('confirm-error');
+    const okBtn = h('button', { type: 'button', class: 'danger', id: 'confirm-ok', onclick: () => run(okBtn, err, async () => { await fn(); closeModal(); await after(); }, explain) }, label);
+    modal('dlg-confirm', tr('请确认'), h('p', { id: 'confirm-text' }, text), err.el,
+      h('div', { class: 'modal-actions' }, h('button', { type: 'button', id: 'confirm-cancel', onclick: () => closeModal() }, tr('取消')), okBtn));
   }
   function shareError(e) {
     if (e.code === 'not_connected' || e.code === 'not_logged_in') return tr('连接网络后才能设置共享');
@@ -391,7 +399,8 @@ I18N.ready.then(() => {
   // The sharing view: whether this device sells, the hosted APIs it sells
   // through with their models, and the models of the local model server.
   // getMarket: the models on the network, for a price hint.
-  function shareView(getMarket) {
+  // pairingPanel: the codes and buyers of pairingView, shown with the rest.
+  function shareView(getMarket, pairingPanel) {
     let st = null;    // the last /api/v1/status; null while the network is not joined
     let kinds = null; // what can be added; fetched once
     const ui = { busy: false, error: '', flash: null };
@@ -400,7 +409,7 @@ I18N.ready.then(() => {
     const local = section('local-models', tr('本机模型服务'));
     const relays = section('share-relays', tr('中继预约'));
     const soldJobs = section('sold-jobs', tr('最近卖出的作业'));
-    const el = h('div', { id: 'view-share', hidden: true }, state.el, provs.el, local.el, relays.el, soldJobs.el);
+    const el = h('div', { id: 'view-share', hidden: true }, state.el, provs.el, local.el, pairingPanel, relays.el, soldJobs.el);
     let acct = null;  // the account, for what was earned in all
     let sold = null;  // the latest jobs this account served
     relays.el.hidden = true;
@@ -570,10 +579,7 @@ I18N.ready.then(() => {
     }
 
     function confirmDialog(text, label, fn) {
-      const err = errorBox('confirm-error');
-      const okBtn = h('button', { type: 'button', class: 'danger', id: 'confirm-ok', onclick: () => run(okBtn, err, async () => { await fn(); closeModal(); ui.flash = null; await settle(); }) }, label);
-      modal('dlg-confirm', tr('请确认'), h('p', { id: 'confirm-text' }, text), err.el,
-        h('div', { class: 'modal-actions' }, h('button', { type: 'button', id: 'confirm-cancel', onclick: () => closeModal() }, tr('取消')), okBtn));
+      confirmBox(text, label, fn, async () => { ui.flash = null; await settle(); });
     }
 
     function removeProvider(p) {
@@ -811,6 +817,137 @@ I18N.ready.then(() => {
     return { el, update(next) { st = next; render(); }, account(me, jobs) { acct = me; sold = jobs || []; render(); } };
   }
 
+  // ---- pairing ----
+
+  // Pairing ties this account, as a buyer, to the sellers whose codes it
+  // redeemed, and as a seller to the buyers that redeemed its codes. The portal
+  // keeps it; the daemon passes the requests on. Two panels: the sellers go on
+  // the overview, the codes and the buyers on the sharing view.
+  function pairingView() {
+    let view = null, error = '';
+    const flash = { sellers: null, buyers: null };
+    const sellers = section('paired-sellers', tr('配对的卖家'));
+    const buyers = section('pairing', tr('配对'));
+
+    function pairError(e) {
+      if (e.code === 'bad_code') return tr('配对码不对，或者已经过期、被撤销或用完');
+      if (e.code === 'own_code') return tr('这是你自己的配对码，请把它发给要配对的买家');
+      if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
+      if (e.code === 'not_found') return tr('这一项已经不存在了');
+      if (e.code === 'not_logged_in') return tr('请先登录');
+      return message(e);
+    }
+
+    async function reload() {
+      try { view = await api('GET', '/api/v1/pairing'); error = ''; }
+      catch (e) { error = pairError(e); }
+      render();
+    }
+
+    const who = u => [u.username, u.disabled ? h('span', { class: 'pill bad pair-off' }, tr('已停用')) : null];
+    const uses = c => c.max_uses ? num(c.used) + ' / ' + num(c.max_uses) : tr('{n}（不限）', { n: num(c.used) });
+    const failed = () => error ? h('div', { class: 'notice warn small pair-error' }, tr('暂时获取不到配对信息：{error}', { error })) : null;
+    const flashLine = (f, id) => f ? h('div', { class: 'notice ' + f.cls, id }, f.text) : null;
+
+    function render() {
+      const v = view || { sellers: [], buyers: [], codes: [], restricted: false };
+      sellers.set([v.sellers, v.restricted, error, flash.sellers, !view],
+        h('div', { class: 'share-line' },
+          h('p', { class: 'small muted' }, tr('输入卖家给你的配对码。配对后，这个账户只向配对的卖家购买；可以同时配对多个卖家。')),
+          h('button', { type: 'button', id: 'pair-join', onclick: joinDialog }, tr('输入配对码'))),
+        failed(),
+        flashLine(flash.sellers, 'pair-join-flash'),
+        v.restricted ? h('div', { class: 'notice warn small', id: 'pair-restricted' }, tr('这个账户现在只向下面的卖家购买，「可用模型」也只列出他们的模型。全部解除后，恢复为向整个网络购买。')) : null,
+        v.sellers.length === 0 ? h('div', { class: 'empty', id: 'pair-sellers-empty' }, tr('还没有配对卖家，可以向网络上所有卖家购买')) : table([
+          { title: tr('卖家'), get: u => who(u) },
+          { title: tr('备注'), get: u => u.label || '—' },
+          { title: tr('配对时间'), get: u => time(u.since) },
+          { title: '', get: u => h('button', { type: 'button', class: 'mini danger pair-leave', 'data-id': String(u.id), onclick: () => leave(u) }, tr('解除')) },
+        ], v.sellers));
+
+      buyers.set([v.buyers, v.codes, error, flash.buyers, !view],
+        h('div', { class: 'share-line' },
+          h('p', { class: 'small muted' }, tr('生成配对码发给你的买家。对方输入后，他的账户只向和他配对的卖家购买。没有配对的买家仍然可以向你购买。')),
+          h('button', { type: 'button', id: 'pair-new-code', onclick: codeDialog }, tr('生成配对码'))),
+        failed(),
+        flashLine(flash.buyers, 'pair-code-flash'),
+        h('h3', { class: 'sub-title' }, tr('有效的配对码')),
+        v.codes.length === 0 ? h('div', { class: 'empty', id: 'pair-codes-empty' }, tr('没有有效的配对码')) : table([
+          { title: tr('配对码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'pair-copy-' + c.id)) },
+          { title: tr('备注'), get: c => c.label || '—' },
+          { title: tr('已配对'), num: true, get: uses },
+          { title: tr('到期时间'), get: c => time(c.expires_at) },
+          { title: '', get: c => h('button', { type: 'button', class: 'mini danger pair-revoke', 'data-id': String(c.id), onclick: () => revoke(c) }, tr('撤销')) },
+        ], v.codes),
+        h('h3', { class: 'sub-title' }, tr('配对的买家')),
+        v.buyers.length === 0 ? h('div', { class: 'empty', id: 'pair-buyers-empty' }, tr('还没有买家和你配对')) : table([
+          { title: tr('买家'), get: u => who(u) },
+          { title: tr('备注'), get: u => u.label || '—' },
+          { title: tr('配对时间'), get: u => time(u.since) },
+          { title: '', get: u => h('button', { type: 'button', class: 'mini danger pair-remove', 'data-id': String(u.id), onclick: () => remove(u) }, tr('移除')) },
+        ], v.buyers));
+    }
+
+    function joinDialog() {
+      const code = h('input', { type: 'text', id: 'pair-code-input', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', maxlength: '64', placeholder: 'XXXX-XXXX-XXXX-XXXX', class: 'mono' });
+      const err = errorBox('pair-join-error');
+      const okBtn = h('button', { class: 'primary', type: 'submit', id: 'pair-join-ok' }, tr('配对'));
+      modal('dlg-pair-join', tr('输入配对码'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
+        if (!code.value.trim()) throw new Error(tr('请输入配对码'));
+        const seller = await api('POST', '/api/v1/pairing/redeem', { code: code.value.trim() });
+        closeModal();
+        flash.sellers = { cls: 'ok', text: tr('已和卖家 {name} 配对', { name: seller.username }) };
+        await reload();
+      }, pairError); } },
+        field(tr('配对码'), code, tr('配对后，这个账户的所有设备都只向配对的卖家购买。随时可以解除。')),
+        err.el, okBtn));
+    }
+
+    const TTLS = [[1, tr('1 小时')], [24, tr('1 天')], [168, tr('7 天')], [720, tr('30 天')], [2160, tr('90 天')]];
+    function codeDialog() {
+      const label = h('input', { type: 'text', id: 'pair-label', maxlength: '64', dir: 'auto' });
+      const ttl = h('select', { id: 'pair-ttl' }, TTLS.map(([hours, text]) => h('option', { value: String(hours), selected: hours === 24 }, text)));
+      const limit = h('input', { type: 'text', id: 'pair-uses', inputmode: 'numeric', placeholder: tr('不限') });
+      const err = errorBox('pair-code-error');
+      const okBtn = h('button', { class: 'primary', type: 'submit', id: 'pair-code-ok' }, tr('生成'));
+      modal('dlg-pair-code', tr('生成配对码'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
+        const n = limit.value.trim() === '' ? 0 : Number(limit.value.trim());
+        if (!Number.isInteger(n) || n < 0 || n > 1000) throw new Error(tr('可配对的买家数需要是 1 到 1000 的整数，不填表示不限'));
+        const c = await api('POST', '/api/v1/pairing/codes', { label: label.value.trim(), ttl_hours: Number(ttl.value), max_uses: n });
+        flash.buyers = null;
+        await reload();
+        shownCode(c);
+      }, pairError); } },
+        field(tr('备注（配对的买家也会看到，可不填）'), label),
+        field(tr('有效期'), ttl, tr('到期后不能再用它配对，已经配对的买家不受影响。')),
+        field(tr('可配对的买家数'), limit, tr('不填表示不限。')),
+        err.el, okBtn));
+    }
+    function shownCode(c) {
+      modal('dlg-pair-shown', tr('配对码已生成'),
+        h('p', { class: 'small muted' }, tr('把它发给要配对的买家。拿到它的人都能和你配对，请只发给你信任的人。')),
+        h('div', { class: 'endpoint' }, h('code', { id: 'pair-shown-code', class: 'pair-code big' }, c.code), copyButton(() => c.code, 'pair-shown-copy')),
+        h('p', { class: 'small muted', id: 'pair-shown-meta' }, tr('到期时间：{time}', { time: time(c.expires_at) })),
+        h('div', { class: 'modal-actions' }, h('button', { type: 'button', class: 'primary', id: 'pair-shown-done', onclick: () => closeModal() }, tr('完成'))));
+    }
+
+    function leave(u) {
+      confirmBox(tr('解除和卖家 {name} 的配对？之后这个账户不再向他购买，除非重新配对。', { name: u.username }), tr('解除'),
+        () => api('DELETE', '/api/v1/pairing/sellers/' + u.id), async () => { flash.sellers = null; await reload(); }, pairError);
+    }
+    function remove(u) {
+      confirmBox(tr('移除买家 {name}？如果这是他唯一配对的卖家，他会恢复为向整个网络购买。', { name: u.username }), tr('移除'),
+        () => api('DELETE', '/api/v1/pairing/buyers/' + u.id), async () => { flash.buyers = null; await reload(); }, pairError);
+    }
+    function revoke(c) {
+      confirmBox(tr('撤销配对码 {code}？它不能再用来配对，已经配对的买家不受影响。', { code: c.code }), tr('撤销'),
+        () => api('DELETE', '/api/v1/pairing/codes/' + c.id), async () => { flash.buyers = null; await reload(); }, pairError);
+    }
+
+    render();
+    return { sellers: sellers.el, buyers: buyers.el, reload };
+  }
+
   function showDashboard(session) {
     markEnv(session);
     stopPolling();
@@ -829,11 +966,12 @@ I18N.ready.then(() => {
     const updateBox = h('div', { id: 'update' });
     const versionLabel = h('p', { class: 'small muted', id: 'app-version' });
     let market = [];
-    const share = shareView(() => market);
+    const pairing = pairingView();
+    const share = shareView(() => market, pairing.buyers);
     // Two views under one top bar. Both stay in the page, so that polling
     // keeps the hidden one current and switching shows it at once.
     const views = {
-      overview: h('div', { id: 'view-overview' }, tiles, endpoint.el, network.el, models.el, devices.el, jobs.el, feedback, telemetryToggle(session.telemetry), versionLabel),
+      overview: h('div', { id: 'view-overview' }, tiles, endpoint.el, network.el, models.el, pairing.sellers, devices.el, jobs.el, feedback, telemetryToggle(session.telemetry), versionLabel),
       share: share.el,
     };
     const navButtons = {};
@@ -1002,6 +1140,7 @@ I18N.ready.then(() => {
             renderJobs(j.jobs);
             share.account(me, sj.jobs);
             setBanner('');
+            await pairing.reload();
           } catch (e) {
             if (e.status === 401) { boot(); return; }
             setBanner(tr('暂时连不上门户，下面是上次获取的账户信息（{error}）', { error: message(e) }));

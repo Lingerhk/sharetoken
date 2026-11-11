@@ -18,6 +18,7 @@ var Migrations = []mysqldb.Migration{
 	{Version: 1, Name: "initial schema", SQL: ledger.Schema + accounts.Schema + Schema},
 	{Version: 2, Name: "date range listings", SQL: ledger.AtIndex + auditsAtIndex},
 	{Version: 3, Name: "device platform", SQL: `ALTER TABLE devices ADD COLUMN client_os VARCHAR(16) NOT NULL DEFAULT '';`},
+	{Version: 4, Name: "pairing", SQL: accounts.PairingSchema},
 }
 
 // Migrate brings the shared database up to date. The portal and the coordinator

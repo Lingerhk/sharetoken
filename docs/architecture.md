@@ -172,6 +172,14 @@ The portal serves its pages from the binary: the public site (`/`), the user pag
 
 **Two-factor authentication for administrators.** An administrator's password yields only a challenge valid for 5 minutes, never a token. An enrolled administrator then submits a TOTP code (`POST /api/v1/web/mfa` or `/api/v1/mfa`; API clients can also send `totp` in the login request). An administrator who is not enrolled first enrolls in the web page: the server generates a 20-byte secret, shows it as a QR code and as base32 text, and stores it only after the first code is correct. So even at the first login there is no admin session without the second factor. Verification accepts one period either side of now and records the last accepted step, so a code cannot be replayed. Wrong codes count towards the login throttle, and a challenge is discarded after 5 wrong codes. `api_tokens.mfa` records whether a token came from a two-factor login, and the `admin` middleware requires it: a token issued before the user became an administrator has no admin rights, and the user must log in again. The secret is stored in `users.mfa_secret` encrypted with AES-GCM under a key derived from the portal's signing key (`portal-pass.key`), or under `keys.mfa_key_file` when that is set, so a copy of the database does not reveal the authenticator secrets. A portal process without that key (an operator command, for instance) cannot log an administrator in, but `portal mfa-reset` does not need it. Ordinary users are not required to use two-factor authentication.
 
+### 2.13 Pairing: a buyer bound to its sellers
+
+A seller can keep a group of buyers to itself, and a buyer can limit whom its prompts go to, without a separate network. The seller makes a pairing code (`internal/accounts/pairing.go`): 80 random bits written as 16 base32 characters, valid for a day by default and at most 90 days, for any number of buyers or a set number. A buyer redeems it at the portal and the two accounts are paired. One seller can have many buyers (up to 1000) and one buyer several sellers (up to 20). Either side can end a pairing, and revoking a code leaves the pairings made with it.
+
+The coordinator enforces it, not the client. When it issues a ticket or lists models for a peer, it looks up the sellers the peer's account is paired with; if there are any, every node of another account is left out, also when the request names a node. A buyer with no pairing is matched as before, and a seller keeps serving buyers that are not paired with it. Pairings are read from the database on each request, so a change takes effect on the next request.
+
+Pairing is between accounts: every device of the buyer is bound by it and every device of the seller serves it. The portal shows each side only a masked form of the other's account name, because a code can travel further than its seller intended. Wrong codes are throttled like failed logins.
+
 ## 3. Database
 
 The portal, the coordinator and the mail server share one MySQL 8 (InnoDB) database (`internal/mysqldb`). It is named with `-db mysql://user@host:port/db` (`database.dsn`) and can run on a separate machine.
@@ -179,6 +187,7 @@ The portal, the coordinator and the mail server share one MySQL 8 (InnoDB) datab
 | Tables | Written by | Read by |
 |---|---|---|
 | `users`, `api_tokens`, `devices` | Portal | Coordinator (`devices`, to resolve accounts), portal |
+| `pairing_codes`, `pairings` | Portal | Coordinator (`pairings`, to match), portal |
 | `relays` | Portal (registry), coordinator (reachability) | Portal, coordinator |
 | `ledger_accounts`, `ledger_holds`, `ledger_entries` | Portal (grants and deductions), coordinator (holds, settlements, refunds) | Both |
 | `jobs`, `nodes`, `audits`, `peers`, `meta` | Coordinator | Portal (billing, usage, coordinator ID) |

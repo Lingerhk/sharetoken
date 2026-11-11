@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -125,4 +126,104 @@ func TestDevicesShareTheirUsersAccount(t *testing.T) {
 		t.Fatalf("disabled user's node: want unauthorized, got %v", err)
 	}
 	f.booksBalance()
+}
+
+// A paired buyer buys only from the sellers it is paired with, and sees only
+// their models; everyone else is matched as before.
+func TestPairedBuyersBuyOnlyFromTheirSellers(t *testing.T) {
+	f := newStrictFixture(t, Config{})
+	st := f.store()
+	aliceNode, carolNode, bob, dave := mustKeys(t), mustKeys(t), mustKeys(t), mustKeys(t)
+	alice := f.bind(st, "alice", aliceNode)
+	carol := f.bind(st, "carol", carolNode)
+	bobUser := f.bind(st, "bob", bob)
+	f.bind(st, "dave", dave)
+	for _, k := range []*p2p.Keys{bob, dave} {
+		if err := f.eng.Deposit(k.ID(), 1_000_000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Carol is cheaper and the only one with model "x": an unpaired buyer gets her.
+	f.offer(aliceNode, "m", priceIn, priceOut, 64)
+	co := f.signedOffer(carolNode, "m", priceIn/2, priceOut/2, 64)
+	co.Models = append(co.Models, protocol.ModelPrice{Model: "x", PriceInMicros: priceIn, PriceOutMicros: priceOut})
+	co.Sign(carolNode.Signer)
+	if err := f.eng.UpsertOffer(co); err != nil {
+		t.Fatal(err)
+	}
+	req := func(model string) protocol.TicketRequest {
+		return protocol.TicketRequest{InferVersions: protocol.SupportedInferVersions, Model: model, BudgetMicros: 1000}
+	}
+	names := func(ms []protocol.ModelSummary) (out []string) {
+		for _, m := range ms {
+			out = append(out, m.Model)
+		}
+		return out
+	}
+	if tk := f.ticket(bob, 1000); tk.Node != carolNode.ID() {
+		t.Fatalf("unpaired: matched %s, want the cheaper node", tk.Node)
+	}
+
+	code, err := st.CreatePairingCode(alice.ID, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RedeemPairingCode(bobUser.ID, code.Code); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if tk := f.ticket(bob, 1000); tk.Node != aliceNode.ID() {
+			t.Fatalf("paired with alice: matched %s", tk.Node)
+		}
+	}
+	_, err = f.eng.IssueTicket(bob.ID(), req("x"))
+	if protocol.CodeOf(err) != protocol.CodeNoOffers || !strings.Contains(err.Error(), "paired") {
+		t.Fatalf("a model only another seller has: %v", err)
+	}
+	// Naming a node does not get around it.
+	r := req("m")
+	r.Node = carolNode.ID()
+	if _, err := f.eng.IssueTicket(bob.ID(), r); protocol.CodeOf(err) != protocol.CodeNoOffers {
+		t.Fatalf("pinned to an unpaired node: %v", err)
+	}
+	ms, err := f.eng.ModelsFor(bob.ID())
+	if err != nil || len(ms) != 1 || ms[0].Model != "m" || ms[0].Nodes != 1 || ms[0].MinPriceIn != priceIn {
+		t.Fatalf("bob's models: %+v %v", ms, err)
+	}
+	// Dave is not paired: nothing changes for him.
+	if ms, _ := f.eng.ModelsFor(dave.ID()); len(ms) != 2 || ms[0].Nodes != 2 {
+		t.Fatalf("dave's models: %v", names(ms))
+	}
+	if tk := f.ticket(dave, 1000); tk.Node != carolNode.ID() {
+		t.Fatalf("dave matched %s", tk.Node)
+	}
+	// A device that belongs to no user (an auditor) is not restricted either.
+	if ms, err := f.eng.ModelsFor(mustKeys(t).ID()); err != nil || len(ms) != 2 {
+		t.Fatalf("a stranger's models: %v %v", names(ms), err)
+	}
+
+	// Pairing with Carol too widens the choice; leaving both lifts the limit.
+	c2, _ := st.CreatePairingCode(carol.ID, "", 0, 0)
+	if _, err := st.RedeemPairingCode(bobUser.ID, c2.Code); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.eng.IssueTicket(bob.ID(), req("x")); err != nil {
+		t.Fatalf("after pairing with carol: %v", err)
+	}
+	if err := st.Unpair(bobUser.ID, carol.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The seller goes offline: the buyer waits for it rather than buying elsewhere.
+	if err := f.eng.WithdrawOffer(aliceNode.ID(), f.now.UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.eng.IssueTicket(bob.ID(), req("m")); protocol.CodeOf(err) != protocol.CodeNoOffers {
+		t.Fatalf("paired seller offline: %v", err)
+	}
+	if err := st.Unpair(bobUser.ID, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tk := f.ticket(bob, 1000); tk.Node != carolNode.ID() {
+		t.Fatalf("after leaving: matched %s", tk.Node)
+	}
 }

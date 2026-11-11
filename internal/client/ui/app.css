@@ -163,3 +163,11 @@ td:first-child, th:first-child { padding-inline-start: 6px; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .modal { animation: none; } }
 main button.primary { width: auto; min-width: 150px; }
+
+/* Pairing: codes are read aloud and typed, so they are spaced and never wrap. */
+.sub-title { font-size: 13px; margin: 14px 0 6px; color: var(--muted); font-weight: 600; }
+.pair-code { letter-spacing: .04em; white-space: nowrap; user-select: all; }
+.pair-code.big { font-size: 17px; padding: 8px 12px; }
+.pair-code-cell { display: inline-flex; align-items: center; gap: 8px; }
+.pair-off { margin-inline-start: 8px; }
+#dlg-pair-shown .endpoint { margin: 10px 0; }

@@ -185,6 +185,34 @@ If a Google account has no project of its own, `gemini` and `antigravity` need a
 - **Where credentials are kept:** keys and logins are in `providers.json` in the state directory, apart from `config.json`. Only your account can read the file. Neither the commands nor the local API show a whole key.
 - **Refused credentials or an empty account:** jobs fail, and `{{exe}} status` shows `warning: deepseek refused its credentials ...` or `... is out of balance ...`. Failed jobs count against your node, so fix it soon.
 
+## Pair with your buyers {#pairing}
+
+Pairing ties buyers to you. Make a pairing code and hand it to the people you want as buyers. Once a buyer joins with the code, that buyer's requests go only to the sellers it is paired with, on all of its devices. One code admits as many buyers as you allow, so a team can share one.
+
+```bash
+{{exe}} pair code -label team
+```
+
+The command prints the code, for example `ABCD-EFGH-IJKL-MNOP`. It lasts 24 hours unless you pass `-ttl`, and admits any number of buyers unless you pass `-uses`. Each buyer then runs:
+
+```bash
+{{exe}} pair join ABCD-EFGH-IJKL-MNOP
+```
+
+| Action | Command |
+|---|---|
+| See your buyers, the sellers you are paired with, and your codes | `{{exe}} pair` |
+| Remove one of your buyers | `{{exe}} pair rm 42` |
+| Stop a code from admitting more buyers | `{{exe}} pair revoke 7` |
+| As a buyer, end the pairing with a seller | `{{exe}} pair leave 42` |
+
+- **What a paired buyer sees:** only the models of the sellers it is paired with. When none of them offers a model, or all of them are offline, the request fails. It is not sent to another seller.
+- **What does not change:** prices, billing, receipts and audits work as for any other job. Pairing does not make you a private seller: buyers that are not paired with anyone can still be matched to you.
+- **Who sees what:** you see part of each buyer's account name, and they see part of yours.
+- **Ending it:** either side can end a pairing at any time. A buyer with no pairings left buys from any seller again.
+
+The desktop app has the same under **Sharing → Pairing** for sellers and **Overview → Paired sellers** for buyers.
+
 ## Concurrency and performance {#tuning}
 
 The number of requests handled at the same time is 2 by default, set by `share.concurrency` in the configuration file. Adjust it to what your machine can handle, then run this command to apply the change:

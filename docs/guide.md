@@ -78,6 +78,10 @@ Before sending a password, the client decides how to trust the portal:
 | `provider login <kind> [-name N] [-project ID]` | Add one with an OAuth login: open the printed address, sign in, and paste the authorization code or the callback address back. |
 | `provider models <name>`, `provider test <name> [-model M] [-prompt TEXT]` | List the models the credentials may use; send one small request through the provider. |
 | `provider on <name>`, `provider off <name>`, `provider rm <name>` | Sell its models, stop, or remove it with its credentials. |
+| `pair` | Who this account is paired with, and its pairing codes. |
+| `pair code [-label L] [-ttl 24h] [-uses N]` | Seller: make a pairing code to hand to buyers. It lasts 24 hours unless `-ttl` says otherwise (at most 90 days) and admits any number of buyers unless `-uses` limits it. |
+| `pair join <code>` | Buyer: pair with the seller that made the code. From then on the account buys only from the sellers it is paired with. |
+| `pair leave <seller id>`, `pair rm <buyer id>`, `pair revoke <code id>` | End a pairing from the buyer's side or the seller's side; stop a code from admitting more buyers. |
 | `logout` | Revoke this device's token. A running client stops. |
 | `config` | Show the configuration (the token is masked). |
 | `version [--check]` | What this client was built for; `--check` asks the portal for a newer release. |
@@ -89,6 +93,7 @@ Notes:
 - By default the client listens on IPv4 and IPv6, TCP and QUIC (`/ip4/0.0.0.0`, `/ip6/::`, port chosen by the system). A machine without IPv6 skips those listeners.
 - No port needs to be opened. A seller holds reservations on relays; buyers reach it through a relay or by hole punching.
 - Seller mode for hosted APIs is described in [providers.md](providers.md).
+- Pairing is between accounts, not devices. A buyer may be paired with up to 20 sellers and a seller with up to 1000 buyers. A buyer with at least one pairing is matched only to its paired sellers and `models` lists only what they sell; a buyer with none buys from anyone. Sellers keep serving buyers that are not paired. Each side sees the other's account name masked (`al***@example.com`). See [architecture.md](architecture.md), section 2.13.
 
 ### 1.4 Files in the state directory
 
@@ -301,6 +306,7 @@ Operator commands work on the database directly and can run beside the live serv
 | `POST /api/v1/share/reload` | Load the sharing settings from `config.json` again. |
 | `GET /api/v1/share/detect[?upstream=]` | List the models of the local model server. |
 | `/api/v1/providers…` | Hosted-API providers: list, add, switch, remove, their models, a test request, OAuth login. The routes are listed at the top of [`internal/client/providers.go`](../internal/client/providers.go). Answers never contain a key, and any request with an `Origin` other than the API's own address gets 403. |
+| `GET /api/v1/pairing`, `POST /api/v1/pairing/codes`, `DELETE /api/v1/pairing/codes/{id}`, `POST /api/v1/pairing/redeem`, `DELETE /api/v1/pairing/sellers/{id}`, `DELETE /api/v1/pairing/buyers/{id}` | Pairing, passed on to the portal's endpoints of the same paths with the user's token ([`internal/client/pairing.go`](../internal/client/pairing.go)). |
 | `POST /api/v1/login/check` | Check now whether the login is still valid (`sharetoken logout` calls it). Otherwise this is checked once a minute; when the login has ended, `up` exits and the daemon goes to the state `expired`. |
 | `POST /v1/chat/completions`, `GET /v1/models` | The OpenAI-compatible endpoint. Responses carry the headers `X-Sharetoken-Job`, `X-Sharetoken-Node`, `X-Sharetoken-Verified`, `X-Sharetoken-Cost-Micros`, and `X-Sharetoken-TEE` when the node is attested. |
 
@@ -344,6 +350,10 @@ Lists take `limit` (default 50, at most 500), `page` or `offset`, `from` and `to
 | `GET /api/v1/jobs?role=&limit=&before=` | yes | Jobs: role, model, status, token counts, cost, earnings. |
 | `GET /api/v1/usage` | yes | Totals bought and sold. |
 | `POST /api/v1/feedback`, `GET /api/v1/feedback` | yes | Send feedback; list one's own. |
+| `GET /api/v1/pairing` | yes | The caller's pairings: `sellers[]` and `buyers[]` (`id`, masked `username`, `label`, `since`), its live `codes[]` (`id`, `code`, `label`, `max_uses`, `used`, `expires_at`) and `restricted` (true when it buys only from `sellers`). |
+| `POST /api/v1/pairing/codes`, `DELETE /api/v1/pairing/codes/{id}` | yes | Make a code (`label`, `ttl_hours`, `max_uses`; zero means one day and no limit) and revoke one. Pairings made with a revoked code stay. 409 `limit` at 20 live codes. |
+| `POST /api/v1/pairing/redeem` | yes | `{code}`: pair the caller, as a buyer, with the code's seller. 404 `bad_code` (wrong, expired, revoked or used up; counted like a failed login, then 429 `throttled`), 409 `own_code`, 409 `limit`. |
+| `DELETE /api/v1/pairing/sellers/{id}`, `DELETE /api/v1/pairing/buyers/{id}` | yes | End a pairing as the buyer or as the seller. |
 | `GET /api/v1/admin/overview`, `GET /api/v1/admin/dashboard`, `GET /api/v1/admin/relay-history?range=` | admin | Platform totals and the ledger replay; the dashboard's figures; relay history. |
 | `GET /api/v1/admin/users`, `POST /api/v1/admin/users`, `GET /api/v1/admin/users/{name}` | admin | List users, create one, one user's details (balance, usage, devices, tokens). |
 | `GET /api/v1/admin/users/search?q=&limit=&offset=` | admin | Search by user name (wildcards are matched literally). Each row has balance, holds, device and token counts; the total is returned. |

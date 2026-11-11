@@ -109,6 +109,13 @@ flowchart LR
    sharetoken share add deepseek-chat -provider deepseek
    ```
 
+5. 想把一批买家留给自己，卖家可以发出配对码。买家兑换后，只向和它配对的卖家购买：
+
+   ```bash
+   sharetoken pair code                    # 卖家：打印一个配对码，例如 K7QF-2MXA-9RTD-H3WC
+   sharetoken pair join K7QF-2MXA-9RTD-H3WC   # 买家：和这个卖家配对
+   ```
+
 完整步骤见[用户指南](https://sharetoken.app/docs/)，命令参考见 [docs/zh-CN/guide.md](docs/zh-CN/guide.md)。
 
 ## 自己运行一个网络

@@ -149,6 +149,7 @@ func (a *Agent) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/v1/share/detect", a.handleDetect)
 	a.providerRoutes(mux)
+	a.pairingRoutes(mux)
 	mux.HandleFunc("POST /api/v1/login/check", func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case a.loginKick <- struct{}{}:

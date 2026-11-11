@@ -119,6 +119,25 @@ Two mechanisms address that:
 - **A user cannot trade with themselves** to farm reputation: matching excludes
   every device of the buyer's own account.
 
+### 2.6 Choosing your sellers
+
+A buyer that does not want its prompts to reach arbitrary sellers can pair with
+the ones it knows (`internal/accounts/pairing.go`). A seller hands out a pairing
+code, the buyer redeems it, and from then on the coordinator matches that
+buyer's requests only to the sellers it is paired with and lists only their
+models. The rule is applied by the coordinator on every request, for every
+device of the account, also when the request names a node, so a modified client
+cannot step around it.
+
+- A code is 80 random bits, expires (one day by default, 90 days at most) and
+  can be limited to a number of buyers and revoked. Wrong codes are throttled
+  per account and per address, like failed logins.
+- Each side sees the other's account name masked. A code that leaks lets a
+  stranger pair with the seller, which gives the stranger nothing beyond what an
+  unpaired buyer already has; the seller sees the pairing and can remove it.
+- Pairing restricts the buyer, not the seller: a paired seller still serves
+  buyers that are not paired with it.
+
 ## 3. Accounts, devices and the platform
 
 | Threat | Defence | Code |
@@ -170,6 +189,9 @@ them more than the list above.
 - **Relayed connections are not admission-controlled.** Anyone can open a circuit
   to a reserved peer. The peer authenticates and rejects strangers, but the
   relay's bandwidth is used. Only aggregate limits bound it.
+- **Pairing is a matching rule, not encryption.** It decides which sellers a
+  buyer's requests are sent to. What a paired seller can see of a prompt is
+  unchanged, and the platform, which keeps the pairings, could alter them.
 - **Relays see metadata.** They see who connects to whom, when and how much, not
   what.
 - **The platform is trusted with the accounting.** One coordinator and one portal

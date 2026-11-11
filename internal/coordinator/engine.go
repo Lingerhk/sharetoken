@@ -451,13 +451,53 @@ func (e *Engine) Offers() []protocol.Offer {
 }
 
 // Models aggregates live offers per model.
-func (e *Engine) Models() []protocol.ModelSummary {
+func (e *Engine) Models() []protocol.ModelSummary { return e.models(nil) }
+
+// ModelsFor is Models as peer may buy them: a device of a paired buyer sees
+// the offers of the sellers it is paired with, and its own user's.
+func (e *Engine) ModelsFor(peer string) ([]protocol.ModelSummary, error) {
+	acct, userID, err := accounts.DeviceAccount(e.db, peer)
+	if err != nil { // not a user's device (an auditor, an open account): nothing restricts it
+		if errors.Is(err, accounts.ErrUnknownDevice) || errors.Is(err, accounts.ErrDisabled) {
+			return e.models(nil), nil
+		}
+		return nil, err
+	}
+	paired, err := pairedAccounts(e.db, userID)
+	if err != nil {
+		return nil, err
+	}
+	if paired == nil {
+		return e.models(nil), nil
+	}
+	paired[acct] = true
+	return e.models(paired), nil
+}
+
+// pairedAccounts returns the ledger accounts of the sellers a buyer is paired
+// with, or nil when it is not paired and buys from anyone (accounts.PairedSellers).
+func pairedAccounts(q interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}, buyerID int64) (map[string]bool, error) {
+	ids, err := accounts.PairedSellers(q, buyerID)
+	if err != nil || len(ids) == 0 {
+		return nil, err
+	}
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[ledger.UserAccount(id)] = true
+	}
+	return out, nil
+}
+
+// models aggregates the live offers of the accounts in only (nil: of everyone).
+func (e *Engine) models(only map[string]bool) []protocol.ModelSummary {
 	now := e.cfg.Now().UnixNano()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	agg := make(map[string]*protocol.ModelSummary)
 	for _, oe := range e.offers {
-		if oe.offer.ExpiresAt <= now {
+		if oe.offer.ExpiresAt <= now || (only != nil && !only[oe.acct]) {
 			continue
 		}
 		for _, m := range oe.offer.Models {
@@ -575,6 +615,13 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		if err != nil {
 			return err
 		}
+		// A paired buyer buys only from the sellers it is paired with.
+		var paired map[string]bool
+		if _, buyerID, err := accounts.DeviceAccount(tx, buyer); err == nil {
+			if paired, err = pairedAccounts(tx, buyerID); err != nil {
+				return err
+			}
+		}
 		if err := e.grantDevCredit(tx, led, buyer, buyerAcct, now); err != nil {
 			return err
 		}
@@ -611,7 +658,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			// A user may not buy from itself (from any of its devices): it
 			// would only churn fees and farm reputation.
 			if o.ExpiresAt <= now.UnixNano() || node == buyer || oe.acct == buyerAcct || excluded[node] ||
-				(req.Node != "" && node != req.Node) || (req.RequireTEE && oe.tee == "") {
+				(req.Node != "" && node != req.Node) || (req.RequireTEE && oe.tee == "") || (paired != nil && !paired[oe.acct]) {
 				continue
 			}
 			if e.cfg.NodeOnline != nil && !e.cfg.NodeOnline(node) {
@@ -650,6 +697,9 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			what := "no node"
 			if req.RequireTEE {
 				what = "no attested node"
+			}
+			if paired != nil {
+				what += " of the sellers you are paired with"
 			}
 			for _, oe := range e.offers {
 				if oe.acct == buyerAcct && slices.ContainsFunc(oe.offer.Models, func(m protocol.ModelPrice) bool { return m.Model == req.Model }) {

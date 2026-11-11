@@ -99,6 +99,26 @@
 
 `<model>` 必须紧跟在 `add` 后面，参数写在它之后。详见[共享模型](/docs/share)。
 
+## 配对 {#pairing}
+
+卖家生成配对码并分发出去。买家用它配对之后，只向已配对的卖家购买。一个配对码可以让多个买家配对。
+
+| 命令 | 作用 |
+|---|---|
+| `pair` | 显示你和谁配对，以及你的配对码 |
+| `pair code [-label L] [-ttl 24h] [-uses N]` | 卖家：生成一个给买家用的配对码。默认 24 小时有效，不限买家数量 |
+| `pair join <code>` | 买家：和生成这个配对码的卖家配对 |
+| `pair leave <seller id>` | 买家：解除和某个卖家的配对 |
+| `pair rm <buyer id>` | 卖家：移除一个买家 |
+| `pair revoke <code id>` | 卖家：让配对码不再接纳新买家，已配对的买家不受影响 |
+
+```bash
+{{exe}} pair code -label team -ttl 72h
+{{exe}} pair join ABCD-EFGH-IJKL-MNOP
+```
+
+命令里的 id 就是 `pair` 列出的编号。详见[和买家配对](/docs/share#pairing)。
+
 ## 其他 {#other}
 
 | 命令 | 作用 |

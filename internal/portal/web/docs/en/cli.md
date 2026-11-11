@@ -99,6 +99,26 @@ Show the latency of each relay. `-measure` measures again right away. The client
 
 `<model>` must come right after `add`, and options go after it. See [Share a model](/docs/share).
 
+## Pairing {#pairing}
+
+A seller hands out a pairing code. A buyer that joins with it buys only from the sellers it is paired with. One code admits many buyers.
+
+| Command | What it does |
+|---|---|
+| `pair` | Show who you are paired with, and your pairing codes |
+| `pair code [-label L] [-ttl 24h] [-uses N]` | Seller: make a code for your buyers. It lasts 24 hours and admits any number of buyers unless you say otherwise |
+| `pair join <code>` | Buyer: pair with the seller that made the code |
+| `pair leave <seller id>` | Buyer: end the pairing with a seller |
+| `pair rm <buyer id>` | Seller: remove one of your buyers |
+| `pair revoke <code id>` | Seller: stop a code from admitting more buyers. Buyers already paired stay |
+
+```bash
+{{exe}} pair code -label team -ttl 72h
+{{exe}} pair join ABCD-EFGH-IJKL-MNOP
+```
+
+The ids are the ones `pair` lists. See [Pair with your buyers](/docs/share#pairing).
+
 ## Other {#other}
 
 | Command | What it does |

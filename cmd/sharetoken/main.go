@@ -24,6 +24,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -85,6 +86,15 @@ Hosted APIs to share (kept in providers.json, apart from the configuration):
   provider on | off <name>              sell its models, or stop
   provider rm <name>
 
+Pairing (a buyer that pairs with a seller buys only from the sellers it is paired with):
+  pair                                  who you are paired with, and your pairing codes
+  pair code [-label L] [-ttl 24h] [-uses N]
+                                        seller: make a code to hand to your buyers (any number of them, or -uses N)
+  pair join <code>                      buyer: pair with the seller that made the code
+  pair leave <seller id>                buyer: end the pairing with a seller
+  pair rm <buyer id>                    seller: remove one of your buyers
+  pair revoke <code id>                 seller: stop a code from admitting more buyers
+
   config                                show the configuration file
   version [--check]                     show what this client was built for; --check asks the portal for a newer release`
 
@@ -138,6 +148,8 @@ func main() {
 		run = c.share
 	case "provider":
 		run = c.provider
+	case "pair":
+		run = c.pair
 	case "config":
 		run = c.showConfig
 	default:
@@ -378,6 +390,142 @@ func (c *cmdCtx) jobs(args []string) error {
 			j.PromptTokens, j.CompletionTokens, credits(int64(j.CostMicros)), credits(int64(j.EarnedMicros)))
 	}
 	return tw.Flush()
+}
+
+// ---- pairing ----
+
+func (c *cmdCtx) pair(args []string) error {
+	pc, err := c.portal()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	sub := ""
+	if len(args) > 0 {
+		sub, args = args[0], args[1:]
+	}
+	id := func(what string) (int64, error) {
+		if len(args) != 1 {
+			return 0, fmt.Errorf("usage: sharetoken pair %s <%s> (`sharetoken pair` lists them)", sub, what)
+		}
+		n, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%q is not an id: `sharetoken pair` lists them", args[0])
+		}
+		return n, nil
+	}
+	switch sub {
+	case "", "ls", "list":
+		return showPairing(cx, pc)
+	case "code", "new":
+		fs := flag.NewFlagSet("pair code", flag.ExitOnError)
+		label := fs.String("label", "", "a note for yourself: who the code is for")
+		ttl := fs.Duration("ttl", 0, "how long the code can be used (default 24h, at most 2160h)")
+		uses := fs.Int64("uses", 0, "how many buyers it admits (default: any number)")
+		_ = fs.Parse(args)
+		code, err := pc.NewPairingCode(cx, *label, ttl.Hours(), *uses)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("pairing code  %s\n", code.Code)
+		fmt.Printf("  good until %s, for %s\n", time.Unix(0, code.ExpiresAt).Format("2006-01-02 15:04"), usesText(code.MaxUses, 0))
+		fmt.Println("  a buyer runs: sharetoken pair join " + code.Code)
+		fmt.Println("  from then on that buyer's requests go only to the sellers it is paired with")
+		return nil
+	case "join", "redeem":
+		if len(args) != 1 {
+			return errors.New("usage: sharetoken pair join <code>")
+		}
+		seller, err := pc.RedeemPairingCode(cx, args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("paired with seller %s (id %d)\n", seller.Username, seller.ID)
+		fmt.Println("  this account now buys only from the sellers it is paired with; `sharetoken pair leave " + fmt.Sprint(seller.ID) + "` ends it")
+		return nil
+	case "leave":
+		n, err := id("seller id")
+		if err != nil {
+			return err
+		}
+		if err := pc.LeaveSeller(cx, n); err != nil {
+			return err
+		}
+		fmt.Println("left seller", n)
+		return nil
+	case "rm", "remove":
+		n, err := id("buyer id")
+		if err != nil {
+			return err
+		}
+		if err := pc.RemoveBuyer(cx, n); err != nil {
+			return err
+		}
+		fmt.Println("removed buyer", n)
+		return nil
+	case "revoke":
+		n, err := id("code id")
+		if err != nil {
+			return err
+		}
+		if err := pc.RevokePairingCode(cx, n); err != nil {
+			return err
+		}
+		fmt.Println("revoked code", n, "(the buyers already paired with it stay)")
+		return nil
+	}
+	return fmt.Errorf("unknown: pair %s (pair | pair code | pair join <code> | pair leave <id> | pair rm <id> | pair revoke <id>)", sub)
+}
+
+func usesText(maxUses, used int64) string {
+	if maxUses == 0 {
+		return fmt.Sprintf("any number of buyers (%d so far)", used)
+	}
+	return fmt.Sprintf("%d of %d buyers", used, maxUses)
+}
+
+func showPairing(cx context.Context, pc *client.PortalClient) error {
+	v, err := pc.Pairing(cx)
+	if err != nil {
+		return err
+	}
+	day := func(ns int64) string { return time.Unix(0, ns).Format("2006-01-02 15:04") }
+	if len(v.Sellers) == 0 {
+		fmt.Println("buying: not paired, requests go to any seller")
+	} else {
+		fmt.Println("buying: only from these sellers")
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tSELLER\tSINCE")
+		for _, s := range v.Sellers {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\n", s.ID, s.Username, day(s.Since))
+		}
+		_ = tw.Flush()
+	}
+	fmt.Println()
+	if len(v.Buyers) == 0 {
+		fmt.Println("selling: no paired buyers")
+	} else {
+		fmt.Printf("selling: %d paired buyers\n", len(v.Buyers))
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tBUYER\tSINCE\tCODE")
+		for _, b := range v.Buyers {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\n", b.ID, b.Username, day(b.Since), b.Label)
+		}
+		_ = tw.Flush()
+	}
+	if len(v.Codes) > 0 {
+		fmt.Println("\npairing codes:")
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tCODE\tGOOD UNTIL\tUSED BY\tLABEL")
+		for _, c := range v.Codes {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\t%s\n", c.ID, c.Code, day(c.ExpiresAt), usesText(c.MaxUses, c.Used), c.Label)
+		}
+		_ = tw.Flush()
+	} else {
+		fmt.Println("\nno pairing codes; `sharetoken pair code` makes one")
+	}
+	return nil
 }
 
 // ---- running ----

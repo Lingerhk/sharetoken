@@ -59,6 +59,7 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（internal/cl
 | 厂商 API | 添加厂商（API key 或账号登录）、启用停用、更换凭据、删除 | `/api/v1/providers`、`/api/v1/providers/oauth/start`、`/finish` |
 | 厂商的模型 | 从厂商的模型列表里选（或手填），设网络 ID、输入输出价、输出上限；测试、编辑、移除 | `/api/v1/providers/{name}/models`、`/test` |
 | 本机模型服务 | 地址和并发数；探测模型后添加、编辑、移除 | `PUT /api/v1/share`、`GET /api/v1/share/detect` |
+| 配对 | 生成配对码（备注、有效期、可配对的买家数）、复制、撤销；和本账户配对的买家，以及移除其中一个 | `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`DELETE /api/v1/pairing/buyers/{id}` |
 
 - 数据来自每 5 秒一次的 `GET /api/v1/status`（`share.providers`、`share.serving`、`warnings`）。列表内容没变就不重绘。表单都在对话框里，轮询不会动它，输入不会丢。
 - 这些接口由 Agent 提供，所以在接入网络之前，共享页只提示连接网络后才能设置共享。
@@ -67,6 +68,7 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（internal/cl
 - 界面上的保护：没有模型时不能开启共享；同一个模型 ID 不能来自两个来源；新增厂商的名称和已有的重复时要求改名（接口会按“更换凭据”处理）；最后一个可出售的模型被移除或其厂商被停用时，共享一起关闭。
 - 和命令行的一处差别：`share add` 会顺带开启共享，界面不会，由用户点“开启共享”。
 - 模型表里的“网络最低价”来自 `GET /api/v1/models`（包含本机自己的报价）。厂商卡片显示登录令牌的有效期和附加请求头的名称。概览页有一张“共享”卡片，点击进入共享页；网络区域显示到协调器的链路质量（平均延迟、抖动、丢包）。
+- 配对（`app.js` 的 `pairingView`）在概览页还有一块“配对的卖家”：输入卖家的配对码，查看本账户配对的卖家，解除其中一个（`POST /api/v1/pairing/redeem`、`DELETE /api/v1/pairing/sellers/{id}`）。账户有配对时，这一块会说明它只向这些卖家购买，“可用模型”也只列出他们的模型。配对保存在门户，所以两块在接入网络之前就能用；每 15 秒重新读取一次。
 - 客户端有英语和简体中文两种语言。没有保存过选择时跟随系统语言，其他系统语言一律显示英语（见 [i18n.md](i18n.md)）。
 - 密钥只在提交时经过页面，接口返回的是打码后的形式。界面测试会检查页面和 `/api/v1/status` 里都没有密钥。
 - daemon 的告警和厂商返回的错误按英文原文显示。
@@ -108,6 +110,7 @@ macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘：关
 | `GET`/`PUT /api/v1/telemetry` | 使用统计的开关（见下） |
 | `POST /api/v1/update/check`、`/skip`、`/notified` | 升级提醒，见 [versioning.md](versioning.md) |
 | `POST /api/v1/feedback`、`GET /api/v1/feedback/mine` | 向门户提交反馈，以及列出本账户提交过的反馈 |
+| `/api/v1/pairing…` | 配对码和配对，转给门户（[guide.md](guide.md) 第 3 节） |
 | 其余 `/api/*` 和 `/v1/*` | 同 `sharetoken up`（见 [guide.md](guide.md)）。未登录时 401 `not_logged_in`，还没接入网络时 503 `not_connected` |
 
 **登录失效。** Agent 每分钟向门户确认一次 token 是否仍然有效（门户不可达不算被拒绝）。设备密钥在 token 吊销后仍能和协调器交易，所以客户端必须停下：daemon 转为 `expired`，`sharetoken up` 退出并提示重新登录。
@@ -218,6 +221,6 @@ scripts/gui_stack.sh stop DIR
 | 全链路 API | `scripts/test.sh -race -run Daemon ./test/e2e` | 在真实的 libp2p 拓扑上：注册、经中继接入、购买模型、记账、重启后恢复、退出、网络恢复后自动接入 |
 | 使用统计 | `scripts/test.sh -race -run Telemetry ./internal/client` | 用假收集器验证：事件格式、不含个人信息、没有 key 时不发送、开关和环境变量、每日和每小时去重、收集器宕机或挂起时不影响客户端 |
 | 窗口壳 | `cd gui && go test -tags desktop,production .`（Linux 再加 `webkit2_41`） | 启动、连接、停止 daemon；端口冲突；转发 |
-| 页面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调 |
+| 页面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调。配对：错误的码和自己的码，和不卖任何模型的卖家配对（没有模型、请求被拒）以及和有模型的卖家配对，生成和撤销配对码，买家加入和被移除 |
 | 真实 WebView | `scripts/gui_shell_test.sh <dev\|prod> <程序目录>` | 不显示窗口，用系统 WebView 加载页面并向真实 daemon 发 POST；检查应用退出时 daemon 一起停止 |
 | 菜单栏和托盘 | `scripts/gui_tray_test.sh <dev\|prod> <程序目录>`（macOS） | 窗口和图标会显示约 15 秒。经系统路径操作真实的图标、菜单和窗口：关闭、打开、最小化和恢复、快速连点、语言跟随、再次启动、退出后 daemon 停止。Windows 上用 `SHARETOKEN_GUI_SELFTEST=tray` 启动应用即可运行同一套自检 |
