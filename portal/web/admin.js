@@ -36,7 +36,11 @@
   const SVGNS = 'http://www.w3.org/2000/svg';
   function svg(tag, attrs, ...kids) {
     const el = document.createElementNS(SVGNS, tag);
-    for (const [k, v] of Object.entries(attrs || {})) if (v !== null && v !== undefined) el.setAttribute(k, String(v));
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v === null || v === undefined) continue;
+      if (k === 'style') ST.setStyle(el, v); // CSP drops style attributes
+      else el.setAttribute(k, String(v));
+    }
     for (const c of kids.flat()) if (c) el.append(c);
     return el;
   }
@@ -387,21 +391,31 @@
   async function relays(m) {
     const list = h('div', { class: 'card' }), clients = h('div', { class: 'card', id: 'relay-clients' });
     const charts = h('div'), legend = h('div', { class: 'dash-legend' });
-    let range = '24h';
-    const rangeBtns = ['24h', '3d', '7d'].map(k => h('button', { class: k === range ? 'active' : '', onclick: () => { range = k; rangeBtns.forEach(b => b.classList.toggle('active', b.dataset.range === k)); loadCharts().catch(fail); } }, { '24h': '24 小时', '3d': '3 天', '7d': '7 天' }[k]));
+    let range = '24h', hs = null;
+    // Clicking a relay in the legend picks it; with any picked, only those are drawn.
+    const picked = new Set();
+    const rangeBtns = ['24h', '3d', '7d'].map(k => h('button', { class: k === range ? 'active' : '', onclick: () => { range = k; rangeBtns.forEach(b => b.classList.toggle('active', b.dataset.range === k)); loadCharts().catch(fail); } }, { '24h': '1 天', '3d': '3 天', '7d': '7 天' }[k]));
     rangeBtns.forEach((b, i) => b.dataset.range = ['24h', '3d', '7d'][i]);
     add(m, pageTitle('中继', h('small', null, '协调器每 15 秒同步一次登记表，并回写是否可达')), h('div', { class: 'toolbar' }, h('button', { class: 'primary', onclick: addRelay }, '登记中继')),
-      h('div', { class: 'card' }, section('chart', '资源监控', h('span', { class: 'tabs' }, rangeBtns)), legend, charts), clients, list);
+      h('div', { class: 'card' }, section('chart', '资源监控', h('span', { class: 'tabs tabs-sm' }, rangeBtns)), legend, charts), clients, list);
     async function loadCharts() {
-      const hs = await api('GET', '/api/v1/admin/relay-history?range=' + range);
-      const to = hs.now, from = hs.from, ser = hs.series.map((s, i) => ({ s, color: SERIES_COLORS[i % SERIES_COLORS.length] }));
-      add(clear(legend), ser.map(x => h('span', { class: 'dash-key' }, h('i', { style: 'background:' + x.color }), x.s.relay)));
+      hs = await api('GET', '/api/v1/admin/relay-history?range=' + range);
+      drawCharts();
+    }
+    function drawCharts() {
+      const to = hs.now, from = hs.from, all = hs.series.map((s, i) => ({ s, color: SERIES_COLORS[i % SERIES_COLORS.length] }));
+      for (const r of [...picked]) if (!all.some(x => x.s.relay === r)) picked.delete(r);
+      const shown = x => !picked.size || picked.has(x.s.relay);
+      add(clear(legend), all.map(x => h('button', { type: 'button', class: 'dash-key' + (shown(x) ? '' : ' off'), title: picked.has(x.s.relay) ? '再点一次取消' : '只看这台（可多选）',
+        onclick: () => { picked.has(x.s.relay) ? picked.delete(x.s.relay) : picked.add(x.s.relay); drawCharts(); } }, h('i', { style: 'background:' + x.color }), x.s.relay)),
+        picked.size ? h('button', { type: 'button', class: 'dash-key dash-key-all', onclick: () => { picked.clear(); drawCharts(); } }, '显示全部') : null);
+      const ser = all.filter(shown);
       const mk = (pick, fmt, opts) => ser.map(x => ({ name: x.s.relay, color: x.color, points: x.s.points.map(p => pick(p)).filter(Boolean) }));
       const pct = v => v.toFixed(v < 10 ? 1 : 0) + '%', rate = v => bytes(v) + '/s';
       const cpu = mk(p => p.cpu_percent >= 0 ? { at: p.at, v: p.cpu_percent } : null);
       const mem = mk(p => ({ at: p.at, v: p.rss_bytes }));
       const net = mk(p => p.rx_bps >= 0 && p.tx_bps >= 0 ? { at: p.at, v: p.rx_bps + p.tx_bps, tip: '↓' + rate(p.rx_bps) + ' ↑' + rate(p.tx_bps) } : null);
-      if (!ser.length) { add(clear(charts), h('p', { class: 'muted' }, '还没有历史数据：需要在门户配置中继指标采集，采集成功后每分钟记一个点。')); return; }
+      if (!all.length) { add(clear(charts), h('p', { class: 'muted' }, '还没有历史数据：需要在门户配置中继指标采集，采集成功后每分钟记一个点。')); return; }
       add(clear(charts), h('div', { class: 'dash-grid' },
         h('div', null, h('h3', { class: 'dash-sub' }, '网络（收 + 发）'), lineChart(net, from, to, hs.bucket_ns, rate)),
         h('div', null, h('h3', { class: 'dash-sub' }, '内存（RSS）'), lineChart(mem, from, to, hs.bucket_ns, bytes)),

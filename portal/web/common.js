@@ -37,10 +37,20 @@ const ST = (() => {
       else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
       else if (k === 'checked' || k === 'disabled' || k === 'selected') el[k] = !!v;
       else if (k === 'value') el.value = v;
+      // CSP (style-src 'self') drops style attributes; CSSOM properties are allowed.
+      else if (k === 'style') setStyle(el, v);
       else el.setAttribute(k, String(v));
     }
     append(el, children);
     return el;
+  }
+  // setStyle applies 'prop: value; …' through CSSOM, since the page's CSP
+  // ignores style attributes set with setAttribute.
+  function setStyle(el, css) {
+    for (const decl of String(css).split(';')) {
+      const i = decl.indexOf(':');
+      if (i > 0) el.style.setProperty(decl.slice(0, i).trim(), decl.slice(i + 1).trim());
+    }
   }
   function append(el, children) {
     for (const c of children) {
@@ -576,6 +586,6 @@ const ST = (() => {
   }
   function param(hash) { return hash; }
 
-  return { icon, chip, pageChip, pageTitle, section, tile, shell, authFrame, api, ApiError, h, clear, add, $, credit, signed, num, time, ago, short, peer, status, badge, rtt, toast, fail, modal, confirm, copy, secret,
+  return { icon, setStyle, chip, pageChip, pageTitle, section, tile, shell, authFrame, api, ApiError, h, clear, add, $, credit, signed, num, time, ago, short, peer, status, badge, rtt, toast, fail, modal, confirm, copy, secret,
     table, kv, field, input, state, listView, dateRange, download, resetToken, renderReset, loadInfo, loadMe, logout, renderLogin, router, param, STATUS };
 })();
