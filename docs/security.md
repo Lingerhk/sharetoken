@@ -1,0 +1,217 @@
+# Security
+
+**English** | [简体中文](zh-CN/security.md)
+
+ShareToken lets people buy inference from machines they do not control, pay for
+it with credit held by a platform, and reach each other through relays run by
+third parties. This document states who is trusted with what, what each party
+can and cannot do, and where the protection stops. The design behind it is in
+[architecture.md](architecture.md).
+
+## 1. Parties and what they are trusted with
+
+| Party | Trusted with | Not trusted with |
+|---|---|---|
+| Buyer's client | Its own prompts and credit | Paying honestly: it may refuse a valid receipt |
+| Seller's client | The plaintext of the jobs it serves (unless it runs in a TEE) | Running the advertised model, reporting usage honestly, returning what the model produced |
+| Relay | Forwarding bytes | Anything else. It sees who talks to whom and how much, never content |
+| Coordinator | The ledger, matching, dispute decisions | Prompts and answers: they do not pass through it. It sees one job's content only when the buyer discloses it as evidence |
+| Portal | Passwords (hashed), tokens (hashed), device bindings, credit grants | Prompts and answers, device private keys |
+| Network | Nothing | |
+
+Every party is a libp2p Ed25519 identity. Offers are signed by the seller,
+tickets by the coordinator, receipts by the seller and acknowledgements by the
+buyer. Each signature covers a canonical, length-prefixed encoding with its own
+domain string (`internal/canon`, `internal/protocol`), so a signature made for
+one kind of message cannot be replayed as another.
+
+## 2. What a buyer can rely on
+
+### 2.1 Confidentiality on the way
+
+The prompt goes from the buyer to the seller and nowhere else. It is protected
+by two layers:
+
+- **Transport.** Every libp2p connection uses Noise, end to end between the two
+  peers, including when the connection is carried by a relay. The relay
+  forwards ciphertext.
+- **Sealed box** (`internal/box`). Each message is encrypted to the recipient's
+  X25519 key with a fresh ephemeral key: X25519 ECDH, HKDF-SHA256, AES-256-GCM.
+  The additional data binds every ciphertext to its job, and every response
+  chunk to its sequence number, so ciphertexts cannot be moved to another job or
+  reordered.
+
+The second layer exists because of what the first cannot do: the box key can
+live inside a TEE while the host's network stack terminates Noise, and receipts
+are computed over the sealed bytes.
+
+The control path (tickets, receipts, disputes) also runs over Noise end to end
+through the relay, so relays do not see it either.
+
+### 2.2 Integrity of the answer
+
+The seller signs a receipt (`internal/receipt`) that says: for the request whose
+sealed bytes hash to this value, I returned the response whose sealed chunks hash
+to that value, using this model and this many tokens. The buyer's client
+recomputes both hashes from the bytes it actually sent and received and verifies
+every chunk's authentication tag and order as it arrives. A seller cannot sign
+one transcript and deliver another, and nobody in between can alter, drop or
+reorder chunks without the check failing.
+
+Non-streaming responses are returned to the caller only after the receipt has
+been verified (`X-Sharetoken-Verified: true`). Streaming responses are forwarded
+as they arrive and end with a comment line stating the result.
+
+### 2.3 Honest billing
+
+A receipt also carries token counts, and the buyer's client estimates them from
+the transcript. When they are implausible it rejects the receipt and opens a
+dispute with evidence (`internal/evidence`): the private key of that one job, the
+sealed request and the sealed chunks. Because the request was sealed from a
+per-job key and the seller sealed every chunk to that same key, the coordinator
+can check without trusting the buyer:
+
+- the request and the chunks are exactly what the seller signed for;
+- the disclosed key is the one the request committed to;
+- whether every chunk opens under that key;
+- how many tokens the transcript really contains, counted with a reference
+  tokenizer when the coordinator has a reference copy of the model
+  (`internal/tokens`).
+
+Only that job is revealed: every job has its own key. The coordinator holds the
+plaintext in memory while it decides and records only the outcome. A claim about
+bytes the seller never signed cannot be decided this way and goes to an
+administrator.
+
+### 2.4 The advertised model
+
+A receipt proves what was returned. It does not prove which model produced it.
+Two mechanisms address that:
+
+- **Audits** (`internal/audit`). At random times the coordinator buys one
+  completion from a seller under a fresh identity, through the ordinary buyer
+  path, with a randomized prompt and greedy decoding. It sends the byte-identical
+  request to its own reference copy of the model and compares the output and the
+  usage. A clear mismatch costs reputation, and consecutive mismatches suspend
+  the seller from matching. Results in between are inconclusive and cost nothing,
+  so numeric differences across hardware do not punish honest sellers.
+- **Hardware attestation** (`internal/attest`). A seller in an AMD SEV-SNP or
+  Intel TDX confidential VM publishes a quote, signed by the CPU, over the
+  guest's launch measurement and a hash of both of its keys. A buyer that
+  verifies the quote and finds the measurement on its allow-list knows that the
+  prompt is decrypted only inside that image and that the receipt was signed by
+  it. Both keys are bound: binding only the signing key would let a host keep the
+  box key outside the VM.
+
+### 2.5 The seller's side
+
+- **A seller is paid for work it did.** The buyer's credit is placed on hold when
+  the ticket is issued. A buyer that refuses a valid receipt has to dispute it,
+  and the evidence then shows the receipt was right.
+- **A ticket cannot be replayed or used by someone else.** It names the buyer,
+  the seller, the job and an expiry, and the seller serves each job once.
+- **A buyer that takes tickets and never connects** ties up a seller's slot for a
+  bounded time: an unstarted job is released shortly after its ticket expires,
+  with the hold returned and no penalty to the seller, and an account holding
+  several stale tickets gets no new ones.
+- **A seller that fails before delivering anything** abandons the job, which
+  returns the buyer's hold at once.
+- **A user cannot trade with themselves** to farm reputation: matching excludes
+  every device of the buyer's own account.
+
+## 3. Accounts, devices and the platform
+
+| Threat | Defence | Code |
+|---|---|---|
+| Binding someone else's device to your account, to collect its earnings | A binding needs the device's signature over the user name, the peer ID and a timestamp within five minutes. A bound device cannot be bound elsewhere. | `internal/accounts` |
+| Stolen API token | Tokens can be revoked at any time, login tokens expire, and only their SHA-256 is stored. | `internal/accounts`, `internal/portal` |
+| Password guessing | argon2id. Failed logins are throttled per user name and per IP address. | `internal/portal` |
+| A disabled user keeps trading | The coordinator checks the user's state on every request, tokens stop working at once, and relay passes run out within their lifetime (one hour by default). | `internal/accounts`, `internal/relaypass` |
+| Stolen administrator password | Administrators must use TOTP two-step verification. A token issued without it cannot reach the admin API. Wrong codes are throttled, a challenge is void after five mistakes, and a code cannot be replayed. TOTP secrets are stored encrypted (AES-GCM). | `internal/portal/mfa.go`, `internal/totp` |
+| Session theft, cross-site request forgery, script injection in the web pages | Sessions are HttpOnly, SameSite=Strict cookies that only count together with a custom header, and the Origin must be the portal's own. A strict Content-Security-Policy allows no inline code and no third-party resources. The pages build the DOM from text and never from HTML strings. | `internal/portal/web.go` |
+| Eavesdropping on the portal connection | HTTPS by default. A self-signed certificate is pinned by fingerprint in the client, and the client refuses to send a password over plain HTTP to another machine. | `internal/portal/tls.go`, `internal/client` |
+| A web page calls the local client API to spend the user's credit | The local API binds to loopback and refuses any request whose Origin is not local. | `internal/client` |
+| Bypassing the relays to reach the coordinator | The coordinator listens on no address. | `cmd/coordinator` |
+| Strangers filling a relay's reservation slots | A reservation needs a short-lived pass signed by the portal and bound to the device's peer ID, with a limit on devices per user. Relays verify it offline. | `internal/relaypass`, `internal/relay` |
+| Exhausting memory with huge frames or floods of streams | Frames grow with the data that arrives, never from the declared length. Stream handlers reserve memory from libp2p's resource manager first, with limits per stream, per peer and in total. | `internal/protocol`, `internal/p2p` |
+| A relay goes down | Clients switch relays automatically. Sellers reserve on more than one, and the coordinator reserves on all of them. | `internal/client`, `internal/p2p` |
+| Tampering with the ledger | Double-entry: every movement is a balanced transfer, journaled, and the journal is replayed against the balances on startup. All writes of the portal and the coordinator are serialized by one database lock. | `internal/ledger`, `internal/mysqldb` |
+| Mail from strangers | The mail server accepts mail only for listed mailboxes, forwards nothing, shows only plain text in the console and serves attachments as downloads. It needs no access to the ledger or the user tables. | `internal/mailer` |
+
+Files that hold secrets on a user's machine (the device key, the configuration
+with the login token, provider credentials) are created so that only their user
+can read them: mode 0600 on Unix, an ACL on Windows (`internal/secfile`).
+
+## 4. Limits
+
+Stated plainly, because a reader deciding whether to rely on the network needs
+them more than the list above.
+
+- **Without a TEE the seller reads the prompt.** A model cannot run on
+  ciphertext. Encryption moves the trust boundary to the seller's machine, and
+  only attestation removes the operator from it. Buyers who need this set
+  `require_tee`.
+- **Hosted-API sellers pass the prompt on.** A seller that resells a hosted API
+  sends the request to that provider under its own account. The buyer's data is
+  then also subject to that provider's policy, and the seller is responsible for
+  that provider's terms of service.
+- **Audits are probabilistic and need a reference.** A seller that could tell an
+  audit from a real job could behave only when audited. Audit prompts are
+  randomized and come from a fresh identity each time, but an operator who needs
+  stronger cover should give the auditor its own network egress. Only models
+  with a reference copy can be audited, which in practice means open-weight
+  models. For closed models nothing proves which model produced the text.
+- **Without a reference, usage checks are loose.** The fallback token counter is
+  a heuristic and catches only gross over-billing.
+- **Attestation is only as good as the image.** The allow-listed measurement must
+  belong to a reproducible build that keeps keys in memory and serves a pinned
+  model. A CPU TEE does not cover GPU memory. Side channels and vendor firmware
+  bugs are out of scope.
+- **Relayed connections are not admission-controlled.** Anyone can open a circuit
+  to a reserved peer. The peer authenticates and rejects strangers, but the
+  relay's bandwidth is used. Only aggregate limits bound it.
+- **Relays see metadata.** They see who connects to whom, when and how much, not
+  what.
+- **The platform is trusted with the accounting.** One coordinator and one portal
+  hold the ledger. They cannot read prompts, but a dishonest operator could
+  misstate balances. Credit is granted by administrators and there is no on-chain
+  or external settlement.
+- **A self-signed portal certificate depends on the first check.** Users must
+  compare the fingerprint with the one the operator publishes. A certificate from
+  a public CA is better where a domain name exists.
+
+## 5. Notes for operators
+
+- Run each server program as its own system user, with its key files readable by
+  that user only. The portal's pass key, the coordinator's key and the mail
+  server's DKIM key have no reason to be readable by one another.
+- Give the mail server a database account limited to its own tables.
+- Keep the database reachable only from the portal's and the coordinator's
+  machines.
+- Back up the portal's pass key, its self-signed certificate directory if you use
+  one, the coordinator's key, each relay's key and the database. Losing a key
+  changes an identity that others have pinned.
+- Configuration files never hold secrets: they name an environment variable or a
+  file ([configuration.md](configuration.md)).
+- The relay's status and metrics endpoint has no authentication and only binds to
+  loopback. Read it over SSH or through an authenticated proxy.
+- `dev.open_accounts` in the coordinator's configuration is for test networks
+  only: it lets unregistered peers trade.
+
+## 6. Telemetry
+
+Release builds of the desktop client report anonymous usage statistics (which
+version runs on which system, and coarse events such as sign-in) to the
+project's analytics instance. The key embedded in the source is a public,
+write-only project key. Prompts, answers, account names and tokens are never
+sent. Users can opt out in the client, development builds send nothing, and a
+build can be made without it (`TELEMETRY_OFF=1`, see
+[development.md](development.md)).
+
+## Reporting a vulnerability
+
+Please report security problems privately, through the repository's private
+vulnerability reporting ("Report a vulnerability" under the Security tab) or by
+mail to the support address shown on <https://sharetoken.app>. Do not open a
+public issue. Include what you found, how to reproduce it and what an attacker
+gains. You will get an answer, and credit in the fix if you want it.

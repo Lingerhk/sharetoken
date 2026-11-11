@@ -1,88 +1,240 @@
-# sharetoken
+# ShareToken
 
-> 当前版本：**v2**（2026-11-07，分支 `arch-v2`）——四角色架构：用户 / 中继 / 协调器 / 门户。
+**English** | [简体中文](README.zh-CN.md)
 
-一个用 Go 写的**开源模型 token 共享网络**：把自己机器上开源权重模型的闲置算力共享出去赚 credit，需要时用 credit 调用别人的节点。同一个账户既能卖也能买。
+ShareToken is a peer-to-peer marketplace for LLM inference, written in Go. A user
+shares the spare capacity of a model they run (or of a hosted API they pay for)
+and earns credits; the same account spends credits to call models that other
+users share. Every client exposes a local OpenAI-compatible endpoint, so existing
+tools work by changing one base URL.
 
-- 节点跑的是不是它声称的模型，由抽检和 TEE 证明来检验，而不是靠名单。
+The project's main concern is what a buyer can rely on when the machine doing the
+work belongs to a stranger: that the prompt stays private on the way, that the
+answer was not altered, that the bill is honest, and that the model is the one
+that was advertised. See [Security](#security).
 
-## 架构
-
-| 角色 | 程序 | 职责 |
-|---|---|---|
-| 用户 | `sharetoken` | 既是买家也是卖家；本地 OpenAI 端点 + 管理 API（给 GUI）；自动按 RTT 选最优中继。桌面客户端见 [docs/gui.md](docs/gui.md) |
-| 中继 | `relay` | 只转发加密流量，有多个；看不到明文、不记账；只给出示门户短期凭证的注册设备预约 |
-| 协调器 | `coordinator` | 算账平台：撮合、结算、争议、抽检；不监听端口，只经中继访问 |
-| 门户 | `portal` | 用户管理：注册登录、API token、设备绑定、credit、账单与用量、中继登记；自带官网 `/`、用户网页 `/app/`（`/login` 跳转到这里）和管理控制台 `/admin/`（管理员强制 TOTP 两步验证）；与协调器共用数据库 |
-
-## 买家能得到的保证
-
-| 保证 | 机制 |
+| | |
 |---|---|
-| prompt 不经过协调器，中继和网络读不到 | 直连 libp2p 流 + 封装加密（box） |
-| 响应没被篡改、截断、重排 | 节点签收据，买家逐块核对哈希 |
-| 虚报用量会被退款 | 买家拒签后提交**这一单**的密钥作为证据，协调器用参考模型精确数 token 后自动裁决 |
-| 节点没有偷换成小模型 | 协调器随机抽检，在参考模型上重算比对，不符的节点被暂停接单 |
-| 节点运营者也看不到 prompt（可选） | AMD SEV-SNP / Intel TDX 机密虚拟机，quote 绑定节点的两把公钥 |
-| 账不会丢 | MySQL 复式账本，启动时回放日志对账 |
+| Portal (hosted network, sign-up, downloads) | <https://sharetoken.app> |
+| User guide | <https://sharetoken.app/docs/> |
+| Developer and operator documentation | [docs/](docs/README.md) |
 
-## 文档
+## How it works
 
-| 文档 | 内容 |
+Four programs, each with one job:
+
+| Role | Program | What it does | What it does not do |
+|---|---|---|---|
+| User | `sharetoken` | Buyer and seller in one process: a local OpenAI-compatible endpoint to buy, optional sharing of local models or hosted APIs to sell. Picks the best relay by round-trip time. | Needs no open port. |
+| Relay | `relay` | Forwards encrypted libp2p traffic (circuit relay v2). There are several, and they can be run by different operators. | Keeps no accounts or money, and cannot read what it forwards. |
+| Coordinator | `coordinator` | The accounting side: matches buyers to sellers, signs job tickets, settles receipts, judges disputes, audits sellers. | Listens on no port. It is reached only through relays. |
+| Portal | `portal` | Accounts over HTTPS: sign-up and login, API tokens, device binding, credit, billing and usage, the relay registry. Serves the website, the user app and the admin console. | Takes no part in the peer-to-peer network. |
+
+The portal and the coordinator share one MySQL database and never talk to each
+other directly. Money moves only through a double-entry ledger, inside database
+transactions.
+
+```mermaid
+flowchart LR
+    subgraph U1["Buyer's machine"]
+        App["Any OpenAI-compatible tool"] -->|"http://127.0.0.1:9787/v1"| C1["sharetoken client"]
+    end
+    subgraph U2["Seller's machine"]
+        C2["sharetoken client"] --> M["Local model server<br/>or hosted API"]
+    end
+    subgraph Net["Relays (public, untrusted)"]
+        R1["relay"]
+        R2["relay"]
+    end
+    subgraph Plat["Platform"]
+        P["portal<br/>accounts, credit, relay registry"]
+        CO["coordinator<br/>matching, settlement, disputes, audits<br/>no listening port"]
+        DB[("MySQL<br/>double-entry ledger")]
+        P --- DB
+        CO --- DB
+    end
+
+    C1 -. "HTTPS: login, balance, relay list, relay pass" .-> P
+    C2 -. "HTTPS" .-> P
+    C1 == "control: ticket, receipt, dispute<br/>(Noise end to end)" ==> R1
+    C2 == "control: offers, settlement" ==> R1
+    R1 == "circuit" ==> CO
+    R2 == "circuit" ==> CO
+    C1 <-->|"data: prompt and answer, direct or relayed<br/>Noise + sealed box"| C2
+```
+
+One request, end to end:
+
+1. The buyer's client asks the coordinator (through a relay) for a **ticket**. The
+   coordinator picks a seller, places a hold on the buyer's credit and signs the
+   ticket. The client checks that the keys and prices in the ticket are the ones
+   in the seller's own signed offer.
+2. The client connects to the seller, directly when it can and through a relay
+   when it cannot, and sends the request **sealed to the seller's key**. The
+   prompt does not pass through the coordinator at all.
+3. The seller runs the model and streams the answer back, sealed to a key that
+   exists only for this job, followed by a **signed receipt** over hashes of
+   exactly what was sent and received.
+4. The client recomputes the hashes and checks the claimed token counts. If they
+   hold, it acknowledges and the coordinator settles. If not, it refuses and
+   opens a **dispute**, with evidence the coordinator can check for itself.
+
+The design is described in [docs/architecture.md](docs/architecture.md).
+
+## Security
+
+A marketplace like this has to assume that any party may misbehave: a seller may
+run a cheaper model or pad the bill, a relay may snoop, a buyer may refuse to pay
+for work that was done. The table lists what the protocol gives a buyer and the
+mechanism behind each line. [docs/security.md](docs/security.md) has the full
+threat model, including the seller's and the operator's side.
+
+| What a buyer can rely on | How |
 |---|---|
-| [docs/design-v2.md](docs/design-v2.md) | v2 架构：四个角色、用户账户、经中继访问协调器、中继选择、共用 MySQL 数据库 |
-| [docs/guide-v2.md](docs/guide-v2.md) | 用户命令、运维部署、本地管理 API（GUI）、门户 HTTP API |
-| [docs/versioning.md](docs/versioning.md) | 版本号、接口版本、升级规则和版本策略 |
-| [docs/gui.md](docs/gui.md) | 桌面客户端（macOS / Linux / Windows）：结构、本地 API、邮箱账号、构建和测试 |
-| [docs/windows-env.md](docs/windows-env.md) | Windows 调试虚拟机：连接、构建、测试方法和平台差异 |
-| [docs/validation-v2.md](docs/validation-v2.md) | 自动化测试、本机演示、三机跨公网实测 |
-| [docs/validation-v2-distributed.md](docs/validation-v2-distributed.md) | 7 机跨三大洲实测：功能、性能、故障注入、长稳 |
-| [docs/validation-v2-mysql.md](docs/validation-v2-mysql.md) | 门户和协调器迁到 MySQL 后的复测 |
-| [docs/test-env.md](docs/test-env.md) | 分布式测试环境（主机、访问路径、脚本） |
-| [docs/prod-env.md](docs/prod-env.md) / [docs/dev-env.md](docs/dev-env.md) | 生产与 dev 环境：主机、域名、DNS、证书、部署命令 |
-| [docs/server-layout.md](docs/server-layout.md) | 服务器布局与权限：每个服务一个系统用户、机密目录、运维命令、MySQL 账号、systemd 加固、部署流程 |
-| [docs/security-audit.md](docs/security-audit.md) | 2026-11-09 代码级安全审计：发现、严重度、修复状态与建议顺序 |
-| [docs/mail.md](docs/mail.md) | 邮件服务：注册验证码、收发、DNS、投递与安全 |
-| [reports/](reports/) | 前期调研：AI token 共享平台 |
+| The coordinator, the relays and the network cannot read the prompt or the answer | The data path runs buyer to seller. It is encrypted twice: libp2p Noise end to end (also across a relay), and a sealed box per message (ephemeral X25519, HKDF-SHA256, AES-256-GCM) bound to the job and the chunk number. |
+| The answer was not altered, truncated or reordered | The seller signs a receipt over the hashes of the sealed request and of every sealed chunk. The client recomputes them from what it actually sent and received. |
+| An inflated bill is refunded | The client rejects a receipt whose token counts are implausible and discloses **that one job's** key. The coordinator verifies the transcript against the seller's own signature, counts the tokens with a reference tokenizer and decides on the facts. |
+| The model is the one advertised | The coordinator audits sellers at random as an ordinary buyer and replays the same request on its own reference copy of the model. Repeated mismatches suspend the seller. |
+| Even the seller cannot read the prompt (optional) | Sellers running in an AMD SEV-SNP or Intel TDX confidential VM publish a hardware quote that binds both of their keys to a measured image. A buyer can require this. |
+| The books balance | A double-entry ledger in MySQL. Every movement is a balanced, journaled transfer, and the journal is replayed against the balances on startup. |
+| A stolen password is not enough to run the platform | Administrators must use TOTP two-step verification. Passwords are hashed with argon2id, API tokens are stored as SHA-256 only, and login attempts are throttled. |
 
-## 快速开始
+### What it does not protect against
+
+These limits follow from how inference works, and it is better to know them
+before relying on the network:
+
+- **Without a TEE, the seller sees your prompt.** A model cannot run on ciphertext,
+  so encryption ends at the machine that runs it. Do not send secrets to a seller
+  you would not trust with them unless you require TEE sellers (`require_tee`).
+- **A seller that resells a hosted API forwards your prompt to that provider**,
+  under the seller's account and that provider's data policy.
+- **Audits are statistical and need a reference.** They make cheating unprofitable
+  rather than impossible, and they cover only models for which the coordinator
+  holds a reference copy. That means open-weight models. For closed, hosted
+  models, the integrity and billing checks above still apply, but nothing proves
+  which model produced the text.
+- **A CPU TEE does not cover GPU memory.** Treat GPU sellers as attested on the
+  CPU side only.
+- **The coordinator and the portal are single operators' services.** They cannot
+  read prompts, but they do hold the ledger. Whoever runs them is trusted with
+  the accounting.
+
+To report a vulnerability, see [docs/security.md](docs/security.md#reporting-a-vulnerability).
+Please do not open a public issue for it.
+
+## Use the hosted network
+
+1. Create an account at <https://sharetoken.app> and download the desktop app or
+   the command-line client for your system.
+2. Sign in and start the client:
+
+   ```bash
+   sharetoken login            # or: sharetoken register
+   sharetoken up               # OpenAI-compatible endpoint at http://127.0.0.1:9787/v1
+   ```
+
+3. Point any OpenAI-compatible tool at `http://127.0.0.1:9787/v1` (the API key
+   can be anything).
+4. To earn credits, share a model:
+
+   ```bash
+   sharetoken share detect                 # models of the local model server (Ollama by default)
+   sharetoken share add qwen2.5:7b         # sell a local model
+   sharetoken provider add deepseek        # or connect a hosted API with a key
+   sharetoken share add deepseek-chat -provider deepseek
+   ```
+
+The full walkthrough is in the [user guide](https://sharetoken.app/docs/). The
+command reference is [docs/guide.md](docs/guide.md).
+
+## Run your own network
+
+Docker Compose starts a complete network on one machine: MySQL, portal,
+coordinator and one relay.
 
 ```bash
-go build -o bin/ ./cmd/...
-
-# 运维：门户 + 协调器（共用 MySQL 8，先建好空库）、中继（公网机器）
-export SHARETOKEN_DB_PASSWORD=…
-DSN=mysql://sharetoken@127.0.0.1:3306/sharetoken
-bin/portal -db $DSN pass-key          # 门户签发中继凭证的公钥 ed25519:…
-bin/coordinator -db $DSN id           # 协调器 peer ID
-bin/relay -config relay.yaml                   # 门户公钥和协调器 ID 写在 access.networks（configs/relay.example.yaml）；打印 portal relay add '…' 命令
-bin/portal -db $DSN serve -listen :8092 -open-registration -signup-credit 5000000
-#   默认 HTTPS（自签名证书，打印指纹，用户登录时用 -portal-pin 确认）
-bin/portal -db $DSN relay add '/ip4/<公网IPv4>/tcp/8091/p2p/<id>,/ip6/<公网IPv6>/tcp/8091/p2p/<id>' relay-1
-bin/coordinator -db $DSN \
-  -reference id=gemma-4-e4b,upstream=gemma4:e4b,url=http://127.0.0.1:11434/v1   # 可选：抽检 + 精确计数
-
-# 用户
-bin/sharetoken register -user alice        # 门户地址内置为 https://sharetoken.app；测试网用环境变量 SHARETOKEN_PORTAL=https://<门户>:8092，自签名证书再加 -portal-pin sha256:…
-bin/sharetoken share add gemma4:e4b -id gemma-4-e4b      # 可选：共享本机 Ollama 模型赚 credit
-bin/sharetoken up                                        # http://127.0.0.1:9787/v1
-bin/sharetoken status | models | balance | jobs
+cp .env.example .env          # set DB_PASSWORD, DB_ROOT_PASSWORD, ADMIN_PASSWORD and PUBLIC_HOST
+docker compose up -d --build
+docker compose logs portal | grep sha256:    # the portal's certificate fingerprint
 ```
 
-任何支持 OpenAI 协议的工具，把 base URL 改成 `http://127.0.0.1:9787/v1` 即可。非流式响应在收据验证通过后才返回（响应头 `X-Sharetoken-Verified: true`）；流式响应边到边转发，结尾附一行 `: sharetoken ... verified=true`。详细参数见 [guide-v2.md](docs/guide-v2.md)。
-
-## 本机一键演示
+Then connect a client built from this tree to it:
 
 ```bash
-scripts/demo-local.sh    # 需要 Ollama 和本地模型（默认 gemma4:e4b，可用 MODEL_UPSTREAM 指定）
+go build -o bin/ ./cmd/sharetoken
+export SHARETOKEN_PORTAL=https://<PUBLIC_HOST>:8092
+bin/sharetoken register -user alice -portal-pin sha256:<fingerprint>
+bin/sharetoken up
 ```
 
-两个中继、门户、协调器和三个用户全部跑在 127.0.0.1：注册并绑定设备、按 RTT 选中继、虚报用量的卖家被抓并按证据退款、请求自动切换到诚实卖家、抽检暂停作弊者、中继宕机后客户端自动切换、credit 在用户账户间流动且账本回放一致、所有日志里都没有 prompt。
+[docs/self-hosting.md](docs/self-hosting.md) explains the settings, how to put the
+portal behind a real certificate, how to add relays on other machines, and what
+to back up.
 
-## 测试
+## Build and test
+
+Requirements: Go 1.26 or newer, and Docker for the tests (they run against MySQL 8).
 
 ```bash
-scripts/test.sh -race ./...   # 在 Docker 里起 MySQL 8 再跑 go test
+go build -o bin/ ./cmd/...        # sharetoken, relay, coordinator, portal, mailserver
+scripts/test.sh ./...             # starts MySQL 8 in Docker, then go test
+scripts/demo-local.sh             # a whole network on 127.0.0.1 with a real model (needs Ollama)
 ```
 
-覆盖签名与防篡改、计费整数运算、MySQL 账本（重启、回滚、篡改检测）、结算与证据裁决的全部路径、抽检判定、SEV-SNP（测试用 AMD 证书链）和 TDX（Intel 真实生产 quote）验证，以及基于真实 libp2p 的端到端测试：故障切换、Ticket 重放与盗用、虚报用量按证据退款、抽检抓出换模型和虚报用量的节点、只用 TEE 节点；v2 的完整拓扑测试（多中继、只经中继可达的协调器、门户共用数据库、用户互为买卖、中继宕机切换）、门户 API、设备绑定防伪。
+The demo runs two relays, a portal, a coordinator and three users. It shows a
+seller that inflates its usage being caught and refunded on evidence, the request
+failing over to an honest seller, an audit suspending the cheat, and a client
+switching relays when one dies.
+
+[docs/development.md](docs/development.md) covers the desktop app, release
+packages and the browser-driven UI tests.
+
+## Repository layout
+
+```
+cmd/            the five programs: sharetoken, relay, coordinator, portal, mailserver
+internal/       all library code
+  protocol/       wire messages, signing encodings, stream framing
+  box/            sealed-box encryption between buyer and seller
+  receipt/        signed receipts and their verification
+  evidence/       deciding disputes from disclosed evidence
+  attest/         TEE attestation (SEV-SNP, TDX)
+  audit/          random audits against a reference model
+  tokens/         token counting for disputes and audits
+  p2p/            libp2p hosts, keys, relay selection, link quality
+  relay/          the relay and its admission control
+  relaypass/      short-lived passes that admit a device to a relay
+  client/         the user client: daemon, local API, embedded UI
+  buyer/          buying: tickets, sealed requests, receipt checks, disputes
+  node/           selling: offers, serving ticketed jobs
+  provider/       hosted APIs as model sources (API key or OAuth)
+  coordinator/    matching, settlement, disputes, node records
+  ledger/         the double-entry credit ledger
+  accounts/       users, tokens, devices, relay registry (shared database)
+  portal/         HTTP API, website, user app, admin console
+  mailer/         outbox, delivery, inbound mail, verification codes
+  canon/ cli/ config/ mysqldb/ secfile/ totp/ version/     shared helpers
+gui/            desktop shell (Wails), a separate Go module
+test/           end-to-end tests over real libp2p hosts
+configs/        example configuration files
+docker/         container entry point (see Dockerfile, docker-compose.yml)
+scripts/        build, packaging, test and demo scripts
+docs/           documentation, English and 简体中文
+```
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Roles, key design decisions, the database, honest limits |
+| [docs/security.md](docs/security.md) | Threat model, guarantees and their mechanisms, reporting a vulnerability |
+| [docs/guide.md](docs/guide.md) | User commands, operator commands, local API, portal HTTP API |
+| [docs/self-hosting.md](docs/self-hosting.md) | Running a network with Docker Compose |
+| [docs/configuration.md](docs/configuration.md) | Configuration files of the server programs |
+| [docs/providers.md](docs/providers.md) | Selling hosted APIs: provider kinds, keys and OAuth |
+| [docs/desktop.md](docs/desktop.md) | The desktop app: structure, local API, packaging |
+| [docs/mail.md](docs/mail.md) | The mail server: verification codes, delivery, DNS |
+| [docs/versioning.md](docs/versioning.md) | Release versions, interface versions, upgrade rules |
+| [docs/i18n.md](docs/i18n.md) | Languages of the site, the portal and the client |
+| [docs/development.md](docs/development.md) | Building, testing and packaging |

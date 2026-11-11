@@ -13,9 +13,9 @@ import (
 
 	"golang.org/x/term"
 
-	"sharetoken/attest"
-	"sharetoken/attest/sevsnp"
-	"sharetoken/attest/tdx"
+	"sharetoken/internal/attest"
+	"sharetoken/internal/attest/sevsnp"
+	"sharetoken/internal/attest/tdx"
 )
 
 // List splits a comma-separated flag value, dropping empty items.

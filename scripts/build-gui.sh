@@ -18,7 +18,7 @@
 # build says so in all its names: sharetoken-dev, sharetoken-gui-dev, sharetoken-dev-<version>-…
 #
 # The build type decides the portal, the state directory and the local port
-# (client/env.go, gui/env.go), so a dev and a prod app can live on one machine:
+# (internal/client/env.go, gui/env.go), so a dev and a prod app can live on one machine:
 #   dev:  https://dev.sharetoken.app   ~/.sharetoken-dev   127.0.0.1:9887
 #   prod: https://sharetoken.app       ~/.sharetoken       127.0.0.1:9787
 #
@@ -26,7 +26,7 @@
 #   sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
 #
 # Usage statistics go to the built-in PostHog project from prod builds only
-# (client/telemetry.go). TELEMETRY_KEY=… replaces the key, TELEMETRY_OFF=1 builds
+# (internal/client/telemetry.go). TELEMETRY_KEY=… replaces the key, TELEMETRY_OFF=1 builds
 # an app that sends nothing, and TELEMETRY_HOST=https://… selects another instance.
 set -euo pipefail
 cd "$(dirname "$0")/.."

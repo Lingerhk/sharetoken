@@ -1,22 +1,33 @@
+# Build output
 bin/
 dist/
 gui/rsrc_windows_*.syso
+
+# Secrets: keys, passwords, tokens, environment files. Never commit them.
 *.key
-.DS_Store
+*.pem
+*.pass
 *.env
-
-# local test-environment secrets (API keys, test passwords): never commit
-docs/test_env.txt
-docs/*.secrets.md
-
-# local test outputs
-*.log
-__pycache__/
-reports/
-/real-qwen.json
-
-# upstream_proxy.py config: holds API keys
+.env.*
+!.env.example
+*.secrets.md
 scripts/upstream_proxy.json
 
-# local working notes, not part of the repo
+# Local only: deployment scripts and configuration of real environments (dev,
+# prod, relays, test machines), operations notes, research. Kept out of the
+# repository on purpose.
+local/
 workspace/
+reports/
+
+# Test and run output
+*.log
+__pycache__/
+/real-qwen.json
+node_modules/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp

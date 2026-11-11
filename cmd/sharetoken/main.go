@@ -33,13 +33,13 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"golang.org/x/term"
 
-	"sharetoken/client"
 	"sharetoken/internal/cli"
+	"sharetoken/internal/client"
+	"sharetoken/internal/node"
+	"sharetoken/internal/p2p"
+	"sharetoken/internal/protocol"
+	"sharetoken/internal/provider"
 	"sharetoken/internal/version"
-	"sharetoken/node"
-	"sharetoken/p2p"
-	"sharetoken/protocol"
-	"sharetoken/provider"
 )
 
 const usage = `usage: sharetoken [-home DIR] <command> [flags]
@@ -79,7 +79,7 @@ Hosted APIs to share (kept in providers.json, apart from the configuration):
                                         add one with an API key (asked for; or stdin, or $SHARETOKEN_PROVIDER_KEY):
                                         anthropic, openai, gemini, grok, deepseek, or custom with -url
   provider login <kind> [-name N] [-project ID]
-                                        add one with an OAuth login: openai, gemini, antigravity, grok
+                                        add one with an OAuth login: anthropic, openai, gemini, antigravity, grok
   provider models <name>                models its credentials may use
   provider test <name> [-model M]       send one small request through it
   provider on | off <name>              sell its models, or stop

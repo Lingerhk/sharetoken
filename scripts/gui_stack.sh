@@ -26,7 +26,7 @@ BIN=$DIR/bin; mkdir -p "$BIN"
 # The desktop daemon reports to the UI test's fake collector, never to a real one.
 # It is an old build of 1.0.0, so that the UI test can publish a newer one.
 V=sharetoken/internal/version
-(cd "$ROOT" && go build -ldflags "-X sharetoken/client.TelemetryKey=phc_test_key -X sharetoken/client.TelemetryHost=http://127.0.0.1:18999 -X $V.Version=1.0.0-dev.guistack -X $V.Commit=guistack -X $V.BuildTime=2000-01-01T00:00:00Z" -o "$BIN/sharetoken-telemetry" ./cmd/sharetoken)
+(cd "$ROOT" && go build -ldflags "-X sharetoken/internal/client.TelemetryKey=phc_test_key -X sharetoken/internal/client.TelemetryHost=http://127.0.0.1:18999 -X $V.Version=1.0.0-dev.guistack -X $V.Commit=guistack -X $V.BuildTime=2000-01-01T00:00:00Z" -o "$BIN/sharetoken-telemetry" ./cmd/sharetoken)
 run() { local log=$1; shift; "$@" > "$log" 2>&1 & echo $! >> pids; }
 wait_for() { for _ in $(seq 1 150); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 0.2; done; echo "timed out waiting for $2 in $1" >&2; tail -5 "$1" >&2; exit 1; }
 

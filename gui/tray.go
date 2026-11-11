@@ -130,7 +130,7 @@ func (t *trayController) notifyUpdate(ctx context.Context, u trayUpdate) {
 	}
 }
 
-// The daemon's session states (client/daemon.go).
+// The daemon's session states (internal/client/daemon.go).
 const (
 	stateLoggedOut = "logged_out"
 	stateExpired   = "expired"
@@ -149,7 +149,7 @@ type trayState struct {
 	Update   trayUpdate `json:"update"`
 }
 
-// trayUpdate is the session's word on a newer release (client/update.go).
+// trayUpdate is the session's word on a newer release (internal/client/update.go).
 type trayUpdate struct {
 	Available bool   `json:"available"`
 	Required  bool   `json:"required"`

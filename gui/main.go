@@ -4,7 +4,7 @@
 // API, and stops it again if it started it.
 //
 // It is a separate Go module so that the servers and the CLI build without cgo
-// and without the webview's dependencies. See docs/gui.md.
+// and without the webview's dependencies. See docs/desktop.md.
 package main
 
 import (

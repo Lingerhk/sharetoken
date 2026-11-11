@@ -10,7 +10,7 @@
 # packages share. The portal reads it to tell clients about the release
 # (GET /api/v1/update); before launch the version stays 1.0.0, and the commit and
 # build time are what tell a client a newer build exists.
-# --owner names the portal's service user (st-portal, see scripts/ops/st-host-setup.sh):
+# --owner names the portal's service user (for example st-portal):
 # the files are staged in the login user's home and moved into place with sudo, owned by it.
 set -euo pipefail
 V=$1 TARGET=$2 DIR=$3; shift 3

@@ -1,8 +1,0 @@
-#!/bin/sh
-# 以 root 身份在 st-mysql 容器里运行 mysql 客户端。密码从 /root/sharetoken/mysql-root.pass 读，
-# 经环境变量传入容器（docker exec -e 只带变量名），不出现在任何进程的命令行上。
-#   st-mysql-root -e "select version()"
-#   st-mysql-root < grants.sql
-set -e
-MYSQL_PWD=$(cat /root/sharetoken/mysql-root.pass); export MYSQL_PWD
-exec docker exec -i -e MYSQL_PWD st-mysql mysql -h127.0.0.1 -uroot "$@"

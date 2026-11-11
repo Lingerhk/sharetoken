@@ -3,7 +3,7 @@ package main
 import "strings"
 
 // trayText is the native menu's text in one language. The page's dictionaries
-// (client/ui/i18n/client) are not available here, because the native menu has
+// (internal/client/ui/i18n/client) are not available here, because the native menu has
 // to work when the page cannot load. Connected, Connecting and Retrying repeat
 // the page's own words, and a test compares them. {app} is the app's name and
 // {version} the new release's.

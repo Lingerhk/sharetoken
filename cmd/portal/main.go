@@ -13,7 +13,7 @@
 //	portal users | user <username> | disable <username> | enable <username>
 //	portal relay add <multiaddr> [name] [region] | relay ls | relay rm|enable|disable <id>
 //	portal overview                             # totals, and a replay of the ledger journal
-//	portal pass-key                             # public key relays verify passes with (relay -portal-key)
+//	portal pass-key                             # public key relays verify passes with (portal_keys in relay.yaml)
 //
 // Operator commands work on the database directly and may run beside the
 // live portal and coordinator.
@@ -43,14 +43,14 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"sharetoken/accounts"
+	"sharetoken/internal/accounts"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/config"
 	"sharetoken/internal/mysqldb"
+	"sharetoken/internal/p2p"
+	"sharetoken/internal/portal"
+	"sharetoken/internal/relaypass"
 	"sharetoken/internal/version"
-	"sharetoken/p2p"
-	"sharetoken/portal"
-	"sharetoken/relaypass"
 )
 
 // File is portal.yaml (configs/portal.example.yaml).
@@ -88,12 +88,12 @@ type File struct {
 		From    string `yaml:"from"`    // ShareToken <team@sharetoken.app>
 		Support string `yaml:"support"` // ShareToken Support <support@sharetoken.app>
 	} `yaml:"mail"`
-	// Downloads: the client packages the portal offers at /downloads/ (scripts/*/deploy.sh puts them there).
+	// Downloads: the client packages the portal offers at /downloads/ (scripts/publish-packages.sh puts them there).
 	Downloads struct {
 		Dir string `yaml:"dir"`
 	} `yaml:"downloads"`
 	// RelayMetrics: read each relay's /metrics over SSH for the admin dashboard
-	// (scripts/relay/authorize-metrics.sh restricts the key on the relay).
+	// (on the relay, restrict the key to that one command in authorized_keys).
 	RelayMetrics struct {
 		KeyFile        string          `yaml:"key_file"`
 		KnownHostsFile string          `yaml:"known_hosts_file"`
@@ -374,7 +374,7 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 			log.Fatal(err)
 		}
 		hs.TLSConfig = &tls.Config{Certificates: []tls.Certificate{c}, MinVersion: tls.VersionTLS12}
-		fmt.Printf("self-signed certificate %s\n   fingerprint %s\n   users: sharetoken login -portal https://<host>%s -portal-pin %s\n",
+		fmt.Printf("self-signed certificate %s\n   fingerprint %s\n   users: SHARETOKEN_PORTAL=https://<host>%s sharetoken login -portal-pin %s\n",
 			filepath.Join(f.TLS.SelfSignedDir, portal.SelfSignedCertFile), portal.CertFingerprint(c.Certificate[0]), portPart(listen), portal.CertFingerprint(c.Certificate[0]))
 	}
 	fmt.Printf("relay pass key %s\n   relays: access.portal_keys: [%s]\n", passPub, passPub)

@@ -17,7 +17,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 const [portal, daemon, shots] = [process.argv[2], process.argv[3], process.argv[4] || mkdtempSync(join(tmpdir(), 'st-i18n-'))];
 mkdirSync(shots, { recursive: true });
-const runtime = readFileSync(new URL('../portal/web/i18n.js', import.meta.url), 'utf8');
+const runtime = readFileSync(new URL('../internal/portal/web/i18n.js', import.meta.url), 'utf8');
 const ALL = [...runtime.slice(runtime.indexOf('const LANGS = {'), runtime.indexOf('};')).matchAll(/'?([A-Za-z-]+)'?: '/g)].map(m => m[1]);
 const LANGS = process.env.LANGS ? process.env.LANGS.split(',') : ALL;
 const HAN_OK = new Set(['zh-CN', 'zh-TW', 'ja']);

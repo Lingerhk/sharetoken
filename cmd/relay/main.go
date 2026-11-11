@@ -34,10 +34,10 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"sharetoken/internal/config"
+	"sharetoken/internal/p2p"
+	"sharetoken/internal/relay"
+	"sharetoken/internal/relaypass"
 	"sharetoken/internal/version"
-	"sharetoken/p2p"
-	"sharetoken/relay"
-	"sharetoken/relaypass"
 )
 
 // File is relay.yaml (configs/relay.example.yaml).
@@ -92,10 +92,16 @@ func defaults() File {
 
 // load builds the settings: defaults, then the -config file, then explicit flags.
 func load(args []string) (File, bool, error) {
+	f, check, _, err := loadArgs(args)
+	return f, check, err
+}
+
+// loadArgs is load, and also reports whether -print-id was given.
+func loadArgs(args []string) (File, bool, bool, error) {
 	f := defaults()
 	if path := config.ConfigPath(args); path != "" {
 		if err := config.Load(path, &f); err != nil {
-			return f, false, err
+			return f, false, false, err
 		}
 		config.Resolve(config.Dir(path), &f.Identity.KeyFile, &f.Log.File)
 	}
@@ -103,6 +109,7 @@ func load(args []string) (File, bool, error) {
 	fl := config.Flags{FlagSet: fs}
 	fs.String("config", "", "YAML configuration file (configs/relay.example.yaml); flags given explicitly override it")
 	check := fs.Bool("check-config", false, "validate the configuration, print the effective settings and exit")
+	printID := fs.Bool("print-id", false, "print the peer ID of the identity key (created if missing) and exit; a portal registers the relay by it")
 	fs.StringVar(&f.Identity.KeyFile, "key", f.Identity.KeyFile, "identity seed file (created with mode 0600 if missing); keep it: the address users know includes the peer ID")
 	fl.List(&f.Network.Listen, "listen", "comma-separated listen multiaddrs (IPv6 is skipped on hosts without it)")
 	fl.List(&f.Network.Announce, "announce", "comma-separated public multiaddrs to advertise instead of the interface addresses (/dns4/<name>/..., or /ip4/ behind 1:1 NAT)")
@@ -112,9 +119,9 @@ func load(args []string) (File, bool, error) {
 	fs.IntVar(&f.Limits.MaxCircuits, "max-circuits", f.Limits.MaxCircuits, "maximum open circuits to one destination peer (the coordinator receives one per online user)")
 	fs.IntVar(&f.Network.MaxConns, "max-conns", f.Network.MaxConns, "connection-manager high watermark")
 	if err := fs.Parse(args); err != nil {
-		return f, false, err
+		return f, false, false, err
 	}
-	return f, *check, nil
+	return f, *check, *printID, nil
 }
 
 // relayConfig validates f and converts it.
@@ -180,9 +187,17 @@ func main() {
 		fmt.Println(version.String("relay"))
 		return
 	}
-	f, check, err := load(os.Args[1:])
+	f, check, printID, err := loadArgs(os.Args[1:])
 	if err != nil {
 		log.Fatal(err)
+	}
+	if printID {
+		keys, err := p2p.LoadOrCreateKeys(f.Identity.KeyFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(keys.ID())
+		return
 	}
 	cfg, err := relayConfig(f)
 	if err != nil {

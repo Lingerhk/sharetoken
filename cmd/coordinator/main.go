@@ -13,7 +13,7 @@
 //	coordinator balance <peer-id>                        # operator commands, run beside
 //	coordinator disputes | nodes | audits | relays | check   # the live service on its database
 //	coordinator resolve <job-id> pay|refund
-//	coordinator id                                       # peer ID, for relays' -allow-peer
+//	coordinator id                                       # peer ID, for the allow_peers of relays
 package main
 
 import (
@@ -35,17 +35,17 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"go.yaml.in/yaml/v3"
 
-	"sharetoken/accounts"
-	"sharetoken/attest"
-	"sharetoken/audit"
-	"sharetoken/coordinator"
+	"sharetoken/internal/accounts"
+	"sharetoken/internal/attest"
+	"sharetoken/internal/audit"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/config"
+	"sharetoken/internal/coordinator"
 	"sharetoken/internal/mysqldb"
+	"sharetoken/internal/node"
+	"sharetoken/internal/p2p"
+	"sharetoken/internal/tokens"
 	"sharetoken/internal/version"
-	"sharetoken/node"
-	"sharetoken/p2p"
-	"sharetoken/tokens"
 )
 
 // Reference is a reference copy of a model (references[] in coordinator.yaml).
@@ -297,7 +297,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if cmd == "id" { // relays need it for -allow-peer before the coordinator first starts
+	if cmd == "id" { // relays need it for allow_peers before the coordinator first starts
 		fmt.Println(keys.ID())
 		return
 	}
