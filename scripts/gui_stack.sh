@@ -23,10 +23,9 @@ fi
 mkdir -p "$DIR"; DIR=$(cd "$DIR" && pwd); cd "$DIR"; : > pids
 BIN=$DIR/bin; mkdir -p "$BIN"
 (cd "$ROOT" && go build -o "$BIN/" ./cmd/...)
-# The desktop daemon reports to the UI test's fake collector, never to a real one.
-# It is an old build of 1.0.0, so that the UI test can publish a newer one.
+# The desktop daemon is an old build of 1.0.0, so that the UI test can publish a newer one.
 V=sharetoken/internal/version
-(cd "$ROOT" && go build -ldflags "-X sharetoken/internal/client.TelemetryKey=phc_test_key -X sharetoken/internal/client.TelemetryHost=http://127.0.0.1:18999 -X $V.Version=1.0.0-dev.guistack -X $V.Commit=guistack -X $V.BuildTime=2000-01-01T00:00:00Z" -o "$BIN/sharetoken-telemetry" ./cmd/sharetoken)
+(cd "$ROOT" && go build -ldflags "-X $V.Version=1.0.0-dev.guistack -X $V.Commit=guistack -X $V.BuildTime=2000-01-01T00:00:00Z" -o "$BIN/sharetoken-guistack" ./cmd/sharetoken)
 run() { local log=$1; shift; "$@" > "$log" 2>&1 & echo $! >> pids; }
 wait_for() { for _ in $(seq 1 150); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 0.2; done; echo "timed out waiting for $2 in $1" >&2; tail -5 "$1" >&2; exit 1; }
 
@@ -83,7 +82,7 @@ SHARETOKEN_PORTAL=$PORTAL SHARETOKEN_PASSWORD=idle-password "$BIN/sharetoken" -h
 run seller.log $ST up -http 127.0.0.1:$SELLER_API -listen /ip4/127.0.0.1/tcp/0 -nat=false
 for _ in $(seq 1 100); do curl -s http://127.0.0.1:$SELLER_API/api/v1/status | grep -q '"connected": true' && break; sleep 0.2; done
 
-run daemon.log env SHARETOKEN_PORTAL="$PORTAL" "$BIN/sharetoken-telemetry" -home "$DIR/desktop" daemon -http 127.0.0.1:$DAEMON_API -listen /ip4/127.0.0.1/tcp/0 -nat=false
+run daemon.log env SHARETOKEN_PORTAL="$PORTAL" "$BIN/sharetoken-guistack" -home "$DIR/desktop" daemon -http 127.0.0.1:$DAEMON_API -listen /ip4/127.0.0.1/tcp/0 -nat=false
 for _ in $(seq 1 50); do curl -s http://127.0.0.1:$DAEMON_API/api/v1/session > /dev/null && break; sleep 0.2; done
 
 cat > env <<ENV

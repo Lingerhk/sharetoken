@@ -133,4 +133,3 @@ The ids are the ones `pair` lists. See [Pair with your buyers](/docs/share#pairi
 |---|---|
 | `SHARETOKEN_HOME` | State directory. Same as `-home` |
 | `SHARETOKEN_PASSWORD` | Password used by login and register, for scripts. See [Sign in from a script](/docs/account#login-script) |
-| `SHARETOKEN_TELEMETRY=0`, `DO_NOT_TRACK=1` | Turn off the anonymous usage statistics of `daemon` |

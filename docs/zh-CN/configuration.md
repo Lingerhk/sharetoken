@@ -174,7 +174,6 @@
 | `network.json` | 0600 | 上次从门户取得的网络信息，门户不可达时使用 |
 | `run.json` | 0600 | 正在运行的客户端的地址和 PID，CLI 据此找到它；退出时删除 |
 | `providers.json` | 0600 | 用户用来出售的托管 API，以及它们的 key 和 token（[providers.md](providers.md)） |
-| `telemetry.json` | 0600 | 桌面服务的匿名使用统计设置，包括用户的关闭选择 |
 | `update.json` | 0600 | 上次检查新版本的结果 |
 | `daemon.log` | 0600 | 桌面应用启动的服务的日志（[desktop.md](desktop.md)） |
 
@@ -215,4 +214,3 @@
 | `SHARETOKEN_PORTAL` | 新登录使用的门户。正式版本忽略它，这样环境变量无法把密码引到别处 |
 | `SHARETOKEN_PASSWORD` | 密码，代替交互输入 |
 | `SHARETOKEN_PROVIDER_KEY` | `provider add` 用的 API key，代替交互输入 |
-| `SHARETOKEN_TELEMETRY=0`、`DO_NOT_TRACK=1` | 关闭桌面服务的匿名使用统计 |

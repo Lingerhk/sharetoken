@@ -52,7 +52,6 @@ network by accident:
 | Portal | the project's test network, or `$SHARETOKEN_PORTAL` | `https://sharetoken.app` |
 | State directory | `~/.sharetoken-dev` | `~/.sharetoken` |
 | Local endpoint | `127.0.0.1:9887` | `127.0.0.1:9787` |
-| Usage statistics | not sent | sent |
 
 For your own network, use a dev build and set `SHARETOKEN_PORTAL`
 ([self-hosting.md](self-hosting.md)).
@@ -70,10 +69,6 @@ on the release tag and `<version>-dev.<commit>` anywhere else, and
 | `scripts/build-gui-linux.sh <dev\|prod> [arch]` | the Linux desktop package (`.deb`), built in Docker (`scripts/gui-builder.Dockerfile`) |
 | `scripts/publish-packages.sh <version> <user@host> <dir>` | builds every package of a release and uploads them to a portal's downloads directory |
 | `docker build -t sharetoken .` | the server image used by `docker-compose.yml` |
-
-`TELEMETRY_OFF=1` builds a client that sends no usage statistics.
-`TELEMETRY_KEY` and `TELEMETRY_HOST` point it at another analytics instance
-(`scripts/client_ldflags.sh`).
 
 The desktop app is described in [desktop.md](desktop.md).
 

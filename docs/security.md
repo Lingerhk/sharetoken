@@ -228,16 +228,6 @@ them more than the list above.
 - `dev.open_accounts` in the coordinator's configuration is for test networks
   only: it lets unregistered peers trade.
 
-## 6. Telemetry
-
-Release builds of the desktop client report anonymous usage statistics (which
-version runs on which system, and coarse events such as sign-in) to the
-project's analytics instance. The key embedded in the source is a public,
-write-only project key. Prompts, answers, account names and tokens are never
-sent. Users can opt out in the client, development builds send nothing, and a
-build can be made without it (`TELEMETRY_OFF=1`, see
-[development.md](development.md)).
-
 ## Reporting a vulnerability
 
 Please report security problems privately, through the repository's private

@@ -45,7 +45,7 @@ func TestProdIgnoresPortalOverride(t *testing.T) {
 
 func writeState(t *testing.T, home, config string) {
 	t.Helper()
-	for name, data := range map[string]string{ConfigFile: config, KeyFile: "key", NetworkFile: "{}", TelemetryFile: `{"opted_out":true}`} {
+	for name, data := range map[string]string{ConfigFile: config, KeyFile: "key", NetworkFile: "{}"} {
 		if err := os.WriteFile(filepath.Join(home, name), []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +58,7 @@ func exists(home, name string) bool {
 }
 
 // A config from before the build types is deleted with the device identity, and
-// the client is logged out. The statistics opt-out survives.
+// the client is logged out.
 func TestOldConfigIsDeleted(t *testing.T) {
 	home := t.TempDir()
 	writeState(t, home, `{"portal":"https://sharetoken.app","token":"secret","user":"alice","http":"127.0.0.1:1234"}`)
@@ -74,9 +74,6 @@ func TestOldConfigIsDeleted(t *testing.T) {
 			t.Fatalf("%s survived", f)
 		}
 	}
-	if !exists(home, TelemetryFile) {
-		t.Fatal("the statistics opt-out was deleted")
-	}
 }
 
 // Another build type's directory is refused and left exactly as it is.
@@ -87,7 +84,7 @@ func TestOtherBuildTypesConfigIsRefused(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "prod") {
 		t.Fatalf("want a refusal, got %v", err)
 	}
-	for _, f := range []string{ConfigFile, KeyFile, NetworkFile, TelemetryFile} {
+	for _, f := range []string{ConfigFile, KeyFile, NetworkFile} {
 		if !exists(home, f) {
 			t.Fatalf("%s was deleted", f)
 		}

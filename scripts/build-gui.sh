@@ -25,9 +25,6 @@
 # Linux build dependencies (Debian/Ubuntu 24.04 names):
 #   sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
 #
-# Usage statistics go to the built-in PostHog project from prod builds only
-# (internal/client/telemetry.go). TELEMETRY_KEY=… replaces the key, TELEMETRY_OFF=1 builds
-# an app that sends nothing, and TELEMETRY_HOST=https://… selects another instance.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ENV=${1:-}
@@ -87,14 +84,44 @@ build_macos() { # architecture
   # copies still need a Developer ID signature and notarization to open without
   # a Gatekeeper warning.
   codesign --force --deep --sign - "$app" 2>/dev/null
-  # The disk image opens on the app and a link to drag it onto.
+  # The disk image opens as a small window: the app, an arrow, the Applications
+  # link. Finder keeps the layout in the volume's .DS_Store, so the image is made
+  # writable, laid out through Finder, and then compressed.
   dmg=sharetoken$SUFFIX-$VERSION-macos-$arch.dmg
   stage=$(mktemp -d)
   ditto "$app" "$stage/$NAME.app"
   ln -s /Applications "$stage/Applications"
-  rm -f "$OUT/$dmg"
-  hdiutil create -quiet -volname "$NAME" -srcfolder "$stage" -fs HFS+ -format UDZO "$OUT/$dmg"
-  rm -rf "$stage"
+  mkdir "$stage/.background"
+  tiffutil -cathidpicheck gui/packaging/dmg-background.png gui/packaging/dmg-background@2x.png -out "$stage/.background/background.tiff" 2>/dev/null
+  rm -f "$OUT/$dmg" "$stage.rw.dmg"
+  hdiutil create -quiet -volname "$NAME" -srcfolder "$stage" -fs HFS+ -format UDRW "$stage.rw.dmg"
+  local mnt
+  mnt=$(hdiutil attach -readwrite -noverify -noautoopen "$stage.rw.dmg" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -1)
+  osascript <<OSA || echo "warning: Finder could not lay out the disk image; it opens as a plain folder" >&2
+tell application "Finder"
+  tell disk "$(basename "$mnt")"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {200, 120, 800, 520}
+    set opts to the icon view options of container window
+    set arrangement of opts to not arranged
+    set icon size of opts to 112
+    set text size of opts to 13
+    set background picture of opts to file ".background:background.tiff"
+    set position of item "$NAME.app" of container window to {150, 190}
+    set position of item "Applications" of container window to {450, 190}
+    update without registering applications
+    delay 2
+    close
+  end tell
+end tell
+OSA
+  sync
+  hdiutil detach -quiet "$mnt" || { sleep 3; hdiutil detach -quiet -force "$mnt"; }
+  hdiutil convert -quiet "$stage.rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$OUT/$dmg"
+  rm -rf "$stage" "$stage.rw.dmg"
   sums "$dmg"
   echo "built $OUT/$dmg"
 }

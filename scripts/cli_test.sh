@@ -14,7 +14,7 @@ PORT=${CLI_TEST_PORT:-19796}
 API=http://127.0.0.1:$PORT
 HOME_DIR=$(mktemp -d)
 EMAIL=cli-$RANDOM$RANDOM@example.com
-export SHARETOKEN_PORTAL=$PORTAL SHARETOKEN_PASSWORD=cli-test-password-1 SHARETOKEN_TELEMETRY=0
+export SHARETOKEN_PORTAL=$PORTAL SHARETOKEN_PASSWORD=cli-test-password-1
 UP=
 stop_up() { if [ -n "$UP" ]; then kill "$UP" 2>/dev/null || true; wait "$UP" 2>/dev/null || true; UP=; fi; }
 trap 'stop_up; rm -rf "$HOME_DIR"' EXIT

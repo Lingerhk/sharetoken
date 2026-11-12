@@ -41,7 +41,6 @@ You can also set the environment variable `SHARETOKEN_HOME`.
 | `network.json` | A cache of the relay list. If you delete it, it is fetched again automatically |
 | `run.json` | The API address of the running client |
 | `daemon.log` | The log of the service started by the desktop app |
-| `telemetry.json` | The usage statistics switch and the install ID |
 
 > [!WARNING]
 > `config.json` and `device.key` act as this device's sign-in credentials. Do not share them, commit them to a code repository, or put them in a backup others can read. Losing them does not lose any credit: just sign in again. Once the device key changes, it is a new device, and you can unbind the old device on the portal.

@@ -206,7 +206,6 @@ func LoadConfig(home string) (Config, error) {
 }
 
 // removeOldState deletes the state of a format this client does not read.
-// The usage-statistics file stays: it may hold the user's opt-out.
 func removeOldState(home string) error {
 	var errs []error
 	for _, f := range []string{ConfigFile, KeyFile, NetworkFile} {

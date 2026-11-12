@@ -315,6 +315,9 @@ func TestDaemonRegistrationClosed(t *testing.T) {
 	if p.RegistrationOpen {
 		t.Fatal("probe says registration is open")
 	}
+	if p.PasswordReset {
+		t.Fatal("probe offers a password reset that the portal cannot send")
+	}
 	d.want(403, "registration_closed", "POST", "/api/v1/register", map[string]string{"portal": e.url, "email": "a@example.com", "password": testPassword})
 	// An account an administrator made still logs in, by username.
 	if _, err := e.portal.CreateUser("bob", testPassword, false); err != nil {

@@ -45,7 +45,6 @@ go build -o bin/ ./cmd/...
 | 门户 | 本项目的测试网络，或者 `$SHARETOKEN_PORTAL` | `https://sharetoken.app` |
 | 状态目录 | `~/.sharetoken-dev` | `~/.sharetoken` |
 | 本机端点 | `127.0.0.1:9887` | `127.0.0.1:9787` |
-| 使用统计 | 不发送 | 发送 |
 
 连接自己的网络时，用 dev 构建并设置 `SHARETOKEN_PORTAL`（[self-hosting.md](self-hosting.md)）。
 
@@ -59,8 +58,6 @@ go build -o bin/ ./cmd/...
 | `scripts/build-gui-linux.sh <dev\|prod> [架构]` | Linux 桌面包（`.deb`），在 Docker 里构建（`scripts/gui-builder.Dockerfile`） |
 | `scripts/publish-packages.sh <版本> <user@host> <目录>` | 构建一个版本的全部包，并上传到门户的下载目录 |
 | `docker build -t sharetoken .` | `docker-compose.yml` 使用的服务端镜像 |
-
-`TELEMETRY_OFF=1` 构建出的客户端不发送使用统计。`TELEMETRY_KEY` 和 `TELEMETRY_HOST` 让它指向另一个统计实例（`scripts/client_ldflags.sh`）。
 
 桌面应用见 [desktop.md](desktop.md)。
 

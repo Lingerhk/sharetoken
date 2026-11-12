@@ -133,4 +133,3 @@
 |---|---|
 | `SHARETOKEN_HOME` | 数据目录，和 `-home` 相同 |
 | `SHARETOKEN_PASSWORD` | 登录和注册时使用的密码，脚本用，见[在脚本里登录](/docs/account#login-script) |
-| `SHARETOKEN_TELEMETRY=0`、`DO_NOT_TRACK=1` | 关闭 `daemon` 的匿名使用统计 |

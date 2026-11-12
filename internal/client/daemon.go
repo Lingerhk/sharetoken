@@ -1,7 +1,6 @@
 package client
 
 import (
-	"cmp"
 	"context"
 	"embed"
 	"encoding/json"
@@ -43,10 +42,6 @@ type Daemon struct {
 	RetryMin, RetryMax time.Duration
 	// OnAgent, if set, adjusts each agent before it starts (embedding, tests).
 	OnAgent func(*Agent)
-	// TelemetryKey and TelemetryHost replace the build's settings (tests).
-	TelemetryKey, TelemetryHost string
-
-	telemetry *Telemetry
 
 	home string
 	log  *slog.Logger
@@ -93,8 +88,6 @@ type Session struct {
 	Peer   string `json:"peer,omitempty"`
 	API    string `json:"api"`             // OpenAI base URL
 	Error  string `json:"error,omitempty"` // why the state is retrying or expired
-	// Telemetry is the usage-statistics setting.
-	Telemetry TelemetryState `json:"telemetry"`
 	// Version and APIVersion say what this daemon is: the desktop shell only
 	// uses a daemon of its own release.
 	Version    string `json:"version"`
@@ -160,8 +153,6 @@ func (d *Daemon) Start() error {
 	d.mu.Lock()
 	d.cfg = cfg
 	d.mu.Unlock()
-	d.telemetry = newTelemetry(d.home, cmp.Or(d.TelemetryKey, TelemetryKey), cmp.Or(d.TelemetryHost, TelemetryHost), d.telemetryStatus)
-	d.telemetry.start()
 	uctx, stopUpdates := context.WithCancel(context.Background())
 	d.stopUpdates = stopUpdates
 	d.bg.Go(func() { d.updates.Run(uctx) })
@@ -185,7 +176,6 @@ func (d *Daemon) Close() {
 		d.stopUpdates()
 	}
 	d.bg.Wait()
-	d.telemetry.Close()
 	if d.srv != nil {
 		_ = os.Remove(filepath.Join(d.home, RunFile))
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -204,18 +194,11 @@ func (d *Daemon) portalAddr() (base, pin string) {
 	return d.cfg.Portal, d.cfg.PortalPin
 }
 
-func (d *Daemon) telemetryStatus() (string, bool) {
-	d.mu.Lock()
-	state, a := d.state, d.agent
-	d.mu.Unlock()
-	return state, a != nil && a.Status().Share.Running
-}
-
 // Session reports the current state.
 func (d *Daemon) Session() Session {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	s := Session{Env: Env, State: d.state, LoggedIn: d.portal != nil, Portal: d.cfg.Portal, User: d.cfg.User, API: "http://" + d.addr + "/v1", Error: d.lastErr, Telemetry: d.telemetry.State(), Version: version.Version, APIVersion: version.API}
+	s := Session{Env: Env, State: d.state, LoggedIn: d.portal != nil, Portal: d.cfg.Portal, User: d.cfg.User, API: "http://" + d.addr + "/v1", Error: d.lastErr, Version: version.Version, APIVersion: version.API}
 	s.Update = d.updates.Current()
 	if !s.LoggedIn || s.Portal == "" {
 		s.Portal = PortalAddr() // the sign-in page does not ask for it
@@ -245,7 +228,6 @@ func (d *Daemon) joinNetwork(ctx context.Context, done chan struct{}, cfg Config
 	defer close(done)
 	wait := cmpDuration(d.RetryMin, 2*time.Second)
 	limit := cmpDuration(d.RetryMax, time.Minute)
-	began, reported := time.Now(), false
 	for {
 		a := NewAgent(d.home, cfg)
 		a.ExternalAPI = d.addr
@@ -266,7 +248,6 @@ func (d *Daemon) joinNetwork(ctx context.Context, done chan struct{}, cfg Config
 			d.state, d.lastErr, d.peer = StateRunning, "", a.PeerID()
 			d.mu.Unlock()
 			d.log.Info("joined the network", "user", cfg.User)
-			d.telemetry.networkJoined(time.Since(began))
 			return
 		}
 		a.Close()
@@ -283,10 +264,6 @@ func (d *Daemon) joinNetwork(ctx context.Context, done chan struct{}, cfg Config
 			return
 		}
 		d.log.Warn("cannot join the network yet", "err", err, "retry_in", wait)
-		if !reported { // once per login: the retries would only repeat it
-			reported = true
-			d.telemetry.networkJoinFailed()
-		}
 		d.mu.Lock()
 		d.state, d.lastErr = StateRetrying, err.Error()
 		d.mu.Unlock()
@@ -340,7 +317,6 @@ func (d *Daemon) expire(token, reason string) {
 	if err := d.clearLogin(StateExpired, reason); err != nil {
 		d.log.Error("forgetting the login", "err", err)
 	}
-	d.telemetry.signedOut("expired")
 }
 
 // clearLogin stops using the token and removes it from disk, keeping every
@@ -407,6 +383,8 @@ type PortalProbe struct {
 	// EmailVerification: registering needs a code from POST /api/v1/register/code.
 	EmailVerification bool   `json:"email_verification"`
 	SupportEmail      string `json:"support_email,omitempty"`
+	// PasswordReset: the portal can mail a reset link (on its sign-in page).
+	PasswordReset bool `json:"password_reset"`
 }
 
 // apiError is a failure the API reports with a stable code the app can act on.
@@ -417,18 +395,6 @@ type apiError struct {
 }
 
 func (e *apiError) Error() string { return e.Message }
-
-func errorCode(err error) string {
-	var ae *apiError
-	var pe *PortalError
-	switch {
-	case errors.As(err, &ae):
-		return ae.Code
-	case errors.As(err, &pe):
-		return pe.Code
-	}
-	return "portal_unreachable"
-}
 
 func writeAPIError(w http.ResponseWriter, err error) {
 	var ae *apiError
@@ -489,7 +455,7 @@ func (d *Daemon) probe(ctx context.Context, raw string) (*PortalProbe, error) {
 		return nil, &apiError{http.StatusBadGateway, "portal_unreachable", "cannot reach the portal: " + err.Error()}
 	}
 	p.RegistrationOpen, p.SignupCredit = info.RegistrationOpen, info.SignupCredit
-	p.EmailVerification, p.SupportEmail = info.EmailVerification, info.SupportEmail
+	p.EmailVerification, p.SupportEmail, p.PasswordReset = info.EmailVerification, info.SupportEmail, info.PasswordReset
 	return p, nil
 }
 
@@ -680,7 +646,6 @@ func (d *Daemon) logout(ctx context.Context) error {
 	if err := pc.Logout(ctx); err != nil && !IsUnauthorized(err) {
 		d.log.Warn("could not revoke the token at the portal", "err", err)
 	}
-	d.telemetry.signedOut("user")
 	return d.clearLogin(StateLoggedOut, "")
 }
 
@@ -734,16 +699,14 @@ func (d *Daemon) Handler() http.Handler {
 		return jsonBody(func(w http.ResponseWriter, r *http.Request, req signInRequest) {
 			ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 			defer cancel()
-			method, status := "login", http.StatusOK
+			status := http.StatusOK
 			if register {
-				method, status = "register", http.StatusCreated
+				status = http.StatusCreated
 			}
 			if err := d.signIn(ctx, req, register); err != nil {
-				d.telemetry.signInFailed(method, errorCode(err))
 				writeAPIError(w, err)
 				return
 			}
-			d.telemetry.signedIn(method)
 			writeJSON(w, status, d.Session())
 		})
 	}
@@ -788,16 +751,6 @@ func (d *Daemon) Handler() http.Handler {
 	}
 	mux.HandleFunc("POST /api/v1/update/skip", updateAction(func(k string) error { return d.updates.Skip(k) }))
 	mux.HandleFunc("POST /api/v1/update/notified", updateAction(func(k string) error { return d.updates.MarkNotified(k) }))
-	mux.HandleFunc("GET /api/v1/telemetry", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.telemetry.State()) })
-	mux.HandleFunc("PUT /api/v1/telemetry", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
-		Enabled bool `json:"enabled"`
-	}) {
-		if err := d.telemetry.SetEnabled(req.Enabled); err != nil {
-			writeErrorCode(w, http.StatusInternalServerError, "save_failed", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, d.telemetry.State())
-	}))
 	// The account pages work without the agent: the portal may be up while
 	// the relays or the coordinator are not.
 	mux.HandleFunc("POST /api/v1/feedback", jsonBody(func(w http.ResponseWriter, r *http.Request, req portal.FeedbackRequest) {

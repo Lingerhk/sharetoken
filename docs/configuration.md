@@ -174,7 +174,6 @@ The directory is created with mode 0700. Files in it:
 | `network.json` | 0600 | The last network information from the portal, used when the portal is unreachable |
 | `run.json` | 0600 | Address and PID of the running client, so the CLI can find it; removed on exit |
 | `providers.json` | 0600 | Hosted APIs the user sells through, with their keys and tokens ([providers.md](providers.md)) |
-| `telemetry.json` | 0600 | Anonymous usage statistics settings of the desktop service, including the opt-out |
 | `update.json` | 0600 | The result of the last check for a new release |
 | `daemon.log` | 0600 | Log of the service started by the desktop app ([desktop.md](desktop.md)) |
 
@@ -215,4 +214,3 @@ Environment variables:
 | `SHARETOKEN_PORTAL` | Portal for a new login. Ignored by release builds, so the environment cannot send a password elsewhere |
 | `SHARETOKEN_PASSWORD` | Password, instead of a prompt |
 | `SHARETOKEN_PROVIDER_KEY` | API key for `provider add`, instead of a prompt |
-| `SHARETOKEN_TELEMETRY=0`, `DO_NOT_TRACK=1` | Turn off the desktop service's anonymous usage statistics |
