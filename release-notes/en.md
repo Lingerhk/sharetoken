@@ -3,7 +3,7 @@
 A smaller, tighter window; relay and latency in the menu bar.
 
 ## Window
-- Sidebar navigation: Overview, Models, Sharing, Pairing, Activity, Settings
+- Sidebar navigation: Overview, Sharing, Pairing, Activity, Feedback, Settings
 - A status bar with the connection, the relay in use and its latency
 - Latency is coloured green, amber or red by how fast it is
 
