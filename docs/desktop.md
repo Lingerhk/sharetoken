@@ -113,7 +113,7 @@ Errors have the form `{"error":{"code","message"}}`; the page chooses its text b
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/v1/session` | `{env, state, logged_in, portal, user, device, peer, api, error, version, api_version, update}`. `state` is `logged_out`, `expired` (the portal rejected the token and the daemon signed out), `starting`, `retrying` (`error` says why) or `running`. When signed out, `portal` is the built-in address (below) and `user` is the last one used, to prefill the form |
+| `GET /api/v1/session` | `{env, state, logged_in, first_run, portal, user, device, peer, api, error, version, api_version, update}`. `state` is `logged_out`, `expired` (the portal rejected the token and the daemon signed out), `starting`, `retrying` (`error` says why) or `running`. When signed out, `portal` is the built-in address (below) and `user` is the last one used, to prefill the form. `first_run` is true when the daemon started without a `config.json` and nobody has signed in since: the app then opens on sign-up instead of login |
 | `POST /api/v1/portal/probe` | `{}` (`portal` is optional and defaults to the built-in address) → `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, signup_credit_micros, email_verification, support_email}`. Called before any password is sent |
 | `POST /api/v1/register/code` | `{pin, email}`: sends a verification code, when the portal requires one |
 | `POST /api/v1/register` | `{pin, email, password, code, device}` → 201 and the session |

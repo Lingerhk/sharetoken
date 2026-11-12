@@ -161,7 +161,7 @@ I18N.ready.then(() => {
   async function showAuth(session, notice) {
     markEnv(session);
     stopPolling();
-    const auth = { probe: null, tab: 'login', totp: false, confirmed: false, busy: false, error: '' };
+    const auth = { probe: null, tab: session.first_run ? 'register' : 'login', totp: false, confirmed: false, busy: false, error: '' };
     // The brand on one side stays; the form beside it is redrawn.
     const root = h('div', { class: 'auth-main', id: 'auth' });
     app.replaceChildren(h('div', { class: 'auth' },

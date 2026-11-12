@@ -57,6 +57,7 @@ type Daemon struct {
 	lastErr  string
 	portal   *PortalClient // nil: logged out
 	peer     string
+	firstRun bool // no config.json when the daemon started, and no sign-in since
 	agent    *Agent
 	agentAPI http.Handler
 	cancel   context.CancelFunc // ends the current run
@@ -88,6 +89,9 @@ type Session struct {
 	Peer   string `json:"peer,omitempty"`
 	API    string `json:"api"`             // OpenAI base URL
 	Error  string `json:"error,omitempty"` // why the state is retrying or expired
+	// FirstRun: this installation has no settings file yet and nobody has
+	// signed in, so the app opens on sign-up rather than login.
+	FirstRun bool `json:"first_run,omitempty"`
 	// Version and APIVersion say what this daemon is: the desktop shell only
 	// uses a daemon of its own release.
 	Version    string `json:"version"`
@@ -119,6 +123,8 @@ func (d *Daemon) loadConfig() (Config, error) {
 // Start opens the local API and, if a login is saved, starts joining the
 // network; it does not wait for that.
 func (d *Daemon) Start() error {
+	_, statErr := os.Stat(filepath.Join(d.home, ConfigFile))
+	firstRun := errors.Is(statErr, fs.ErrNotExist)
 	cfg, err := d.loadConfig()
 	if err != nil {
 		return err
@@ -152,6 +158,7 @@ func (d *Daemon) Start() error {
 
 	d.mu.Lock()
 	d.cfg = cfg
+	d.firstRun = firstRun
 	d.mu.Unlock()
 	uctx, stopUpdates := context.WithCancel(context.Background())
 	d.stopUpdates = stopUpdates
@@ -199,6 +206,7 @@ func (d *Daemon) Session() Session {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	s := Session{Env: Env, State: d.state, LoggedIn: d.portal != nil, Portal: d.cfg.Portal, User: d.cfg.User, API: "http://" + d.addr + "/v1", Error: d.lastErr, Version: version.Version, APIVersion: version.API}
+	s.FirstRun = d.firstRun && d.portal == nil
 	s.Update = d.updates.Current()
 	if !s.LoggedIn || s.Portal == "" {
 		s.Portal = PortalAddr() // the sign-in page does not ask for it
@@ -596,7 +604,7 @@ func (d *Daemon) signIn(ctx context.Context, req signInRequest, register bool) e
 		return err
 	}
 	d.mu.Lock()
-	d.peer = peer
+	d.peer, d.firstRun = peer, false
 	d.mu.Unlock()
 	d.log.Info("signed in", "user", res.User.Username, "device", peer)
 	d.startRun(cfg)

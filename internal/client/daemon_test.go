@@ -270,6 +270,28 @@ func TestDaemonRegisterWithEmail(t *testing.T) {
 	d.want(409, "already_logged_in", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": s.User, "password": testPassword})
 }
 
+// A fresh installation (no config.json) opens on sign-up; once anyone has
+// signed in, or a settings file exists, it opens on login.
+func TestDaemonFirstRun(t *testing.T) {
+	e := newDaemonEnv(t, openPortal(), false)
+	home := t.TempDir()
+	d := e.daemonIn(home)
+	if s := d.session(); !s.FirstRun {
+		t.Fatalf("a fresh home is not a first run: %+v", s)
+	}
+	if s := d.register(e.url, "first@example.com"); s.FirstRun {
+		t.Fatalf("still a first run after signing up: %+v", s)
+	}
+	d.want(200, "", "POST", "/api/v1/logout", nil)
+	if s := d.session(); s.FirstRun || s.LoggedIn {
+		t.Fatalf("logged out after signing up: %+v", s)
+	}
+	d.Close()
+	if s := e.daemonIn(home).session(); s.FirstRun {
+		t.Fatalf("a home with config.json is a first run: %+v", s)
+	}
+}
+
 // Every way a sign-up can be refused comes back with a code the app handles.
 func TestDaemonRegisterErrors(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)

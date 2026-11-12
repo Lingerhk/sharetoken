@@ -113,7 +113,7 @@ macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘：关
 
 | 接口 | 说明 |
 |---|---|
-| `GET /api/v1/session` | `{env, state, logged_in, portal, user, device, peer, api, error, version, api_version, update}`。`state` 是 `logged_out`、`expired`（门户拒绝了 token，daemon 已退出登录）、`starting`、`retrying`（`error` 是原因）或 `running`。未登录时 `portal` 是内置地址（见下），`user` 是上次用的值，用于预填表单 |
+| `GET /api/v1/session` | `{env, state, logged_in, first_run, portal, user, device, peer, api, error, version, api_version, update}`。`state` 是 `logged_out`、`expired`（门户拒绝了 token，daemon 已退出登录）、`starting`、`retrying`（`error` 是原因）或 `running`。未登录时 `portal` 是内置地址（见下），`user` 是上次用的值，用于预填表单。`first_run` 为 true 表示 daemon 启动时没有 `config.json`，且之后还没有人登录过：这时应用先显示注册页，而不是登录页 |
 | `POST /api/v1/portal/probe` | `{}`（`portal` 可省略，默认是内置地址）→ `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, signup_credit_micros, email_verification, support_email}`。发送密码之前调用 |
 | `POST /api/v1/register/code` | `{pin, email}`：门户要求验证码时，发送验证码 |
 | `POST /api/v1/register` | `{pin, email, password, code, device}` → 201 和会话 |

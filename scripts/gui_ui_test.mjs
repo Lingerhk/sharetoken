@@ -90,6 +90,7 @@ ok((await ev('document.title')).includes('DEV'), 'and in the title');
 ok(!(await has('#portal')), 'there is no portal address field');
 ok(!(await has('#portal-change')), 'there is no way to change the portal');
 ok(await text('.tagline') !== '', 'the logged-out app opens straight on sign-in');
+ok(await ev(`${el('#tab-register')}.getAttribute('aria-selected')`) === 'true' && await has('#email'), 'a fresh installation (no config.json) opens on sign-up');
 await shot('01-signin');
 
 console.log('certificate confirmation');
@@ -495,6 +496,7 @@ ok(await text('#who') === NORMAL, 'a reload stays logged in');
 await click('#logout');
 await waitFor(el('#signin-form'));
 ok(await ev(`${el('#account')}.value`) === NORMAL, 'after logout the email is pre-filled');
+ok(await ev(`${el('#tab-login')}.getAttribute('aria-selected')`) === 'true', 'and the page is on login, not sign-up');
 ok(!(await has('#cert')) , 'the confirmed certificate is not asked about again');
 const oldToken = config.token;
 ok((await portalApi('GET', '/api/v1/me', null, oldToken)).status === 401, 'the token is revoked at the portal');
