@@ -52,7 +52,7 @@ go build -o bin/ ./cmd/...
 
 | 脚本 | 产物 |
 |---|---|
-| `scripts/build.sh portal coordinator relay mailserver` | `dist/` 下的服务端程序，文件名带版本、系统和架构。用 `GOOS` 和 `GOARCH` 交叉编译 |
+| `scripts/build.sh portal coordinator relay mailserver` | `dist/` 下的服务端程序，文件名带版本、系统和架构。用 `GOOS` 和 `GOARCH` 交叉编译。编译参数为 `-trimpath -ldflags "-s -w"`；`GOAMD64`/`GOARM64` 高于基线时面向更新的 CPU，并写进文件名（`GOAMD64=v3` → `portal-1.0.0-linux-amd64v3`） |
 | `scripts/build-cli.sh <dev\|prod> [系统] [架构]` | 命令行客户端的压缩包 |
 | `scripts/build-gui.sh <dev\|prod> [macos\|windows] [架构]` | 桌面应用及其安装包（`.dmg`、`.exe`） |
 | `scripts/build-gui-linux.sh <dev\|prod> [架构]` | Linux 桌面包（`.deb`），在 Docker 里构建（`scripts/gui-builder.Dockerfile`） |
