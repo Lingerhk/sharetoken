@@ -16,13 +16,12 @@
 | 命令行和 daemon | `sharetoken-dev` | `sharetoken` |
 | 窗口程序 | `sharetoken-gui-dev` | `sharetoken-gui` |
 | macOS 应用 | `ShareToken-dev.app`，`app.sharetoken.desktop.dev` | `ShareToken.app`，`app.sharetoken.desktop` |
-| 使用统计 | 不发送 | 发送 |
 | `SHARETOKEN_PORTAL` | 生效（测试网络用） | 忽略 |
 
 - `sharetoken version`（`sharetoken-dev version`）显示构建类型、门户和数据目录。
 - 窗口只连接同类型的 daemon。dev 窗口和页面标题都显示 DEV。
 - `SHARETOKEN_HOME` 可以改变数据目录。
-- `config.json` 里记有文件格式版本和写入它的构建类型。更新的客户端写的文件会被拒绝。格式过旧、不再支持的文件会连同 `device.key`、`network.json` 一起删除，用户需要重新登录；`telemetry.json` 保留，因为里面有用户退出统计的选择。另一种构建类型的文件只报错、不删除，这样 `SHARETOKEN_HOME` 指错目录时不会删掉另一个环境的身份。
+- `config.json` 里记有文件格式版本和写入它的构建类型。更新的客户端写的文件会被拒绝。格式过旧、不再支持的文件会连同 `device.key`、`network.json` 一起删除，用户需要重新登录。另一种构建类型的文件只报错、不删除，这样 `SHARETOKEN_HOME` 指错目录时不会删掉另一个环境的身份。
 
 ## 结构
 
@@ -47,9 +46,21 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（internal/cl
 - 默认端口被无关程序占用时，窗口把 daemon 启动在第一个空闲的备用端口上，页面显示实际地址。`config.json` 里指定的端口不会被替换，这时直接报错。同一数据目录上已有 `sharetoken up` 在运行时也报错，否则同一把设备密钥会同时在线两次。
 - 窗口持有它所启动的 daemon 的标准输入（`-stop-on-stdin-eof`）。窗口退出或崩溃时管道关闭，daemon 正常收尾后退出。
 
+## 窗口布局
+
+窗口是一个小窗口（默认 880×600，最小 760×520），页面按应用而不是网页来排版（[`internal/client/ui/app.css`](../../internal/client/ui/app.css)）：
+
+- **窗口本身不滚动。** 左侧是图标导航（概览、共享、配对、记录；底部是反馈和设置），中间是当前视图，底部是状态栏。长列表在各自的面板里滚动；窗口太矮放不下时，滚动的是视图，不是窗口。
+- **视图**：概览（余额等卡片、本地接口地址、网络和可用模型并排）、共享（标签：状态、厂商 API、本机模型）、配对（标签：我的卖家、我的买家）、记录（标签：全部、卖出）、设置（账户和退出登录、语言、版本和检查更新、反馈、我的设备）。所有视图都留在页面里，轮询会更新隐藏的视图，切换时立即显示。
+- **按需展开**：面板的说明文字收在标题旁的“?”里，点击才显示；反馈是一个对话框；升级提示只占一行，详情在对话框里。
+- **状态栏**：连接状态、当前中继和它的延迟、账户、版本。
+- **延迟的颜色**和门户一致：低于 80 ms 绿色，低于 250 ms 黄色，其余红色（`app.js` 的 `rtt`）。网络面板的中继表、链路质量、中继预约和状态栏都用它。
+- 文字默认不可选中，只有适合复制的内容（地址、代码、表格、提示）可以选中。
+- **macOS** 隐藏标题栏（`mac.TitleBarHiddenInset`），页面一直铺到窗口顶部。窗口壳在页面加载后给 `<html>` 加上 `os-<系统>` 类；`os-darwin` 下侧边栏给红绿灯按钮留出位置，侧边栏和视图标题栏可以拖动窗口（`--wails-draggable`），其中的按钮不可拖。Windows 和 Linux 保留系统标题栏。
+
 ## 共享页（卖家模式）
 
-主界面顶部在“概览”和“共享”之间切换（[`internal/client/ui/app.js`](../../internal/client/ui/app.js) 的 `shareView`），选择记在 `localStorage.st_view`。共享页只调用本机 API，和命令行改的是同一份 `config.json` 和 `providers.json`，两边的修改互相可见。实现说明见 [providers.md](providers.md)。
+侧边栏的“共享”打开共享视图（[`internal/client/ui/app.js`](../../internal/client/ui/app.js) 的 `shareView`），当前视图记在 `localStorage.st_view`。共享页只调用本机 API，和命令行改的是同一份 `config.json` 和 `providers.json`，两边的修改互相可见。实现说明见 [providers.md](providers.md)。
 
 | 区域 | 功能 | 接口 |
 |---|---|---|
@@ -68,7 +79,7 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（internal/cl
 - 界面上的保护：没有模型时不能开启共享；同一个模型 ID 不能来自两个来源；新增厂商的名称和已有的重复时要求改名（接口会按“更换凭据”处理）；最后一个可出售的模型被移除或其厂商被停用时，共享一起关闭。
 - 和命令行的一处差别：`share add` 会顺带开启共享，界面不会，由用户点“开启共享”。
 - 模型表里的“网络最低价”来自 `GET /api/v1/models`（包含本机自己的报价）。厂商卡片显示登录令牌的有效期和附加请求头的名称。概览页有一张“共享”卡片，点击进入共享页；网络区域显示到协调器的链路质量（平均延迟、抖动、丢包）。
-- 配对（`app.js` 的 `pairingView`）在概览页还有一块“配对的卖家”：输入卖家的配对码，查看本账户配对的卖家，解除其中一个（`POST /api/v1/pairing/redeem`、`DELETE /api/v1/pairing/sellers/{id}`）。账户有配对时，这一块会说明它只向这些卖家购买，“可用模型”也只列出他们的模型。配对保存在门户，所以两块在接入网络之前就能用；每 15 秒重新读取一次。
+- 配对（`app.js` 的 `pairingView`）有自己的视图，分两个标签。“我的卖家”：输入卖家的配对码，查看本账户配对的卖家，解除其中一个（`POST /api/v1/pairing/redeem`、`DELETE /api/v1/pairing/sellers/{id}`）；账户有配对时，这里会说明它只向这些卖家购买，“可用模型”也只列出他们的模型。“我的买家”：私有模式、配对码和配对的买家。配对保存在门户，所以接入网络之前就能用；每 15 秒重新读取一次。
 - 客户端有英语和简体中文两种语言。没有保存过选择时跟随系统语言，其他系统语言一律显示英语（见 [i18n.md](i18n.md)）。
 - 密钥只在提交时经过页面，接口返回的是打码后的形式。界面测试会检查页面和 `/api/v1/status` 里都没有密钥。
 - daemon 的告警和厂商返回的错误按英文原文显示。
@@ -81,11 +92,13 @@ macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘：关
 |---|---|
 | 关闭窗口（红色按钮、X、macOS 的 Cmd+W） | 只隐藏窗口。应用和 daemon 继续运行，共享和本地 API 不中断 |
 | Windows 左键点图标 | 打开窗口（最小化时恢复） |
-| macOS 点图标、Windows 右键点图标 | 菜单：状态行（不可点）、有新版本时的更新行（点击打开窗口）、打开、退出 |
+| macOS 点图标、Windows 右键点图标 | 菜单：状态行、信息行（当前中继和延迟、共享中的在售模型数、可用 credit，都不可点）、有新版本时的更新行（点击打开窗口）、打开、退出 |
 | 菜单里的退出、macOS 的 Cmd+Q | 退出应用；daemon 如果是这个应用启动的，一起停止 |
 | 再次启动程序 | 同一数据目录只保留一个实例：第二个进程唤回窗口后退出。dev 和 prod、不同数据目录互不影响 |
 
 - 状态行每 3 秒从 `GET /api/v1/session` 更新，例如 `已连接 · a@example.com`、`未登录`、`后台服务未运行`。
+- 信息行只在已连接时显示，同样每 3 秒从 `GET /api/v1/status` 更新：`中继：relay-sg · 42 ms`（延迟取当前中继的实时 ping 均值，没有时取上次测速）、`正在共享 · 在售模型：2`。`可用 credit：4.99` 每分钟从 `GET /api/v1/account` 取一次，因为它要问门户。鼠标停在图标上的提示也带上中继和延迟。
+- 新版本的系统通知会带上发布说明里的一句话摘要（见 [versioning.md](versioning.md) 的“发布说明”）。
 - 新版本：每个新构建发一次系统通知（[`gui/notify.go`](../../gui/notify.go)，点击打开窗口）。Linux 没有托盘也会发。规则见 [versioning.md](versioning.md) 的“升级提醒”。Windows 上 Wails 会在 HKCU 登记通知激活器，卸载程序会删掉它。
 - 菜单文字跟随页面语言：页面每次加载都把自己的语言报给窗口壳（`/__shell/lang`，不到 daemon）。文字在 [`gui/tray_text.go`](../../gui/tray_text.go)，有测试检查它和页面的语言列表、相同词条的译文是否一致。
 - Windows 11 默认把新图标收进 `^` 溢出区，用户可以把它拖到任务栏上。
@@ -100,14 +113,13 @@ macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘：关
 
 | 接口 | 说明 |
 |---|---|
-| `GET /api/v1/session` | `{env, state, logged_in, portal, user, device, peer, api, error, telemetry, version, api_version, update}`。`state` 是 `logged_out`、`expired`（门户拒绝了 token，daemon 已退出登录）、`starting`、`retrying`（`error` 是原因）或 `running`。未登录时 `portal` 是内置地址（见下），`user` 是上次用的值，用于预填表单 |
+| `GET /api/v1/session` | `{env, state, logged_in, portal, user, device, peer, api, error, version, api_version, update}`。`state` 是 `logged_out`、`expired`（门户拒绝了 token，daemon 已退出登录）、`starting`、`retrying`（`error` 是原因）或 `running`。未登录时 `portal` 是内置地址（见下），`user` 是上次用的值，用于预填表单 |
 | `POST /api/v1/portal/probe` | `{}`（`portal` 可省略，默认是内置地址）→ `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, signup_credit_micros, email_verification, support_email}`。发送密码之前调用 |
 | `POST /api/v1/register/code` | `{pin, email}`：门户要求验证码时，发送验证码 |
 | `POST /api/v1/register` | `{pin, email, password, code, device}` → 201 和会话 |
 | `POST /api/v1/login` | `{pin, account, password, totp, device}` → 200 和会话。`account` 是邮箱或用户名。管理员先得到 401 `mfa_required`，带上 `totp` 重发 |
 | `POST /api/v1/logout` | 停止 Agent、吊销 token（门户不可达时跳过），并从 `config.json` 删除 token；其他设置保留 |
 | `GET /api/v1/account`、`/api/v1/jobs`、`/api/v1/ledger` | 透传到门户，不依赖 Agent。门户返回 401 时会话转为 `expired` |
-| `GET`/`PUT /api/v1/telemetry` | 使用统计的开关（见下） |
 | `POST /api/v1/update/check`、`/skip`、`/notified` | 升级提醒，见 [versioning.md](versioning.md) |
 | `POST /api/v1/feedback`、`GET /api/v1/feedback/mine` | 向门户提交反馈，以及列出本账户提交过的反馈 |
 | `/api/v1/pairing…` | 配对码和配对，转给门户（[guide.md](guide.md) 第 3 节） |
@@ -143,28 +155,6 @@ macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘：关
 
 - 本地 API 对本机其他进程没有认证（`sharetoken up` 也一样）。在多用户的 Linux 机器上，别的用户可以调用 `/v1` 花你的 credit，或者调用 `/api/v1/logout`。要解决需要引入本地 secret（例如 0600 文件加会话 cookie）。
 - token 明文存于 `config.json`（0600；Windows 上是只给本人、SYSTEM 和 Administrators 的 ACL），和命令行相同，没有放进系统钥匙串。
-
-## 匿名使用统计
-
-统计发往 PostHog，只由 `sharetoken daemon` 发送。`sharetoken up` 和服务端程序不发送。
-
-- **内置 key。** 项目 key 是 [`internal/client/telemetry.go`](../../internal/client/telemetry.go) 里的常量（PostHog Cloud，US 区域），不需要配置文件。这种 key 只能写入事件，不能读数据。构建时，`TELEMETRY_KEY` 可以替换它，`TELEMETRY_OFF=1` 构建完全不发送、也不显示开关的客户端，`TELEMETRY_HOST` 可以指向另一个实例，例如自建的 PostHog（只接受 https 或本机回环地址）。见 [`scripts/client_ldflags.sh`](../../scripts/client_ldflags.sh)。
-- **只有 prod 构建发送。** 内置 key 只在 prod 构建中生效。`go test`、`go run`、普通 `go build` 和 dev 构建都不发送，也不显示开关。`scripts/gui_stack.sh` 用假 key 和假收集器，`scripts/gui_shell_test.sh` 设置了 `SHARETOKEN_TELEMETRY=0`。
-- **用户开关。** 默认开启，登录页和主界面都有复选框（`GET`/`PUT /api/v1/telemetry`）。状态存在 `telemetry.json`。关闭时清空队列并删除安装 ID。`SHARETOKEN_TELEMETRY=0` 或 `DO_NOT_TRACK=1` 强制关闭并隐藏开关。文件损坏时按关闭处理。
-- **发送方式。** `POST <host>/batch/`，尽力而为：不阻塞调用方，失败的批次直接丢弃、不重试，退出时最多等 2 秒。
-
-| 事件 | 附加字段 | 时机 |
-|---|---|---|
-| `sharetoken_daily_active`、`sharetoken_hourly_active` | `state`、`sharing` | 每个 UTC 日或小时最多一次；每 10 分钟检查一次 |
-| `sharetoken_signed_in` | `method`（login、register） | 登录或注册成功 |
-| `sharetoken_sign_in_failed` | `method`、`reason`（白名单内的错误码，其余为 `other`） | 登录或注册失败 |
-| `sharetoken_signed_out` | `reason`（user、expired） | 退出，或登录失效 |
-| `sharetoken_network_joined` | `duration`（分桶） | 接入网络 |
-| `sharetoken_network_join_failed` | 无 | 每次登录最多一次 |
-
-每个事件还带 `schema_version`、`os`、`arch` 和 `app_version`。`distinct_id` 是随机的安装 ID（`install:<随机值>`），与账户和设备密钥无关。字段由结构体 `telemetryProps` 固定，所以事件里不可能带上邮箱、设备 ID、门户地址、错误原文、提示词或模型输出。不要新增自由文本字段。
-
-PostHog 服务端仍能看到请求的来源 IP。事件设置了 `$geoip_disable` 并关闭了 person profile；要完全不留 IP，还需要在 PostHog 项目设置里打开“Discard client IP data”。
 
 ## 构建
 
@@ -219,7 +209,6 @@ scripts/gui_stack.sh stop DIR
 | Daemon API | `scripts/test.sh -race ./internal/client` | 注册、登录、退出的正常和失败路径；证书确认和固定；MFA；token 吊销；用户停用；换账号；并发登录；请求防护；日志不含密钥 |
 | 账号规则 | `scripts/test.sh ./internal/accounts ./internal/portal` | 邮箱校验和规范化；管理接口 URL 含 `@` 和 `+` |
 | 全链路 API | `scripts/test.sh -race -run Daemon ./test/e2e` | 在真实的 libp2p 拓扑上：注册、经中继接入、购买模型、记账、重启后恢复、退出、网络恢复后自动接入 |
-| 使用统计 | `scripts/test.sh -race -run Telemetry ./internal/client` | 用假收集器验证：事件格式、不含个人信息、没有 key 时不发送、开关和环境变量、每日和每小时去重、收集器宕机或挂起时不影响客户端 |
 | 窗口壳 | `cd gui && go test -tags desktop,production .`（Linux 再加 `webkit2_41`） | 启动、连接、停止 daemon；端口冲突；转发 |
 | 页面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调。配对：错误的码和自己的码，和不卖任何模型的卖家配对（没有模型、请求被拒）以及和有模型的卖家配对，生成和撤销配对码，买家加入和被移除，在页面上开关私有模式及其对未配对买家的效果 |
 | 真实 WebView | `scripts/gui_shell_test.sh <dev\|prod> <程序目录>` | 不显示窗口，用系统 WebView 加载页面并向真实 daemon 发 POST；检查应用退出时 daemon 一起停止 |

@@ -5,7 +5,7 @@ package main
 #cgo LDFLAGS: -framework Cocoa
 #include <stdlib.h>
 void stTrayStart(const void *png, int length, const char *tooltip);
-void stTraySet(const char *status, const char *update, const char *open, const char *quit);
+void stTraySet(const char *status, const char *info, const char *update, const char *open, const char *quit, const char *tooltip);
 void stTrayStop(void);
 void stTrayRaise(void);
 */
@@ -14,6 +14,7 @@ import "C"
 import (
 	"context"
 	_ "embed"
+	"strings"
 	"unsafe"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -37,12 +38,14 @@ func nativeTrayStart(tooltip string, onOpen, onQuit func()) {
 }
 
 func nativeTraySet(m trayMenu) {
-	status, update, open, quit := C.CString(m.Status), C.CString(m.Update), C.CString(m.Open), C.CString(m.Quit)
-	defer C.free(unsafe.Pointer(status))
-	defer C.free(unsafe.Pointer(update))
-	defer C.free(unsafe.Pointer(open))
-	defer C.free(unsafe.Pointer(quit))
-	C.stTraySet(status, update, open, quit)
+	// The info lines travel as one text, a line each.
+	texts := []string{m.Status, strings.Join(m.Info, "\n"), m.Update, m.Open, m.Quit, m.Tooltip}
+	c := make([]*C.char, len(texts))
+	for i, s := range texts {
+		c[i] = C.CString(s)
+		defer C.free(unsafe.Pointer(c[i]))
+	}
+	C.stTraySet(c[0], c[1], c[2], c[3], c[4], c[5])
 }
 
 func nativeTrayStop() { C.stTrayStop() }

@@ -16,6 +16,9 @@
 
 static NSStatusItem *statusItem;
 static NSMenuItem *statusLine, *updateItem, *openItem, *quitItem;
+// The lines under the status line; as many as trayInfoLines in tray.go.
+#define ST_INFO_LINES 3
+static NSMenuItem *infoLines[ST_INFO_LINES];
 static STTrayTarget *target;
 
 static void onMain(dispatch_block_t block) {
@@ -39,6 +42,11 @@ void stTrayStart(const void *png, int length, const char *tooltip) {
         menu.autoenablesItems = NO;
         statusLine = [menu addItemWithTitle:tip action:nil keyEquivalent:@""];
         statusLine.enabled = NO;
+        for (int i = 0; i < ST_INFO_LINES; i++) {
+            infoLines[i] = [menu addItemWithTitle:@"" action:nil keyEquivalent:@""];
+            infoLines[i].enabled = NO;
+            infoLines[i].hidden = YES;
+        }
         updateItem = [menu addItemWithTitle:@"" action:@selector(open:) keyEquivalent:@""];
         updateItem.target = target;
         updateItem.hidden = YES;
@@ -56,13 +64,25 @@ void stTrayStart(const void *png, int length, const char *tooltip) {
     });
 }
 
-void stTraySet(const char *status, const char *update, const char *open, const char *quit) {
+void stTraySet(const char *status, const char *info, const char *update, const char *open, const char *quit, const char *tooltip) {
     NSString *s = [NSString stringWithUTF8String:status];
+    NSString *lines = [NSString stringWithUTF8String:info];
+    NSArray<NSString *> *is = lines.length == 0 ? @[] : [lines componentsSeparatedByString:@"\n"];
+    NSString *tip = [NSString stringWithUTF8String:tooltip];
     NSString *u = [NSString stringWithUTF8String:update];
     NSString *o = [NSString stringWithUTF8String:open];
     NSString *q = [NSString stringWithUTF8String:quit];
     onMain(^{
         statusLine.title = s;
+        for (NSUInteger i = 0; i < ST_INFO_LINES; i++) {
+            infoLines[i].hidden = i >= is.count;
+            if (i < is.count) {
+                infoLines[i].title = is[i];
+            }
+        }
+        if (tip.length > 0) {
+            statusItem.button.toolTip = tip;
+        }
         updateItem.title = u;
         updateItem.hidden = u.length == 0;
         openItem.title = o;

@@ -116,7 +116,7 @@ console.log('desktop client');
 const ROOT = new URL('..', import.meta.url).pathname;
 execFileSync('go', ['build', '-ldflags', '-X sharetoken/internal/version.Version=1.0.0', '-o', dir + '/bin/sharetoken-100', './cmd/sharetoken'], { cwd: ROOT, stdio: 'inherit' });
 const bin = dir + '/bin/sharetoken-100', home = dir + '/version-desktop', api = 'http://127.0.0.1:19795';
-const daemonEnv = { ...process.env, SHARETOKEN_PORTAL: env.PORTAL, SHARETOKEN_TELEMETRY: '0' };
+const daemonEnv = { ...process.env, SHARETOKEN_PORTAL: env.PORTAL };
 const startDaemon = async () => {
   const c = spawn(bin, ['-home', home, 'daemon', '-http', '127.0.0.1:19795', '-listen', '/ip4/127.0.0.1/tcp/0', '-nat=false'], { env: daemonEnv, stdio: 'ignore' });
   children.push(c);
@@ -132,11 +132,13 @@ for (let i = 0; i < 40; i++) { const s = await (await fetch(api + '/api/v1/sessi
 await go(api + '/?lang=zh-CN');
 await waitFor(el('#update-notice'));
 ok((await text('#update-text')).includes('9.9.9'), 'the client offers the new release');
+await click('#update-open'); await waitFor(el('#dlg-update'));
 ok((await text('#update-link')) === 'https://example.com/download', 'with where to get it');
+await click('#update-close');
 ok((await text('#app-version')).startsWith('版本 '), 'the client shows its version');
 ok(!(await ev(`${el('#update-notice')}.classList.contains('bad')`)), 'an optional upgrade is a warning');
 await shot('client-update');
-await go(api + '/?lang=ja');
+await go(api + '/?lang=en');
 await waitFor(el('#update-text'));
 ok(!/[\u4e00-\u9fa5]版本/.test(await text('#update-text')) && (await text('#update-text')).includes('9.9.9'), 'the notice is translated');
 if (problems.length) throw new Error('page problems:\n' + problems.join('\n'));

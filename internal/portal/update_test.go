@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sharetoken/internal/accounts"
@@ -57,7 +58,19 @@ func TestUpdateInfo(t *testing.T) {
 	write("RELEASE-0.9.0.json", `{"version":"0.9.0","commit":"old","build_time":"2026-01-01T00:00:00Z"}`)
 	write("RELEASE-1.0.0.json", `{"version":"1.0.0","commit":"abc1234","build_time":"2026-11-10T08:00:00Z"}`)
 
+	// What the release says about itself, by language; a file of another
+	// version, an oversized one and one that is not a notes file are left out.
+	write("RELEASE-1.0.0.en.md", "# A smaller window\r\n\r\nThe app is **compact** now.\n\n## Changes\n- Relay latency in the menu\n")
+	write("RELEASE-1.0.0.zh-CN.md", "# 更小的窗口\n- 菜单里显示中继延迟\n")
+	write("RELEASE-0.9.0.en.md", "old")
+	write("RELEASE-1.0.0.de.md", strings.Repeat("x", maxNotesBytes+1))
+	write("RELEASE-1.0.0.notes.md", "not a language")
+
 	u = getUpdate(t, srv.URL, "kind=cli&channel=prod&os=linux&arch=amd64")
+	if n := u.Release.Notes; len(n) != 2 || n["en"].Summary != "The app is compact now." || !strings.HasPrefix(n["en"].Body, "# A smaller window\n\nThe app") ||
+		n["zh-CN"].Summary != "" || n["zh-CN"].Body != "# 更小的窗口\n- 菜单里显示中继延迟" {
+		t.Fatalf("notes: %+v", n)
+	}
 	if u.Release == nil || u.Release.Version != "1.0.0" || u.Release.Commit != "abc1234" || u.Release.BuildTime != "2026-11-10T08:00:00Z" || u.Release.NotesURL != "/changelog/#v1.0.0" {
 		t.Fatalf("release: %+v", u.Release)
 	}

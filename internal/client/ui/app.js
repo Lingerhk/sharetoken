@@ -50,8 +50,8 @@ I18N.ready.then(() => {
     upgrade_required: tr('这个版本已不再受支持，请升级到最新版本后继续使用'),
     bad_portal: tr('门户地址格式不对'),
     insecure_portal: tr('拒绝使用其他机器上的明文 HTTP 门户：密码会以明文传输。请使用 https:// 地址'),
-    portal_unreachable: tr('连不上 sharetoken 服务器，请检查网络后重试'),
-    not_a_portal: tr('这个地址不是 sharetoken 门户'),
+    portal_unreachable: tr('连不上 ShareToken 服务器，请检查网络后重试'),
+    not_a_portal: tr('这个地址不是 ShareToken 门户'),
     pin_required: tr('请先核对并确认门户证书指纹'),
     pin_mismatch: tr('门户证书和确认的指纹不一致，连接可能被拦截。已停止，密码没有发送'),
     bad_credentials: tr('账号或密码错误，或账号已被停用'),
@@ -87,25 +87,62 @@ I18N.ready.then(() => {
       h('tbody', null, rows.map(r => h('tr', null, cols.map(c => h('td', { class: c.num ? 'num' : null }, c.get(r))))))));
   }
 
-  function tile(id, label, value, sub) {
-    return h('div', { class: 'tile', id }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), sub ? h('div', { class: 'sub' }, sub) : null);
+  // tip: what hovering explains, for what would not fit.
+  function tile(id, label, value, sub, tip) {
+    return h('div', { class: 'tile', id, title: tip || (typeof sub === 'string' ? sub : null) }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), sub ? h('div', { class: 'sub' }, sub) : null);
   }
+
+  // A round-trip time in ms, coloured by how good it is, with the portal's
+  // thresholds; 0 or nothing: not measured.
+  const rttClass = ms => ms < 80 ? 'ok' : ms < 250 ? 'warn' : 'bad';
+  function rtt(ms) {
+    ms = Number(ms || 0);
+    if (!ms) return h('span', { class: 'muted' }, '—');
+    return h('span', { class: 'rtt ' + rttClass(ms) }, (ms < 10 ? ms.toFixed(1) : String(Math.round(ms))) + ' ms');
+  }
+
+  // richText draws the small markup of release notes: "# " a title, "## " a
+  // subtitle, "- " a list item, any other line a paragraph; **bold** and `code`
+  // inside a line. It builds elements itself: the text is never parsed as HTML.
+  function richInline(text) {
+    const out = [], re = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+    let last = 0, m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) out.push(text.slice(last, m.index));
+      out.push(m[1] !== undefined ? h('strong', null, m[1]) : h('code', null, m[2]));
+      last = re.lastIndex;
+    }
+    if (last < text.length) out.push(text.slice(last));
+    return out;
+  }
+  function richText(src, id) {
+    const out = h('div', { class: 'rich', id, dir: 'auto' });
+    let list = null;
+    for (const raw of String(src || '').split('\n')) {
+      const line = raw.trim();
+      let m;
+      if (!line) { list = null; continue; }
+      if ((m = /^##\s+(.*)$/.exec(line))) { list = null; out.append(h('h4', null, richInline(m[1]))); }
+      else if ((m = /^#\s+(.*)$/.exec(line))) { list = null; out.append(h('h3', null, richInline(m[1]))); }
+      else if ((m = /^[-*]\s+(.*)$/.exec(line))) { if (!list) { list = h('ul'); out.append(list); } list.append(h('li', null, richInline(m[1]))); }
+      else { list = null; out.append(h('p', null, richInline(line))); }
+    }
+    return out;
+  }
+
+  // Outline icons on a 24×24 grid (Heroicons, MIT licence), as on the portal.
+  const ICONS = {
+    overview: 'M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z',
+    share: 'M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z',
+    pairing: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z',
+    activity: 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z',
+    settings: 'M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z M15 12a3 3 0 11-6 0 3 3 0 016 0z',
+    feedback: 'M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z',
+  };
+  const icon = name => I18N.svg(ICONS[name], 20);
+
   // A time the daemon reports as text (RFC 3339), to the minute.
   const clock = t => t ? new Date(t).toLocaleString(I18N.lang, { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
-
-  // The usage-statistics setting; absent from builds that send none.
-  function telemetryToggle(t) {
-    if (!t || !t.available) return null;
-    const box = h('input', { type: 'checkbox', id: 'telemetry-toggle', checked: t.enabled, onchange: async () => {
-      box.disabled = true;
-      try { t.enabled = (await api('PUT', '/api/v1/telemetry', { enabled: box.checked })).enabled; }
-      catch (e) { /* the box returns to the saved value below */ }
-      box.checked = t.enabled;
-      box.disabled = false;
-    } });
-    return h('label', { class: 'check small muted', id: 'telemetry' }, box,
-      h('span', null, tr('发送匿名使用统计（活跃、登录结果、连接耗时）。不含邮箱、设备 ID、提示词或模型内容。')));
-  }
 
   // ---- sign-in ----
 
@@ -125,8 +162,11 @@ I18N.ready.then(() => {
     markEnv(session);
     stopPolling();
     const auth = { probe: null, tab: 'login', totp: false, confirmed: false, busy: false, error: '' };
-    const root = h('div', { class: 'auth', id: 'auth' });
-    app.replaceChildren(root);
+    // The brand on one side stays; the form beside it is redrawn.
+    const root = h('div', { class: 'auth-main', id: 'auth' });
+    app.replaceChildren(h('div', { class: 'auth' },
+      h('div', { class: 'auth-side' }, h('img', { class: 'auth-logo', src: '/ui/favicon.svg', alt: '' }), h('h1', null, 'ShareToken'), h('p', { class: 'tagline' }, tr('共享和使用模型算力'))),
+      root));
 
     const account = h('input', { type: 'text', id: 'account', autocomplete: 'username', value: session.user || '', autocapitalize: 'off', spellcheck: 'false' });
     const email = h('input', { type: 'email', id: 'email', autocomplete: 'email', autocapitalize: 'off', spellcheck: 'false' });
@@ -158,16 +198,11 @@ I18N.ready.then(() => {
     }
     const totp = h('input', { type: 'text', id: 'totp', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '7' });
 
-    const telemetry = telemetryToggle(session.telemetry);
-
     function render() {
       root.replaceChildren(...[
-        h('h1', null, 'sharetoken'),
-        h('p', { class: 'tagline' }, tr('共享和使用模型算力')),
         I18N.picker(),
         notice && h('div', { class: 'notice warn', id: 'notice' }, notice),
         auth.probe ? signInPanel() : connectPanel(),
-        telemetry,
       ].filter(Boolean)); // replaceChildren would print a null as text
     }
 
@@ -179,7 +214,7 @@ I18N.ready.then(() => {
     // why it could not and offers a retry.
     function connectPanel() {
       return h('form', { class: 'panel', id: 'portal-form', novalidate: true, onsubmit: e => { e.preventDefault(); probe(); } },
-        auth.busy ? h('p', { class: 'small muted', id: 'connecting' }, tr('正在连接 sharetoken…')) : null,
+        auth.busy ? h('p', { class: 'small muted', id: 'connecting' }, tr('正在连接 ShareToken…')) : null,
         errorLine(),
         auth.busy ? null : h('button', { class: 'primary', type: 'submit', id: 'portal-next' }, tr('重试')));
     }
@@ -224,7 +259,8 @@ I18N.ready.then(() => {
         isLogin
           ? [h('label', { class: 'field' }, h('span', null, tr('邮箱（或用户名）')), account),
              h('label', { class: 'field' }, h('span', null, tr('密码')), password),
-             auth.totp ? h('label', { class: 'field' }, h('span', null, tr('两步验证码（6 位）')), totp) : null]
+             auth.totp ? h('label', { class: 'field' }, h('span', null, tr('两步验证码（6 位）')), totp) : null,
+             p.password_reset ? h('p', { class: 'small' }, h('a', { id: 'forgot-link', href: p.portal.replace(/\/+$/, '') + '/app/', target: '_blank', rel: 'noopener' }, tr('忘记密码？'))) : null]
           : [h('label', { class: 'field' }, h('span', null, tr('邮箱')), email),
              p.email_verification ? h('label', { class: 'field' }, h('span', null, tr('邮箱验证码（也看看垃圾邮件）')), h('div', { class: 'code-row' }, mailCode, sendCode)) : null,
              h('label', { class: 'field' }, h('span', null, tr('密码（至少 8 位）')), password),
@@ -278,10 +314,19 @@ I18N.ready.then(() => {
 
   // A section re-renders only when its data changed, so that polling does not
   // disturb a text selection or a scroll position.
-  function section(id, title) {
-    const body = h('div', { id: id + '-body' });
+  // opts.hint: what the panel is for, shown when its "?" is clicked, so that the
+  // window stays compact. opts.actions: buttons at the end of its title line.
+  // opts.fill: the panel takes the room left in its view and its body scrolls.
+  // opts.row: a panel of one line, its title and its content side by side.
+  function section(id, title, opts = {}) {
+    const body = h('div', { class: 'panel-body', id: id + '-body' });
     let last;
-    const el = h('section', { class: 'panel', id }, title ? h('h2', null, title) : null, body);
+    const hint = opts.hint ? h('p', { class: 'small muted hint-text', id: id + '-hint', hidden: true }, opts.hint) : null;
+    const hintBtn = hint ? h('button', { type: 'button', class: 'hint-btn', id: id + '-hint-btn', title: opts.hint, 'aria-label': tr('说明'), 'aria-expanded': 'false',
+      onclick: () => { hint.hidden = !hint.hidden; hintBtn.setAttribute('aria-expanded', String(!hint.hidden)); } }, '?') : null;
+    const el = h('section', { class: 'panel' + (opts.fill ? ' fill' : '') + (opts.row ? ' row' : ''), id },
+      h('div', { class: 'panel-head' }, title ? h('h2', null, title) : null, hintBtn, h('span', { class: 'spacer' }), opts.actions ? h('span', { class: 'actions' }, opts.actions) : null),
+      hint, body);
     return { el, set(key, ...nodes) { const k = JSON.stringify(key); if (k !== last) { last = k; body.replaceChildren(...nodes.flat().filter(Boolean)); } } };
   }
 
@@ -309,15 +354,15 @@ I18N.ready.then(() => {
   };
   const JOB_STATUS = { held: tr('进行中'), pending: tr('待最终确认'), disputed: tr('争议中'), final: tr('已完成'), released: tr('已释放'), refunded: tr('已退款') };
 
-  // Built once: account polling never touches it, so typing is not disturbed.
-  function feedbackPanel() {
+  // A dialog: polling never touches it, so typing is not disturbed.
+  function feedbackDialog() {
     const kind = h('select', { id: 'feedback-kind' },
       h('option', { value: 'bug' }, tr('问题')), h('option', { value: 'idea' }, tr('建议')), h('option', { value: 'other' }, tr('其他')));
     const text = h('textarea', { id: 'feedback-text', rows: '4', maxlength: '4000', dir: 'auto' });
     const line = h('div', { id: 'feedback-result', role: 'status' });
     const send = h('button', { class: 'primary', type: 'submit', id: 'feedback-send' }, tr('提交反馈'));
     const say = (cls, msg) => { line.className = 'notice small ' + cls; line.textContent = msg; };
-    return h('section', { class: 'panel', id: 'feedback' }, h('h2', null, tr('反馈')),
+    modal('dlg-feedback', tr('反馈'),
       h('p', { class: 'small muted' }, tr('告诉我们你遇到的问题或建议。请不要填写密码、token 或 prompt 内容。我们可能会通过账户邮箱回复你。')),
       h('form', { novalidate: true, onsubmit: async e => {
         e.preventDefault();
@@ -399,17 +444,20 @@ I18N.ready.then(() => {
   // The sharing view: whether this device sells, the hosted APIs it sells
   // through with their models, and the models of the local model server.
   // getMarket: the models on the network, for a price hint.
-  // pairingPanel: the codes and buyers of pairingView, shown with the rest.
-  function shareView(getMarket, pairingPanel) {
+  function shareView(getMarket) {
     let st = null;    // the last /api/v1/status; null while the network is not joined
     let kinds = null; // what can be added; fetched once
     const ui = { busy: false, error: '', flash: null };
-    const state = section('share-state', tr('共享状态'));
-    const provs = section('providers', tr('厂商 API'));
-    const local = section('local-models', tr('本机模型服务'));
-    const relays = section('share-relays', tr('中继预约'));
-    const soldJobs = section('sold-jobs', tr('最近卖出的作业'));
-    const el = h('div', { id: 'view-share', hidden: true }, state.el, provs.el, local.el, pairingPanel, relays.el, soldJobs.el);
+    const state = section('share-state', tr('共享状态'), { hint: tr('开启后，这台设备用下面配置的模型为网络上的买家服务，收益计入你的账户。') });
+    const provs = section('providers', tr('厂商 API'), { fill: true,
+      hint: tr('把你在模型厂商开通的 API 或订阅提供给网络。买家的提示词会以明文发给厂商，用量记在你的厂商账户上。'),
+      actions: h('button', { type: 'button', id: 'provider-add', onclick: () => providerDialog(null) }, tr('添加厂商')) });
+    const local = section('local-models', tr('本机模型服务'), { fill: true,
+      hint: tr('共享这台电脑上的模型服务（如 Ollama），它需要提供 OpenAI 兼容接口。'),
+      actions: [h('button', { type: 'button', id: 'local-add-model', onclick: () => modelDialog(null, null) }, tr('添加模型')),
+        h('button', { type: 'button', id: 'local-settings', onclick: () => localDialog() }, tr('设置'))] });
+    const relays = section('share-relays', tr('中继预约'), { fill: true });
+    const soldJobs = section('sold-jobs', tr('最近卖出的作业'), { fill: true });
     let acct = null;  // the account, for what was earned in all
     let sold = null;  // the latest jobs this account served
     relays.el.hidden = true;
@@ -485,9 +533,8 @@ I18N.ready.then(() => {
           h('span', { class: 'pill ' + cls, id: 'share-pill' }, label),
           h('span', { class: 'spacer' }),
           h('button', { type: 'button', id: 'share-toggle', class: s.enabled ? '' : 'accent', disabled: ui.busy, onclick: toggle }, s.enabled ? tr('停止共享') : tr('开启共享'))),
-        h('p', { class: 'small muted' }, tr('开启后，这台设备用下面配置的模型为网络上的买家服务，收益计入你的账户。')),
         ui.error ? h('div', { class: 'notice bad', id: 'share-error', role: 'alert' }, ui.error) : null,
-        !s.enabled && n === 0 && !ui.error ? h('p', { class: 'small muted', id: 'share-start-hint' }, tr('先在下面添加厂商 API 或本机模型，再开启共享。')) : null,
+        !s.enabled && n === 0 && !ui.error ? h('p', { class: 'small muted', id: 'share-start-hint' }, tr('先添加厂商 API 或本机模型，再开启共享。')) : null,
         !s.enabled && n > 0 ? h('div', { class: 'notice warn', id: 'share-hint' }, tr('已配置 {n} 个模型，开启共享后开始接单。', { n: num(n) })) : null,
         s.running ? h('div', { class: 'tiles', id: 'share-stats' },
           tile('share-tile-models', tr('在售模型'), num((s.serving || []).length)),
@@ -499,9 +546,6 @@ I18N.ready.then(() => {
         (st.warnings || []).map(w => h('div', { class: 'notice warn small share-warning' }, w)));
 
       provs.set([ps, [...serving], ui.flash, marketKey()],
-        h('div', { class: 'share-line' },
-          h('p', { class: 'small muted' }, tr('把你在模型厂商开通的 API 或订阅提供给网络。买家的提示词会以明文发给厂商，用量记在你的厂商账户上。')),
-          h('button', { type: 'button', id: 'provider-add', onclick: () => providerDialog(null) }, tr('添加厂商'))),
         ui.flash ? h('div', { class: 'notice ' + ui.flash.cls, id: 'provider-flash' }, ui.flash.text) : null,
         ps.length === 0 ? h('div', { class: 'empty', id: 'providers-empty' }, tr('还没有添加厂商')) : ps.map(p => h('div', { class: 'prov', id: 'prov-' + p.name },
           h('div', { class: 'prov-head' },
@@ -523,11 +567,6 @@ I18N.ready.then(() => {
 
       const lm = s.models || [];
       local.set([s.upstream, s.concurrency, lm, [...serving], marketKey()],
-        h('div', { class: 'share-line' },
-          h('p', { class: 'small muted' }, tr('共享这台电脑上的模型服务（如 Ollama），它需要提供 OpenAI 兼容接口。')),
-          h('span', { class: 'row-actions' },
-            h('button', { type: 'button', id: 'local-add-model', onclick: () => modelDialog(null, null) }, tr('添加模型')),
-            h('button', { type: 'button', id: 'local-settings', onclick: localDialog }, tr('设置')))),
         h('div', { class: 'kv small' },
           h('span', null, tr('地址'), ' ', h('code', { id: 'local-upstream' }, s.upstream)),
           h('span', { id: 'local-concurrency' }, tr('同时处理的请求数：{n}', { n: num(s.concurrency) }))),
@@ -544,7 +583,7 @@ I18N.ready.then(() => {
       relays.set(rs.map(r => [r.addr, r.reserved, r.error, Math.round((r.rtt_ns || 0) / 1e6), clock(r.expires)]), rs.length === 0 ? null : table([
         { title: tr('中继'), get: r => named(r.addr) },
         { title: tr('状态'), get: r => r.reserved ? h('span', { class: 'on-sale' }, tr('已预约')) : h('span', { class: 'muted' }, r.error || tr('未预约')) },
-        { title: tr('延迟'), num: true, get: r => r.rtt_ns ? Math.round(r.rtt_ns / 1e6) + ' ms' : '—' },
+        { title: tr('延迟'), num: true, get: r => rtt((r.rtt_ns || 0) / 1e6) },
         { title: tr('到期时间'), get: r => clock(r.expires) },
       ], rs));
     }
@@ -814,7 +853,9 @@ I18N.ready.then(() => {
     }
 
     render();
-    return { el, update(next) { st = next; render(); }, account(me, jobs) { acct = me; sold = jobs || []; render(); } };
+    // The panels by tab; the jobs sold go with the rest of the activity.
+    return { panes: { state: [state.el, relays.el], providers: [provs.el], local: [local.el] }, sold: soldJobs.el,
+      update(next) { st = next; render(); }, account(me, jobs) { acct = me; sold = jobs || []; render(); } };
   }
 
   // ---- pairing ----
@@ -826,8 +867,12 @@ I18N.ready.then(() => {
   function pairingView() {
     let view = null, error = '';
     const flash = { sellers: null, buyers: null };
-    const sellers = section('paired-sellers', tr('配对的卖家'));
-    const buyers = section('pairing', tr('配对'));
+    const sellers = section('paired-sellers', tr('配对的卖家'), { fill: true,
+      hint: tr('输入卖家给你的配对码。配对后，这个账户只向配对的卖家购买。'),
+      actions: h('button', { type: 'button', id: 'pair-join', onclick: () => joinDialog() }, tr('输入配对码')) });
+    const buyers = section('pairing', tr('配对码'), { fill: true,
+      hint: tr('生成配对码发给你的买家。对方输入后，他的账户只向和他配对的卖家购买。没有配对的买家仍然可以向你购买。'),
+      actions: h('button', { type: 'button', id: 'pair-new-code', onclick: () => codeDialog() }, tr('生成配对码')) });
 
     function pairError(e) {
       if (e.code === 'bad_code') return tr('配对码不对，或者已经过期、被撤销或用完');
@@ -852,12 +897,10 @@ I18N.ready.then(() => {
     function render() {
       const v = view || { sellers: [], buyers: [], codes: [], restricted: false, private: false, max_sellers: 0 };
       sellers.set([v.sellers, v.restricted, v.max_sellers, error, flash.sellers, !view],
-        h('div', { class: 'share-line' },
-          h('p', { class: 'small muted' }, v.max_sellers ? tr('输入卖家给你的配对码。配对后，这个账户只向配对的卖家购买；最多同时配对 {n} 个卖家。', { n: num(v.max_sellers) }) : tr('输入卖家给你的配对码。配对后，这个账户只向配对的卖家购买。')),
-          h('button', { type: 'button', id: 'pair-join', onclick: joinDialog }, tr('输入配对码'))),
         failed(),
         flashLine(flash.sellers, 'pair-join-flash'),
         v.restricted ? h('div', { class: 'notice warn small', id: 'pair-restricted' }, tr('这个账户现在只向下面的卖家购买，「可用模型」也只列出他们的模型。全部解除后，恢复为向整个网络购买。')) : null,
+        v.max_sellers ? h('p', { class: 'small muted', id: 'pair-max' }, tr('最多同时配对 {n} 个卖家。', { n: num(v.max_sellers) })) : null,
         v.sellers.length === 0 ? h('div', { class: 'empty', id: 'pair-sellers-empty' }, tr('还没有配对卖家，可以向网络上所有卖家购买')) : table([
           { title: tr('卖家'), get: u => who(u) },
           { title: tr('备注'), get: u => u.label || '—' },
@@ -866,13 +909,9 @@ I18N.ready.then(() => {
         ], v.sellers));
 
       buyers.set([v.buyers, v.codes, v.private, error, flash.buyers, !view],
-        h('div', { class: 'share-line' },
-          h('p', { class: 'small muted' }, tr('生成配对码发给你的买家。对方输入后，他的账户只向和他配对的卖家购买。没有配对的买家仍然可以向你购买。')),
-          h('button', { type: 'button', id: 'pair-new-code', onclick: codeDialog }, tr('生成配对码'))),
         failed(),
         flashLine(flash.buyers, 'pair-code-flash'),
         privateToggle(v),
-        h('h3', { class: 'sub-title' }, tr('有效的配对码')),
         v.codes.length === 0 ? h('div', { class: 'empty', id: 'pair-codes-empty' }, tr('没有有效的配对码')) : table([
           { title: tr('配对码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'pair-copy-' + c.id)) },
           { title: tr('备注'), get: c => c.label || '—' },
@@ -964,46 +1003,96 @@ I18N.ready.then(() => {
     return { sellers: sellers.el, buyers: buyers.el, reload };
   }
 
+  // subTabs puts panels of one view behind a row of tabs: one shows at a time,
+  // the first at the start. items: [name, label, panels].
+  function subTabs(view, items) {
+    const btns = {}, panes = {};
+    function show(name) {
+      for (const [n] of items) {
+        panes[n].hidden = n !== name;
+        btns[n].setAttribute('aria-selected', n === name ? 'true' : 'false');
+      }
+    }
+    const bar = h('div', { class: 'seg', role: 'tablist', id: 'tabs-' + view, hidden: true }, items.map(([n, label, nodes]) => {
+      panes[n] = h('div', { class: 'pane', id: 'pane-' + view + '-' + n }, nodes);
+      return (btns[n] = h('button', { type: 'button', role: 'tab', id: 'tab-' + view + '-' + n, onclick: () => show(n) }, label));
+    }));
+    show(items[0][0]);
+    return { bar, panes: Object.values(panes), show };
+  }
+
+  // The window after sign-in: a sidebar that chooses the view, the view, and a
+  // status bar. Every view stays in the page, so that polling keeps the hidden
+  // ones current and switching shows them at once.
   function showDashboard(session) {
     markEnv(session);
     stopPolling();
     let current = session;
     const pill = h('span', { class: 'pill', id: 'conn-state' });
+    const relayStat = h('span', { id: 'status-relay' });
     const logoutBtn = h('button', { type: 'button', id: 'logout', onclick: logout }, tr('退出登录'));
     const who = h('span', { class: 'who', id: 'who' });
+    const accountName = h('span', { class: 'v', id: 'account-name' });
     const banner = h('div', { id: 'banner' });
     const tiles = h('div', { class: 'tiles', id: 'tiles' });
-    const endpoint = section('endpoint', tr('本地 OpenAI 接口'));
-    const network = section('network', tr('网络'));
-    const models = section('models', tr('可用模型'));
-    const devices = section('devices', tr('我的设备'));
-    const jobs = section('jobs', tr('最近作业'));
-    const feedback = feedbackPanel();
+    const endpoint = section('endpoint', tr('本地 OpenAI 接口'), { row: true, hint: tr('在支持 OpenAI 协议的工具里把 base URL 改成这个地址即可使用。') });
+    const network = section('network', tr('网络'), { fill: true });
+    const models = section('models', tr('可用模型'), { fill: true });
+    const devices = section('devices', tr('我的设备'), { fill: true });
+    const jobs = section('jobs', tr('最近作业'), { fill: true });
     const updateBox = h('div', { id: 'update' });
-    const versionLabel = h('p', { class: 'small muted', id: 'app-version' });
+    const versionLabel = h('span', { id: 'app-version' });
+    const versionText = h('span', { id: 'settings-version' });
+    const checkResult = h('span', { class: 'small muted', id: 'update-check-result', role: 'status' });
+    const checkBtn = h('button', { type: 'button', id: 'update-check', onclick: checkUpdate }, tr('检查更新'));
+    const settings = h('section', { class: 'panel', id: 'settings' }, h('div', { class: 'rows' },
+      h('span', { class: 'k' }, tr('账户')), accountName, logoutBtn,
+      h('span', { class: 'k' }, tr('语言')), h('span', { class: 'v' }), I18N.picker() || h('span'),
+      h('span', { class: 'k' }, tr('版本')), h('span', { class: 'v' }, versionText, ' ', checkResult), checkBtn,
+      h('span', { class: 'k' }, tr('反馈')), h('span', { class: 'v muted' }, tr('告诉我们你遇到的问题或建议。')),
+      h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈'))));
     let market = [];
     const pairing = pairingView();
-    const share = shareView(() => market, pairing.buyers);
-    // Two views under one top bar. Both stay in the page, so that polling
-    // keeps the hidden one current and switching shows it at once.
-    const views = {
-      overview: h('div', { id: 'view-overview' }, tiles, endpoint.el, network.el, models.el, pairing.sellers, devices.el, jobs.el, feedback, telemetryToggle(session.telemetry), versionLabel),
-      share: share.el,
-    };
-    const navButtons = {};
-    function showView(name) {
+    const share = shareView(() => market);
+
+    // name, label, panels, or tabs of panels.
+    const VIEWS = [
+      ['overview', tr('概览'), [tiles, endpoint.el, h('div', { class: 'cols' }, network.el, models.el)]],
+      ['share', tr('共享'), null, [['state', tr('状态'), share.panes.state], ['providers', tr('厂商 API'), share.panes.providers], ['local', tr('本机模型'), share.panes.local]]],
+      ['pairing', tr('配对'), null, [['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
+      ['activity', tr('记录'), null, [['all', tr('全部'), [jobs.el]], ['sold', tr('卖出'), [share.sold]]]],
+      ['settings', tr('设置'), [settings, devices.el]],
+    ];
+    const views = {}, navButtons = {}, tabs = {}, labels = {};
+    const title = h('h1', { id: 'view-title' });
+    const head = h('header', { class: 'head' }, title);
+    for (const [name, label, panels, tabbed] of VIEWS) {
+      if (tabbed) { tabs[name] = subTabs(name, tabbed); head.append(tabs[name].bar); }
+      labels[name] = label;
+      views[name] = h('div', { class: 'view', id: 'view-' + name, hidden: true }, tabbed ? tabs[name].panes : panels);
+      navButtons[name] = h('button', { type: 'button', role: 'tab', id: 'nav-' + name, onclick: () => showView(name) }, icon(name), h('span', null, label));
+    }
+    // tab: the tab of the view to show, when it has tabs.
+    function showView(name, tab) {
       if (!views[name]) name = 'overview';
       for (const k of Object.keys(views)) {
         views[k].hidden = k !== name;
         navButtons[k].setAttribute('aria-selected', k === name ? 'true' : 'false');
+        if (tabs[k]) tabs[k].bar.hidden = k !== name;
       }
+      if (tab && tabs[name]) tabs[name].show(tab);
+      title.textContent = labels[name];
       try { localStorage.setItem('st_view', name); } catch (e) { /* this visit only */ }
     }
-    const navButton = (name, label) => (navButtons[name] = h('button', { type: 'button', role: 'tab', id: 'nav-' + name, onclick: () => showView(name) }, label));
-    const nav = h('nav', { class: 'nav', role: 'tablist' }, navButton('overview', tr('概览')), navButton('share', tr('共享')));
-    app.replaceChildren(
-      h('header', { class: 'topbar' }, h('span', { class: 'brand' }, h('img', { class: 'brand-logo', src: '/ui/favicon.svg', alt: '' }), 'sharetoken'), pill, nav, h('span', { class: 'spacer' }), I18N.picker(), who, logoutBtn),
-      h('main', null, updateBox, banner, views.overview, views.share));
+    app.replaceChildren(h('div', { class: 'shell' },
+      h('aside', { class: 'side' },
+        h('img', { class: 'brand-logo', src: '/ui/favicon.svg', alt: 'ShareToken', title: 'ShareToken' }),
+        h('nav', { class: 'nav', role: 'tablist' }, ['overview', 'share', 'pairing', 'activity'].map(n => navButtons[n])),
+        h('div', { class: 'side-foot' },
+          h('button', { type: 'button', id: 'nav-feedback', onclick: () => feedbackDialog() }, icon('feedback'), h('span', null, tr('反馈'))),
+          navButtons.settings)),
+      h('main', { class: 'main' }, head, h('div', { class: 'notices' }, updateBox, banner), Object.values(views)),
+      h('footer', { class: 'statusbar' }, pill, relayStat, h('span', { class: 'spacer' }), who, versionLabel)));
     let savedView = '';
     try { savedView = localStorage.getItem('st_view') || ''; } catch (e) { /* the overview */ }
     showView(savedView);
@@ -1019,7 +1108,7 @@ I18N.ready.then(() => {
         brief && brief.running ? tr('在售模型：{n}', { n: num(brief.n) }) : null);
       t.classList.add('tile-link');
       t.setAttribute('role', 'button');
-      t.addEventListener('click', () => showView('share'));
+      t.addEventListener('click', () => showView('share', 'state'));
       return t;
     }
     function renderAccount(me) {
@@ -1030,7 +1119,7 @@ I18N.ready.then(() => {
         lastTiles = key;
         tiles.replaceChildren(
           tile('tile-available', tr('可用 credit'), credit(b.available_micros)),
-          tile('tile-held', tr('冻结中'), credit(b.held_micros), tr('请求结束后多余部分退回')),
+          tile('tile-held', tr('冻结中'), credit(b.held_micros), null, tr('请求结束后多余部分退回')),
           tile('tile-bought', tr('买入'), credit(u.bought.micros), tr('{n} 次，{tokens} tokens', { n: num(u.bought.jobs), tokens: num(u.bought.prompt_tokens + u.bought.completion_tokens) })),
           tile('tile-sold', tr('卖出收益'), credit(u.sold.micros), tr('{n} 次，{tokens} tokens', { n: num(u.sold.jobs), tokens: num(u.sold.prompt_tokens + u.sold.completion_tokens) })),
           shareTile());
@@ -1043,20 +1132,36 @@ I18N.ready.then(() => {
       ], me.devices));
     }
 
+    // The status bar names the relay in use and how fast it answers.
+    let lastRelay = '';
+    function setRelayStat(r, ms) {
+      const key = r ? (r.name || r.addr) + '|' + Math.round(ms || 0) : '';
+      if (key === lastRelay) return;
+      lastRelay = key;
+      relayStat.replaceChildren(...(r ? [h('span', null, tr('中继')), h('span', { id: 'status-relay-name', title: r.addr }, r.name || shortPeer(r.addr)), rtt(ms)] : []));
+    }
+
     function renderNetwork(st) {
       const c = st.coordinator;
-      const line = c.connected ? tr('协调器已连接') : tr('协调器未连接');
       const q = c.link && c.link.samples ? c.link : null;
-      const link = q ? [Math.round(q.avg_ms || 0), Math.round(q.jitter_ms || 0), Math.round(q.loss_pct || 0)] : null;
+      // Under 10 ms a whole number would say 0.
+      const ms1 = v => { v = Number(v || 0); return v > 0 && v < 10 ? Math.round(v * 10) / 10 : Math.round(v); };
+      const link = q ? [ms1(q.avg_ms), ms1(q.jitter_ms), Math.round(q.loss_pct || 0)] : null;
+      const cur = (st.relays || []).find(r => r.current);
+      // The live pings of the relay in use say more than the last survey of all relays.
+      setRelayStat(cur, link && link[0] ? link[0] : cur && !cur.error ? cur.rtt_ms : 0);
       network.set([st.relays, c.connected, c.via, st.warnings, link],
-        h('p', { class: 'small muted', id: 'coord-line' }, line),
-        link ? h('p', { class: 'small muted', id: 'link-line' }, tr('链路质量：平均 {avg} ms · 抖动 {jitter} ms · 丢包 {loss}%', { avg: link[0], jitter: link[1], loss: link[2] })) : null,
+        h('div', { class: 'kv' },
+          h('span', { class: 'pill ' + (c.connected ? 'ok' : 'bad'), id: 'coord-line' }, c.connected ? tr('协调器已连接') : tr('协调器未连接')),
+          link ? h('span', { class: 'small', id: 'link-line' }, I18N.parts('链路质量：平均 {avg} ms · 抖动 {jitter} ms · 丢包 {loss}%', {
+            avg: h('strong', { class: link[0] ? rttClass(link[0]) + ' rtt-text' : null }, String(link[0])), jitter: String(link[1]),
+            loss: h('strong', { class: link[2] >= 5 ? 'bad rtt-text' : link[2] > 0 ? 'warn rtt-text' : null }, String(link[2])) })) : null),
         (st.warnings || []).map(w => h('div', { class: 'notice warn small' }, w)),
         !st.relays || st.relays.length === 0 ? h('div', { class: 'empty' }, tr('门户还没有登记中继')) : table([
           { title: tr('中继'), get: r => r.name || shortPeer(r.addr) },
           { title: tr('地区'), get: r => r.region || '—' },
-          { title: tr('延迟'), num: true, get: r => r.error ? tr('不可达') : (r.rtt_ms ? r.rtt_ms.toFixed(1) + ' ms' : '—') },
-          { title: '', get: r => r.current ? tr('当前使用') : '' },
+          { title: tr('延迟'), num: true, get: r => r.error ? h('span', { class: 'rtt bad', title: r.error }, tr('不可达')) : rtt(r.rtt_ms) },
+          { title: '', get: r => [r.current ? h('span', { class: 'badge accent' }, tr('当前使用')) : null, r.reserved ? h('span', { class: 'badge' }, tr('已预约')) : null].filter(Boolean) },
         ], st.relays));
     }
 
@@ -1066,6 +1171,7 @@ I18N.ready.then(() => {
       models.set(['down'], h('div', { class: 'empty' }, tr('连接网络后显示')));
       share.update(null);
       setBrief(null);
+      setRelayStat(null);
     }
 
     function renderModels(ms) {
@@ -1092,49 +1198,74 @@ I18N.ready.then(() => {
     function renderSession(s) {
       current = s;
       renderUpdate(s);
-      who.textContent = s.user || '';
+      who.textContent = accountName.textContent = s.user || '';
       who.title = s.user || '';
       const [cls, label] = STATE[s.state] || ['', s.state];
       pill.className = 'pill ' + cls;
       pill.textContent = label;
-      endpoint.set(s.api, h('div', { class: 'endpoint' }, h('code', { id: 'endpoint-url' }, s.api), copyButton(() => s.api)),
-        h('p', { class: 'small muted' }, tr('在支持 OpenAI 协议的工具里把 base URL 改成这个地址即可使用。')));
+      endpoint.set(s.api, h('div', { class: 'endpoint' }, h('code', { id: 'endpoint-url' }, s.api), copyButton(() => s.api)));
     }
 
-    // What a new release means for this client. Links show their address: not
-    // every platform's window can open them, and then they can be copied. The
-    // box is rebuilt only when the offer changes, so a click is not lost.
+    // What a new release means for this client: one line over the views (the
+    // version and the release's own sentence about itself), and a dialog with
+    // the release notes and the download. Links show their address: not every
+    // platform's window can open them, and then they can be copied. The line
+    // is rebuilt only when the offer changes, so a click is not lost.
+    const web = x => typeof x === 'string' && /^https?:\/\//.test(x) ? x : '';
+    // The notes in the page's language, else in English, else in any.
+    const notesOf = u => (u.notes && (u.notes[I18N.lang] || u.notes.en || Object.values(u.notes)[0])) || null;
+    const updateTitle = u => u.required ? tr('这个版本已不再受支持，请升级到最新版本后继续使用') : tr('有新版本 {version} 可用', { version: u.latest || '' });
     let shownUpdate = '';
     function renderUpdate(s) {
       const u = s.update || {};
       versionLabel.textContent = tr('版本 {version}', { version: s.version || '' });
-      const web = x => typeof x === 'string' && /^https?:\/\//.test(x) ? x : '';
+      versionText.textContent = s.version || '';
       const show = u.available && (u.required || !u.skipped);
-      const sig = show ? u.key + '|' + u.required : '';
+      const n = notesOf(u);
+      const sig = show ? u.key + '|' + u.required + '|' + (n ? n.summary : '') : '';
       if (sig === shownUpdate) return;
       shownUpdate = sig;
       if (!show) { updateBox.replaceChildren(); return; }
-      const lines = [h('div', null,
-        h('strong', { id: 'update-text' }, u.required ? tr('这个版本已不再受支持，请升级到最新版本后继续使用') : tr('有新版本 {version} 可用', { version: u.latest || '' })))];
-      if (u.required) lines.push(h('div', { id: 'update-required' }, tr('升级前不能调用模型或接单，已有作业照常结算。')));
-      const pkg = u.package && web(u.package.url), page = web(u.download_url), notes = web(u.notes_url);
-      const dl = pkg || page;
-      if (dl) lines.push(h('div', null, tr('下载'), ' ', h('a', { id: 'update-link', href: dl, target: '_blank', rel: 'noopener' }, dl)));
-      const actions = [];
-      if (notes) actions.push(h('a', { id: 'update-notes', href: notes, target: '_blank', rel: 'noopener' }, tr('更新内容')));
-      if (!u.required && u.key) actions.push(h('button', { type: 'button', class: 'link', id: 'update-skip', onclick: async () => {
-        try {
-          const next = await api('POST', '/api/v1/update/skip', { key: u.key });
-          renderUpdate(Object.assign({}, s, { update: next }));
-        } catch (e) { setBanner(message(e)); }
-      } }, tr('跳过此版本')));
-      if (actions.length) lines.push(h('div', { class: 'update-actions' }, ...actions));
-      updateBox.replaceChildren(h('div', { class: 'notice ' + (u.required ? 'bad' : 'warn'), id: 'update-notice' }, ...lines));
+      updateBox.replaceChildren(h('div', { class: 'notice strip ' + (u.required ? 'bad' : 'warn'), id: 'update-notice' },
+        h('span', { class: 'strip-text' }, h('strong', { id: 'update-text' }, updateTitle(u)),
+          n && n.summary ? [' · ', h('span', { id: 'update-summary', title: n.summary, dir: 'auto' }, n.summary)] : null),
+        h('button', { type: 'button', class: 'mini', id: 'update-open', onclick: () => updateDialog(u) }, tr('查看详情')),
+        !u.required && u.key ? h('button', { type: 'button', class: 'link small', id: 'update-skip', onclick: async () => {
+          try {
+            const next = await api('POST', '/api/v1/update/skip', { key: u.key });
+            renderUpdate(Object.assign({}, s, { update: next }));
+          } catch (e) { setBanner(message(e)); }
+        } }, tr('跳过此版本')) : null));
+    }
+
+    function updateDialog(u) {
+      const n = notesOf(u);
+      const dl = (u.package && web(u.package.url)) || web(u.download_url), notes = web(u.notes_url);
+      modal('dlg-update', u.required ? tr('需要升级') : tr('新版本 {version}', { version: u.latest || '' }),
+        u.required ? h('div', { class: 'notice bad', id: 'update-required' }, tr('升级前不能调用模型或接单，已有作业照常结算。')) : null,
+        n && n.body ? richText(n.body, 'update-body') : h('p', { class: 'muted', id: 'update-no-notes' }, updateTitle(u)),
+        dl ? h('div', { class: 'update-link' }, h('span', { class: 'muted' }, tr('下载')), h('a', { id: 'update-link', href: dl, target: '_blank', rel: 'noopener' }, dl), copyButton(() => dl, 'update-copy')) : null,
+        h('div', { class: 'modal-actions' },
+          notes ? h('a', { id: 'update-notes', href: notes, target: '_blank', rel: 'noopener' }, tr('更新内容')) : null,
+          h('span', { class: 'spacer' }),
+          h('button', { type: 'button', id: 'update-close', onclick: () => closeModal() }, tr('关闭'))));
+    }
+
+    async function checkUpdate() {
+      checkBtn.disabled = true;
+      checkResult.textContent = tr('正在检查…');
+      try {
+        const u = await api('POST', '/api/v1/update/check');
+        renderUpdate(Object.assign({}, current, { update: u }));
+        checkResult.textContent = u.available ? '' : tr('已是最新版本');
+        if (u.available) updateDialog(u);
+      } catch (e) { checkResult.textContent = message(e); }
+      checkBtn.disabled = false;
     }
 
     function setBanner(text) {
       if (banner.textContent === text) return;
-      banner.replaceChildren(...(text ? [h('div', { class: 'notice warn', id: 'banner-text' }, text)] : []));
+      banner.replaceChildren(...(text ? [h('div', { class: 'notice warn small', id: 'banner-text' }, text)] : []));
     }
 
     let stopped = false, tick = 0, inflight = false;
@@ -1207,7 +1338,7 @@ I18N.ready.then(() => {
       for (let i = 0; !s; i++) {
         try { s = await api('GET', '/api/v1/session'); }
         catch (e) {
-          if (i === 0) app.replaceChildren(h('div', { class: 'auth' }, h('div', { class: 'notice bad', id: 'boot-error' }, message(e))));
+          if (i === 0) app.replaceChildren(h('div', { class: 'boot' }, h('div', { class: 'notice bad', id: 'boot-error' }, message(e))));
           await new Promise(r => setTimeout(r, 2000));
         }
       }

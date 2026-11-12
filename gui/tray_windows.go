@@ -21,6 +21,7 @@ var winTray struct {
 	mu             sync.Mutex
 	status, update *systray.MenuItem
 	open, quit     *systray.MenuItem
+	info           [trayInfoLines]*systray.MenuItem
 	pending        *trayMenu
 	shown          trayMenu // for the self-test
 }
@@ -41,6 +42,12 @@ func nativeTrayStart(tooltip string, onOpen, onQuit func()) {
 			systray.SetTooltip(tooltip)
 			status := systray.AddMenuItem("sharetoken", "")
 			status.Disable()
+			var info [trayInfoLines]*systray.MenuItem
+			for i := range info {
+				info[i] = systray.AddMenuItem("info", "")
+				info[i].Disable()
+				info[i].Hide()
+			}
 			update := systray.AddMenuItem("update", "")
 			update.Hide()
 			systray.AddSeparator()
@@ -48,7 +55,7 @@ func nativeTrayStart(tooltip string, onOpen, onQuit func()) {
 			systray.AddSeparator()
 			quit := systray.AddMenuItem(tooltip, "")
 			winTray.mu.Lock()
-			winTray.status, winTray.update, winTray.open, winTray.quit = status, update, open, quit
+			winTray.status, winTray.update, winTray.open, winTray.quit, winTray.info = status, update, open, quit, info
 			pending := winTray.pending
 			winTray.mu.Unlock()
 			if pending != nil {
@@ -79,6 +86,17 @@ func nativeTraySet(m trayMenu) {
 	}
 	winTray.shown = m
 	winTray.status.SetTitle(menuText(m.Status))
+	for i, item := range winTray.info {
+		if i < len(m.Info) {
+			item.SetTitle(menuText(m.Info[i]))
+			item.Show()
+		} else {
+			item.Hide()
+		}
+	}
+	if m.Tooltip != "" {
+		systray.SetTooltip(m.Tooltip)
+	}
 	if m.Update == "" {
 		winTray.update.Hide()
 	} else {

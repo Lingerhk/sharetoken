@@ -34,6 +34,9 @@ type Update struct {
 	DownloadURL string         `json:"download_url,omitempty"`
 	Package     *UpdatePackage `json:"package,omitempty"`
 	NotesURL    string         `json:"notes_url,omitempty"`
+	// Notes is what the release says about itself, by language: a one-line
+	// summary and a text in the release-notes markup (portal.ReleaseNotes).
+	Notes map[string]portal.ReleaseNotes `json:"notes,omitempty"`
 	// Key names the offered build, to skip it or to notify about it once.
 	Key string `json:"key,omitempty"`
 	// Skipped: the user chose to skip this build (never for a required one).
@@ -59,6 +62,7 @@ func updateFor(cur version.Info, info portal.UpdateInfo, base string) Update {
 	if r := info.Release; r != nil {
 		u.Latest = r.Version
 		u.NotesURL = absURL(base, r.NotesURL)
+		u.Notes = r.Notes
 		if p := info.Package; p != nil {
 			u.Package = &UpdatePackage{File: p.File, URL: absURL(base, p.URL), Size: p.Size, SHA256: p.SHA256}
 		}

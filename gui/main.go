@@ -23,13 +23,17 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/menu/keys"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// The window is a small one: every view of the page fits it without scrolling
+// the page, and long lists scroll inside their own panel.
 const (
-	windowWidth     = 1040
-	windowHeight    = 760
-	minWindowHeight = 560
+	windowWidth     = 880
+	windowHeight    = 600
+	minWindowWidth  = 760
+	minWindowHeight = 520
 	// screenReserve is left for the taskbar or Dock and the window's title bar.
 	screenReserve = 96
 )
@@ -60,6 +64,11 @@ func fitToScreen(ctx context.Context) {
 
 // langReportJS tells the shell which language the page chose, for the tray's text.
 const langReportJS = `fetch('` + shellLangPath + `?l=' + encodeURIComponent(document.documentElement.lang));`
+
+// shellClassJS tells the page which window it is in: on macOS the title bar is
+// hidden and the page draws under the window's buttons, so it leaves room for
+// them and marks where the window can be dragged (app.css, .os-darwin).
+const shellClassJS = `document.documentElement.classList.add('os-` + goruntime.GOOS + `');`
 
 func errText(e *error) string {
 	if e == nil {
@@ -119,7 +128,7 @@ func main() {
 		Title:     windowTitle(),
 		Width:     windowWidth,
 		Height:    windowHeight,
-		MinWidth:  480,
+		MinWidth:  minWindowWidth,
 		MinHeight: minWindowHeight,
 		Menu:      m,
 		// With a tray, closing the window leaves the app and its daemon running;
@@ -129,6 +138,7 @@ func main() {
 		StartHidden:       selftest,
 		AssetServer:       &assetserver.Options{Handler: handler},
 		OnDomReady: func(ctx context.Context) {
+			runtime.WindowExecJS(ctx, shellClassJS)
 			if selftest {
 				runtime.WindowExecJS(ctx, selftestJS)
 			}
@@ -179,6 +189,9 @@ func main() {
 				}()
 			}
 		},
+	}
+	if goruntime.GOOS == "darwin" {
+		app.Mac = &mac.Options{TitleBar: mac.TitleBarHiddenInset()}
 	}
 	if useTray {
 		app.SingleInstanceLock = &options.SingleInstanceLock{

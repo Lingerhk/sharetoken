@@ -236,8 +236,8 @@ func TestDaemonFailsAtStart(t *testing.T) {
 func TestWindowFitsScreen(t *testing.T) {
 	for _, c := range []struct{ sw, sh, w, h int }{
 		{2560, 1440, windowWidth, windowHeight},
-		{1280, 720, windowWidth, 720 - screenReserve},
-		{1024, 768, 1024, 768 - screenReserve},
+		{1280, 720, windowWidth, windowHeight},
+		{1024, 640, windowWidth, 640 - screenReserve},
 		{800, 480, 800, minWindowHeight},
 	} {
 		if w, h := fittedSize(c.sw, c.sh); w != c.w || h != c.h {

@@ -30,7 +30,7 @@ Replace `<arch>` with the `amd64` or `arm64` you downloaded. You can then open S
 
 ## Upgrade and uninstall {#upgrade}
 
-To upgrade, download the new version and install it as you did the first time. It replaces the old version. Uninstalling does not delete the state directory `{{home}}`, so your account and device key stay. To remove everything, delete that directory as well.
+When a new version exists, a line appears at the top of the window with one sentence about it. "Details" shows the full release notes and where to download it, and "Check for updates" in Settings asks at any time. To upgrade, download the new version and install it as you did the first time. It replaces the old version. Uninstalling does not delete the state directory `{{home}}`, so your account and device key stay. To remove everything, delete that directory as well.
 
 ::: macos
 To uninstall, quit the app and move ShareToken from the "Applications" folder to the Trash.
@@ -53,7 +53,7 @@ To uninstall, open "Settings > Apps > Installed apps", find ShareToken and click
 The app has two parts: the window, and the background service that does the real work (`{{exe}} daemon`). All logic lives in the background service. The window only displays it.
 
 ::: macos
-- There is an icon in the menu bar. Click it to see the status, open the window or quit.
+- There is an icon in the menu bar. Click it to see the connection, the relay in use and its latency, whether you are sharing and your available credit, or to open the window or quit.
 - Closing the window (red button or `Cmd+W`) only hides it. The background service keeps running, so sharing and the local API are not interrupted.
 - The app quits only when you quit from the menu or press `Cmd+Q`. If the app started the background service, it stops too.
 :::
@@ -64,25 +64,27 @@ The app has two parts: the window, and the background service that does the real
 :::
 
 ::: windows
-- There is an icon in the notification area. Left-click opens the window, and right-click opens the menu (status, open, quit). Windows 11 may put a new icon in the `^` overflow area. You can drag it to the taskbar.
+- There is an icon in the notification area. Left-click opens the window, and right-click opens the menu (the connection, the relay in use and its latency, sharing, your available credit, open, quit). Windows 11 may put a new icon in the `^` overflow area. You can drag it to the taskbar.
 - Closing the window (X) only hides it. The background service keeps running, so sharing and the local API are not interrupted.
 - The app quits only when you quit from the menu. If the app started the background service, it stops too.
 :::
 
 Starting the program again only brings back the existing window.
 
+The window has its navigation on the left: Overview, Sharing, Pairing and Activity, with Feedback and Settings at the bottom. The status bar at the bottom of the window shows the connection, the relay in use and its latency; the latency is green, amber or red by how fast it is. The "?" beside a panel's title explains what the panel is for.
+
 ## Share models {#share}
 
-Once you are signed in and connected to the network, click "Sharing" at the top:
+Once you are signed in and connected to the network, click "Sharing" on the left. It has three tabs:
 
 - **Provider APIs**: click "Add provider", choose the provider, and enter an API key or sign in with an account. After saving, choose the models to sell and set each one's model ID on the network and its prices. Each provider can be turned off, given new credentials or deleted, and each model can be tested, repriced or removed.
 - **Local model server**: enter the model server's address under "Settings", then click "Add model"; the app lists the models that server offers.
-- **Sharing status**: once there is at least one model, click "Start sharing" to take jobs. Sharing turns itself off when there is no model left to sell.
-- **Pairing**: click "Create pairing code", choose how long it lasts (1, 7 or 30 days) and how many buyers it admits, and give the code to your buyers. The panel lists your codes and your buyers, and lets you revoke a code or remove a buyer. Tick "Private mode" to serve only the buyers paired with you.
+- **Status**: once there is at least one model, click "Start sharing" to take jobs. Sharing turns itself off when there is no model left to sell.
+- **Pairing** ("Pairing" on the left, the "My buyers" tab): click "Create pairing code", choose how long it lasts (1, 7 or 30 days) and how many buyers it admits, and give the code to your buyers. The panel lists your codes and your buyers, and lets you revoke a code or remove a buyer. Tick "Private mode" to serve only the buyers paired with you.
 
 Prices are in credit per million tokens. API keys and login tokens are stored only on this computer, and the page shows keys masked. For notes on each provider, see [Share a hosted API](/docs/share#providers).
 
-To buy only from sellers you know, use "Paired sellers" on the Overview: click "Enter pairing code" and type the code a seller gave you. See [Buy only from sellers you know](/docs/use-models#pairing).
+To buy only from sellers you know, use "My sellers" under "Pairing": click "Enter pairing code" and type the code a seller gave you. See [Buy only from sellers you know](/docs/use-models#pairing).
 
 ## Graphical interface without the app {#browser-ui}
 
@@ -116,6 +118,3 @@ The package has already placed `{{exe}}` in `/usr/bin`, so you can use it direct
 The installer has already added `{{exe}}` to the current user's PATH. Open a new terminal to use it.
 :::
 
-## Usage statistics {#telemetry}
-
-By default, the desktop service (`daemon`) sends anonymous usage statistics, such as whether it is online, whether sign-in succeeded and the system type. They do not include your email, device ID, prompts or model content. The sign-in page and the main screen both have a switch. You can also force it off with the environment variable `SHARETOKEN_TELEMETRY=0` or `DO_NOT_TRACK=1`. `{{exe}} up` does not send statistics.

@@ -16,13 +16,12 @@ Every client is built as either `dev` or `prod` ([`internal/client/env.go`](../i
 | CLI and daemon | `sharetoken-dev` | `sharetoken` |
 | Window program | `sharetoken-gui-dev` | `sharetoken-gui` |
 | macOS app | `ShareToken-dev.app`, `app.sharetoken.desktop.dev` | `ShareToken.app`, `app.sharetoken.desktop` |
-| Usage statistics | not sent | sent |
 | `SHARETOKEN_PORTAL` | honoured (for test networks) | ignored |
 
 - `sharetoken version` (`sharetoken-dev version`) prints the build type, the portal and the data directory.
 - The window only connects to a daemon of its own build type. A dev window and its page title say DEV.
 - `SHARETOKEN_HOME` overrides the data directory.
-- `config.json` records its format version and the build type that wrote it. A file written by a newer client is refused. A file in an older, unsupported format is deleted together with `device.key` and `network.json`, and the user signs in again; `telemetry.json` is kept because it holds the user's opt-out. A file of the other build type is refused and left alone, so pointing `SHARETOKEN_HOME` at the wrong directory cannot delete another environment's identity.
+- `config.json` records its format version and the build type that wrote it. A file written by a newer client is refused. A file in an older, unsupported format is deleted together with `device.key` and `network.json`, and the user signs in again. A file of the other build type is refused and left alone, so pointing `SHARETOKEN_HOME` at the wrong directory cannot delete another environment's identity.
 
 ## Architecture
 
@@ -47,9 +46,21 @@ sharetoken-gui (Wails window, gui/)        sharetoken daemon (internal/client/da
 - If the default port is taken by an unrelated program, the window starts its daemon on the first free spare port, and the page shows the actual address. A port set in `config.json` is not replaced; that case is an error. If `sharetoken up` is already running on the same data directory, the window reports an error too, because the same device key would otherwise be online twice.
 - The window holds the stdin of the daemon it starts (`-stop-on-stdin-eof`). When the window exits or crashes, the pipe closes and the daemon shuts down in order.
 
+## Window layout
+
+The window is small (880×600 by default, 760×520 at least), and the page is laid out as an application, not as a web page ([`internal/client/ui/app.css`](../internal/client/ui/app.css)):
+
+- **The window itself never scrolls.** An icon sidebar on the left (Overview, Sharing, Pairing, Activity; Feedback and Settings at the bottom), the current view in the middle, a status bar at the bottom. Long lists scroll inside their own panel; when a short window cannot hold a view, the view scrolls, not the window.
+- **Views**: Overview (the balance and usage tiles, the local endpoint, the network and the available models side by side), Sharing (tabs: Status, Provider APIs, Local models), Pairing (tabs: My sellers, My buyers), Activity (tabs: All, Sold), Settings (the account and Log out, the language, the version and Check for updates, feedback, the devices). Every view stays in the page: polling keeps the hidden ones current, and switching shows them at once.
+- **Shown when asked for**: what a panel is for is behind the "?" beside its title; feedback is a dialog; an update is one line, with its details in a dialog.
+- **Status bar**: the connection, the relay in use and its latency, the account, the version.
+- **Latency colours** are the portal's: green under 80 ms, amber under 250 ms, red otherwise (`rtt` in `app.js`). The relay table, the link quality, the relay reservations and the status bar use them.
+- Text is not selectable by default; only what is worth copying is (addresses, code, tables, notices).
+- **macOS** hides the title bar (`mac.TitleBarHiddenInset`), so the page reaches the top of the window. Once the page has loaded, the shell adds the class `os-<system>` to `<html>`; under `os-darwin` the sidebar leaves room for the window's buttons, and the sidebar and the view's title bar drag the window (`--wails-draggable`), their buttons excepted. Windows and Linux keep the system's title bar.
+
 ## Sharing view (seller mode)
 
-The top bar of the main page switches between Overview and Sharing (`shareView` in [`internal/client/ui/app.js`](../internal/client/ui/app.js)); the choice is kept in `localStorage.st_view`. The Sharing view only calls the local API, and edits the same `config.json` and `providers.json` as the command line, so changes made on either side show on the other. See [providers.md](providers.md) for the implementation.
+Sharing in the sidebar opens the Sharing view (`shareView` in [`internal/client/ui/app.js`](../internal/client/ui/app.js)); the current view is kept in `localStorage.st_view`. The Sharing view only calls the local API, and edits the same `config.json` and `providers.json` as the command line, so changes made on either side show on the other. See [providers.md](providers.md) for the implementation.
 
 | Area | What it does | API |
 |---|---|---|
@@ -68,7 +79,7 @@ The top bar of the main page switches between Overview and Sharing (`shareView` 
 - Guards in the page: sharing cannot start without a model; one model ID cannot come from two sources; a new provider whose name is already taken must be renamed (the API would treat it as a credential replacement); when the last sellable model is removed or its provider is turned off, sharing turns off with it.
 - One difference from the command line: `share add` also turns sharing on; the page leaves that to the Start button.
 - The model table's "lowest price on the network" comes from `GET /api/v1/models` (which includes this machine's own offers). A provider card shows when its login token expires and the names of its extra request headers. The Overview has a Sharing tile that opens the Sharing view, and its network section shows link quality to the coordinator (average latency, jitter, loss).
-- Pairing (`pairingView` in `app.js`) has a second panel on the Overview, Paired sellers: enter a seller's code, see the sellers this account is paired with, leave one (`POST /api/v1/pairing/redeem`, `DELETE /api/v1/pairing/sellers/{id}`). While the account is paired the panel says that it buys only from those sellers, and Available models lists only theirs. Pairings live at the portal, so both panels work before the network is joined; they are read again every 15 seconds.
+- Pairing (`pairingView` in `app.js`) has a view of its own, with two tabs. My sellers: enter a seller's code, see the sellers this account is paired with, leave one (`POST /api/v1/pairing/redeem`, `DELETE /api/v1/pairing/sellers/{id}`); while the account is paired it says that it buys only from those sellers, and Available models lists only theirs. My buyers: private mode, the pairing codes and the paired buyers. Pairings live at the portal, so the view works before the network is joined; it is read again every 15 seconds.
 - The client is in English and Simplified Chinese. Without a saved choice it follows the system language; any other system language gets English (see [i18n.md](i18n.md)).
 - A key passes through the page only when it is submitted; the API returns it masked. The UI test checks that no key appears in the page or in `/api/v1/status`.
 - Daemon warnings and errors returned by a provider are shown as they are, in English.
@@ -81,11 +92,13 @@ The app shows an icon in the menu bar on macOS and in the notification area on W
 |---|---|
 | Close the window (red button, X, Cmd+W on macOS) | The window is hidden. The app and the daemon keep running; sharing and the local API are not interrupted |
 | Left-click the icon on Windows | Opens the window (restores it if minimized) |
-| Click the icon on macOS, right-click on Windows | Menu: a status line (not clickable), an update line when a new version exists (opens the window), Open, Quit |
+| Click the icon on macOS, right-click on Windows | Menu: a status line, information lines (the relay in use and its latency, the models on sale while sharing, the available credit; none clickable), an update line when a new version exists (opens the window), Open, Quit |
 | Quit in the menu, Cmd+Q on macOS | Quits the app; a daemon that this app started stops with it |
 | Start the program again | One instance per data directory: the second process brings the window back and exits. dev and prod, and different data directories, do not affect each other |
 
 - The status line is refreshed every 3 seconds from `GET /api/v1/session`, for example `Connected · a@example.com`, `Not signed in`, `The background service is not running`.
+- The information lines show only while connected, and are also updated every 3 seconds, from `GET /api/v1/status`: `Relay: relay-sg · 42 ms` (the latency is the mean of the live pings of the relay in use, or else its last measurement) and `Sharing · models on sale: 2`. `Available credit: 4.99` is fetched once a minute from `GET /api/v1/account`, because that asks the portal. The tooltip of the icon carries the relay and its latency too.
+- The system notification about a new release carries the one-line summary of its release notes (see "Release notes" in [versioning.md](versioning.md)).
 - New versions: one system notification per new build ([`gui/notify.go`](../gui/notify.go); clicking it opens the window). Linux sends it too, without a tray. The rules are in [versioning.md](versioning.md), under "Update notices". On Windows, Wails registers a notification activator under HKCU; the uninstaller removes it.
 - The menu text follows the page's language: each time the page loads, it reports its language to the shell (`/__shell/lang`, which never reaches the daemon). The text is in [`gui/tray_text.go`](../gui/tray_text.go); a test checks it against the page's language list and the page's wording for the shared entries.
 - Windows 11 puts new icons in the `^` overflow area by default; the user can drag the icon onto the taskbar.
@@ -100,14 +113,13 @@ Errors have the form `{"error":{"code","message"}}`; the page chooses its text b
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/v1/session` | `{env, state, logged_in, portal, user, device, peer, api, error, telemetry, version, api_version, update}`. `state` is `logged_out`, `expired` (the portal rejected the token and the daemon signed out), `starting`, `retrying` (`error` says why) or `running`. When signed out, `portal` is the built-in address (below) and `user` is the last one used, to prefill the form |
+| `GET /api/v1/session` | `{env, state, logged_in, portal, user, device, peer, api, error, version, api_version, update}`. `state` is `logged_out`, `expired` (the portal rejected the token and the daemon signed out), `starting`, `retrying` (`error` says why) or `running`. When signed out, `portal` is the built-in address (below) and `user` is the last one used, to prefill the form |
 | `POST /api/v1/portal/probe` | `{}` (`portal` is optional and defaults to the built-in address) → `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, signup_credit_micros, email_verification, support_email}`. Called before any password is sent |
 | `POST /api/v1/register/code` | `{pin, email}`: sends a verification code, when the portal requires one |
 | `POST /api/v1/register` | `{pin, email, password, code, device}` → 201 and the session |
 | `POST /api/v1/login` | `{pin, account, password, totp, device}` → 200 and the session. `account` is an email address or a user name. An administrator first gets 401 `mfa_required` and resends with `totp` |
 | `POST /api/v1/logout` | Stops the Agent, revokes the token (skipped if the portal is unreachable) and removes the token from `config.json`; other settings stay |
 | `GET /api/v1/account`, `/api/v1/jobs`, `/api/v1/ledger` | Passed through to the portal; they do not need the Agent. If the portal answers 401, the session becomes `expired` |
-| `GET`/`PUT /api/v1/telemetry` | The usage-statistics switch (below) |
 | `POST /api/v1/update/check`, `/skip`, `/notified` | Update notices, see [versioning.md](versioning.md) |
 | `POST /api/v1/feedback`, `GET /api/v1/feedback/mine` | Send feedback to the portal, and list what this account sent |
 | `/api/v1/pairing…` | Pairing codes and pairings, passed on to the portal ([guide.md](guide.md), section 3) |
@@ -143,28 +155,6 @@ When the portal sets `accounts.email_verification`, sign-up needs a code sent by
 
 - The local API does not authenticate other processes on the same machine (the same is true of `sharetoken up`). On a multi-user Linux machine another user can call `/v1` and spend your credits, or call `/api/v1/logout`. Fixing this needs a local secret (for example a 0600 file plus a session cookie).
 - The token is stored in clear text in `config.json` (0600; on Windows an ACL for the user, SYSTEM and Administrators), as with the CLI. It is not kept in the system keychain.
-
-## Anonymous usage statistics
-
-Statistics go to PostHog and are sent only by `sharetoken daemon`. `sharetoken up` and the server programs send nothing.
-
-- **Built-in key.** The project key is a constant in [`internal/client/telemetry.go`](../internal/client/telemetry.go) (PostHog Cloud, US region); no configuration file is needed. A key of this kind can only write events, not read data. At build time, `TELEMETRY_KEY` replaces it, `TELEMETRY_OFF=1` builds a client that sends nothing and shows no switch, and `TELEMETRY_HOST` selects another instance such as a self-hosted PostHog (only https, or a loopback address). See [`scripts/client_ldflags.sh`](../scripts/client_ldflags.sh).
-- **Only prod builds send.** The built-in key is active in prod builds only. `go test`, `go run`, a plain `go build` and dev builds send nothing and show no switch. `scripts/gui_stack.sh` uses a fake key and a fake collector, and `scripts/gui_shell_test.sh` sets `SHARETOKEN_TELEMETRY=0`.
-- **User switch.** On by default, with a checkbox on the sign-in page and the main page (`GET`/`PUT /api/v1/telemetry`). The state is kept in `telemetry.json`. Turning it off empties the queue and deletes the install ID. `SHARETOKEN_TELEMETRY=0` or `DO_NOT_TRACK=1` forces it off and hides the switch. A damaged file counts as off.
-- **Sending.** `POST <host>/batch/`, best effort: it never blocks the caller, a failed batch is dropped without a retry, and shutdown waits at most 2 seconds.
-
-| Event | Extra fields | When |
-|---|---|---|
-| `sharetoken_daily_active`, `sharetoken_hourly_active` | `state`, `sharing` | At most once per UTC day or hour; checked every 10 minutes |
-| `sharetoken_signed_in` | `method` (login, register) | Sign-in or sign-up succeeded |
-| `sharetoken_sign_in_failed` | `method`, `reason` (an allow-listed error code, otherwise `other`) | Sign-in or sign-up failed |
-| `sharetoken_signed_out` | `reason` (user, expired) | Sign-out, or the login expired |
-| `sharetoken_network_joined` | `duration` (a bucket) | The network was joined |
-| `sharetoken_network_join_failed` | none | At most once per sign-in |
-
-Every event also carries `schema_version`, `os`, `arch` and `app_version`. The `distinct_id` is a random install ID (`install:<random>`), unrelated to the account or the device key. The fields are fixed by the struct `telemetryProps`, so an event cannot carry an email address, a device ID, the portal address, an error message, a prompt or model output. Do not add a free-text field.
-
-The PostHog server still sees the IP address a request comes from. Events set `$geoip_disable` and turn person profiles off; to keep no IP at all, also enable "Discard client IP data" in the PostHog project settings.
 
 ## Building
 
@@ -219,7 +209,6 @@ See [development.md](development.md) for the general build and test setup. `scri
 | Daemon API | `scripts/test.sh -race ./internal/client` | Sign-up, sign-in and sign-out, success and failure paths; certificate confirmation and pinning; MFA; token revocation; disabled users; switching accounts; concurrent sign-ins; request guards; no secrets in the log |
 | Account rules | `scripts/test.sh ./internal/accounts ./internal/portal` | Email validation and normalization; admin API URLs containing `@` and `+`. |
 | End-to-end API | `scripts/test.sh -race -run Daemon ./test/e2e` | On a real libp2p topology: sign-up, joining through a relay, buying from a model, accounting, recovery after a restart, sign-out, joining once the network comes back |
-| Usage statistics | `scripts/test.sh -race -run Telemetry ./internal/client` | With a fake collector: event format, no personal data, nothing sent without a key, the switch and the environment variables, daily and hourly de-duplication, no effect on the client when the collector is down or hangs |
 | Window shell | `cd gui && go test -tags desktop,production .` (add `webkit2_41` on Linux) | Starting, connecting to and stopping the daemon; port conflicts; forwarding |
 | Page | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | Headless Chrome runs every flow of the page against real processes (relay, HTTPS portal, coordinator, seller, daemon). The Sharing view uses a `custom` provider pointed at a mock model server: add, pick a model, price, start, test, reprice, local models, turn off, remove. Account login is checked up to the sign-in address and a bad callback. Pairing: wrong and own codes, pairing with a seller that sells nothing (no models, requests refused) and with one that sells, creating and revoking a code, a buyer joining and being removed, private mode from the page and its effect on a buyer that is not paired |
 | Real WebView | `scripts/gui_shell_test.sh <dev\|prod> <program directory>` | Without showing a window, the system WebView loads the page and POSTs to a real daemon; checks that the daemon stops when the app quits |

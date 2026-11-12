@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"sharetoken/internal/accounts"
 	"sharetoken/internal/version"
@@ -27,6 +29,70 @@ type Release struct {
 	Commit    string `json:"commit,omitempty"`
 	BuildTime string `json:"build_time,omitempty"` // RFC 3339, the same in every package of the release
 	NotesURL  string `json:"notes_url,omitempty"`  // relative to the portal
+	// Notes says what this build brings, by language: RELEASE-<version>.<lang>.md.
+	Notes map[string]ReleaseNotes `json:"notes,omitempty"`
+}
+
+// ReleaseNotes is a release's own word about itself in one language. Body is
+// plain text in a small markup that clients draw themselves: "# " a title,
+// "## " a subtitle, "- " a list item, anything else a paragraph; **bold** and
+// `code` inside a line. Summary is its first paragraph line, for places with
+// room for one sentence (a notification, the line under the version).
+type ReleaseNotes struct {
+	Summary string `json:"summary,omitempty"`
+	Body    string `json:"body"`
+}
+
+// notesRe names a notes file: RELEASE-<version>.<language>.md.
+var notesRe = regexp.MustCompile(`^RELEASE-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)\.([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?)\.md$`)
+
+const (
+	maxNotesBytes   = 4 << 10 // one language
+	maxNotesLangs   = 16
+	maxSummaryRunes = 120
+)
+
+// notesSummary is the first line of body that is neither a heading nor a list item.
+func notesSummary(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+			continue
+		}
+		line = strings.NewReplacer("**", "", "`", "").Replace(line)
+		if r := []rune(line); len(r) > maxSummaryRunes {
+			line = string(r[:maxSummaryRunes-1]) + "…"
+		}
+		return line
+	}
+	return ""
+}
+
+// releaseNotes reads the notes files of release v. A file that is too large or
+// not text is left out: the release is still offered, without its description.
+func (s *Server) releaseNotes(v string) map[string]ReleaseNotes {
+	entries, err := os.ReadDir(s.cfg.DownloadsDir)
+	if err != nil {
+		return nil
+	}
+	var out map[string]ReleaseNotes
+	for _, e := range entries {
+		m := notesRe.FindStringSubmatch(e.Name())
+		if m == nil || m[1] != v || !e.Type().IsRegular() || len(out) >= maxNotesLangs {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.cfg.DownloadsDir, e.Name()))
+		body := strings.TrimSpace(strings.ReplaceAll(string(data), "\r\n", "\n"))
+		if err != nil || len(data) > maxNotesBytes || !utf8.ValidString(body) || body == "" {
+			s.log.Warn("unusable release notes", "file", e.Name(), "err", err)
+			continue
+		}
+		if out == nil {
+			out = map[string]ReleaseNotes{}
+		}
+		out[m[2]] = ReleaseNotes{Summary: notesSummary(body), Body: body}
+	}
+	return out
 }
 
 // UpdateInfo is GET /api/v1/update.
@@ -75,6 +141,7 @@ func (s *Server) currentRelease() *Release {
 	}
 	if best != nil {
 		best.NotesURL = "/changelog/#v" + version.Core(best.Version)
+		best.Notes = s.releaseNotes(best.Version)
 	}
 	return best
 }

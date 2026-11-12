@@ -8,7 +8,6 @@
 //   scripts/gui_stack.sh stop /tmp/guitest
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const dir = process.argv[2];
@@ -18,7 +17,7 @@ const env = Object.fromEntries(readFileSync(dir + '/env', 'utf8').trim().split('
 const chrome = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const port = 9334;
 const proc = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--remote-debugging-port=${port}`,
-  `--user-data-dir=${dir}/chrome-profile`, '--window-size=1040,760', 'about:blank'], { stdio: 'ignore' });
+  `--user-data-dir=${dir}/chrome-profile`, '--window-size=880,600', 'about:blank'], { stdio: 'ignore' });
 process.on('exit', () => proc.kill());
 
 let ws, id = 0; const pending = new Map(); const problems = [];
@@ -74,18 +73,12 @@ const EMAIL = 'Desk.User+gui@Example.com', NORMAL = EMAIL.toLowerCase(), PASSWOR
 
 process.env.NODE_NO_WARNINGS = '1';
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // the test calls the self-signed portal directly
-// A fake PostHog: the daemon of gui_stack.sh is built to report here.
-const collected = [];
-const collector = createServer((req, res) => {
-  let body = ''; req.on('data', c => { body += c; });
-  req.on('end', () => { collected.push({ path: req.url, body }); res.end('{"status":1}'); });
-}).listen(18999, '127.0.0.1');
-collector.unref();
-const events = () => collected.flatMap(c => JSON.parse(c.body).batch);
-const eventNames = () => events().map(e => e.event);
 
 await connect();
 await cdp('Runtime.enable'); await cdp('Log.enable'); await cdp('Page.enable');
+// The window's inside at its default size, less a title bar.
+const WINDOW = { width: 880, height: 568, deviceScaleFactor: 2, mobile: false };
+await cdp('Emulation.setDeviceMetricsOverride', WINDOW);
 await cdp('Page.addScriptToEvaluateOnNewDocument', { source: "try { localStorage.setItem('st_lang', 'zh-CN'); } catch (e) {}" }); // these checks read the Chinese source text
 await cdp('Page.navigate', { url: env.DAEMON + '/' });
 
@@ -139,6 +132,12 @@ ok(true, 'the coordinator is connected');
 await waitFor(`${el('#models-body')}.textContent.includes('mock-fast')`, 30000);
 ok(true, "the seller's model is listed");
 ok(await text('#endpoint-url') === env.DAEMON + '/v1', 'the local endpoint is shown');
+ok((await text('#status-relay')).includes('relay-local') && await has('#status-relay .rtt.ok'), 'the status bar names the relay in use, its latency coloured');
+ok(await has('#network-body td .rtt.ok') && await has('#network-body .badge.accent'), 'the relay table colours the latency and marks the relay in use');
+ok(await ev(`${el('#endpoint-hint')}.hidden`), 'what a panel is for stays folded');
+await click('#endpoint-hint-btn');
+ok(!(await ev(`${el('#endpoint-hint')}.hidden`)) && (await text('#endpoint-hint')).includes('base URL'), 'until its "?" is clicked');
+await click('#endpoint-hint-btn');
 ok((await text('#devices-body')).includes('（本机）'), 'this device is marked in the list');
 ok(await has('#jobs-empty'), 'no jobs yet');
 ok(!(await ev('document.documentElement.outerHTML')).includes(PASSWORD), 'the password is gone from the page');
@@ -173,18 +172,33 @@ ok(!(await has('#devices-body img')) && !(await ev('window.__xss === 1')), 'it s
 
 ok((await ev(`${el('#app-version')}.textContent`)).length > 2, 'the app shows its version');
 console.log('layouts');
-await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 760, deviceScaleFactor: 1, mobile: false });
+// The window never scrolls: a view fits it, and long lists scroll in their panel.
+const fits = () => ev('document.documentElement.scrollWidth <= window.innerWidth && document.documentElement.scrollHeight <= window.innerHeight && document.body.scrollHeight <= window.innerHeight');
+const viewFits = name => ev(`(() => { const v = ${el('#view-' + name)}; return v.getClientRects().length > 0 && v.scrollHeight <= v.clientHeight && v.scrollWidth <= v.clientWidth; })()`);
+for (const name of ['share', 'pairing', 'activity', 'settings', 'overview']) {
+  await click('#nav-' + name);
+  ok(await fits() && await viewFits(name) && await text('#view-title') !== '', `the ${name} view fits the window`);
+  if (name === 'settings') {
+    ok((await text('#account-name')) === NORMAL && (await text('#devices-body')).includes('（本机）'), 'settings show the account and its devices');
+    await shot('08b-settings');
+  }
+}
+await cdp('Emulation.setDeviceMetricsOverride', { width: 760, height: 488, deviceScaleFactor: 2, mobile: false });
 await sleep(300);
-ok(await ev('document.documentElement.scrollWidth <= window.innerWidth'), 'no sideways scrolling at the smallest window');
-ok(await ev(`${el('#logout')}.getBoundingClientRect().height < 40`), 'the logout button stays on one line');
+ok(await fits(), 'no scrolling of the window at its smallest size');
+await click('#nav-settings');
+ok(await ev(`${el('#logout')}.getBoundingClientRect().height`) > 0 && await ev(`${el('#logout')}.getBoundingClientRect().height < 40`), 'the logout button stays on one line');
+await click('#nav-overview');
 await shot('08-narrow');
-await cdp('Emulation.clearDeviceMetricsOverride');
+await cdp('Emulation.setDeviceMetricsOverride', WINDOW);
 await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
 await sleep(200);
 await shot('09-dark');
 await cdp('Emulation.setEmulatedMedia', { features: [] });
 
 console.log('feedback');
+ok(!(await has('#feedback-text')), 'the feedback form is not on the page until asked for');
+await click('#nav-feedback'); await waitFor(el('#dlg-feedback'));
 await click('#feedback-send');
 await waitFor(`${el('#feedback-result')}.textContent === '请填写反馈内容'`);
 ok(true, 'empty feedback is stopped in the page');
@@ -195,6 +209,8 @@ ok(await ev(`${el('#feedback-text')}.value`) === '', 'feedback is sent and the b
 const sent = await ev(`fetch('/api/v1/feedback/mine').then(r => r.json())`);
 ok(sent.feedback[0].message === 'it works' && sent.feedback[0].source === 'client' && sent.feedback[0].os.includes('/'), 'the portal has it, marked as from the client');
 await shot('10b-feedback');
+await click('#dlg-feedback-close');
+ok(!(await has('#dlg-feedback')), 'and the dialog closes');
 
 console.log('sharing: a hosted API');
 const choose = (s, v) => ev(`(() => { const e = ${el(s)}; e.value = ${q(v)}; e.dispatchEvent(new Event('change', { bubbles: true })); })()`);
@@ -203,11 +219,14 @@ const KEY = 'sk-test-secret-0123456789';
 await click('#nav-share');
 await waitFor(el('#provider-add'));
 ok(await shown('#view-share') && !(await shown('#view-overview')), 'the sharing view replaces the overview');
+ok(await shown('#share-state') && !(await shown('#providers')) && await shown('#tabs-share'), 'it opens on its status tab');
 ok(await text('#share-pill') === '未开启' && await has('#providers-empty') && await has('#local-empty'), 'nothing is shared at first');
 await click('#share-toggle');
 await waitFor(`${el('#share-error')}?.textContent.includes('先添加')`);
 ok(true, 'sharing cannot be turned on with nothing to sell');
 await shot('15-share-empty');
+await click('#tab-share-providers');
+ok(await shown('#providers') && !(await shown('#share-state')), 'the providers have a tab of their own');
 await click('#provider-add'); await waitFor(el('#dlg-provider'));
 ok(await ev(`[...${el('#pv-type')}.options].map(o => o.value).join()`) === 'anthropic,openai,gemini,antigravity,grok,deepseek,custom', 'every kind of provider can be added');
 await choose('#pv-type', 'openai');
@@ -253,6 +272,8 @@ ok(providersFile().providers[0].api_key === KEY && providersFile().providers[0].
 ok(!(await ev('document.documentElement.outerHTML')).includes(KEY) && !JSON.stringify(await ev(`fetch('/api/v1/status').then(r => r.json())`)).includes(KEY), 'the key is in neither the page nor the API');
 
 console.log('sharing: on, test, edit');
+await shot('18b-share-provider');
+await click('#tab-share-state');
 await click('#share-toggle');
 await waitFor(`${el('#share-pill')}.textContent === '正在共享'`);
 await waitFor(`${el('#prov-lab')}.textContent.includes('在售')`);
@@ -273,9 +294,13 @@ ok((await text('#share-tile-active .value')).includes('/') && await has('#share-
 await waitFor(`${el('#prov-lab')}.textContent.includes('0.5 / 0.6')`, 40000);
 ok(true, "the network's lowest price stands beside the model's own");
 await shot('20-share-on');
-await fullShot('20b-share-on-full');
+ok(await viewFits('share'), 'the sharing status fits the window while sharing');
+await click('#tab-share-providers');
+await shot('20b-share-providers');
+ok(await ev(`(() => { const v = ${el('#view-share')}; return v.scrollHeight <= v.clientHeight; })()`), 'a provider with its models fits too');
 
 console.log('sharing: the local model server');
+await click('#tab-share-local');
 await click('#local-settings'); await waitFor(el('#dlg-local'));
 await fill('#local-url', 'ftp://nope'); await click('#local-save');
 await waitFor(`${el('#local-error')}.textContent.includes('http')`);
@@ -303,11 +328,11 @@ await click('#nav-overview');
 await waitFor(`${el('#models-body')}.textContent.includes('desk-mock')`, 40000);
 ok(true, 'the network lists the model this device sells');
 await click('#nav-share');
-await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 760, deviceScaleFactor: 1, mobile: false });
+await cdp('Emulation.setDeviceMetricsOverride', { width: 760, height: 488, deviceScaleFactor: 2, mobile: false });
 await sleep(300);
-ok(await ev('document.documentElement.scrollWidth <= window.innerWidth'), 'no sideways scrolling in the sharing view at the smallest window');
+ok(await fits(), 'no scrolling of the window in the sharing view at its smallest size');
 await shot('21-share-narrow');
-await cdp('Emulation.clearDeviceMetricsOverride');
+await cdp('Emulation.setDeviceMetricsOverride', WINDOW);
 
 console.log('sharing: off and removal');
 await click('#prov-lab .prov-toggle');
@@ -346,7 +371,9 @@ const buyOnce = async () => {
   return { status: r.status, body: await r.text() };
 };
 const clickRow = (panel, needle, button) => ev(`[...document.querySelectorAll(${q(panel + ' tbody tr')})].find(r => r.textContent.includes(${q(needle)})).querySelector(${q(button)}).click()`);
+await click('#nav-pairing');
 await waitFor(el('#pair-sellers-empty'));
+ok(await shown('#paired-sellers') && !(await shown('#pairing')), 'the pairing view opens on the sellers');
 ok(!(await has('#pair-restricted')) && (await text('#paired-sellers-body')).includes('3'), 'an account that is not paired buys from everyone; it may pair with three sellers');
 await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
 await click('#pair-join-ok');
@@ -378,8 +405,8 @@ await click('#confirm-ok');
 await waitFor(`!${el('#paired-sellers-body')}.textContent.includes('id***')`);
 ok(await has('#pair-restricted') && (await text('#paired-sellers-body')).includes('se***'), 'leaving one seller keeps the other');
 
-await click('#nav-share'); await waitFor(el('#pair-new-code'));
-ok(await has('#pair-codes-empty') && await has('#pair-buyers-empty'), 'the sharing view starts with no codes and no buyers');
+await click('#tab-pairing-buyers'); await waitFor(el('#pair-new-code'));
+ok(await shown('#pairing') && await has('#pair-codes-empty') && await has('#pair-buyers-empty'), 'the buyers tab starts with no codes and no buyers');
 const isPrivate = async () => JSON.parse(await ev(`fetch('/api/v1/pairing').then(r => r.text())`)).private;
 ok(!(await ev(`${el('#pair-private')}.checked`)) && !(await isPrivate()), 'private mode is off at first');
 await click('#pair-private');
@@ -403,21 +430,21 @@ const pairingText = () => text('#pairing-body');
 ok((await pairingText()).includes(ownCode) && (await pairingText()).includes('friends') && (await pairingText()).includes('0 / 2'), 'and listed with its label and uses');
 const days = (JSON.parse(await ev(`fetch('/api/v1/pairing').then(r => r.text())`)).codes[0].expires_at / 1e6 - Date.now()) / 86400e3;
 ok(days > 6.9 && days < 7.1, 'it lasts the seven days chosen');
-await click('#nav-overview'); await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
+await click('#tab-pairing-sellers'); await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
 await fill('#pair-code-input', ownCode); await click('#pair-join-ok');
 await waitFor(`${el('#pair-join-error')}.textContent.includes('自己的配对码')`);
 ok(true, "nobody pairs with their own code");
 await click('#dlg-pair-join-close');
 ok(cli('seller', 'pair', 'join', ownCode).includes('paired with seller de***@example.com'), "another account redeems it and sees this account's masked name");
-await click('#nav-share');
+await click('#tab-pairing-buyers');
 await waitFor(`${el('#pairing-body')}.textContent.includes('se***')`, 40000);
 ok((await pairingText()).includes('1 / 2') && !(await has('#pair-buyers-empty')), 'the buyer appears, and the code counts it');
 await fullShot('24b-pair-buyers');
-await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 760, deviceScaleFactor: 1, mobile: false });
+await cdp('Emulation.setDeviceMetricsOverride', { width: 760, height: 488, deviceScaleFactor: 2, mobile: false });
 await sleep(300);
-ok(await ev('document.documentElement.scrollWidth <= window.innerWidth'), 'no sideways scrolling with pairings at the smallest window');
+ok(await fits(), 'no scrolling of the window with pairings at its smallest size');
 await shot('24c-pair-narrow');
-await cdp('Emulation.clearDeviceMetricsOverride');
+await cdp('Emulation.setDeviceMetricsOverride', WINDOW);
 await clickRow('#pairing', 'se***', '.pair-remove'); await waitFor(el('#dlg-confirm'));
 await click('#confirm-ok');
 await waitFor(el('#pair-buyers-empty'));
@@ -429,7 +456,7 @@ await waitFor(el('#pair-codes-empty'));
 let revoked = false;
 try { cli('seller', 'pair', 'join', ownCode); } catch (e) { revoked = true; }
 ok(revoked, 'a revoked code pairs nobody');
-await click('#nav-overview');
+await click('#tab-pairing-sellers');
 await click('#paired-sellers .pair-leave'); await waitFor(el('#dlg-confirm'));
 await click('#confirm-ok');
 await waitFor(el('#pair-sellers-empty'));
@@ -453,7 +480,10 @@ await fullShot('22-share-english');
 await click('#provider-add'); await waitFor(el('#dlg-provider'));
 await shot('22b-provider-english');
 await click('#dlg-provider-close');
-await click('#nav-overview');
+for (const name of ['pairing', 'activity', 'settings', 'overview']) {
+  await click('#nav-' + name); await sleep(100);
+  ok(!/[\u4e00-\u9fff]/.test(await ev(`${el('#app')}.innerText`)) && await fits() && await viewFits(name), `the ${name} view is in English and fits`);
+}
 await fullShot('22c-overview-english');
 ok(await ev(`fetch('/ui/i18n/client/de.json').then(r => r.status)`) === 404, 'the other dictionaries are gone');
 await cdp('Page.navigate', { url: env.DAEMON + '/?lang=zh-CN' });
@@ -498,32 +528,6 @@ await fill('#password', PASSWORD); await click('#submit');
 await waitFor(el('#tiles .tile'));
 ok(true, 'signing in again works');
 
-console.log('usage statistics');
-await waitFor(el('#telemetry-toggle'));
-ok(await ev(`${el('#telemetry-toggle')}.checked`), 'the setting is shown, on by default');
-await sleep(500);
-for (const name of ['sharetoken_signed_in', 'sharetoken_network_joined', 'sharetoken_signed_out', 'sharetoken_sign_in_failed']) {
-  ok(eventNames().includes(name), 'collected ' + name);
-}
-ok(collected.every(c => c.path === '/batch/' && JSON.parse(c.body).api_key === 'phc_test_key'), 'events use the PostHog batch format and the built-in key');
-const raw = collected.map(c => c.body).join('\n');
-const lastConfig = JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8'));
-const sessionNow = await ev(`fetch('/api/v1/session').then(r => r.json())`);
-for (const [what, secret] of [['email', NORMAL], ['password', PASSWORD], ['token', lastConfig.token], ['device id', sessionNow.peer], ['portal address', env.PORTAL], ['device name', hostile]]) {
-  ok(!raw.includes(secret), 'events do not contain the ' + what);
-}
-ok(new Set(events().map(e => e.distinct_id)).size === 1 && events()[0].distinct_id.startsWith('install:'), 'one anonymous install ID');
-await click('#telemetry-toggle');
-await waitFor(`!${el('#telemetry-toggle')}.disabled && !${el('#telemetry-toggle')}.checked`);
-const before = collected.length;
-await cdp('Page.reload'); await waitFor(el('#telemetry-toggle'));
-ok(!(await ev(`${el('#telemetry-toggle')}.checked`)), 'turning it off is remembered');
-await click('#logout'); await waitFor(el('#signin-form'));
-await fill('#password', PASSWORD); await click('#submit'); await waitFor(el('#tiles .tile'));
-await sleep(1500);
-ok(collected.length === before, 'with it off, logging out and in again sends nothing');
-await shot('13-telemetry-off');
-
 console.log('a newer build is published');
 ok(!(await has('#update-notice')), 'no update notice before a release');
 {
@@ -534,18 +538,36 @@ ok(!(await has('#update-notice')), 'no update notice before a release');
   writeFileSync(`${env.DOWNLOADS}/${pkg}`, 'package');
   writeFileSync(`${env.DOWNLOADS}/SHA256SUMS-1.0.0`, `abcd  ${pkg}\n`);
   writeFileSync(`${env.DOWNLOADS}/RELEASE-1.0.0.json`, JSON.stringify({ version: '1.0.0', commit: 'newbuild', build_time: new Date().toISOString().replace(/\.\d+Z$/, 'Z') }));
+  // What the release says about itself: a line for the notice, a text for the dialog.
+  writeFileSync(`${env.DOWNLOADS}/RELEASE-1.0.0.zh-CN.md`, '# 更小的窗口\n\n窗口更紧凑，**菜单栏**显示中继延迟。\n\n## 界面\n- 侧边栏导航\n- 延迟按快慢着色 `ms`\n\n## 其他\n- <img src=x onerror=window.__xss=3>\n');
+  writeFileSync(`${env.DOWNLOADS}/RELEASE-1.0.0.en.md`, '# A smaller window\n\nA tighter window.\n');
   const u = await ev(`fetch('/api/v1/update/check', { method: 'POST' }).then(r => r.json())`);
   ok(u.available && !u.required && u.key === '1.0.0+newbuild' && u.package?.url === env.PORTAL + '/downloads/' + pkg && u.package.sha256 === 'abcd', 'the daemon finds the newer build of its version and the package for this system');
   await waitFor(el('#update-notice'), 10000);
   ok((await text('#update-text')).includes('1.0.0'), 'the page shows the new version');
-  ok((await ev(`${el('#update-link')}.href`)) === u.package.url && (await ev(`${el('#update-notes')}.href`)) === env.PORTAL + '/changelog/#v1.0.0', 'with the download and what changed');
+  ok(u.notes['zh-CN'].summary === '窗口更紧凑，菜单栏显示中继延迟。' && u.notes.en.summary === 'A tighter window.', 'the daemon passes on what the release says about itself');
+  ok(await text('#update-summary') === '窗口更紧凑，菜单栏显示中继延迟。', 'the page adds the release\'s one-line description, in its language');
+  ok(await fits(), 'the notice does not make the window scroll');
   await shot('13b-update');
+  ok(!(await has('#update-link')), 'the details are not on the page until asked for');
+  await click('#update-open'); await waitFor(el('#dlg-update'));
+  ok(await text('#update-body h3') === '更小的窗口' && await ev(`[...document.querySelectorAll('#update-body h4')].map(e => e.textContent).join()`) === '界面,其他'
+    && await ev(`document.querySelectorAll('#update-body li').length`) === 3 && await text('#update-body p strong') === '菜单栏' && await text('#update-body li code') === 'ms',
+    'the dialog draws the release notes: a title, subtitles, items, bold and code');
+  ok(!(await has('#update-body img')) && (await text('#update-body')).includes('<img') && !(await ev('window.__xss === 3')), 'markup in the notes shows as text');
+  ok((await ev(`${el('#update-link')}.href`)) === u.package.url && (await ev(`${el('#update-notes')}.href`)) === env.PORTAL + '/changelog/#v1.0.0', 'with the download and what changed');
+  await sleep(300);
+  await shot('13c-update-details');
+  await click('#update-close');
   await click('#update-skip');
   await waitFor(`!${el('#update-notice')}`, 10000);
   const s1 = await ev(`fetch('/api/v1/session').then(r => r.json())`);
   ok(s1.update.skipped && JSON.parse(readFileSync(env.DESKTOP_HOME + '/update.json', 'utf8')).skipped === u.key, 'skipping hides it and is remembered');
   await cdp('Page.reload'); await waitFor(el('#tiles .tile')); await sleep(500);
   ok(!(await has('#update-notice')), 'and it stays hidden after a reload');
+  await click('#nav-settings'); await click('#update-check'); await waitFor(el('#dlg-update'));
+  ok(await has('#update-body') && !(await has('#update-notice')), 'checking by hand shows a skipped release again, without bringing the notice back');
+  await click('#update-close'); await click('#nav-overview');
 }
 
 console.log('portal goes away');

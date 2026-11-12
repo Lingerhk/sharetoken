@@ -69,7 +69,7 @@ A client decides that a newer version exists when its version is below `min` (up
 
 The notice appears in these places:
 
-- At the top of the desktop app's page: the version, a download link (the package for this system, or the download page if there is none), "What's new", and "Skip this version". A required upgrade is shown in red, says that existing jobs still settle, and cannot be skipped.
+- One line at the top of the desktop app's page: the version, the summary of the release notes, "Details" and "Skip this version". "Details" opens a dialog with the release notes in full, a download link (the package for this system, or the download page if there is none) and "What's new". A required upgrade is shown in red, says that existing jobs still settle, and cannot be skipped. "Check for updates" in Settings asks the portal at once and opens this dialog when there is a new version, a skipped one included.
 - In the tray menu: "Update available: x" or "Upgrade required: x"; clicking it opens the window.
 - As a system notification, once per new build (through Wails' notification API; macOS asks for permission the first time). The daemon records skipped and notified builds in `update.json` in the data directory, so a restart does not repeat them.
 - On the command line: `sharetoken up` writes one WARN line to its log; `sharetoken status` shows it; `sharetoken version --check` asks the portal directly and needs no running client.
@@ -77,6 +77,22 @@ The notice appears in these places:
 Local API: `update` in `GET /api/v1/session`, and in `GET /api/v1/status` when there is a newer version; `POST /api/v1/update/check`, `POST /api/v1/update/skip` and `POST /api/v1/update/notified` (body `{"key"}`; a key that is not the build currently offered gets 409 `not_offered`).
 
 **Not implemented:** downloading and installing are done by the user. The update information is not signed; the client only shows the link and the sha256 and never runs a downloaded file. Automatic upgrades would first need the release information to be signed with an offline key.
+
+### Release notes
+
+A release can carry a text of its own that tells users what this build brings. The sources are `release-notes/<language>.md` in the repository (`en.md` and `zh-CN.md` today, the client's two languages), rewritten before each release. `publish-packages.sh` publishes them beside the packages as `RELEASE-<version>.<language>.md`; the portal puts what it reads into `release.notes` (by language, each with a `summary` and a `body`), and the client hands it to the page unchanged. The files in the server's downloads directory can also be edited in place, without publishing again.
+
+The text is in a very small markup that clients draw themselves; it is never parsed as HTML:
+
+| Written | Shown as |
+|---|---|
+| `# text` | A title |
+| `## text` | A subtitle |
+| `- text` | A list item |
+| Any other line | A paragraph |
+| `**text**`, `` `text` `` inside a line | Bold, code |
+
+The **summary** is the first paragraph line (the first line that is neither a heading nor a list item). It is shown where there is room for one line: the update line at the top of the page, the system notification, `sharetoken status`. Keep it short: `publish-packages.sh` refuses more than 30 characters in Chinese, Japanese and Korean and more than 90 in other languages. The portal keeps 120 characters at most. A file may be 4096 bytes at most; a larger one leaves that language without notes, and the release is still offered. The page takes the notes in its own language, or else in English.
 
 ## Upgrade rules
 

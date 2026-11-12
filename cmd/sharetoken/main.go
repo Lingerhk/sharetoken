@@ -732,6 +732,9 @@ func printUpdate(u client.Update) {
 	} else {
 		fmt.Printf("update available: %s\n", u.Latest)
 	}
+	if n := u.Notes["en"]; n.Summary != "" {
+		fmt.Printf("   %s\n", n.Summary)
+	}
 	if u.Package != nil {
 		fmt.Printf("   download %s\n", u.Package.URL)
 		if u.Package.SHA256 != "" {

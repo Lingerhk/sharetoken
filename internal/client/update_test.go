@@ -42,12 +42,13 @@ func TestUpdateFor(t *testing.T) {
 // Before launch the version stays 1.0.0: a newer build of it is an update, when
 // a package for this client is published.
 func TestUpdateForRebuild(t *testing.T) {
-	rel := &portal.Release{Version: "1.0.0", Commit: "new", BuildTime: "2026-11-10T08:00:00Z", NotesURL: "/changelog/#v1.0.0"}
+	rel := &portal.Release{Version: "1.0.0", Commit: "new", BuildTime: "2026-11-10T08:00:00Z", NotesURL: "/changelog/#v1.0.0",
+		Notes: map[string]portal.ReleaseNotes{"en": {Summary: "A smaller window", Body: "# New\nA smaller window"}}}
 	pkg := &portal.Package{File: "sharetoken-cli-1.0.0-linux-amd64.tar.gz", URL: "/downloads/sharetoken-cli-1.0.0-linux-amd64.tar.gz", Size: 9, SHA256: "ab"}
 	info := portal.UpdateInfo{ClientVersions: portal.ClientVersions{Latest: "1.0.0", DownloadURL: "/#download"}, Release: rel, Package: pkg}
 	old := version.Info{Version: "1.0.0", Commit: "old", BuildTime: "2026-11-01T00:00:00Z"}
 	u := updateFor(old, info, "https://portal.example/")
-	if !u.Available || u.Required || u.Key != "1.0.0+new" || u.Latest != "1.0.0" {
+	if !u.Available || u.Required || u.Key != "1.0.0+new" || u.Latest != "1.0.0" || u.Notes["en"].Summary != "A smaller window" {
 		t.Fatalf("%+v", u)
 	}
 	if u.Package == nil || u.Package.URL != "https://portal.example/downloads/sharetoken-cli-1.0.0-linux-amd64.tar.gz" || u.Package.SHA256 != "ab" ||
