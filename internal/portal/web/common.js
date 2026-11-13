@@ -332,6 +332,16 @@ const ST = (() => {
       h('span', { class: 'for-dark' }, icon('sun', 20), h('span', { class: 'nav-label' }, tr('浅色模式'))),
       h('span', { class: 'for-light' }, icon('moon', 20), h('span', { class: 'nav-label' }, tr('深色模式'))));
   }
+  // githubLink points to the source repository; the mark is filled, unlike the outline icons.
+  const GITHUB_URL = 'https://github.com/Lingerhk/sharetoken';
+  function githubLink() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const el = document.createElementNS(NS, 'svg'), path = document.createElementNS(NS, 'path');
+    for (const [k, v] of Object.entries({ viewBox: '0 0 24 24', width: 19, height: 19, fill: 'currentColor', 'aria-hidden': 'true' })) el.setAttribute(k, v);
+    path.setAttribute('d', 'M12 .3a12 12 0 00-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 016 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 011.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0012 .3');
+    el.appendChild(path);
+    return h('a', { class: 'icon-btn gh-link', href: GITHUB_URL, target: '_blank', rel: 'noopener', 'aria-label': 'GitHub', title: 'GitHub' }, el);
+  }
   // popover wires a button to a menu that closes on Escape and on any click elsewhere.
   function popover(wrap, btn, menu) {
     const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', outside); };
@@ -401,7 +411,7 @@ const ST = (() => {
       h('button', { type: 'button', class: 'icon-btn menu-btn', id: 'menu-btn', 'aria-label': tr('打开菜单'), onclick: () => box.classList.toggle('nav-open') }, icon('menu', 22)),
       crumb, h('span', { class: 'spacer' }),
       (o.links || []).map(l => h('a', { class: 'top-link', href: l.href, title: l.label }, icon(l.icon, 18), h('span', null, l.label))),
-      I18N.picker(), o.extra, userMenu);
+      githubLink(), I18N.picker(), o.extra, userMenu);
     const main = h('main');
     add(clear(root), add(box, sidebar, h('div', { class: 'backdrop', onclick: closeDrawer }), h('div', { class: 'frame' }, topbar, main)));
     return { nav, main };
