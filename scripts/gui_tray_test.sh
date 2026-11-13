@@ -2,7 +2,8 @@
 # Runs the built desktop app through its tray self-test: closing the window, the
 # menu's Open and Quit, the status line, the language, a second start. The window
 # and the menu-bar icon do show for about 15 seconds. No account or network is
-# involved. macOS only; docs/windows-env.md has the steps for Windows.
+# involved. macOS and Linux (on Wayland the minimise steps are skipped; run with
+# GDK_BACKEND=x11 for them); on Windows start the app with SHARETOKEN_GUI_SELFTEST=tray.
 #
 #   scripts/gui_tray_test.sh <dev|prod> <dir with the programs of that build (sharetoken and sharetoken-gui, or sharetoken-dev and sharetoken-gui-dev)>
 set -euo pipefail
@@ -12,8 +13,7 @@ PORT=${GUI_TEST_PORT:-19798}
 HOME_DIR=$(mktemp -d)
 trap 'rm -rf "$HOME_DIR"' EXIT
 printf '{"version":1,"env":"%s","http":"127.0.0.1:%s"}\n' "$ENV" "$PORT" > "$HOME_DIR/config.json"
-# The binaries are release builds: keep this test out of the real statistics.
-export SHARETOKEN_HOME=$HOME_DIR SHARETOKEN_GUI_SELFTEST=tray SHARETOKEN_TELEMETRY=0
+export SHARETOKEN_HOME=$HOME_DIR SHARETOKEN_GUI_SELFTEST=tray
 set +e
 SUFFIX=-$ENV; [ "$ENV" = prod ] && SUFFIX=
 OUT=$("$BIN/sharetoken-gui$SUFFIX" 2>&1)

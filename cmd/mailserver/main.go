@@ -32,9 +32,9 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"sharetoken/internal/config"
+	"sharetoken/internal/mailer"
 	"sharetoken/internal/mysqldb"
 	"sharetoken/internal/version"
-	"sharetoken/mailer"
 )
 
 // File is mail.yaml (configs/mail.example.yaml).

@@ -25,7 +25,7 @@ const (
 	envProd = "prod"
 )
 
-// profile repeats client/env.go, which this module cannot import. firstSpare
+// profile repeats internal/client/env.go, which this module cannot import. firstSpare
 // and lastSpare are the addresses tried when the default one is taken.
 type profile struct {
 	homeDir               string

@@ -78,18 +78,20 @@ function totp(secret) {
 
 const DSN = readFileSync(dir + '/dsn', 'utf8').trim();
 const portalCmd = (args, extra = {}) => execFileSync(dir + '/bin/portal', ['-db', DSN, ...args], { cwd: dir, env: { ...process.env, SHARETOKEN_DB_PASSWORD: '', ...extra }, encoding: 'utf8' });
-const PASSWORD = 'version-ui-password';
+// Sign-in codes: nothing delivers mail, scripts/gui_stack.sh reads them from the outbox.
+const mailedCode = email => execFileSync(new URL('./gui_stack.sh', import.meta.url).pathname, ['code', dir, email], { encoding: 'utf8' }).trim();
 
 await connect();
 await cdp('Page.enable'); await cdp('Runtime.enable'); await cdp('Log.enable');
 await cdp('Page.addScriptToEvaluateOnNewDocument', { source: "try { localStorage.setItem('st_lang', 'zh-CN'); } catch (e) {}" }); // these checks read the Chinese source text
 
 console.log('admin console');
-portalCmd(['useradd', '-admin', 'verroot'], { SHARETOKEN_PASSWORD: PASSWORD });
+portalCmd(['useradd', '-admin', 'verroot@example.test']);
 await go(env.PORTAL + '/admin/');
 const web = `{ 'Content-Type': 'application/json', 'X-Sharetoken-Web': '1' }`;
 const post = (path, body) => ev(`fetch(${q(path)}, { method: 'POST', headers: ${web}, body: ${q(JSON.stringify(body))} }).then(async r => ({ status: r.status, data: await r.json() }))`);
-const ch = (await post('/api/v1/web/login', { username: 'verroot', password: PASSWORD })).data;
+ok((await post('/api/v1/auth/code', { email: 'verroot@example.test' })).status === 200, 'a sign-in code is mailed');
+const ch = (await post('/api/v1/web/auth/verify', { email: 'verroot@example.test', code: mailedCode('verroot@example.test') })).data;
 const setup = (await post('/api/v1/web/mfa/setup', { challenge: ch.challenge })).data;
 ok((await post('/api/v1/web/mfa/confirm', { challenge: ch.challenge, code: totp(setup.secret) })).status === 200, 'an admin session');
 await go(env.PORTAL + '/app/'); // a full load, so that the page sees the new session
@@ -116,7 +118,7 @@ console.log('desktop client');
 const ROOT = new URL('..', import.meta.url).pathname;
 execFileSync('go', ['build', '-ldflags', '-X sharetoken/internal/version.Version=1.0.0', '-o', dir + '/bin/sharetoken-100', './cmd/sharetoken'], { cwd: ROOT, stdio: 'inherit' });
 const bin = dir + '/bin/sharetoken-100', home = dir + '/version-desktop', api = 'http://127.0.0.1:19795';
-const daemonEnv = { ...process.env, SHARETOKEN_PORTAL: env.PORTAL, SHARETOKEN_TELEMETRY: '0' };
+const daemonEnv = { ...process.env, SHARETOKEN_PORTAL: env.PORTAL };
 const startDaemon = async () => {
   const c = spawn(bin, ['-home', home, 'daemon', '-http', '127.0.0.1:19795', '-listen', '/ip4/127.0.0.1/tcp/0', '-nat=false'], { env: daemonEnv, stdio: 'ignore' });
   children.push(c);
@@ -124,19 +126,23 @@ const startDaemon = async () => {
   return c;
 };
 let d = await startDaemon();
-const login = await fetch(api + '/api/v1/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: env.PIN, email: 'version@example.com', password: PASSWORD, device: 'version-box' }) });
-ok(login.status === 201, 'signed up through the daemon');
+const daemonPost = (path, body) => fetch(api + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+ok((await daemonPost('/api/v1/auth/code', { pin: env.PIN, email: 'version@example.com' })).ok, 'a code through the daemon');
+const login = await daemonPost('/api/v1/auth/verify', { pin: env.PIN, email: 'version@example.com', code: mailedCode('version@example.com'), device: 'version-box' });
+ok(login.status === 200, 'signed up through the daemon');
 d.kill(); await sleep(800);
 d = await startDaemon();
 for (let i = 0; i < 40; i++) { const s = await (await fetch(api + '/api/v1/session')).json(); if (s.update.available) break; await sleep(250); }
 await go(api + '/?lang=zh-CN');
 await waitFor(el('#update-notice'));
 ok((await text('#update-text')).includes('9.9.9'), 'the client offers the new release');
+await click('#update-open'); await waitFor(el('#dlg-update'));
 ok((await text('#update-link')) === 'https://example.com/download', 'with where to get it');
+await click('#update-close');
 ok((await text('#app-version')).startsWith('版本 '), 'the client shows its version');
 ok(!(await ev(`${el('#update-notice')}.classList.contains('bad')`)), 'an optional upgrade is a warning');
 await shot('client-update');
-await go(api + '/?lang=ja');
+await go(api + '/?lang=en');
 await waitFor(el('#update-text'));
 ok(!/[\u4e00-\u9fa5]版本/.test(await text('#update-text')) && (await text('#update-text')).includes('9.9.9'), 'the notice is translated');
 if (problems.length) throw new Error('page problems:\n' + problems.join('\n'));

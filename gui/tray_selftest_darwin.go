@@ -1,34 +1,21 @@
 package main
 
 /*
-#include <stdlib.h>
-typedef struct { int iconShown, windowVisible; char *status, *open, *quit; } stTrayState;
-stTrayState stTrayProbe(void);
-void stTrayClick(int open);
-void stWindowClose(void);
+#cgo CFLAGS: -fobjc-arc
+#cgo LDFLAGS: -framework Cocoa
+int stTrayIconShown(void);
+int stWindowShown(void *window);
 void stCloseShortcut(void);
 */
 import "C"
 
-import "unsafe"
+import "github.com/wailsapp/wails/v3/pkg/application"
 
-func nativeTrayProbe() trayProbe {
-	s := C.stTrayProbe()
-	defer C.free(unsafe.Pointer(s.status))
-	defer C.free(unsafe.Pointer(s.open))
-	defer C.free(unsafe.Pointer(s.quit))
-	return trayProbe{IconShown: s.iconShown != 0, WindowVisible: s.windowVisible != 0,
-		Status: C.GoString(s.status), Open: C.GoString(s.open), Quit: C.GoString(s.quit)}
-}
+// windowShown: the window is open, not minimised, and the app is not hidden.
+// Wails' IsVisible asks whether any of the window can be seen, which is false
+// while other apps' windows cover it.
+func windowShown(w *application.WebviewWindow) bool { return C.stWindowShown(w.NativeWindow()) != 0 }
 
-func nativeTrayClick(what string) {
-	open := C.int(0)
-	if what == "open" {
-		open = 1
-	}
-	C.stTrayClick(open)
-}
-
-func nativeWindowClose() { C.stWindowClose() }
+func nativeTrayIconShown() bool { return C.stTrayIconShown() != 0 }
 
 func nativeCloseShortcut() { C.stCloseShortcut() }

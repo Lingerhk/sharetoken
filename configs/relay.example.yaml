@@ -1,61 +1,75 @@
-# sharetoken relay 配置样板
-# 用法: relay -config /etc/sharetoken/relay.yaml
-# 优先级: 内置默认 < 本文件 < 命令行 flag（显式传入的 flag 覆盖本文件，便于临时调试）
-# 相对路径相对于本文件所在目录解析。时长用 Go 写法: 30s / 10m / 1h / 720h。
-# 未知字段直接报错（防拼写错误）。
+# Example configuration of a sharetoken relay.
+#   relay -config /etc/sharetoken/relay.yaml
+# Precedence: built-in defaults < this file < command-line flags given explicitly.
+# Relative paths are resolved against this file's directory. Durations are
+# written the Go way: 30s, 10m, 1h, 720h. Unknown keys are an error.
 
 version: 1
 
-# 节点身份。地址里含 peer ID，换 key = 换地址，所有用户/portal 登记都要改。
+# The relay's identity. Its address includes the peer ID, so a new key is a new
+# address: every registration with a portal would have to change.
 identity:
-  key_file: relay.key            # 不存在则以 0600 创建
+  key_file: relay.key            # created with mode 0600 if missing
 
 network:
-  # 监听地址；主机没有 IPv6 时 IPv6 监听自动跳过
+  # Listen addresses. IPv6 is skipped on a host without it.
   listen:
     - /ip4/0.0.0.0/tcp/4001
     - /ip4/0.0.0.0/udp/4001/quic-v1
     - /ip6/::/tcp/4001
     - /ip6/::/udp/4001/quic-v1
-  # 对外宣告的公网地址（云主机 1:1 NAT 时必填，IPv6 也列上）；空 = 用网卡地址
+  # Public addresses to announce instead of the interface addresses. Needed
+  # behind 1:1 NAT (most cloud hosts); list IPv6 too. /dns4 and /dns6 work.
   announce: []
   #  - /ip4/203.0.113.7/tcp/4001
   #  - /ip4/203.0.113.7/udp/4001/quic-v1
-  max_conns: 8192                # 连接管理器高水位；libp2p 资源管理器的全局连接/流数按它放宽，其余限额（每流 16 MiB、每 peer 流数、全局内存 = RAM/8）保留
+  # Connection manager high watermark. libp2p's system-wide connection and
+  # stream limits are raised to match; the other limits (16 MiB per stream,
+  # streams per peer, total memory) stay.
+  max_conns: 8192
 
-# 准入控制：谁可以在本中继上占 reservation。
-# 一个中继可以同时服务多个网络（prod、dev）。为空 = 开放中继，任何人可占位（启动时告警）
+# Admission: who may hold a reservation on this relay.
+# One relay can serve several networks (for example prod and dev). With no
+# network listed the relay is open: anyone may reserve (a warning at startup).
 access:
   networks:
     - name: prod
-      # portal 的 relay-pass 公钥（`portal pass-key` 输出）；可多个，用于轮换。不能和其他网络重复
+      # The portal's relay-pass public key (`portal pass-key`). Several keys
+      # allow rotation. A key may appear in one network only.
       portal_keys:
         - ed25519:<prod portal pass-key hex>
-      # 无需 pass 即可占位的 peer：该网络的协调器（`coordinator id` 输出）。不能和其他网络重复
+      # Peers that reserve without a pass: the network's coordinator
+      # (`coordinator id`). A peer may appear in one network only.
       allow_peers:
         - <prod coordinator peer id>
-      max_devices_per_user: 4    # 该网络同一用户同时持有 reservation 的设备数（各网络的账号互不相干）
+      # Devices of one user that may hold a reservation at once. Accounts are
+      # counted per network.
+      max_devices_per_user: 4
     - name: dev
       portal_keys:
         - ed25519:<dev portal pass-key hex>
       allow_peers:
         - <dev coordinator peer id>
       max_devices_per_user: 4
-      max_reservations: 32       # 该网络的设备合计上限（协调器不计），防止挤占其他网络；0 = 只受 limits.max_reservations 限制
+      # Ceiling for this network's devices together (the coordinator is not
+      # counted), so one network cannot crowd out another.
+      # 0: only limits.max_reservations applies.
+      max_reservations: 32
 
 limits:
-  max_reservations: 4096         # 全局同时持有的 reservation
-  max_reservations_per_ip: 64    # 单 IP（运营商 NAT 后可能很多用户）
-  max_circuits: 4096             # 到同一目的 peer 的并发 circuit（协调器每在线用户一条）
-  reservation_ttl: 1h            # [新增，原硬编码] reservation 有效期
-  circuit_buffer: 16KiB          # [新增，原硬编码] 每条 circuit 的缓冲区
+  max_reservations: 4096         # reservations held at once, all networks
+  max_reservations_per_ip: 64    # per IP address (many users can share one behind carrier NAT)
+  max_circuits: 4096             # open circuits to one destination peer (the coordinator receives one per online user)
+  reservation_ttl: 1h            # how long a reservation lasts
+  circuit_buffer: 16KiB          # buffer of each circuit
 
-# 运维
 status:
-  listen: ""                     # 如 127.0.0.1:8093，/ 是 JSON 统计，/metrics 是 Prometheus 指标；没有认证，只接受回环地址
-  stats_interval: 5m             # [新增，原硬编码] 周期性统计日志间隔，0 关闭
+  # For example 127.0.0.1:8093: JSON statistics at /, Prometheus metrics at
+  # /metrics. There is no authentication, so only a loopback address is accepted.
+  listen: ""
+  stats_interval: 5m             # how often statistics are logged; 0 turns it off
 
-log:                             # [新增] 三个服务端统一
+log:
   level: info                    # debug | info | warn | error
   format: text                   # text | json
-  file: ""                       # 空 = stderr（交给 systemd/journald）
+  file: ""                       # empty: stderr

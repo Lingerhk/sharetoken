@@ -5,6 +5,7 @@
 //
 //	packaging/tray_template.png  macOS: black with alpha, the system colors it
 //	packaging/tray.ico           Windows: uncompressed entries, which every LoadImage reads
+//	packaging/tray.png           Linux: the Windows drawing at 64x64; the panel scales it
 package main
 
 import (
@@ -149,4 +150,11 @@ func main() {
 		log.Fatal(err)
 	}
 	writeICO("packaging/tray.ico", []int{16, 20, 24, 32, 40, 48, 64})
+	buf.Reset()
+	if err := png.Encode(&buf, render(64, colored)); err != nil {
+		log.Fatal(err)
+	}
+	if err := os.WriteFile("packaging/tray.png", buf.Bytes(), 0o644); err != nil {
+		log.Fatal(err)
+	}
 }

@@ -1,20 +1,23 @@
 #!/usr/bin/env node
-// Browser test of the system settings page, the audit log, password reset, invite
-// codes and paged listings: drives a headless Chrome over the DevTools protocol
-// through what an administrator and a user do. Works against a local stack
+// Browser test of the system settings page, the audit log, invite codes and
+// paged listings: drives a headless Chrome over the DevTools protocol through
+// what an administrator and a user do. Works against a local stack
 // (scripts/gui_stack.sh) and against dev.
 //
-//   node scripts/settings_ui_test.mjs <portal url> <dir for screenshots>
+//   STACK=DIR ST_INSECURE=1 node scripts/settings_ui_test.mjs <portal url> <dir for screenshots>   # scripts/gui_stack.sh
+//   node scripts/settings_ui_test.mjs <portal url> <dir for screenshots>                            # elsewhere, with ST_MAIL_CMD
 //
+// Signing in takes a code mailed to the address.
 // Environment:
-//   ST_ADMIN, ST_ADMIN_PASS  an administrator (a stored or new two-factor secret lives in the dir)
-//   ST_MAIL_CMD              prints the newest queued mail to the address in $ST_MAIL_TO (subject and text)
-//   ST_MAIL_HOLD_CMD         stops the mail server, if there is one: a sent code or link is wiped from the outbox
+//   STACK                    a scripts/gui_stack.sh directory: codes come from its outbox, the admin is created there
+//   ST_ADMIN                 an administrator's email (a stored or new two-factor secret lives in the dir)
+//   ST_MAIL_CMD              without STACK: prints the newest queued mail to the address in $ST_MAIL_TO (subject and text)
+//   ST_MAIL_HOLD_CMD         stops the mail server, if there is one: a sent code is wiped from the outbox
 //   ST_MAIL_RELEASE_CMD      starts it again
 //   ST_TEST_MAIL_TO          where the test mail goes; a server that accepts it shows "accepted"
 //   ST_INSECURE=1            accept a self-signed certificate
 //   ST_KEEP_SETTINGS=1       do not put the settings back at the end
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execSync, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHmac, randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -23,7 +26,12 @@ const base = process.argv[2];
 const shots = process.argv[3] || './shots-settings';
 if (!base) { console.error('usage: settings_ui_test.mjs <portal url> [dir]'); process.exit(2); }
 mkdirSync(shots, { recursive: true });
-const admin = process.env.ST_ADMIN || 'root', adminPass = process.env.ST_ADMIN_PASS || 'adminadmin';
+const admin = process.env.ST_ADMIN || 'root@example.test';
+const STACK = process.env.STACK;
+const ROOT = new URL('..', import.meta.url).pathname;
+const runQuiet = (cmd, ...args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+const stackSQL = q => runQuiet(ROOT + 'scripts/local-mysql.sh', 'sql', readFileSync(STACK + '/dsn', 'utf8').trim().replace(/.*\//, ''), q);
+if (STACK) { try { runQuiet(STACK + '/bin/portal', '-db', readFileSync(STACK + '/dsn', 'utf8').trim(), 'useradd', '-admin', admin); } catch (e) { /* there already */ } }
 const RUN = randomBytes(3).toString('hex');
 const chrome = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const port = 9300 + Math.floor(Math.random() * 400);
@@ -92,17 +100,41 @@ function totp(secretB32, at = Date.now()) {
   return String(((mac[off] & 0x7f) << 24 | mac[off + 1] << 16 | mac[off + 2] << 8 | mac[off + 3]) % 1_000_000).padStart(6, '0');
 }
 const secretFile = u => `${shots}/mfa-${u}.secret`;
-async function loginForm(user, pass) {
-  await waitFor('document.querySelector("#login-user")');
-  await type('#login-user', user); await type('#login-pass', pass);
-  await click('form button[type=submit]');
+// sendCode asks for a code to the address in the form and returns the page's
+// answer: '' when a code went out, else the error shown.
+async function sendCode(email) {
+  await waitFor('document.querySelector("#login-email")');
+  // An address gets one code a minute and five an hour: on a stack, start clean.
+  if (STACK) stackSQL(`DELETE FROM mail_codes WHERE email='${email}'; DELETE FROM mail_outbox WHERE to_addr='${email}'`);
+  await type('#login-email', email);
+  for (;;) {
+    await click('#send-code'); await sleep(600);
+    const err = await evaluate('document.querySelector("#login-error").textContent');
+    if (!err.includes('刚发送过')) return err;
+    await sleep(15000);
+  }
+}
+// readCode returns the code just mailed to the address.
+async function readCode(email) {
+  if (STACK) return runQuiet(ROOT + 'scripts/gui_stack.sh', 'code', STACK, email);
+  return (await mailTo(email, /code: (\d{6})/))[1];
+}
+// loginForm signs in with a mailed code, up to any two-factor step.
+async function loginForm(email) {
+  hold();
+  try {
+    const err = await sendCode(email);
+    if (err) throw new Error('no code for ' + email + ': ' + err);
+    await type('#login-code', await readCode(email));
+  } finally { release(); }
+  await click('#login-submit');
   await sleep(900);
 }
 // SHOWN is an expression: whether the element takes up room on the page.
 const SHOWN = sel => `(e => !!e && e.getClientRects().length > 0)(document.querySelector(${JSON.stringify(sel)}))`;
 async function adminLogin() {
   await goto(base + '/admin/');
-  await loginForm(admin, adminPass);
+  await loginForm(admin);
   await waitFor('document.querySelector("#mfa-code")');
   let secret = await evaluate('(document.querySelector("#mfa-secret") || {}).textContent || ""');
   if (secret) writeFileSync(secretFile(admin), secret);
@@ -186,33 +218,27 @@ async function run() {
     const email = `functest+ui${RUN}@example.com`, blocked = `functest+blocked${RUN}@example.com`;
     let r = await apiCall('PUT', '/api/v1/admin/settings', { open_registration: true, invite_required: true, email_block: [blocked] });
     check(r.status === 200, 'invite required, one address blocked');
-    const verify = r.body.settings.email_verification;
-    await logout(); await goto(base + '/app/#register'); await sleep(600);
-    await waitFor('document.querySelector("#login-invite")');
-    await clickText('.tabs button', '注册');
+    await logout(); await goto(base + '/app/'); await sleep(600);
+    await waitFor('document.querySelector("#login-email")');
     // Rendered, not just the attribute: a display rule once overrode [hidden].
-    check(await evaluate(SHOWN('#login-invite')), 'the sign-up form asks for the code');
-    await clickText('.tabs button', '登录');
-    check(!(await evaluate(SHOWN('#login-invite'))), 'signing in does not');
-    await clickText('.tabs button', '注册');
+    check(!(await evaluate(SHOWN('#login-invite'))), 'the form does not ask everybody for an invite code');
     check((await evaluate('document.querySelector(".login h1").textContent')) === 'ShareToken', 'the sign-in page keeps the built-in name');
     check(await evaluate('document.querySelector(".auth-logo").getAttribute("src") === "/static/favicon.svg"'), 'and the built-in logo');
+    check((await sendCode(blocked)).includes('这个邮箱不能在此注册'), 'no code goes to a blocked address');
+    check((await sendCode(email)).includes('新账户需要邀请码'), 'a new address is asked for an invite code');
+    check(await evaluate(SHOWN('#login-invite')), 'and the invite field appears');
     await shot('register-invite');
-    await type('#login-user', blocked); await type('#login-pass', 'password-' + RUN); await type('#login-invite', code);
-    if (verify) { await click('#send-code'); await sleep(500); await assertText('这个邮箱不能在此注册', 'no code goes to a blocked address'); }
-    else { await click('form button[type=submit]'); await sleep(600); await assertText('这个邮箱不能在此注册', 'a blocked address cannot sign up'); }
-    await type('#login-user', email); await type('#login-invite', 'WRONGCODE');
-    if (verify) { await click('#send-code'); await sleep(500); await assertText('邀请码错误', 'no code without a good invite'); }
-    else { await click('form button[type=submit]'); await sleep(600); await assertText('邀请码错误', 'a wrong invite is refused'); }
+    await type('#login-invite', 'WRONGCODE');
+    check((await sendCode(email)).includes('邀请码错误'), 'no code without a good invite');
     await type('#login-invite', code);
-    if (verify) {
-      hold();
-      await click('#send-code'); await sleep(600);
-      const m = await mailTo(email, /verification code: (\d{6})/);
-      release();
-      await type('#login-code', m[1]);
-    }
-    await click('form button[type=submit]');
+    hold();
+    let signupCode;
+    try {
+      check((await sendCode(email)) === '', 'with the invite, a code is mailed');
+      signupCode = await readCode(email);
+    } finally { release(); }
+    await type('#login-code', signupCode);
+    await click('#login-submit');
     await waitFor('document.querySelector(".sidenav")', 10000);
     check(true, 'signing up with the code works');
 
@@ -240,40 +266,15 @@ async function run() {
     await type('#feedback-text', 'ui test ' + RUN); await click('#feedback-send'); await sleep(600);
     await assertText('共 1 条', 'my feedback is paged and refreshes');
 
-    console.log('== forgot password');
-    await logout(); await goto(base + '/app/'); await waitFor('document.querySelector("#login-user")');
-    await click('#forgot-link');
-    await waitFor('document.querySelector("#forgot-email")');
-    await shot('forgot');
-    await type('#forgot-email', 'nobody-' + RUN + '@example.com'); await click('#forgot-send'); await sleep(600);
-    await assertText('查看你的邮箱', 'an unknown address gets the same answer');
-    await click('.login button'); await waitFor('document.querySelector("#forgot-link")');
-    await click('#forgot-link'); await waitFor('document.querySelector("#forgot-email")');
-    hold();
-    await type('#forgot-email', email); await click('#forgot-send'); await sleep(600);
-    await assertText('查看你的邮箱', 'a known address the same');
-    const m = await mailTo(email, /\/app\/#reset=([A-Za-z0-9_-]{20,})/);
-    release();
-    await goto(base + '/app/'); await waitFor('document.querySelector("#login-user")');
-    await evaluate(`location.href = ${J('/app/#reset=' + m[1])}`); await sleep(1200); // a link pasted into a tab already on the page
-    await waitFor('document.querySelector("#reset-form")');
-    check(!(await evaluate('location.href')).includes('reset='), 'the token leaves the address bar at once');
-    await shot('reset');
-    await type('#reset-pass', 'newpassword-' + RUN); await type('#reset-pass2', 'different'); await click('#reset-form button[type=submit]'); await sleep(300);
-    await assertText('两次输入的新密码不一致', 'a typo is caught');
-    await type('#reset-pass2', 'newpassword-' + RUN); await click('#reset-form button[type=submit]');
-    await waitFor('document.querySelector("#login-user")');
-    await assertText('密码已重置', 'done, and back at sign-in');
-    await loginForm(email, 'password-' + RUN);
-    await assertText('用户名或密码错误', 'the old password is gone');
-    await loginForm(email, 'newpassword-' + RUN);
-    await waitFor('document.querySelector(".sidenav")', 10000);
-    check(true, 'the new one works');
+    console.log('== no passwords');
     await logout();
-    await goto(base + '/app/#reset=' + m[1]); await sleep(300); // from outside the page
-    await waitFor('document.querySelector("#reset-form")');
-    await type('#reset-pass', 'yet-another-' + RUN); await type('#reset-pass2', 'yet-another-' + RUN); await click('#reset-form button[type=submit]'); await sleep(500);
-    await assertText('无效、已使用或已过期', 'the link works only once');
+    await goto(base + '/app/#reset=AAAAAAAAAAAAAAAAAAAAAAAA'); await sleep(600);
+    await waitFor('document.querySelector("#login-email")');
+    check(!(await evaluate('!!document.querySelector("#reset-form, #forgot-link, input[type=password]")')), 'an old reset link shows the sign-in form: there is no password to reset');
+    for (const [path, body] of [['/api/v1/password/forgot', { email }], ['/api/v1/web/login', { username: email, password: 'x' }]]) {
+      const st = (await apiCall('POST', path, body)).status;
+      check(st === 404 || st === 405, path + ' is gone (' + st + ')');
+    }
     await goto('about:blank');
 
     console.log('== admin listings');
@@ -282,7 +283,7 @@ async function run() {
     await waitFor('document.querySelector(".pager-total")');
     let total = Number((await evaluate('document.querySelector(".pager-total").textContent')).replace(/\D/g, ''));
     // Enough rows for two pages at the smallest size.
-    for (let i = total; i < 13; i++) { const x = await apiCall('POST', '/api/v1/admin/users', { username: `functest-pg-${RUN}-${i}`, password: 'password-' + RUN }); if (x.status !== 201) throw new Error('seeding users: ' + J(x)); }
+    for (let i = total; i < 13; i++) { const x = await apiCall('POST', '/api/v1/admin/users', { username: `functest-pg-${RUN}-${i}@example.com` }); if (x.status !== 201) throw new Error('seeding users: ' + J(x)); }
     await route('overview'); await route('users');
     await waitFor('document.querySelector(".pager-size")');
     await evaluate(`(() => { const s = document.querySelector('.pager-size'); s.value = '10'; s.dispatchEvent(new Event('change')); return true; })()`); await sleep(800);
@@ -308,7 +309,7 @@ async function run() {
     }
     await route('mail/outbox');
     await type('#out-search', email); await sleep(800);
-    check(!(await text()).includes('reset=') && (await text()).includes('含验证码'), 'the outbox does not show a reset mail');
+    check(!(await text()).includes(signupCode) && (await text()).includes('含验证码'), 'the outbox does not show the sign-in code');
 
     console.log('== blocklist');
     await route('settings'); await waitFor('document.querySelector("#set-block-apply")');
@@ -334,11 +335,11 @@ async function run() {
     await evaluate(`(() => { const s = document.querySelector('#oplog-action'); s.value = ''; s.dispatchEvent(new Event('change')); return true; })()`);
     await type('#oplog-actor', admin); await sleep(800);
     const log = await evaluate(`fetch('/api/v1/admin/oplog?format=csv&actor=' + encodeURIComponent(${J(admin)}), { headers: { 'X-Sharetoken-Web': '1' } }).then(r => r.text())`);
-    check(log.includes('settings.update') && !/password-|newpassword/.test(log), 'its export has the entries and no password');
-    r = await apiCall('GET', '/api/v1/admin/oplog?action=' + encodeURIComponent('user.password_reset_by_mail') + '&target=' + encodeURIComponent(email));
-    check(r.body.total === 1, 'the password reset is on record');
+    check(log.includes('settings.update') && !log.includes(signupCode), 'its export has the entries and no sign-in code');
+    r = await apiCall('GET', '/api/v1/admin/oplog?action=' + encodeURIComponent('auth.admin_login') + '&actor=' + encodeURIComponent(admin));
+    check(r.body.total >= 1, 'admin sign-ins are on record');
     await route('versions'); await sleep(300);
-    await assertText('/ portal 1', 'the version page lists the new schema');
+    await assertText('/ portal 3', 'the version page lists the new schema');
 
     console.log('== phone width, dark theme');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 2, mobile: true });
@@ -370,10 +371,8 @@ async function run() {
       console.log('settings put back: ' + back.status);
       check(back.status === 200, 'the settings are as they were');
       if (back.status === 200 && !original.settings.invite_required) {
-        await logout(); await goto(base + '/app/'); await waitFor('document.querySelector("#login-user")');
-        check(!(await evaluate(SHOWN('#login-invite'))), 'with invites off, signing in has no code field');
-        await clickText('.tabs button', '注册');
-        check(!(await evaluate(SHOWN('#login-invite'))), 'and neither does signing up');
+        await logout(); await goto(base + '/app/'); await waitFor('document.querySelector("#login-email")');
+        check(!(await evaluate(SHOWN('#login-invite'))), 'with invites off, signing in has no invite field');
       }
     }
   }

@@ -1,0 +1,536 @@
+package portal
+
+// The web front end: static pages served from the binary, browser sessions
+// in an HttpOnly cookie, and the endpoints the pages need beyond the CLI
+// API.
+//
+// Security model
+//
+//   - A browser session is an ordinary API token whose secret lives only in
+//     an HttpOnly, SameSite=Strict (and, over TLS, Secure) cookie: page
+//     scripts never see it, so a script injection cannot exfiltrate it.
+//   - A cookie is only honoured on requests that carry the custom header
+//     X-Sharetoken-Web (a cross-site page cannot add it without a CORS
+//     preflight, which the portal never grants) and whose Origin, when the
+//     browser sends one, is the portal itself. That blocks cross-site
+//     request forgery, including login CSRF.
+//   - Bearer tokens keep working as before; a cookie is never used as a
+//     fallback for them.
+//   - Every response carries a strict Content-Security-Policy (same-origin
+//     scripts and styles only, no inline code, no framing), nosniff and a
+//     no-referrer policy. The pages are plain HTML/JS with no third-party
+//     code, and they build the DOM with textContent, never with HTML strings.
+//   - Sign-ups are rate-limited per IP like failed logins.
+
+import (
+	"database/sql"
+	"embed"
+	"errors"
+	"io/fs"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"sharetoken/internal/accounts"
+	"sharetoken/internal/coordinator"
+	"sharetoken/internal/ledger"
+)
+
+//go:embed web
+var webFiles embed.FS
+
+// Names and headers of the browser session.
+const (
+	SessionCookie = "st_session"
+	WebHeader     = "X-Sharetoken-Web" // every cookie-authenticated request must carry it
+	webTokenName  = "web session"
+)
+
+const csp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; " +
+	"font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
+func securityHeaders(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("Content-Security-Policy", csp)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	h.Set("Cross-Origin-Opener-Policy", "same-origin")
+	h.Set("Cross-Origin-Resource-Policy", "same-origin")
+	if r.TLS != nil {
+		h.Set("Strict-Transport-Security", "max-age=31536000")
+	}
+}
+
+// Info is what the pages need before anyone signs in.
+type Info struct {
+	RegistrationOpen bool   `json:"registration_open"`
+	SignupCredit     uint64 `json:"signup_credit_micros"`
+	SessionHours     int64  `json:"session_hours"`
+	PassesEnabled    bool   `json:"passes_enabled"`
+	SupportEmail     string `json:"support_email,omitempty"`
+	InviteRequired   bool   `json:"invite_required,omitempty"`
+	DefaultPageSize  int    `json:"default_page_size"`
+	// CodeSignIn: people sign in with a code mailed to them (POST
+	// /api/v1/auth/code). Always true; clients check it to tell this portal
+	// from one that wanted passwords.
+	CodeSignIn bool `json:"code_sign_in"`
+}
+
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	st := s.settings()
+	writeJSON(w, http.StatusOK, Info{RegistrationOpen: st.OpenRegistration, SignupCredit: st.SignupCreditMicros,
+		SessionHours: int64(s.webSessionTTL() / time.Hour), PassesEnabled: s.cfg.PassKey != nil,
+		SupportEmail: s.supportAddress(), InviteRequired: st.InviteRequired,
+		DefaultPageSize: st.DefaultPageSize, CodeSignIn: true})
+}
+
+// webSessionTTL is the lifetime of a new browser session.
+func (s *Server) webSessionTTL() time.Duration {
+	if h := s.settings().WebSessionHours; h > 0 {
+		return time.Duration(h) * time.Hour
+	}
+	return s.cfg.WebSessionTTL
+}
+
+// loginTTL is the lifetime of the token an API login issues.
+func (s *Server) loginTTL() time.Duration {
+	if h := s.settings().LoginTokenHours; h > 0 {
+		return time.Duration(h) * time.Hour
+	}
+	return s.cfg.LoginTTL
+}
+
+// ---- static pages ----
+
+func (s *Server) servePages(mux *http.ServeMux) {
+	sub, err := fs.Sub(webFiles, "web")
+	if err != nil {
+		panic(err)
+	}
+	page := func(name string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-cache")
+			http.ServeFileFS(w, r, sub, name)
+		}
+	}
+	mux.HandleFunc("GET /{$}", page("index.html")) // the public landing page
+	mux.HandleFunc("GET /app/{$}", page("app.html"))
+	for _, from := range []string{"GET /app", "GET /login"} {
+		mux.HandleFunc(from, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/app/", http.StatusFound)
+		})
+	}
+	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /admin/{$}", page("admin.html"))
+	// The user guide: one page that draws every /docs/<page> from the Markdown
+	// under web/docs/. A page that does not exist still gets the guide's navigation.
+	mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/docs/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /changelog", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/changelog/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /changelog/{$}", page("changelog.html"))
+	mux.HandleFunc("GET /docs/{$}", page("docs.html"))
+	mux.HandleFunc("GET /docs/{page}", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := fs.Stat(sub, "docs/en/"+r.PathValue("page")+".md"); err == nil {
+			page("docs.html")(w, r)
+			return
+		}
+		data, err := fs.ReadFile(sub, "docs.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(data)
+	})
+	mux.HandleFunc("GET /static/docs/{lang}/{file}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFileFS(w, r, sub, "docs/"+r.PathValue("lang")+"/"+r.PathValue("file"))
+	})
+	// Translations; a wildcard matches one path segment, so these stay under i18n/.
+	mux.HandleFunc("GET /static/i18n/{bundle}/{file}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFileFS(w, r, sub, "i18n/"+r.PathValue("bundle")+"/"+r.PathValue("file"))
+	})
+	mux.HandleFunc("GET /static/{file}", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("file")
+		if strings.HasSuffix(name, ".html") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFileFS(w, r, sub, name)
+	})
+}
+
+// ---- browser sessions ----
+
+// sameOrigin reports whether a request is one of the portal's own pages
+// talking to it: it carries WebHeader, and any Origin / Sec-Fetch-Site the
+// browser attached point back at the portal.
+func sameOrigin(r *http.Request) bool {
+	if r.Header.Get(WebHeader) != "1" {
+		return false
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		return false
+	}
+	if o := r.Header.Get("Origin"); o != "" {
+		u, err := url.Parse(o)
+		if err != nil || !strings.EqualFold(u.Host, r.Host) || (u.Scheme != "https" && u.Scheme != "http") {
+			return false
+		}
+		if (u.Scheme == "https") != (r.TLS != nil) && !s3Proxied(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// s3Proxied reports whether a TLS-terminating proxy sits in front of the
+// portal (it then says so in X-Forwarded-Proto).
+func s3Proxied(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// webOnly rejects requests that do not come from the portal's own pages.
+func webOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !sameOrigin(r) {
+			writeErr(w, http.StatusForbidden, "cross_site", "this endpoint is for the portal's own pages")
+			return
+		}
+		h(w, r)
+	}
+}
+
+// credential extracts the bearer token or, for the portal's own pages, the
+// session cookie.
+func (s *Server) credential(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		return strings.TrimSpace(tok), true
+	}
+	c, err := r.Cookie(SessionCookie)
+	if err != nil || c.Value == "" {
+		writeErr(w, http.StatusUnauthorized, "unauthorized", "missing bearer token")
+		return "", false
+	}
+	if !sameOrigin(r) {
+		writeErr(w, http.StatusForbidden, "cross_site", "session cookies are only accepted from the portal's own pages")
+		return "", false
+	}
+	return c.Value, true
+}
+
+func (s *Server) setSession(w http.ResponseWriter, r *http.Request, token string, ttl time.Duration) {
+	c := &http.Cookie{Name: SessionCookie, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		Secure: s.cfg.SecureCookies || r.TLS != nil || s3Proxied(r)}
+	if ttl > 0 {
+		c.MaxAge = int(ttl / time.Second)
+	} else {
+		c.MaxAge = -1
+	}
+	http.SetCookie(w, c)
+}
+
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, u *accounts.User, status int, mfa bool) {
+	ttl := s.webSessionTTL()
+	plain, _, err := s.store.IssueSessionToken(u.ID, webTokenName, ttl, mfa)
+	if err != nil {
+		s.accountErr(w, err)
+		return
+	}
+	if mfa && u.Admin {
+		s.auditEvent(r, u, actionAdminLogin, u.Username, nil)
+	}
+	s.setSession(w, r, plain, ttl)
+	writeJSON(w, status, map[string]any{"user": u, "created": status == http.StatusCreated})
+}
+
+func (s *Server) handleWebLogout(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	_ = s.store.RevokeToken(cu.user.ID, cu.tokenID)
+	s.setSession(w, r, "", 0)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// ---- user endpoints beyond the CLI API ----
+
+func (s *Server) handleRenameDevice(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if err := s.store.RenameDevice(cu.user.ID, r.PathValue("peer"), req.Name); err != nil {
+		s.accountErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// ---- admin endpoints beyond the CLI API ----
+
+func (s *Server) handleSetAdmin(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	u := s.userByPath(w, r)
+	if u == nil {
+		return
+	}
+	var req struct {
+		Admin bool `json:"is_admin"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if u.ID == cu.user.ID && !req.Admin {
+		writeErr(w, http.StatusBadRequest, "bad_request", "you cannot revoke your own admin rights")
+		return
+	}
+	if err := s.store.SetAdmin(u.ID, req.Admin); err != nil {
+		s.accountErr(w, err)
+		return
+	}
+	cu.note("is_admin", req.Admin)
+	s.log.Info("admin rights changed", "user", u.Username, "admin", req.Admin, "by", cu.user.Username)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleAdminTokens(w http.ResponseWriter, r *http.Request, _ ctxUser) {
+	u := s.userByPath(w, r)
+	if u == nil {
+		return
+	}
+	ts, err := s.store.Tokens(u.ID)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tokens": ts})
+}
+
+func (s *Server) handleAdminRevokeToken(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	u := s.userByPath(w, r)
+	if u == nil {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", "bad token id")
+		return
+	}
+	if err := s.store.RevokeToken(u.ID, id); err != nil {
+		s.accountErr(w, err)
+		return
+	}
+	s.log.Info("token revoked by admin", "user", u.Username, "token", id, "by", cu.user.Username)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleAdminRevokeAll(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	u := s.userByPath(w, r)
+	if u == nil {
+		return
+	}
+	n, err := s.store.RevokeAllTokens(u.ID)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	cu.note("tokens_revoked", n)
+	s.log.Info("all tokens revoked by admin", "user", u.Username, "count", n, "by", cu.user.Username)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tokens_revoked": n})
+}
+
+func (s *Server) handleAdminUnbind(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	u := s.userByPath(w, r)
+	if u == nil {
+		return
+	}
+	if err := s.store.UnbindDevice(u.ID, r.PathValue("peer")); err != nil {
+		s.accountErr(w, err)
+		return
+	}
+	s.log.Info("device unbound by admin", "user", u.Username, "peer", r.PathValue("peer"), "by", cu.user.Username)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleAdminUserLedger(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	u := s.userByPath(w, r)
+	if u == nil {
+		return
+	}
+	s.ledgerListing(w, r, cu, u.ID, "user-ledger")
+}
+
+func (s *Server) handleAdminUserJobs(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	u := s.userByPath(w, r)
+	if u == nil {
+		return
+	}
+	s.jobsListing(w, r, cu, u.ID, "user-jobs")
+}
+
+func (s *Server) handleUpdateRelay(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", "bad relay id")
+		return
+	}
+	var req struct{ Name, Region string }
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if err := s.store.UpdateRelay(id, req.Name, req.Region); err != nil {
+		s.accountErr(w, err)
+		return
+	}
+	cu.note("name", req.Name)
+	cu.note("region", req.Region)
+	s.log.Info("relay updated", "id", id, "by", cu.user.Username)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, _ ctxUser) {
+	ns, err := coordinator.QueryNodes(s.db)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	// Tell operators which user each node belongs to.
+	type nodeRow struct {
+		coordinator.NodeStats
+		User          string `json:"user,omitempty"`
+		ClientVersion string `json:"client_version,omitempty"`
+	}
+	out := make([]nodeRow, 0, len(ns))
+	for _, n := range ns {
+		row := nodeRow{NodeStats: n}
+		_ = s.db.QueryRow(`SELECT u.username, d.client_version FROM devices d JOIN users u ON u.id = d.user_id WHERE d.peer = ?`, n.Node).Scan(&row.User, &row.ClientVersion)
+		out = append(out, row)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": out})
+}
+
+func (s *Server) handleResolveDispute(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	var req struct {
+		Decision string `json:"decision"` // pay | refund
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.Decision != "pay" && req.Decision != "refund" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "decision must be pay or refund")
+		return
+	}
+	job := r.PathValue("job")
+	cu.note("decision", req.Decision)
+	err := coordinator.ResolveDispute(s.db, job, req.Decision == "pay", s.cfg.Now())
+	switch {
+	case err == nil:
+		s.log.Info("dispute resolved", "job", job, "decision", req.Decision, "by", cu.user.Username)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case errors.Is(err, coordinator.ErrNotDisputed):
+		writeErr(w, http.StatusConflict, "not_disputed", err.Error())
+	case strings.Contains(err.Error(), "unknown job"):
+		writeErr(w, http.StatusNotFound, "not_found", "unknown job")
+	default:
+		s.internal(w, err)
+	}
+}
+
+// JournalLine is one ledger entry for operators.
+type JournalLine struct {
+	ledger.Entry
+	FromUser string `json:"from_user,omitempty"`
+	ToUser   string `json:"to_user,omitempty"`
+}
+
+// accountUser names the user behind a user:<id> account, caching lookups.
+func (s *Server) accountUser(cache map[string]string, acct string) string {
+	if !strings.HasPrefix(acct, "user:") {
+		return ""
+	}
+	if n, ok := cache[acct]; ok {
+		return n
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(acct, "user:"), 10, 64)
+	var name string
+	if err == nil {
+		if u, err := s.store.User(id); err == nil {
+			name = u.Username
+		}
+	}
+	cache[acct] = name
+	return name
+}
+
+// AccountRow is one ledger account with its balance, for operators.
+type AccountRow struct {
+	Account string `json:"account"`
+	User    string `json:"user,omitempty"`
+	Balance int64  `json:"balance_micros"`
+	Held    int64  `json:"held_micros"`
+}
+
+func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request, _ ctxUser) {
+	rows, err := s.db.Query(`SELECT a.account, a.balance, COALESCE((SELECT SUM(amount) FROM ledger_holds h WHERE h.owner = a.account AND h.open = 1), 0)
+		FROM ledger_accounts a ORDER BY a.account`)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []AccountRow{}
+	for rows.Next() {
+		var a AccountRow
+		if err := rows.Scan(&a.Account, &a.Balance, &a.Held); err != nil {
+			s.internal(w, err)
+			return
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		s.internal(w, err)
+		return
+	}
+	rows.Close() // the pool has one connection: finish reading before looking names up
+	names := map[string]string{}
+	for i := range out {
+		out[i].User = s.accountUser(names, out[i].Account)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
+}
+
+// overviewExtras fills the counters the dashboard shows beyond the books.
+func (s *Server) overviewExtras(o *Overview) error {
+	counts, err := coordinator.JobCounts(s.db)
+	if err != nil {
+		return err
+	}
+	o.Jobs = map[string]int64{}
+	for st, n := range counts {
+		o.Jobs[string(st)] = n
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(enabled), 0), COALESCE(SUM(enabled AND coordinator_ok), 0) FROM relays`).
+		Scan(&o.Relays, &o.RelaysEnabled, &o.RelaysOK); err != nil {
+		return err
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE disabled = 1`).Scan(&o.DisabledUsers); err != nil {
+		return err
+	}
+	var raw sql.NullString
+	if err := s.db.QueryRow("SELECT value FROM meta WHERE `key` = 'fee_bps'").Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	o.FeeBps, _ = strconv.ParseInt(raw.String, 10, 64)
+	return nil
+}

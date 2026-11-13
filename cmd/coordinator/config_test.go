@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"sharetoken/coordinator"
 	"sharetoken/internal/config"
+	"sharetoken/internal/coordinator"
 )
 
 func TestExampleConfigLoads(t *testing.T) {

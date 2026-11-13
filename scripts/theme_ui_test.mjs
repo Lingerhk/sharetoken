@@ -3,19 +3,26 @@
 // sidebar, the language menu, the icons, and every page at desktop and phone width.
 //
 //   scripts/gui_stack.sh start DIR && . DIR/env
-//   SHARETOKEN_PASSWORD=theme-pass DIR/bin/portal -db "$(cat DIR/dsn)" useradd -admin theme-admin
-//   ADMIN=theme-admin:theme-pass node scripts/theme_ui_test.mjs $PORTAL [shots-dir]
+//   STACK=DIR node scripts/theme_ui_test.mjs $PORTAL [shots-dir]
 //
-// Registers a throwaway user, so it needs open registration; leave ADMIN out to
-// skip the admin console. Never point it at a shared portal.
-import { spawn } from 'node:child_process';
+// Signs up a throwaway user and creates a throwaway admin in the stack, reading
+// their sign-in codes from its outbox; it needs open registration. Never point
+// it at a shared portal.
+import { execFileSync, spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const portal = process.argv[2];
+const STACK = process.env.STACK;
+if (!portal || !STACK) { console.error('usage: STACK=<gui_stack.sh directory> theme_ui_test.mjs <portal url> [shots-dir]'); process.exit(2); }
+const ROOT = new URL('..', import.meta.url).pathname;
+const quiet = (cmd, ...args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+const RUN = Date.now().toString(36);
+const ADMIN = `theme-admin-${RUN}@example.test`;
+quiet(STACK + '/bin/portal', '-db', readFileSync(STACK + '/dsn', 'utf8').trim(), 'useradd', '-admin', ADMIN);
 const shots = process.argv[3] || mkdtempSync(join(tmpdir(), 'st-theme-'));
 mkdirSync(shots, { recursive: true });
 const chrome = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -69,6 +76,13 @@ function totp(secret) {
   return String((mac.readUInt32BE(off) & 0x7fffffff) % 1e6).padStart(6, '0');
 }
 const fill = (sel, v) => ev(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el.value = ${JSON.stringify(v)}; el.dispatchEvent(new Event('input', {bubbles: true})); })()`);
+// signIn signs in with a code mailed to the address, read from the stack's outbox.
+async function signIn(email) {
+  await fill('#login-email', email);
+  await ev(`document.getElementById('send-code').click()`);
+  await fill('#login-code', quiet(ROOT + 'scripts/gui_stack.sh', 'code', STACK, email));
+  await ev(`document.querySelector('.login form').requestSubmit()`);
+}
 
 await cdp('Page.enable'); await cdp('Runtime.enable'); await cdp('Log.enable');
 await size(1440, 900);
@@ -87,15 +101,14 @@ await shot('login-light');
 ok(await ev(`!!document.querySelector('.auth-tools #lang-select') && !!document.querySelector('.auth-tools #theme-toggle')`), 'language and theme controls sit in the corner');
 ok(await ev(`!!document.querySelector('.auth .input-icon svg')`), 'the fields carry icons');
 
-const name = 'theme' + Date.now().toString(36);
-await fill('#login-user', name); await fill('#login-pass', 'theme-password');
-await ev(`document.querySelector('.login form').requestSubmit()`);
+const name = `theme-${RUN}@example.test`;
+await signIn(name);
 await waitFor(`document.querySelector('.sidenav a.active') && document.querySelector('main h1')`);
 
 // ---- the frame ----
 console.log('frame');
 ok(await ev(`[...document.querySelectorAll('.sidenav a')].every(a => a.querySelector('svg') && a.textContent.trim())`), 'every module has an icon and a name');
-ok(await ev(`document.querySelectorAll('.sidenav a').length`) === 8, 'the user portal lists its eight modules');
+ok(await ev(`document.querySelectorAll('.sidenav a').length`) === 9, 'the user portal lists its nine modules');
 ok(await ev(`!!document.querySelector('main h1 .chip svg')`), 'the page title carries the icon of its module');
 ok((await ev(`document.querySelector('.crumb').textContent`)).includes('总览'), 'the top bar names the current module');
 ok(await ev(`document.querySelectorAll('.tile .chip svg').length`) === await ev(`document.querySelectorAll('.tile').length`), 'every tile has an icon');
@@ -138,7 +151,7 @@ console.log('language menu');
 ok((await ev(`document.getElementById('lang-select').textContent`)).includes('简体中文'), 'the button shows the current language');
 ok(await ev(`!!document.querySelector('#lang-select svg')`), 'with an icon');
 await ev(`document.getElementById('lang-select').click()`);
-ok(await ev(`document.querySelectorAll('.lang-item').length`) === 20, 'the menu lists 20 languages');
+ok(await ev(`document.querySelectorAll('.lang-item').length`) === 10, 'the menu lists 10 languages');
 ok(await ev(`document.activeElement.getAttribute('lang')`) === 'zh-CN', 'focus starts on the current language');
 await shot('lang-dark');
 await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
@@ -181,6 +194,18 @@ await sleep(400);
 const inked = await ev(`(() => { const c = document.getElementById('mesh'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let dark = 0, light = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 40) { const l = d[i] + d[i + 1] + d[i + 2]; if (l < 380) dark++; else if (l > 650) light++; } return { dark, light }; })()`);
 ok(inked.dark > inked.light, 'the hero animation redraws in dark ink');
 await wholePage('site-light');
+// the vendors are tabs over one set of commands
+await ev(`document.getElementById('models').scrollIntoView({ behavior: 'instant' })`); await sleep(900);
+const vendorCode = () => ev(`document.getElementById('vendor-code').textContent`);
+ok(await ev(`document.querySelectorAll('.vendor svg').length`) === 7 && (await vendorCode()).includes('provider login anthropic'), 'seven model sources with logos, the first one open');
+await ev(`document.getElementById('vendor-deepseek').click()`);
+ok((await vendorCode()).includes('provider add deepseek') && !(await vendorCode()).includes('login'), 'a vendor without account login shows only the API key');
+ok(await ev(`document.getElementById('vendor-deepseek').getAttribute('aria-selected')`) === 'true' && await ev(`document.querySelectorAll('.vendor[aria-selected=true]').length`) === 1, 'and is the one selected tab');
+await ev(`document.getElementById('vendor-ollama').click()`);
+ok((await vendorCode()).includes('share add gemma4:e4b') && !(await vendorCode()).includes('provider'), 'the local source shows the local commands');
+await ev(`document.getElementById('vendor-openai').click()`);
+await sleep(300); // the border is still changing colour
+await shot('site-models-light');
 await ev(`document.getElementById('security').scrollIntoView({ behavior: 'instant' })`); await sleep(1500);
 await shot('site-security-light');
 for (const mode of ['light', 'dark']) {
@@ -225,7 +250,7 @@ await waitFor(`document.querySelector('.sidenav')`);
 ok(await theme() === 'light', 'the choice carries back to the portal');
 
 // ---- every user page, both themes, phone and desktop ----
-const USER = ['home', 'ledger', 'jobs', 'tokens', 'devices', 'network', 'account', 'feedback'];
+const USER = ['home', 'ledger', 'jobs', 'tokens', 'devices', 'pairing', 'network', 'account', 'feedback'];
 async function pages(path, routes, label) {
   for (const [w, h, phone] of [[1440, 900, false], [390, 780, true]]) {
     await size(w, h, phone);
@@ -263,36 +288,27 @@ await ev(`document.querySelector('.sidenav a[href="#/jobs"]').click()`);
 await sleep(350);
 ok(await ev(`!document.querySelector('.shell').classList.contains('nav-open')`), 'choosing a module closes it');
 
-// ---- right-to-left ----
-console.log('right-to-left');
 await size(1440, 900);
-await go(`${portal}/app/?lang=ar`);
-await waitFor(`document.querySelector('.sidenav a.active') && document.querySelector('main h1')`);
-ok(await ev(`document.querySelector('.sidebar').getBoundingClientRect().right`) === 1440, 'the sidebar moves to the right');
-ok(await overflow() <= 0, 'nothing runs off the screen');
-await shot('rtl');
 await ev(`localStorage.setItem('st_lang', 'zh-CN')`);
 
 // ---- the admin console ----
-if (process.env.ADMIN) {
+{
   console.log('admin console');
-  const [admin, password] = process.env.ADMIN.split(':');
   await ev(`ST.logout()`);
   await sleep(500);
   await go(`${portal}/admin/`);
-  await waitFor(`document.getElementById('login-user')`);
+  await waitFor(`document.getElementById('login-email')`);
   ok(!(await ev(`!!document.getElementById('lang-select')`)), 'the sign-in has no language menu');
   ok(await ev(`!!document.getElementById('theme-toggle')`), 'but has the theme control');
-  await fill('#login-user', admin); await fill('#login-pass', password);
-  await ev(`document.querySelector('.login form').requestSubmit()`);
+  await signIn(ADMIN);
   await waitFor(`document.getElementById('mfa-code')`);
   const secret = await ev(`document.getElementById('mfa-secret')?.textContent || ''`);
   await shot('admin-mfa');
   await fill('#mfa-code', totp(secret));
   await ev(`document.querySelector('.login form').requestSubmit()`);
   await waitFor(`document.querySelector('.sidenav a.active') && document.querySelector('main h1')`);
-  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 13, 'all thirteen admin modules have icons');
-  await pages('/admin/', ['overview', 'users', 'relays', 'versions', 'jobs', 'nodes', 'audits', 'disputes', 'ledger', 'mail', 'feedback'], 'admin');
+  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 15, 'all fifteen admin modules have icons');
+  await pages('/admin/', ['overview', 'users', 'relays', 'versions', 'jobs', 'nodes', 'audits', 'disputes', 'pairings', 'ledger', 'mail', 'feedback'], 'admin');
   await size(1440, 900);
   await ev(`location.hash = '#/users/' + encodeURIComponent(${JSON.stringify(name)})`);
   await waitFor(`document.querySelector('main h1 .chip') && document.querySelector('main .tile')`);

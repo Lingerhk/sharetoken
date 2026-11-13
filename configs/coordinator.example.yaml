@@ -1,81 +1,86 @@
-# sharetoken coordinator 配置样板
-# 用法: coordinator -config /etc/sharetoken/coordinator.yaml [serve|balance|nodes|check|...]
-#   运维子命令也读同一份文件（拿 database / identity），不用再重复传 -db -key。
-# 优先级: 内置默认 < 本文件 < 命令行 flag。相对路径相对于本文件目录。未知字段报错。
-# 机密不写明文：一律用 *_env（环境变量名）或 *_file（文件路径，建议 0600）。
+# Example configuration of the sharetoken coordinator.
+#   coordinator -config /etc/sharetoken/coordinator.yaml [serve|balance|nodes|check|...]
+# Admin commands read the same file (for database and identity).
+# Precedence: built-in defaults < this file < command-line flags given explicitly.
+# Relative paths are resolved against this file's directory. Unknown keys are an error.
+# Secrets are never written here: use *_env (name of an environment variable)
+# or *_file (path of a file, mode 0600).
 
 version: 1
 
 identity:
-  key_file: coordinator.key      # peer ID 来源；relay 的 allow_peers 依赖它，务必备份
+  key_file: coordinator.key      # the peer ID comes from it, and relays list that ID under allow_peers: back it up
 
-# 与 portal 共用同一个库（两边配置必须指向同一 DSN）
+# The database is shared with the portal: both files must name the same one.
 database:
   # mysql://user@host:port/db
   dsn: mysql://sharetoken@127.0.0.1:3306/sharetoken
-  password_env: SHARETOKEN_DB_PASSWORD   # 或 password_file: /etc/sharetoken/db.pass
-  # 以下为 [新增，原硬编码]
+  password_env: SHARETOKEN_DB_PASSWORD   # or password_file: /etc/sharetoken/db.pass
   max_open_conns: 32
   max_idle_conns: 8
   conn_max_lifetime: 30m
   connect_timeout: 10s
   lock_wait_timeout: 10s         # innodb_lock_wait_timeout
-  startup_busy_retry: 2m         # [新增] 启动迁移遇库锁时重试多久
+  startup_busy_retry: 2m         # how long startup keeps retrying while another program migrates the schema
 
 network:
-  listen: []                     # 默认空：只拨出，经中继可达，不需要公网地址
-  max_conns: 8192                # 每个在线用户占一条中继连接；libp2p 资源管理器的全局连接/流数按它放宽，其余限额（每流 16 MiB、每 peer 流数、全局内存 = RAM/8）保留
-  # 除数据库中登记的中继外，额外占位的中继（完整 multiaddr，以 /p2p/<id> 结尾）
+  listen: []                     # empty (default): dial out only and be reached through relays; no public address needed
+  # Each online user holds one relayed connection. libp2p's system-wide
+  # connection and stream limits are raised to match; the other limits (16 MiB
+  # per stream, streams per peer, total memory) stay.
+  max_conns: 8192
+  # Relays to reserve on besides those registered in the database (full
+  # multiaddrs ending in /p2p/<id>).
   relays: []
-  relay_sync: 15s                # [新增] 中继列表/状态同步间隔
+  relay_sync: 15s                # how often the relay list and its state are synchronised
 
-# 计费与撮合
+# Pricing and matching
 market:
-  fee_bps: 500                   # 平台抽成，基点（500 = 5%）
-  min_budget_micros: 1           # [新增] 单票最小冻结额
-  warm_up: 30s                   # [新增] 重启后此时间内无报价返回 capacity（让买家排队）
+  fee_bps: 500                   # the platform's cut in basis points (500 = 5%)
+  min_budget_micros: 1           # smallest hold of one ticket
+  warm_up: 30s                   # after a restart, answer "capacity" for this long while offers arrive (buyers queue)
 
-# 工单/结算时序 —— 全部为 [新增，原硬编码]，默认值即当前行为；非必要不要改
+# Job timing. The values below are the defaults; change them only with a reason.
 jobs:
-  ticket_ttl: 1m                 # 节点开始执行的时限
-  start_grace: 30s               # 票过期后再等多久释放未开始的单
-  reconnect_grace: 2m            # 节点重连后推迟释放
-  max_stale_tickets: 5           # 买家可持有的“陈旧未开始”票上限
-  stale_after: 15s               # 签出多久未开始算“陈旧”
-  settle_grace: 15m              # 结算到达的额外宽限
-  dispute_window: 24h            # 未确认结算自动终结
-  max_offer_ttl: 5m              # 报价声称的有效期上限
-  job_retention: 720h            # 已完成工单保留（流水账永久保留）
-  suspend_for: 24h               # 抽检多次失败后停止撮合该节点的时长
+  ticket_ttl: 1m                 # time a node has to start the job
+  start_grace: 30s               # after the ticket expires, how long before an unstarted job is released
+  reconnect_grace: 2m            # release is put off this long after the node reconnects
+  max_stale_tickets: 5           # stale unstarted tickets one buyer may hold
+  stale_after: 15s               # a ticket not started this long after issue is stale
+  settle_grace: 15m              # extra time for a settlement to arrive
+  dispute_window: 24h            # an unconfirmed settlement becomes final after this
+  max_offer_ttl: 5m              # ceiling on the lifetime an offer may claim
+  job_retention: 720h            # how long finished jobs are kept (the ledger is kept for good)
+  suspend_for: 24h               # how long a node that keeps failing audits is left out of matching
 
-# 参考模型：开启抽检 + 争议时精确计 token
+# Reference copies of models: they turn on audits, and exact token counts in disputes.
 references:
-  - id: qwen2.5-7b               # 市场模型 ID
-    upstream: qwen2.5:7b         # 上游服务里的模型名
+  - id: qwen2.5-7b               # model ID on the marketplace
+    upstream: qwen2.5:7b         # the model's name on the server
     url: http://127.0.0.1:11434/v1
-    api_key_env: ""              # 上游 API key 所在环境变量
+    api_key_env: ""              # environment variable holding the server's API key
 
 audit:
-  interval: 10m                  # 平均抽检间隔，0 关闭
-  budget_micros: 200000          # 每次抽检冻结额，由平台手续费支付
-  prompts_file: ""               # 挑战 prompt，每行一个；空 = 内置随机
-  max_tokens: 96                 # [新增] 挑战输出上限
-  match_at: 0.8                  # [新增] 相似度 ≥ 视为一致
-  mismatch_below: 0.4            # [新增] 相似度 < 视为不一致
+  interval: 10m                  # mean time between audits; 0 turns them off
+  budget_micros: 200000          # held for each audit, paid from the platform's fees
+  prompts_file: ""               # challenge prompts, one per line; empty: built-in random ones
+  max_tokens: 96                 # output limit of a challenge
+  match_at: 0.8                  # similarity at or above this: the same model
+  mismatch_below: 0.4            # similarity below this: a different model
 
 tee:
-  policy_file: ""                # TEE 镜像白名单 JSON；设置后启用 require_tee 撮合
-  online_check: false            # 联网向 AMD/Intel 查吊销/TCB
+  policy_file: ""                # JSON allow-list of TEE images; setting it enables matching for require_tee
+  online_check: false            # ask AMD and Intel about revocation and TCB status
 
 debug:
-  pprof_listen: ""               # 如 127.0.0.1:6060，仅回环
+  pprof_listen: ""               # for example 127.0.0.1:6060; loopback only
 
 log:
   level: info
   format: text
   file: ""
 
-# 仅开发/测试网！启动时会大声告警；建议生产构建直接拒绝
+# Development and test networks only. The coordinator warns loudly at startup.
 dev:
-  open_accounts: false           # 未绑定用户的 peer 用自身账户交易
-  credit_micros: 0               # 每个新 peer 首次使用赠送额度
+  open_accounts: false           # a peer not bound to a user trades on an account of its own
+  credit_micros: 0               # credit granted to each new peer on first use

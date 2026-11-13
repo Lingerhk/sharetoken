@@ -4,13 +4,14 @@
 // API, and stops it again if it started it.
 //
 // It is a separate Go module so that the servers and the CLI build without cgo
-// and without the webview's dependencies. See docs/gui.md.
+// and without the webview's dependencies. See docs/desktop.md.
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	goruntime "runtime"
 	"strings"
@@ -18,18 +19,18 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/menu"
-	"github.com/wailsapp/wails/v2/pkg/menu/keys"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
+	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 )
 
+// The window is a small one: every view of the page fits it without scrolling
+// the page, and long lists scroll inside their own panel.
 const (
-	windowWidth     = 1040
-	windowHeight    = 760
-	minWindowHeight = 560
+	windowWidth     = 880
+	windowHeight    = 600
+	minWindowWidth  = 760
+	minWindowHeight = 520
 	// screenReserve is left for the taskbar or Dock and the window's title bar.
 	screenReserve = 96
 )
@@ -41,25 +42,45 @@ func fittedSize(screenW, screenH int) (int, int) {
 	return min(windowWidth, screenW), max(minWindowHeight, min(windowHeight, screenH-screenReserve))
 }
 
-func fitToScreen(ctx context.Context) {
-	screens, err := runtime.ScreenGetAll(ctx)
-	if err != nil {
+func fitToScreen(w *application.WebviewWindow) {
+	s, err := w.GetScreen()
+	if err != nil || s == nil {
 		return
 	}
-	for _, s := range screens {
-		if !s.IsCurrent {
-			continue
-		}
-		if w, h := fittedSize(s.Size.Width, s.Size.Height); w != windowWidth || h != windowHeight {
-			runtime.WindowSetSize(ctx, w, h)
-			runtime.WindowCenter(ctx)
-		}
-		return
+	if fw, fh := fittedSize(s.Size.Width, s.Size.Height); fw != windowWidth || fh != windowHeight {
+		w.SetSize(fw, fh)
+		w.Center()
 	}
 }
 
-// langReportJS tells the shell which language the page chose, for the tray's text.
-const langReportJS = `fetch('` + shellLangPath + `?l=' + encodeURIComponent(document.documentElement.lang));`
+// langReportJS tells the shell which language the page shows, for the tray's
+// text: once the page is there, and again whenever it changes.
+const langReportJS = `(() => {
+  const report = () => fetch('` + shellLangPath + `?l=' + encodeURIComponent(document.documentElement.lang));
+  new MutationObserver(report).observe(document.documentElement, { attributes: true, attributeFilter: ['lang'] });
+  addEventListener('DOMContentLoaded', report);
+})();`
+
+// shellClassJS tells the page which window it is in: on macOS the title bar is
+// hidden and the page draws under the window's buttons, so it leaves room for
+// them and marks where the window can be dragged (app.css, .os-darwin).
+const shellClassJS = `document.documentElement.classList.add('os-` + goruntime.GOOS + `');`
+
+// runtimeJS loads Wails' page runtime. It turns a mouse-down on an element
+// marked --wails-draggable into a window drag (macOS, where the page draws the
+// title bar), and Wails runs script in the page (ExecJS) only once it is there.
+// The asset server answers /wails/runtime.js itself, so it is a script of the
+// page's own origin and its CSP allows it.
+const runtimeJS = `import('/wails/runtime.js').catch(e => console.error('wails runtime', e));`
+
+// shellBootJS is the shell's script for each page the window loads (proxy.go).
+func shellBootJS(selftest bool) string {
+	js := shellClassJS + runtimeJS
+	if selftest {
+		return js + selftestJS
+	}
+	return js + langReportJS // the tray and the notifications speak the page's language
+}
 
 func errText(e *error) string {
 	if e == nil {
@@ -70,9 +91,9 @@ func errText(e *error) string {
 
 func main() {
 	sup := newSupervisor()
-	// The daemon is started once Wails holds the single-instance lock (OnStartup),
-	// so a second start of the app leaves without touching anything. The window's
-	// first request may arrive before that, and waits.
+	// The daemon is started once Wails holds the single-instance lock (taken in
+	// application.New), so a second start of the app leaves without touching
+	// anything. The window's first request may arrive before that, and waits.
 	start := sync.OnceValue(func() error {
 		err := sup.start(context.Background())
 		if err != nil {
@@ -87,122 +108,160 @@ func main() {
 	mode := os.Getenv("SHARETOKEN_GUI_SELFTEST")
 	trayCheck := mode == "tray"
 	selftest := mode != "" && !trayCheck
-	useTray := trayAvailable && !selftest
+	useTray := !selftest && trayAvailable()
 	var trayCheckErr atomic.Pointer[error]
 
 	result := make(chan string, 1)
-	var appCtx atomic.Pointer[context.Context]
+	var window *application.WebviewWindow
+	var app *application.App
 	showWindow := func() {
-		if ctx := appCtx.Load(); ctx != nil {
-			nativeShowWindow(*ctx)
+		if window == nil {
+			return
+		}
+		if goruntime.GOOS == "darwin" {
+			// The app may be hidden as a whole (Command-H). Unlike the window's
+			// methods, App.Show does not move itself to the main thread.
+			application.InvokeSync(app.Show)
+		}
+		window.Show()
+		window.Restore()
+		window.Focus()
+	}
+	var nt atomic.Pointer[nativeTray]
+	tray := newTrayController(start, func() string { return sup.addr }, func(m trayMenu) {
+		if t := nt.Load(); t != nil {
+			t.set(m)
+		}
+	})
+	handler := newProxy(sup, start, result, tray.setLang)
+	handler.boot = shellBootJS(selftest)
+
+	// Run does not return on every platform: macOS ends the process when the app
+	// terminates. So the daemon is stopped, and the self-tests report, from Wails'
+	// shutdown hooks.
+	stopDaemon := sync.OnceFunc(func() {
+		_ = start() // one still in progress must finish before it can be stopped
+		sup.stop()
+	})
+	finish := sync.OnceFunc(func() {
+		if selftest && !strings.HasPrefix(handler.lastResult(), "ok") {
+			os.Exit(1)
+		}
+		if trayCheck {
+			if e := trayCheckErr.Load(); e == nil || *e != nil {
+				fmt.Println("selftest: failed:", errText(e))
+				os.Exit(1)
+			}
+			fmt.Println("selftest: ok")
+		}
+	})
+
+	notifier := notifications.New()
+	opts := application.Options{
+		OnShutdown:   stopDaemon,
+		PostShutdown: finish,
+		Name:         windowTitle(),
+		LogLevel:     slog.LevelWarn, // not Wails' build and platform lines at each start
+		Assets:       application.AssetOptions{Handler: handler, DisableLogging: true},
+		Services:     []application.Service{application.NewService(notifier)},
+		Mac: application.MacOptions{
+			ActivationPolicy: application.ActivationPolicyRegular,
+			// With a tray, closing the window leaves the app and its daemon
+			// running; the menu's Quit ends them.
+			ApplicationShouldTerminateAfterLastWindowClosed: !useTray,
+		},
+		Windows: application.WindowsOptions{DisableQuitOnLastWindowClosed: useTray},
+		Linux:   application.LinuxOptions{DisableQuitOnLastWindowClosed: useTray, ProgramName: daemonName()},
+	}
+	if useTray {
+		opts.SingleInstance = &application.SingleInstanceOptions{
+			UniqueID:               singleInstanceID(sup.home),
+			OnSecondInstanceLaunch: func(application.SecondInstanceData) { showWindow() },
 		}
 	}
-	tray := newTrayController(start, func() string { return sup.addr }, nativeTraySet)
-	handler := newProxy(sup, start, result, tray.setLang)
+	app = application.New(opts)
 
-	var m *menu.Menu
-	if goruntime.GOOS != "windows" { // Wails draws these roles as blank menus on Windows, where WebView2 handles the keys itself
-		m = menu.NewMenu()
-		m.Append(menu.AppMenu())
+	if goruntime.GOOS == "darwin" { // Windows and Linux windows have no menu bar; the webview handles the keys
+		m := app.NewMenu()
+		m.AddRole(application.AppMenu)
 		if useTray { // only here is closing different from quitting
-			m.AddSubmenu("File").AddText("Close Window", keys.CmdOrCtrl("w"), func(*menu.CallbackData) {
-				if ctx := appCtx.Load(); ctx != nil {
-					runtime.Hide(*ctx) // what closing does
+			m.AddSubmenu("File").Add("Close Window").SetAccelerator("CmdOrCtrl+W").OnClick(func(*application.Context) {
+				if window != nil {
+					window.Hide() // what closing does
 				}
 			})
 		}
-		m.Append(menu.EditMenu()) // without it, copy and paste do not work on macOS
-		m.Append(menu.WindowMenu())
+		m.AddRole(application.EditMenu) // without it, copy and paste do not work on macOS
+		m.AddRole(application.WindowMenu)
+		app.Menu.Set(m)
 	}
 
-	app := &options.App{
+	window = app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:      "main",
 		Title:     windowTitle(),
 		Width:     windowWidth,
 		Height:    windowHeight,
-		MinWidth:  480,
+		MinWidth:  minWindowWidth,
 		MinHeight: minWindowHeight,
-		Menu:      m,
-		// With a tray, closing the window leaves the app and its daemon running;
-		// the menu's Quit ends them.
-		HideWindowOnClose: useTray,
-		OnBeforeClose:     onBeforeClose,
-		StartHidden:       selftest,
-		AssetServer:       &assetserver.Options{Handler: handler},
-		OnDomReady: func(ctx context.Context) {
-			if selftest {
-				runtime.WindowExecJS(ctx, selftestJS)
-			}
-			if !selftest { // the tray and the notifications speak the page's language
-				runtime.WindowExecJS(ctx, langReportJS)
-			}
-		},
-		OnStartup: func(ctx context.Context) {
-			appCtx.Store(&ctx)
-			fitToScreen(ctx)
-			go start()
-			if useTray {
-				nativeTrayStart(windowTitle(), showWindow, func() { runtime.Quit(ctx) })
-			}
-			if !selftest { // without a tray (Linux) it only sends the notifications
-				if !trayCheck {
-					tray.notify = (&desktopNotifier{ctx: ctx, show: showWindow}).send
-				}
-				go tray.run(ctx)
-			}
-			if trayCheck {
-				go func() {
-					t := &trayTest{ctx: ctx, sup: sup}
-					err := t.run(start, tray.langReported, func(lang string) {
-						runtime.WindowExecJS(ctx, "fetch('"+shellLangPath+"?l="+lang+"');")
-					})
-					trayCheckErr.Store(&err)
-					if err != nil {
-						runtime.Quit(ctx)
-						return
-					}
-					nativeTrayClick("quit")
-					time.Sleep(15 * time.Second)
-					e := fmt.Errorf("the menu's Quit did not end the app")
-					trayCheckErr.Store(&e)
-					runtime.Quit(ctx)
-				}()
-			}
-			if selftest {
-				go func() {
-					select {
-					case r := <-result:
-						fmt.Println("selftest:", r)
-					case <-time.After(60 * time.Second):
-						fmt.Println("selftest: failed: the page never reported")
-					}
-					runtime.Quit(ctx)
-				}()
-			}
-		},
-	}
+		URL:       "/",
+		Hidden:    selftest,
+		Mac:       application.MacWindow{TitleBar: application.MacTitleBarHiddenInset},
+	})
 	if useTray {
-		app.SingleInstanceLock = &options.SingleInstanceLock{
-			UniqueId:               singleInstanceID(sup.home),
-			OnSecondInstanceLaunch: func(options.SecondInstanceData) { showWindow() },
+		window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+			window.Hide()
+			e.Cancel()
+		})
+	}
+
+	go start()
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		fitToScreen(window)
+		ctx := app.Context()
+		if useTray {
+			nt.Store(startTray(app, windowTitle(), showWindow, app.Quit))
 		}
-	}
-	err := wails.Run(app)
-	if useTray {
-		nativeTrayStop()
-	}
-	_ = start() // one still in progress must finish before it can be stopped
-	sup.stop()
+		if !selftest {
+			if !trayCheck {
+				tray.notify = (&desktopNotifier{ns: notifier, show: showWindow}).send
+			}
+			go tray.run(ctx)
+		}
+		if trayCheck {
+			go func() {
+				t := &trayTest{ctx: ctx, sup: sup, win: window, tray: nt.Load()}
+				err := t.run(start, tray.langReported, func(lang string) {
+					window.ExecJS("fetch('" + shellLangPath + "?l=" + lang + "');")
+				})
+				trayCheckErr.Store(&err)
+				if err != nil {
+					app.Quit()
+					return
+				}
+				t.tray.click("quit")
+				time.Sleep(15 * time.Second)
+				e := fmt.Errorf("the menu's Quit did not end the app")
+				trayCheckErr.Store(&e)
+				app.Quit()
+			}()
+		}
+		if selftest {
+			go func() {
+				select {
+				case r := <-result:
+					fmt.Println("selftest:", r)
+				case <-time.After(60 * time.Second):
+					fmt.Println("selftest: failed: the page never reported")
+				}
+				app.Quit()
+			}()
+		}
+	})
+
+	err := app.Run()
 	if err != nil {
+		stopDaemon()
 		log.Fatalf("sharetoken-gui: %v", err)
 	}
-	if selftest && !strings.HasPrefix(handler.lastResult(), "ok") {
-		os.Exit(1)
-	}
-	if trayCheck {
-		if e := trayCheckErr.Load(); e == nil || *e != nil {
-			fmt.Println("selftest: failed:", errText(e))
-			os.Exit(1)
-		}
-		fmt.Println("selftest: ok")
-	}
+	finish()
 }

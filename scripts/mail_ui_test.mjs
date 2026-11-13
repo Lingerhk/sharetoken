@@ -39,7 +39,7 @@ database: {dsn: "${DSN}"}
 keys: {pass_key_file: pass.key}
 http: {listen: "127.0.0.1:${PORTAL}"}
 tls: {mode: auto}
-accounts: {open_registration: true, signup_credit_micros: 1000000, email_verification: true}
+accounts: {open_registration: true, signup_credit_micros: 1000000}
 mail: {from: "ShareToken <team@ui.test>", support: "ShareToken Support <support@ui.test>"}
 `);
 writeFileSync(join(dir, 'mail.yaml'), `version: 1
@@ -50,8 +50,7 @@ dkim: {selector: t1, key_file: dkim.key}
 delivery: {mode: smarthost, smarthost: {addr: "127.0.0.1:1"}}
 smtp: {enabled: true, listen: "127.0.0.1:${SMTP}", mailboxes: ["support@ui.test"]}
 `);
-const PASSWORD = 'adminadmin';
-execFileSync('./portal', ['-config', 'portal.yaml', 'useradd', '-admin', 'root'], { cwd: dir, env: { ...process.env, SHARETOKEN_PASSWORD: PASSWORD }, stdio: 'ignore' });
+execFileSync('./portal', ['-config', 'portal.yaml', 'useradd', '-admin', 'root@ui.test'], { cwd: dir, stdio: 'ignore' });
 execFileSync('./mailserver', ['-config', 'mail.yaml', 'dkim-keygen'], { cwd: dir, stdio: 'ignore' });
 run('./portal', ['-config', 'portal.yaml', 'serve'], 'portal');
 run('./mailserver', ['-config', 'mail.yaml', 'serve'], 'mailserver');
@@ -126,12 +125,11 @@ function totp(secret) {
 // ---- sign-up ----
 console.log('email sign-up');
 await goto(base + '/app/');
-await clickText('button', '注册');
 await waitFor(q('#send-code'));
-ok(await ev(`!${q('.code-field')}.hidden`), 'the code field appears for registration');
-await fill('#login-user', 'ui@example.com'); await fill('#login-pass', 'correct horse');
+ok(await ev(`!${q('.code-field')}.hidden`), 'the sign-in form asks for a mailed code');
+await fill('#login-email', 'ui@example.com');
 await ev(`document.querySelector('form').requestSubmit()`); await sleep(300);
-ok((await body()).includes('请填写邮箱收到的验证码'), 'sign-up without a code is stopped in the page');
+ok((await body()).includes('请填写邮箱收到的验证码'), 'sign-in without a code is stopped in the page');
 await fill('#login-code', '000000');
 await ev(`document.querySelector('form').requestSubmit()`); await sleep(400);
 ok((await body()).includes('验证码错误或已过期'), 'a wrong code is explained');
@@ -179,8 +177,12 @@ ok(replies.includes('354'), 'bounces arrive with a null sender');
 // ---- admin console ----
 console.log('admin console');
 await goto(base + '/admin/');
-await waitFor(q('#login-user'));
-await fill('#login-user', 'root'); await fill('#login-pass', PASSWORD);
+await waitFor(q('#login-email'));
+await fill('#login-email', 'root@ui.test');
+await click('#send-code');
+let adminCode;
+for (let i = 0; i < 50 && !adminCode; i++) { adminCode = sql(`SELECT subject FROM mail_outbox WHERE to_addr='root@ui.test' ORDER BY id DESC LIMIT 1`).match(/\b\d{6}\b/)?.[0]; if (!adminCode) await sleep(200); }
+await fill('#login-code', adminCode);
 await ev(`document.querySelector('form').requestSubmit()`);
 await waitFor(q('#mfa-secret'));
 const secret = await ev(`${q('#mfa-secret')}.textContent`);
@@ -218,7 +220,7 @@ ok(t.includes('attacker@evil.example') && t.includes('谢谢反馈') && t.includ
 await sleep(2500);
 await goto(base + '/admin/#/mail/outbox'); await waitFor(`document.querySelector('main table')`);
 t = await body();
-ok(!t.includes(code), 'the outbox does not show verification codes');
+ok(!t.includes(code) && !t.includes(adminCode), 'the outbox does not show sign-in codes');
 ok(t.includes('含验证码'), 'it says why');
 await shot('04-outbox');
 

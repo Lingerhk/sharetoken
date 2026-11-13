@@ -1,0 +1,24 @@
+[
+  {"title": {"en": "Get started", "zh-CN": "开始"}, "pages": [
+    {"slug": "overview", "title": {"en": "Overview", "zh-CN": "概览"}},
+    {"slug": "quickstart", "title": {"en": "Quick start", "zh-CN": "快速开始"}}
+  ]},
+  {"title": {"en": "Install", "zh-CN": "安装"}, "pages": [
+    {"slug": "desktop", "title": {"en": "Desktop app", "zh-CN": "桌面应用"}},
+    {"slug": "install", "title": {"en": "Install the command-line client", "zh-CN": "安装命令行版"}},
+    {"slug": "update", "title": {"en": "Update and uninstall", "zh-CN": "升级和卸载"}}
+  ]},
+  {"title": {"en": "Use", "zh-CN": "使用"}, "pages": [
+    {"slug": "account", "title": {"en": "Account and devices", "zh-CN": "账户和设备"}},
+    {"slug": "running", "title": {"en": "Run the client", "zh-CN": "运行客户端"}},
+    {"slug": "use-models", "title": {"en": "Call models", "zh-CN": "调用模型"}},
+    {"slug": "share", "title": {"en": "Share a model", "zh-CN": "共享模型"}},
+    {"slug": "agents", "title": {"en": "Use with coding agents", "zh-CN": "在编程助手中使用"}}
+  ]},
+  {"title": {"en": "Reference", "zh-CN": "参考"}, "pages": [
+    {"slug": "cli", "title": {"en": "Command reference", "zh-CN": "命令参考"}},
+    {"slug": "config", "title": {"en": "Configuration and files", "zh-CN": "配置和文件"}},
+    {"slug": "api", "title": {"en": "Local API", "zh-CN": "本地 API"}},
+    {"slug": "troubleshooting", "title": {"en": "Troubleshooting", "zh-CN": "故障排查"}}
+  ]}
+]

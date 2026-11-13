@@ -11,8 +11,7 @@ BIN=$(cd "$2" && pwd)
 HOME_DIR=$(mktemp -d)
 trap 'rm -rf "$HOME_DIR"' EXIT
 printf '{"version":1,"env":"%s","http":"127.0.0.1:%s"}\n' "$ENV" "${GUI_TEST_PORT:-19799}" > "$HOME_DIR/config.json"
-# The binaries are release builds: keep this test out of the real statistics.
-export SHARETOKEN_HOME=$HOME_DIR SHARETOKEN_GUI_SELFTEST=1 SHARETOKEN_TELEMETRY=0
+export SHARETOKEN_HOME=$HOME_DIR SHARETOKEN_GUI_SELFTEST=1
 SUFFIX=-$ENV; [ "$ENV" = prod ] && SUFFIX=
 RUN=("$BIN/sharetoken-gui$SUFFIX")
 if [ "$(uname -s)" = Linux ] && [ -z "${DISPLAY:-}" ]; then RUN=(xvfb-run -a "${RUN[@]}"); fi

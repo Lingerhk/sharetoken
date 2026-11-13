@@ -1,110 +1,114 @@
-# 邮件服务
+# Mail
 
-发送注册验证码和通知，接收 `support@` 等地址的邮件，在管理后台查看和回复。代码：`mailer/`（模块）、`cmd/mailserver`（服务）、`portal/mail.go`（门户接口）。
+**English** | [简体中文](zh-CN/mail.md)
 
-## 结构
+The mail server sends sign-in codes and notices, and receives mail for a few addresses such as `support@`, which administrators read and answer in the admin console. **A portal needs it**: there are no passwords, and everyone, administrators included, signs in with a code mailed to their address. Without a sender (`mail.from`) and a running mail server nobody can sign in.
+
+Code: [`internal/mailer`](../internal/mailer) (the library), [`cmd/mailserver`](../cmd/mailserver) (the server), [`internal/portal/mail.go`](../internal/portal/mail.go) (the portal's endpoints). Example configuration: [`configs/mail.example.yaml`](../configs/mail.example.yaml).
+
+## Structure
 
 ```
-门户 ── 写 mail_outbox / mail_codes ──▶ MySQL ◀── 投递、收信写 mail_inbox ── mailserver ◀── 25 端口 ── 互联网
- ▲                                                    │
- └── 管理后台 /admin/#/mail                            └── 直投收件方 MX（或 smarthost、Resend API）
+portal ── writes mail_outbox / mail_codes ──▶ MySQL ◀── delivers; writes mail_inbox ── mailserver ◀── port 25 ── internet
+  ▲                                                                                        │
+  └── admin console /admin/#/mail                                                          └── recipient's MX, a smarthost, or the Resend API
 ```
 
-- 门户和 mailserver **只通过数据库交互**。mailserver 宕机时邮件排队，注册接口不受影响。
-- mailserver 是唯一直接面对陌生人的进程，所以有自己的系统用户 `st-mail` 和单独的 MySQL 账号，只能访问 `mail_outbox`、`mail_inbox`、`mail_status`，碰不到账本、用户和验证码表，也读不到门户和协调器的密钥。systemd 只给它绑定 25 端口的权限（[server-layout.md](server-layout.md)）。
-- 只收 `smtp.mailboxes` 列出的地址，其他在 SMTP 对话中拒绝（550）。不转发，不自动回复，所以不是开放中继，也不会产生反向散射。
+- The portal and the mail server talk **only through the database**. While the mail server is down, mail queues up and the sign-in endpoints keep answering, but no code arrives until it is back.
+- The mail server is the one process strangers talk to directly. Run it as its own system user, with a MySQL account of its own that may only use `mail_outbox`, `mail_inbox` and `mail_status`. It then cannot reach the ledger, the users or the verification codes, and it cannot read the keys of the portal or the coordinator. Give it nothing beyond the right to bind port 25.
+- It accepts mail only for the addresses listed in `smtp.mailboxes` and refuses everything else during the SMTP dialogue (550). It never forwards and never answers automatically, so it is not an open relay and produces no backscatter.
 
-## 环境
+## Setting it up
 
-| | prod（云主机） | dev（armbian） |
+1. Create the restricted MySQL account. The portal creates the mail tables when it starts; `mailserver -config mail.yaml migrate` does the same with an account that may create tables.
+2. Copy `configs/mail.example.yaml` to `mail.yaml` and set `hostname` (the name MX points to), `domain`, `dkim.selector`, `delivery.mode` and `smtp.mailboxes`.
+3. Create the DKIM key and publish the DNS records below.
+4. Start the server, and set the sender addresses on the portal: `mail.from` and `mail.support` in `portal.yaml`, or the settings page.
+
+```bash
+mailserver -config mail.yaml check-config          # validate, print the effective settings
+mailserver -config mail.yaml dkim-keygen           # create dkim.key_file, print its TXT record
+mailserver -config mail.yaml dns                   # the DKIM record to publish, and a check of what is published now
+mailserver -config mail.yaml migrate               # create the mail tables
+mailserver -config mail.yaml serve                 # run
+mailserver -config mail.yaml send-test you@example.net   # queue a test message; the running server delivers it
+```
+
+A DKIM key is required in every delivery mode: without `dkim.selector` and `dkim.key_file` the server does not start.
+
+## DNS
+
+For a deployment that sends as `…@example.com` from the host `mail.example.com`, with the DKIM selector `s1`:
+
+| Record | Value | Purpose |
 |---|---|---|
-| 发件地址 | `team@sharetoken.app` | `team-dev@sharetoken.app` |
-| 反馈地址 | `support@sharetoken.app` | `support-dev@sharetoken.app` |
-| DKIM 选择器 | `st1` | `stdev1` |
-| 配置 | `scripts/prod/mail.yaml` | `scripts/dev/mail.yaml` |
-| 密钥 | Mac `~/st-test/prod-keys/{dkim.key,mail-db.pass,resend.key}`；服务器 `/etc/sharetoken/mail/{dkim.key,db.pass,resend.key}`（st-mail 0600），证书由 certbot 钩子复制到 `/etc/sharetoken/mail/tls/` | Mac `~/st-test/dev-keys/{dkim.key,mail-db.pass}`；armbian `/etc/sharetoken-dev/mail/` |
-| 发信 | Resend HTTPS API（`delivery.mode: resend`） | 从家宽 IP 直投 |
-| 互联网收信 | 主机 25 端口（ufw 放行） | 只听回环，互联网不可达 |
+| `MX example.com` | `10 mail.example.com` | Where mail for the domain is delivered. Needed to receive. |
+| `A mail.example.com` (and `AAAA`) | The mail server's public address | The host MX points to. |
+| `TXT example.com` | `v=spf1 a:mail.example.com ~all` | SPF: which hosts may send for the domain. With a smarthost or an API provider, use what the provider tells you to publish instead (usually an `include:`). |
+| `TXT s1._domainkey.example.com` | Printed by `mailserver dkim-keygen` | The DKIM public key. |
+| `TXT _dmarc.example.com` | `v=DMARC1; p=quarantine; rua=mailto:postmaster@example.com` | DMARC policy. Start with `p=none` if you want reports before enforcing. |
 
-MX 只有一个，所以外部发给 `team-dev@`、`support-dev@` 的邮件（比如 dev 邮件的退信）进的是 **prod** 的收件箱，后台可按收件地址区分。
+For direct delivery, the reverse DNS (PTR) of the sending address should also resolve to `mail.example.com`, and that name back to the address. Many receivers reject or downgrade mail when it does not.
 
-部署：
+Check the records with `mailserver -config mail.yaml dns`: it looks up MX, A, SPF, DKIM (compared with the local private key) and DMARC, and prints `ok` or `BAD` for each. The running server repeats the check every 10 minutes and shows it on the "service status" tab of the console's mail section. The check reports only; it changes nothing.
+
+## Delivery modes
+
+`delivery.mode` in `mail.yaml`:
+
+| Mode | How mail leaves | When to use it |
+|---|---|---|
+| `direct` (default) | The server connects to the recipient domain's MX on port 25 and signs each message with its own DKIM key. | A host with a static address, a matching PTR record, a clean reputation and open outbound port 25. |
+| `smarthost` | Everything is handed to one relay: `delivery.smarthost.addr` on port 587 (STARTTLS) or 465 (TLS), with `username` and `password_file`. The relay's certificate is verified. | Outbound port 25 is blocked, or the address has no usable reputation (residential or dynamic ranges), and you have an SMTP relay account. |
+| `resend` | Messages go to the [Resend](https://resend.com) HTTPS API with the key in `delivery.resend.api_key_file`. Resend builds the message and signs it with its own DKIM key, so the domain must be verified with Resend and Resend's DNS records published. | Outbound SMTP ports are blocked altogether. Many cloud providers block 25, and some also 465 and 587; HTTPS always gets out. |
+
+Notes:
+
+- Before choosing `direct`, test that the host can open a connection to port 25 of an outside mail server. Cloud providers often block it by default.
+- In `resend` mode each message carries its Message-ID as the idempotency key, so a retry after a lost answer does not produce a second copy. HTTP 400 and 422 are permanent failures. 401 and 403 (a problem with the key or the domain verification), 429 and 5xx leave the message queued for retry. Without a readable key the server does not start.
+- A temporary failure is retried for `delivery.retry_for` (48 hours by default). Sent mail is kept for `delivery.keep_for`.
+- "Accepted by the recipient's server" in the console does not mean the user saw the message in the inbox: the server cannot see where it was filed. The sign-in page therefore tells users to look in the spam folder.
+
+To verify a deployment from outside, send a test message to a mailbox you control at a large provider and read its `Authentication-Results` header: SPF, DKIM and DMARC should all pass.
+
+## Sign-in codes
+
+One flow for new and existing accounts:
+
+1. `POST /api/v1/auth/code {email, invite_code?}` mails a six-digit code and says whether the address is new (`new_account`). For a new address the registration rules are checked before any mail goes out (open registration, the allowed domains and the blocked addresses on the settings page, an invite code when one is required), so mail only reaches people who can finish. Refusals of a new address are limited to 8 per IP address in 5 minutes, so the answers are no fast directory of who has an account.
+2. `POST /api/v1/auth/verify {email, code}` (clients, a token for 60 days) or `POST /api/v1/web/auth/verify` (the portal's pages, a session for 15 days) redeems it. The first sign-in of a new address creates its account and grants the sign-up credit. An account with two-factor authentication then needs its authenticator code as well ([guide.md](guide.md), section 4.2).
+
+| Limit | Value |
+|---|---|
+| Lifetime | 10 minutes. An expired code's message is no longer delivered. |
+| Asking again | Once per 60 seconds for one address (`code_cooldown`). |
+| Per hour | 5 for one address, 20 for one IP address, 500 in total (`throttled`). |
+| Guessing | 5 attempts per code; wrong codes are also limited per IP address and per address (8 in 5 minutes). |
+
+Only a salted hash of a code is stored. Once the message has been sent, its subject and body are erased from the database, and while it is queued administrators cannot read it in the console. The web pages, the desktop client (through its daemon's `POST /api/v1/auth/code`) and the command line (`sharetoken login -email`) all use this flow. The message's subject is `Your ShareToken verification code: 123456`.
+
+## Mail settings in the console
+
+The sender address, the support address and "send a test message" are at `/admin/#/settings` and apply as soon as they are saved. **The delivery mode and its credentials stay in `mail.yaml`** and are read-only on the page: the mail server's database account cannot read the portal's tables, and someone who can change settings should not be able to reroute all outgoing mail, sign-in codes included.
+
+Other notices: a message is sent when two-factor authentication is turned on or off for an account. Code that sends a notice calls `mailer.Store.Enqueue` and does not wait for delivery.
+
+## Receiving safely
+
+- Incoming mail comes from strangers. The console shows plain text only; from HTML only the text is extracted, and it is never loaded as HTML. Attachments and the raw message are downloaded as `application/octet-stream`.
+- A message that passes neither SPF nor DKIM in alignment with its From domain is marked "unverified" with a warning. Sender addresses can be forged: do not act on an account because of what an unverified message says.
+- Limits (defaults, `smtp.*` in `mail.yaml`): 10 MiB per message; 60 messages an hour and 4 concurrent connections per IP address; 2 GiB for the whole inbox. Above the total the server answers 452 and the sender retries later.
+- TLS: with `smtp.tls.cert_file` and `key_file` the server offers that certificate and picks up renewals without a restart; without them it uses a self-signed one, which still encrypts.
+
+## Admin console
+
+`/admin/#/mail` has the inbox, the archive, bounces, the outbox, the service status and a compose form. Messages can be answered (from the support address), archived, deleted, and downloaded raw or by attachment. Failed outgoing mail can be sent again; verification-code mail cannot, the user asks for a new code.
+
+## Tests
 
 ```bash
-scripts/dev/deploy.sh --bins          # dev：门户、协调器、邮件服务
-scripts/prod/deploy.sh --mail-server  # prod：只更新邮件服务
-scripts/prod/deploy.sh --mail         # prod：门户 + 邮件服务，协调器不动
+scripts/test.sh -race ./internal/mailer ./internal/portal ./internal/client   # real SMTP round trips, DKIM, rate limits, codes, the admin endpoints
+node scripts/mail_ui_test.mjs                                                 # headless Chrome against real processes: sign-in by code, hostile mail, the whole console
 ```
 
-## DNS（GoDaddy）
-
-`scripts/mail_dns.py`（`-n` 只看不改）写入，可重复运行：
-
-| 记录 | 值 |
-|---|---|
-| `MX @` | `10 mail.sharetoken.app` |
-| `A mail` | 生产主机 165.227.3.194（静态） |
-| `TXT @` | `v=spf1 a:dev.sharetoken.app ~all`（dev 从家宽 IP 直投；prod 的 SPF 由 Resend 的退信域 `send` 承担） |
-| `TXT resend._domainkey` | Resend 的 DKIM 公钥（prod 发信由 Resend 签名） |
-| `CNAME send`、`CNAME rsend` | `send.forge.rmta.net`、`rsend.forge.rmta.net`（Resend 的退信域和 SPF） |
-| `TXT st1._domainkey`、`stdev1._domainkey` | DKIM 公钥 |
-| `TXT _dmarc` | GoDaddy 默认（`p=quarantine`），未改动 |
-
-检查：`st-mailserver dns`（服务器上的包装脚本，以 st-mail 运行），或后台“服务状态”页（每 10 分钟自动检查一次）。dev 的家宽 IP 变化后 SPF 最多滞后约 20 分钟，因为用的是 `~all`，且 DKIM 不依赖 IP，DMARC 仍能通过。
-
-## 发信路径
-
-**prod：Resend。** DigitalOcean 封了出站 25、465、587（2026-11-09 实测），所以 prod 配 `delivery.mode: resend`，用官方 Go SDK（`github.com/resend/resend-go/v2`，`mailer/resend.go`）走 HTTPS。Resend 自己组装邮件，并用 `resend._domainkey` 签 DKIM，我们的 `st1` 密钥在 prod 上不参与发信。每封信以我们的 Message-ID 作幂等键，重试时丢了回复也不会发出第二份。HTTP 400、422 视为永久失败；401、403（key 或域名验证出问题）、429、5xx 留在队列里重试。
-
-API key 在 Mac 的 `~/st-test/prod-keys/resend.key`（Resend 后台名为 `sharetoken-app-full`，Full access），`scripts/prod/deploy.sh --mail-server` 每次都会重新安装，换 key 只要改这个文件后再部署一次。没有 key，邮件服务不会启动。Resend 后台的域名 `sharetoken.app` 已于 2026-11-10 验证通过（区域 us-east-1，只开发信，收信仍由我们的 MX 处理）；它的三条记录也由 `scripts/mail_dns.py` 维护。
-
-**dev：家宽直投。** 发信 IP 是 StarHub 家宽动态地址，在 Spamhaus PBL 里，PTR 也没有正向解析（2026-11-08 Port25 实测：SPF、DKIM 通过，iprev 失败）。Gmail 实测（2026-11-09）能收到，但进垃圾邮件。dev 上这样可以接受。
-
-后台的“对方已接受”不代表用户在收件箱里看到了，服务端看不到邮件被归到哪里。注册页因此提示用户查看垃圾邮件。
-
-## 注册验证码
-
-1. `POST /api/v1/register/code {email}`：邮箱已注册时直接返回 409 `exists`（页面提示“已注册，请直接登录”），不发邮件；查到已注册的请求按 IP 限流（5 分钟 8 次）。
-2. `POST /api/v1/register {email, password, code}`：`accounts.email_verification: true` 时必填，同时关闭用户名注册。
-
-| 限制 | 值 |
-|---|---|
-| 有效期 | 10 分钟；邮件过期后不再投递 |
-| 重发间隔 | 同一邮箱 60 秒（`code_cooldown`） |
-| 每小时 | 同一邮箱 5 次，同一 IP 20 次，全站 500 次（`throttled`） |
-| 猜测 | 每个验证码 5 次，错误次数按 IP 再限流 |
-
-验证码只存加盐哈希。邮件发完后主题和正文从数据库清除，排队期间管理员在后台也看不到。网页、桌面客户端（`POST /api/register/code`）和 CLI（`sharetoken register -email`）都已接入。
-
-## 找回密码
-
-`POST /api/v1/password/forgot {email}` 的响应和耗时都不取决于邮箱是否有账户（实际工作在响应之后做）。有账户才发信，链接是 `<门户公网地址>/app/#reset=<token>`：256 位随机数，只存哈希，放在 URL 片段里所以不进服务器日志，30 分钟有效、只能用一次，新链接使旧链接失效。限制：同一账户 60 秒一次、每小时 5 次，全站每小时 500 次，每 IP 按登录限流规则。
-
-`POST /api/v1/password/reset {token, new_password}` 成功后吊销该账户全部 token 和会话，发通知邮件，并写操作日志。管理员的两步验证不变，只拿到邮箱进不了控制台。用户名不是邮箱的账户收不到链接，由管理员重置。
-
-重置邮件和验证码一样标记为敏感：发完后内容从数据库清除，排队期间后台看不到。需要在系统设置里开启，并有门户公网地址和发件地址。
-
-## 系统设置里的邮件项
-
-发件地址、客服地址和“发送测试邮件”在 `/admin/#/settings`，保存后立即生效。**投递方式（直投或 smarthost）和它的密码仍在 `mail.yaml`**，页面上只读：mailserver 的数据库账号读不到门户的表，而且能改设置的人不应该能把所有外发邮件（包括重置链接）改道。
-
-其他通知：修改密码时发邮件。代码里发通知用 `mailer.Store.Enqueue`，不需要等投递结果。
-
-## 收信安全
-
-- 邮件内容来自陌生人。后台只显示纯文本，HTML 只提取文字，不会作为 HTML 加载。附件和原文一律以 `application/octet-stream` 下载。
-- 没有通过 SPF 或 DKIM（且与 From 域名对齐）的邮件标“未验证”并显示警告。回复地址可以被伪造，不要按未验证邮件的内容操作账户。
-- 限额：单封 10 MiB，每 IP 每小时 60 封、并发 4，总量 2 GiB。超过总量后返回 452，对方稍后重试。
-
-## 管理后台
-
-`/admin/#/mail`：收件箱、已归档、退信、发件箱、服务状态、写邮件。可以回复（从客服地址发出）、归档、删除、下载原文和附件，失败的邮件可以重新发送。验证码邮件不能重发，用户重新获取即可。
-
-## 测试
-
-```bash
-scripts/test.sh -race ./mailer ./portal ./client     # 真实 SMTP 往返、DKIM、限流、验证码、管理接口
-node scripts/mail_ui_test.mjs                # 无头 Chrome + 真实进程：注册、恶意邮件、后台全流程
-```
-
-外部验证：`st-mailserver send-test check-auth@verifier.port25.com`，报告会回信到发件地址，同时验证了互联网收信。
+See [development.md](development.md) for what the tests need.

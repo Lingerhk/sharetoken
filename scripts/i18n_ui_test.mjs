@@ -5,19 +5,25 @@
 // screen, and the language picker and pinned admin console behave.
 //
 //   scripts/gui_stack.sh start DIR && . DIR/env
-//   node scripts/i18n_ui_test.mjs https://127.0.0.1:18092 http://127.0.0.1:19787 [shots-dir]
+//   STACK=DIR node scripts/i18n_ui_test.mjs "$PORTAL" "$DAEMON" [shots-dir]
+//
+// It signs in on the portal and in the client with codes read from the stack's outbox.
 //
 // LANGS=en,ar limits the run. Screenshots land in the shots directory, a new
 // temporary one by default. A client left signed in by another test is signed out.
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const [portal, daemon, shots] = [process.argv[2], process.argv[3], process.argv[4] || mkdtempSync(join(tmpdir(), 'st-i18n-'))];
+const STACK = process.env.STACK;
+if (!portal || !daemon || !STACK) { console.error('usage: STACK=<gui_stack.sh directory> i18n_ui_test.mjs <portal> <daemon> [shots-dir]'); process.exit(2); }
+// The last sign-in code mailed to an address, from the stack's outbox.
+const mailedCode = email => execFileSync(new URL('gui_stack.sh', import.meta.url).pathname, ['code', STACK, email], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 mkdirSync(shots, { recursive: true });
-const runtime = readFileSync(new URL('../portal/web/i18n.js', import.meta.url), 'utf8');
+const runtime = readFileSync(new URL('../internal/portal/web/i18n.js', import.meta.url), 'utf8');
 const ALL = [...runtime.slice(runtime.indexOf('const LANGS = {'), runtime.indexOf('};')).matchAll(/'?([A-Za-z-]+)'?: '/g)].map(m => m[1]);
 const LANGS = process.env.LANGS ? process.env.LANGS.split(',') : ALL;
 const HAN_OK = new Set(['zh-CN', 'zh-TW', 'ja']);
@@ -140,7 +146,7 @@ for (const lang of LANGS) {
 
   await size(1280, 900);
   await go(`${portal}/app/?lang=${lang}#register`);
-  await waitFor(`document.getElementById('login-user')`);
+  await waitFor(`document.getElementById('login-email')`);
   await inspect(lang, 'login');
   await shot(`login-${lang}`);
 
@@ -148,18 +154,17 @@ for (const lang of LANGS) {
   await go(`${daemon}/?lang=${lang}`);
   await waitFor(`document.getElementById('signin-form')`, 20000);
   await inspect(lang, 'client sign-in');
-  await ev(`document.getElementById('tab-register').click()`);
-  await inspect(lang, 'client sign-up');
   await shot(`client-auth-${lang}`);
 }
 
 // ---- signed in ----
 await size(1280, 900);
 await go(`${portal}/app/?lang=en`);
-await waitFor(`document.getElementById('login-user')`);
-const user = 'i18n' + Date.now();
-await ev(`ST.api('POST', '/api/v1/web/register', { username: ${JSON.stringify(user)}, password: 'translated-pass' }).then(() => true)`);
-const ROUTES = ['home', 'ledger', 'jobs', 'tokens', 'devices', 'network', 'account', 'feedback'];
+await waitFor(`document.getElementById('login-email')`);
+const user = `i18n${Date.now()}@example.com`;
+await ev(`ST.api('POST', '/api/v1/auth/code', { email: ${JSON.stringify(user)} }).then(() => true)`);
+await ev(`ST.api('POST', '/api/v1/web/auth/verify', { email: ${JSON.stringify(user)}, code: ${JSON.stringify(mailedCode(user))} }).then(() => true)`);
+const ROUTES = ['home', 'ledger', 'jobs', 'tokens', 'devices', 'pairing', 'network', 'account', 'feedback'];
 for (const lang of LANGS) {
   await size(1280, 900);
   await go(`${portal}/app/?lang=${lang}`);
@@ -205,8 +210,11 @@ ok((await ev('document.body.innerText')).includes('管理控制台') || (await e
 await size(1040, 760);
 await go(`${daemon}/?lang=en`);
 const probe = await ev(`fetch('/api/v1/portal/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => r.json())`);
-const reg = await ev(`fetch('/api/v1/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ pin: probe.fingerprint, email: `i18n${Date.now()}@example.com`, password: 'translated-pass' }))} }).then(r => r.status)`);
-ok(reg === 201, `client registers (HTTP ${reg})`);
+const clientUser = `i18n-client${Date.now()}@example.com`;
+const post = (path, body) => ev(`fetch(${JSON.stringify(path)}, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ${JSON.stringify(JSON.stringify(body))} }).then(r => r.status)`);
+const sent = await post('/api/v1/auth/code', { pin: probe.fingerprint, email: clientUser });
+const reg = await post('/api/v1/auth/verify', { pin: probe.fingerprint, email: clientUser, code: mailedCode(clientUser) });
+ok(sent === 200 && reg === 200, `the client signs up with a mailed code (HTTP ${sent}, ${reg})`);
 for (const lang of LANGS) {
   await go(`${daemon}/?lang=${lang}`);
   await waitFor(`document.getElementById('tile-available')`, 20000);
