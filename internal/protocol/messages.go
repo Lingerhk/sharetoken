@@ -222,7 +222,11 @@ type Ticket struct {
 	ExpiresAt      int64    `json:"expires_at"` // the node must accept the job before this
 	Coordinator    string   `json:"coordinator"`
 	InferVersion   uint32   `json:"infer_version"` // the infer protocol version buyer and node use for this job
-	Sig            []byte   `json:"sig"`
+	// Shared marks a job between share partners (accounts/sharing.go): the
+	// node runs it as any other, but it costs nothing: no credits are held,
+	// charged or paid. The prices still bound the output by the reservation.
+	Shared bool   `json:"shared,omitempty"`
+	Sig    []byte `json:"sig"`
 }
 
 func (t *Ticket) signingBytes() []byte {
@@ -241,6 +245,7 @@ func (t *Ticket) signingBytes() []byte {
 		I64(t.ExpiresAt).
 		String(t.Coordinator).
 		U64(uint64(t.InferVersion)).
+		Bool(t.Shared).
 		Sum()
 }
 
@@ -362,6 +367,9 @@ type ModelSummary struct {
 	AttestedNodes int    `json:"attested_nodes,omitempty"` // nodes whose TEE quote the coordinator verified
 	MinPriceIn    uint64 `json:"min_price_in"`
 	MinPriceOut   uint64 `json:"min_price_out"`
+	// SharedNodes counts the nodes of the asker's share partners among Nodes:
+	// the asker uses them for free, before the market.
+	SharedNodes int `json:"shared_nodes,omitempty"`
 }
 
 // ModelsResponse lists models with live offers.

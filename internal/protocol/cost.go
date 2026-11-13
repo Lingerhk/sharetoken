@@ -39,8 +39,11 @@ func CostMicros(promptTokens, completionTokens, priceIn, priceOut uint64) (uint6
 }
 
 // TicketCost prices usage at a ticket's rates, capped at its reservation:
-// exactly what settlement will charge.
+// exactly what settlement will charge. A job between share partners is free.
 func TicketCost(t *Ticket, promptTokens, completionTokens uint64) uint64 {
+	if t.Shared {
+		return 0
+	}
 	c, err := CostMicros(promptTokens, completionTokens, t.PriceInMicros, t.PriceOutMicros)
 	if err != nil || c > t.ReservedMicros {
 		return t.ReservedMicros

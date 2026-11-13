@@ -83,6 +83,11 @@ sharetoken up                               # 客户端已在运行时，share �
 | `pair join <code>` | 买家：和生成这个配对码的卖家配对。此后本账户只向配对的卖家购买。 |
 | `pair leave <seller id>`、`pair rm <buyer id>`、`pair revoke <code id>` | 买家一侧或卖家一侧解除配对；让一个配对码不再接纳新买家。 |
 | `pair private on\|off` | 卖家：私有模式。开启期间，只有和本账户配对的买家会被撮合过来，也只有他们能看到它的模型。 |
+| `partner` | 共享伙伴：伙伴列表、过去 24 小时给每个伙伴和从每个伙伴用了多少 token、未用的邀请和设置。 |
+| `partner invite [-ttl 24h]` | 生成一个只能一人使用的邀请（最长 168 小时）。用它加入的人成为共享伙伴：双方优先、免费使用对方的节点。 |
+| `partner join <code>` | 成为生成该邀请的用户的共享伙伴。 |
+| `partner rm <user id>`、`partner revoke <invite id>` | 停止和一个伙伴共享；撤回一个未用的邀请。 |
+| `partner set [-only on\|off] [-limit N] [-share PCT]` | `-only on`：只用伙伴的节点，从不在网络上购买。`-limit`：本账户的节点每 24 小时给所有伙伴的 token 数（0 表示不限）。`-share`：每个节点的并发任务中伙伴可占的百分比（0 表示暂停共享）。 |
 | `skill [install\|uninstall\|show] [-agent claude\|codex\|all] [-force]` | 教编程助手使用客户端的 skill：`install` 在 `~/.claude`（或 `$CLAUDE_CONFIG_DIR`）和 `~/.codex`（或 `$CODEX_HOME`）下写入 `skills/sharetoken/SKILL.md`，默认装给找到的每个助手；写入的内容带有本构建的命令、数据目录和接口地址。不带子命令时显示哪些助手已装。不是客户端写的 `SKILL.md` 不会被覆盖，除非加 `-force`。正文见 [`internal/agentskill/SKILL.md`](../../internal/agentskill/SKILL.md)。 |
 | `logout` | 吊销本机的 token。运行中的客户端随即停止。 |
 | `config` | 查看配置（token 打码）。 |
@@ -96,6 +101,7 @@ sharetoken up                               # 客户端已在运行时，share �
 - 不需要开放任何端口。卖家在中继上预约，买家经中继或打洞连过来。
 - 出售托管 API 的卖家模式见 [providers.md](providers.md)。
 - 配对发生在账户之间，不是设备之间。一个买家最多配对 3 个卖家，一个卖家最多 1000 个买家。买家只要有一个配对，就只会被撮合到配对的卖家，`models` 也只列出他们出售的模型；没有配对的买家可以向任何人购买。卖家照常服务没有配对的买家，除非开启了私有模式。双方看到的对方账户名是打码的（`al***@example.com`）。见 [architecture.md](architecture.md) 第 2.13 节。
+- 共享伙伴是另一种免费的共享方式：请求先交给伙伴的节点，双方都不花钱；只有伙伴都接不了时才进入网络并付费（用 `partner set -only on` 则直接失败）。一个账户最多 5 个伙伴；一个邀请只能一人使用。不论账户有没有配对，伙伴都会被使用。见 [architecture.md](architecture.md) 第 2.14 节。
 
 ### 1.4 状态目录里的文件
 
@@ -285,7 +291,7 @@ coordinator -db $DSN -fee-bps 500 \
 | `/docs/`、`/changelog/` | 所有人 | 用户指南和更新日志。 |
 | `/downloads/<file>` | 所有人 | `downloads.dir` 目录里的客户端安装包；`GET /api/v1/downloads` 列出每一类的最新版本，官网显示实际存在的包。没有配置目录时不提供下载。 |
 | `/app/`（`/login` 跳转到这里） | 用户 | 邮件验证码登录（新邮箱同时注册）；总览（余额、冻结额、买卖汇总）；账单；作业（按买入或卖出筛选）；API token（明文只显示一次）及其吊销；设备改名和解绑；配对（兑换配对码、解除卖家；生成和撤销配对码、移除买家、私有模式）；网络（协调器、中继可达性）；账户（开启或关闭两步验证）；反馈。 |
-| `/admin/` | 管理员 | 仪表盘和总览（账本回放、流通额、手续费、中继、作业统计、各账户余额）；用户（搜索、新建、发放或扣减 credit、禁用、设置或撤销管理员、重置两步验证、吊销 token、解绑设备、账单与作业）；中继（登记、编辑、启用、停用、删除）；客户端版本；全部作业（按状态和用户筛选）；节点记录；推理审计；争议及其人工裁决（付款给节点或退款给买家）；配对（谁只向谁购买、私有卖家）；全局账本；邮件；反馈；操作日志；系统设置。 |
+| `/admin/` | 管理员 | 仪表盘和总览（账本回放、流通额、手续费、中继、作业统计、各账户余额）；用户（搜索、新建、发放或扣减 credit、禁用、设置或撤销管理员、重置两步验证、吊销 token、解绑设备、账单与作业）；中继（登记、编辑、启用、停用、删除）；客户端版本；全部作业（按状态和用户筛选）；节点记录；推理审计；争议及其人工裁决（付款给节点或退款给买家）；配对（谁只向谁购买、私有卖家）；共享伙伴（全部共享组，成员账户名完整）；全局账本；邮件；反馈；操作日志；系统设置。 |
 
 - 浏览器会话默认 15 天（`serve -session-ttl`，或系统设置页）。它存放在 HttpOnly cookie 里，页面脚本读不到。在 API Token 页上它显示为「web session」，当前会话有标记，任何一个都可以吊销。
 - 管理员用同一个账号进入 `/admin/`。其他人打开它只会看到「不是管理员」。
@@ -319,6 +325,7 @@ OpenAI 兼容端点 `/v1/` 用的是 `apikey.json` 里的 API key（除非用 `s
 | `GET /api/v1/share/detect[?upstream=]` | 列出本机模型服务上的模型。 |
 | `/api/v1/providers…` | 托管 API 的 provider：列出、添加、开关、删除、可用模型、测试请求、OAuth 登录。路由列在 [`internal/client/providers.go`](../../internal/client/providers.go) 的文件头。返回内容里从不包含 key；`Origin` 不是 API 自身地址的请求一律 403。 |
 | `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`POST /api/v1/pairing/redeem`、`DELETE /api/v1/pairing/sellers/{id}`、`DELETE /api/v1/pairing/buyers/{id}`、`PUT /api/v1/pairing/private` | 配对，带着用户的 token 转给门户的同名接口（[`internal/client/pairing.go`](../../internal/client/pairing.go)）。 |
+| `GET /api/v1/sharing`、`POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}`、`POST /api/v1/sharing/join`、`DELETE /api/v1/sharing/partners/{id}`、`PUT /api/v1/sharing/settings` | 共享伙伴，转给门户的同名接口（[`internal/client/sharing.go`](../../internal/client/sharing.go)）。 |
 | `POST /api/v1/login/check` | 立即检查登录是否仍然有效（`sharetoken logout` 会调用）。平时每分钟检查一次；登录失效后，`up` 退出，daemon 转为 `expired` 状态。 |
 | `POST /v1/chat/completions`、`GET /v1/models` | OpenAI 兼容端点。响应带有 `X-Sharetoken-Job`、`X-Sharetoken-Node`、`X-Sharetoken-Verified`、`X-Sharetoken-Cost-Micros` 这几个头，节点经过证明时还有 `X-Sharetoken-TEE`。 |
 
@@ -367,6 +374,12 @@ OpenAI 兼容端点 `/v1/` 用的是 `apikey.json` 里的 API key（除非用 `s
 | `DELETE /api/v1/pairing/sellers/{id}`、`DELETE /api/v1/pairing/buyers/{id}` | 是 | 以买家或卖家身份解除一个配对。 |
 | `PUT /api/v1/pairing/private` | 是 | `{enabled}`：开启或关闭调用者的私有模式。 |
 | `GET /api/v1/admin/pairings?user=` | 管理员 | 全部配对：买家、卖家（完整账户名）、配对码备注、时间、卖家是否私有。`user` 匹配任一方账户名的一部分。 |
+| `GET /api/v1/sharing` | 是 | 调用者的共享伙伴：`partners[]`（`id`、打码的 `username`、`group_id`、`since`，以及过去 `window_hours` 内双方之间的 `given`、`taken` token 数和 `jobs`），未用的 `invites[]`（`id`、`code`、`created_at`、`expires_at`），`settings`，`served`（窗口内它的节点为所有伙伴处理的 token 数，即每日额度所计的量），`window_hours`（24）和 `max_partners`（5）。 |
+| `POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}` | 是 | 生成一个只能一人使用的邀请（`ttl_hours` 最大 168；0 表示一天）和撤回邀请。未用邀请达到 10 个或伙伴达到 5 个时 409 `limit`。 |
+| `POST /api/v1/sharing/join` | 是 | `{code}`：成为邀请生成者的共享伙伴。404 `bad_code`（错误、过期、已撤回或已使用；和登录失败一样计数，之后 429 `throttled`），409 `own_code`，409 `limit`。 |
+| `DELETE /api/v1/sharing/partners/{id}` | 是 | 停止和一个伙伴共享。 |
+| `PUT /api/v1/sharing/settings` | 是 | `{only_partners, daily_limit_tokens, share_pct}`：只用伙伴；调用者的节点在滚动 24 小时内给所有伙伴的 token 数（0 表示不限）；每个节点的并发槽位中伙伴任务可占的百分比（0 表示暂停，否则至少一个槽位）。 |
+| `GET /api/v1/admin/share-groups?user=` | 管理员 | 全部共享组及其成员（完整账户名）和创建时间。`user` 匹配任一成员账户名的一部分。 |
 | `GET /api/v1/admin/overview`、`GET /api/v1/admin/dashboard`、`GET /api/v1/admin/relay-history?range=` | 管理员 | 平台汇总与账本回放；仪表盘数据；中继历史。 |
 | `GET /api/v1/admin/users`、`POST /api/v1/admin/users`、`GET /api/v1/admin/users/{name}` | 管理员 | 用户列表、创建用户（`{username, is_admin}`，名字是邮箱）、用户详情（余额、用量、设备、token）。 |
 | `GET /api/v1/admin/users/search?q=&limit=&offset=` | 管理员 | 按用户名搜索（通配符按字面匹配）。每行带余额、冻结额、设备数和 token 数；同时返回总数。 |

@@ -52,7 +52,7 @@ sharetoken-gui（Wails v3 窗口，gui/）        sharetoken daemon（internal/c
 窗口是一个小窗口（默认 880×600，最小 760×520），页面按应用而不是网页来排版（[`internal/client/ui/app.css`](../../internal/client/ui/app.css)）：
 
 - **窗口本身不滚动。** 左侧是图标导航（概览、共享、配对、记录；底部是反馈和设置），中间是当前视图，底部是状态栏。长列表在各自的面板里滚动；窗口太矮放不下时，滚动的是视图，不是窗口。
-- **视图**：概览（余额等卡片、本地接口地址、网络和可用模型并排）、共享（标签：状态、厂商 API、本机模型）、配对（标签：我的卖家、我的买家）、记录（标签：全部、卖出）、设置（账户和退出登录、语言、版本和检查更新、反馈、我的设备）。所有视图都留在页面里，轮询会更新隐藏的视图，切换时立即显示。
+- **视图**：概览（余额等卡片、本地接口地址、网络和可用模型并排）、共享（标签：状态、厂商 API、本机模型）、配对（标签：共享伙伴、我的卖家、我的买家）、记录（标签：全部、卖出）、设置（账户和退出登录、语言、版本和检查更新、反馈、我的设备）。所有视图都留在页面里，轮询会更新隐藏的视图，切换时立即显示。
 - **按需展开**：面板的说明文字收在标题旁的“?”里，点击才显示；反馈是一个对话框；升级提示只占一行，详情在对话框里。
 - **状态栏**：连接状态、当前中继和它的延迟、账户、版本。
 - **延迟的颜色**和门户一致：低于 80 ms 绿色，低于 250 ms 黄色，其余红色（`app.js` 的 `rtt`）。网络面板的中继表、链路质量、中继预约和状态栏都用它。
@@ -72,6 +72,7 @@ sharetoken-gui（Wails v3 窗口，gui/）        sharetoken daemon（internal/c
 | 厂商的模型 | 从厂商的模型列表里选（或手填），设网络 ID、输入输出价、输出上限；测试、编辑、移除 | `/api/v1/providers/{name}/models`、`/test` |
 | 本机模型服务 | 地址和并发数；探测模型后添加、编辑、移除 | `PUT /api/v1/share`、`GET /api/v1/share/detect` |
 | 配对 | 私有模式（只为配对的买家服务）。生成配对码（备注；有效期 1、7 或 30 天；可配对的买家数）、复制、撤销；和本账户配对的买家，以及移除其中一个 | `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`DELETE /api/v1/pairing/buyers/{id}`、`PUT /api/v1/pairing/private` |
+| 共享伙伴 | 邀请伙伴（只能一人使用的邀请码，有效期 1、3 或 7 天），复制和撤销未用的邀请码，用别人的邀请码加入；伙伴列表，以及最近 24 小时给每个伙伴和从每个伙伴用了多少 token，解除伙伴关系。设置：只用伙伴的节点、每日上限（每 24 小时的 token 数，所有伙伴合计）、每个节点并发的比例（0 表示暂停），以及已给出的 token 数 | `GET /api/v1/sharing`、`POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}`、`POST /api/v1/sharing/join`、`DELETE /api/v1/sharing/partners/{id}`、`PUT /api/v1/sharing/settings` |
 
 - 数据来自每 5 秒一次的 `GET /api/v1/status`（`share.providers`、`share.serving`、`warnings`）。列表内容没变就不重绘。表单都在对话框里，轮询不会动它，输入不会丢。
 - 这些接口由 Agent 提供，所以在接入网络之前，共享页只提示连接网络后才能设置共享。
@@ -80,7 +81,7 @@ sharetoken-gui（Wails v3 窗口，gui/）        sharetoken daemon（internal/c
 - 界面上的保护：没有模型时不能开启共享；同一个模型 ID 不能来自两个来源；新增厂商的名称和已有的重复时要求改名（接口会按“更换凭据”处理）；最后一个可出售的模型被移除或其厂商被停用时，共享一起关闭。
 - 和命令行的一处差别：`share add` 会顺带开启共享，界面不会，由用户点“开启共享”。
 - 模型表里的“网络最低价”来自 `GET /api/v1/models`（包含本机自己的报价）。厂商卡片显示登录令牌的有效期和附加请求头的名称。概览页有一张“共享”卡片，点击进入共享页；网络区域显示到协调器的链路质量（平均延迟、抖动、丢包）。
-- 配对（`app.js` 的 `pairingView`）有自己的视图，分两个标签。“我的卖家”：输入卖家的配对码，查看本账户配对的卖家，解除其中一个（`POST /api/v1/pairing/redeem`、`DELETE /api/v1/pairing/sellers/{id}`）；账户有配对时，这里会说明它只向这些卖家购买，“可用模型”也只列出他们的模型。“我的买家”：私有模式、配对码和配对的买家。配对保存在门户，所以接入网络之前就能用；每 15 秒重新读取一次。
+- 配对（`app.js` 的 `pairingView`）有自己的视图，分三个标签。第一个是“共享伙伴”（`partnersView`）：伙伴和未用的邀请码，“邀请伙伴”和“输入邀请码”按钮，以及一个设置表单（只用伙伴、每日上限、并发比例），编辑期间轮询不会覆盖它；比例为 0 时提示共享已暂停。“可用模型”给伙伴节点提供的模型标上“伙伴 n”，作业列表里伙伴之间的作业显示“伙伴共享”而不是 credit。“我的卖家”：输入卖家的配对码，查看本账户配对的卖家，解除其中一个（`POST /api/v1/pairing/redeem`、`DELETE /api/v1/pairing/sellers/{id}`）；账户有配对时，这里会说明它只向这些卖家购买，“可用模型”也只列出他们的模型。“我的买家”：私有模式、配对码和配对的买家。配对保存在门户，所以接入网络之前就能用；每 15 秒重新读取一次。
 - 客户端有英语和简体中文两种语言。没有保存过选择时跟随系统语言，其他系统语言一律显示英语（见 [i18n.md](i18n.md)）。
 - 密钥只在提交时经过页面，接口返回的是打码后的形式。界面测试会检查页面和 `/api/v1/status` 里都没有密钥。
 - daemon 的告警和厂商返回的错误按英文原文显示。
@@ -127,6 +128,7 @@ macOS 在菜单栏、Windows 在通知区、Linux 以状态通知项（StatusNot
 | `POST /api/v1/update/download` | 把当前提供的构建的签名安装包下载到 `update/` 并校验（一键升级）；进度在 `session.update.download`。由窗口壳安装：`POST`/`GET /__shell/update`，见 [versioning.md](versioning.md)“一键升级” |
 | `POST /api/v1/feedback`、`GET /api/v1/feedback/mine` | 向门户提交反馈，以及列出本账户提交过的反馈 |
 | `/api/v1/pairing…` | 配对码和配对，转给门户（[guide.md](guide.md) 第 3 节） |
+| `/api/v1/sharing…` | 共享伙伴：邀请、伙伴和设置，转给门户（[guide.md](guide.md) 第 3 节） |
 | 其余 `/api/*` 和 `/v1/*` | 同 `sharetoken up`（见 [guide.md](guide.md)）。未登录时 401 `not_logged_in`，还没接入网络时 503 `not_connected` |
 
 **登录失效。** Agent 每分钟向门户确认一次 token 是否仍然有效（门户不可达不算被拒绝）。设备密钥在 token 吊销后仍能和协调器交易，所以客户端必须停下：daemon 转为 `expired`，`sharetoken up` 退出并提示重新登录。
@@ -215,6 +217,6 @@ scripts/gui_stack.sh stop DIR
 | 账号规则 | `scripts/test.sh ./internal/accounts ./internal/portal` | 邮箱校验和规范化；管理接口 URL 含 `@` 和 `+` |
 | 全链路 API | `scripts/test.sh -race -run Daemon ./test/e2e` | 在真实的 libp2p 拓扑上：登录、经中继接入、购买模型、记账、重启后恢复、退出、网络恢复后自动接入 |
 | 窗口壳 | `cd gui && go test .` | 启动、连接、停止 daemon；端口冲突；转发 |
-| 页面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调。配对：错误的码和自己的码，和不卖任何模型的卖家配对（没有模型、请求被拒）以及和有模型的卖家配对，生成和撤销配对码，买家加入和被移除，在页面上开关私有模式及其对未配对买家的效果 |
+| 页面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调。配对：错误的码和自己的码，和不卖任何模型的卖家配对（没有模型、请求被拒）以及和有模型的卖家配对，生成和撤销配对码，买家加入和被移除，在页面上开关私有模式及其对未配对买家的效果。共享伙伴：在窗口里生成邀请，另一个账户用命令行加入，在伙伴节点上的免费请求（费用 0），伙伴暂停共享（请求改为付费），只用伙伴（请求失败），设置校验，解除后再次付费 |
 | 真实 WebView | `scripts/gui_shell_test.sh <dev\|prod> <程序目录>` | 不显示窗口，用系统 WebView 加载页面并向真实 daemon 发 POST；检查应用退出时 daemon 一起停止 |
 | 菜单栏和托盘 | `scripts/gui_tray_test.sh <dev\|prod> <程序目录>`（macOS、Linux） | 窗口和图标会显示约 15 秒。先向系统确认图标已显示，再执行菜单项的动作、操作真实窗口：关闭、打开、最小化和恢复、快速最小化再打开、语言跟随、点击图标（Windows，走系统的托盘消息）、Command-W（macOS）、再次启动、退出后 daemon 停止。Wayland 不告诉应用窗口是否已最小化，所以 Wayland 会话上跳过最小化的步骤，`GDK_BACKEND=x11` 时会跑。Windows 上用 `SHARETOKEN_GUI_SELFTEST=tray` 启动应用即可运行同一套自检 |

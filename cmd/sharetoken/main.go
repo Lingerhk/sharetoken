@@ -36,6 +36,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"golang.org/x/term"
 
+	"sharetoken/internal/accounts"
 	"sharetoken/internal/agentskill"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/client"
@@ -98,6 +99,17 @@ Pairing (a buyer that pairs with a seller buys only from the sellers it is paire
   pair rm <buyer id>                    seller: remove one of your buyers
   pair revoke <code id>                 seller: stop a code from admitting more buyers
   pair private on|off                   seller: serve only the buyers paired with you, or anyone
+
+Share partners (two users use each other's nodes for free, before the market):
+  partner                               your partners, open invites, settings and the tokens shared in the last 24 hours
+  partner invite [-ttl 24h]             make an invite for one person (at most 168h)
+  partner join <code>                   become the partner of whoever made the invite
+  partner rm <user id>                  stop sharing with a partner
+  partner revoke <invite id>            withdraw an open invite
+  partner set [-only on|off] [-limit N] [-share P]
+                                        -only: use partners' nodes only, never the market;
+                                        -limit: tokens your nodes give all partners per 24 hours (0: no limit);
+                                        -share: percent of each node's concurrent jobs partners may take (0 pauses)
 
 The OpenAI-compatible endpoint's API key (by default required; tools send it as their OpenAI API key):
   apikey [-q]                           the endpoint, whether the key is required, and the key; -q prints the key only
@@ -169,6 +181,8 @@ func main() {
 		run = c.provider
 	case "pair":
 		run = c.pair
+	case "partner":
+		run = c.partner
 	case "apikey":
 		run = c.apikey
 	case "skill":
@@ -575,6 +589,162 @@ func showPairing(cx context.Context, pc *client.PortalClient) error {
 		_ = tw.Flush()
 	} else {
 		fmt.Println("\nno pairing codes; `sharetoken pair code` makes one")
+	}
+	return nil
+}
+
+// ---- share partners ----
+
+func (c *cmdCtx) partner(args []string) error {
+	pc, err := c.portal()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	sub := ""
+	if len(args) > 0 {
+		sub, args = args[0], args[1:]
+	}
+	id := func(what string) (int64, error) {
+		if len(args) != 1 {
+			return 0, fmt.Errorf("usage: sharetoken partner %s <%s> (`sharetoken partner` lists them)", sub, what)
+		}
+		n, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%q is not an id: `sharetoken partner` lists them", args[0])
+		}
+		return n, nil
+	}
+	switch sub {
+	case "", "ls", "list":
+		return showPartners(cx, pc)
+	case "invite", "new":
+		fs := flag.NewFlagSet("partner invite", flag.ExitOnError)
+		ttl := fs.Duration("ttl", 0, "how long the invite can be used (default 24h, at most 168h)")
+		_ = fs.Parse(args)
+		inv, err := pc.NewShareInvite(cx, ttl.Hours())
+		if err != nil {
+			return err
+		}
+		fmt.Printf("share invite  %s\n", inv.Code)
+		fmt.Printf("  good until %s, for one person\n", time.Unix(0, inv.ExpiresAt).Format("2006-01-02 15:04"))
+		fmt.Println("  they run: sharetoken partner join " + inv.Code)
+		fmt.Println("  from then on each of you uses the other's nodes first, for free")
+		return nil
+	case "join":
+		if len(args) != 1 {
+			return errors.New("usage: sharetoken partner join <code>")
+		}
+		p, err := pc.JoinShare(cx, args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("now sharing with %s (id %d)\n", p.Username, p.ID)
+		fmt.Println("  each of you uses the other's nodes first, for free; `sharetoken partner rm " + fmt.Sprint(p.ID) + "` ends it")
+		return nil
+	case "rm", "remove", "leave":
+		n, err := id("user id")
+		if err != nil {
+			return err
+		}
+		if err := pc.LeaveSharePartner(cx, n); err != nil {
+			return err
+		}
+		fmt.Println("stopped sharing with", n)
+		return nil
+	case "revoke":
+		n, err := id("invite id")
+		if err != nil {
+			return err
+		}
+		if err := pc.RevokeShareInvite(cx, n); err != nil {
+			return err
+		}
+		fmt.Println("withdrew invite", n)
+		return nil
+	case "set":
+		v, err := pc.Sharing(cx)
+		if err != nil {
+			return err
+		}
+		st := v.Settings
+		fs := flag.NewFlagSet("partner set", flag.ExitOnError)
+		only := fs.String("only", "", "on: use partners' nodes only; off: fall back to the market")
+		limit := fs.Int64("limit", st.DailyLimitTokens, "tokens your nodes give all partners per 24 hours (0: no limit)")
+		share := fs.Int64("share", st.SharePct, "percent of each node's concurrent jobs partners may take (0 pauses sharing)")
+		_ = fs.Parse(args)
+		switch *only {
+		case "on":
+			st.OnlyPartners = true
+		case "off":
+			st.OnlyPartners = false
+		case "":
+		default:
+			return errors.New("usage: sharetoken partner set -only on|off")
+		}
+		st.DailyLimitTokens, st.SharePct = *limit, *share
+		if err := pc.SetShareSettings(cx, st); err != nil {
+			return err
+		}
+		printShareSettings(st)
+		return nil
+	}
+	return fmt.Errorf("unknown: partner %s (partner | partner invite | partner join <code> | partner rm <id> | partner revoke <id> | partner set)", sub)
+}
+
+func printShareSettings(st accounts.ShareSettings) {
+	if st.OnlyPartners {
+		fmt.Println("using: partners' nodes only, never the market")
+	} else {
+		fmt.Println("using: partners' nodes first, then the market (paid)")
+	}
+	limit := "no limit"
+	if st.DailyLimitTokens > 0 {
+		limit = fmt.Sprintf("%d tokens per 24 hours", st.DailyLimitTokens)
+	}
+	switch {
+	case st.SharePct == 0:
+		fmt.Printf("giving: paused (%s)\n", limit)
+	default:
+		fmt.Printf("giving: %d%% of each node's concurrent jobs, %s\n", st.SharePct, limit)
+	}
+}
+
+func showPartners(cx context.Context, pc *client.PortalClient) error {
+	v, err := pc.Sharing(cx)
+	if err != nil {
+		return err
+	}
+	day := func(ns int64) string { return time.Unix(0, ns).Format("2006-01-02 15:04") }
+	if len(v.Partners) == 0 {
+		fmt.Println("no share partners; `sharetoken partner invite` makes an invite")
+	} else {
+		fmt.Printf("share partners (tokens in the last %d hours):\n", v.WindowHours)
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tPARTNER\tSINCE\tYOU GAVE\tYOU USED")
+		for _, p := range v.Partners {
+			name := p.Username
+			if p.Disabled {
+				name += " (disabled)"
+			}
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%d\t%d\n", p.ID, name, day(p.Since), p.Given, p.Taken)
+		}
+		_ = tw.Flush()
+	}
+	fmt.Println()
+	printShareSettings(v.Settings)
+	if v.Settings.DailyLimitTokens > 0 {
+		fmt.Printf("given in the last %d hours: %d of %d tokens\n", v.WindowHours, v.Served, v.Settings.DailyLimitTokens)
+	}
+	if len(v.Invites) > 0 {
+		fmt.Println("\nopen invites:")
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tCODE\tGOOD UNTIL")
+		for _, inv := range v.Invites {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\n", inv.ID, inv.Code, day(inv.ExpiresAt))
+		}
+		_ = tw.Flush()
 	}
 	return nil
 }

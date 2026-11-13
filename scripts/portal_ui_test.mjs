@@ -441,7 +441,7 @@ try {
   await assertText('没有配对关系', 'searching the pairings by account name');
 
   // read-only pages render
-  for (const [page, label] of [['jobs', '作业'], ['nodes', '节点'], ['audits', '审计'], ['disputes', '争议'], ['ledger', '账本']]) {
+  for (const [page, label] of [['jobs', '作业'], ['nodes', '节点'], ['audits', '审计'], ['disputes', '争议'], ['partners', '共享伙伴'], ['ledger', '账本']]) {
     await goto(base + '/admin/#/' + page); await sleep(700);
     await assertText(label, 'admin page ' + page + ' renders');
     await noNull(page);

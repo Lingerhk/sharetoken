@@ -185,6 +185,39 @@ If a Google account has no project of its own, `gemini` and `antigravity` need a
 - **Where credentials are kept:** keys and logins are in `providers.json` in the state directory, apart from `config.json`. Only your account can read the file. Neither the commands nor the local API show a whole key.
 - **Refused credentials or an empty account:** jobs fail, and `{{exe}} status` shows `warning: deepseek refused its credentials ...` or `... is out of balance ...`. Failed jobs count against your node, so fix it soon.
 
+## Share with partners for free {#partners}
+
+There are two ways to share. One is buying and selling: buyers pay credits and sellers earn them. Pairing with your buyers (below) is part of it; it only narrows who buys from whom. The other is share partners: two people pair up as partners and each uses the other's nodes **for free**: nothing is held or charged, and there is no platform fee. It suits two people who each have some models or API quota and want to cover for each other.
+
+One makes an invite (it prints a code such as `ABCD-EFGH-IJKL-MNOP`, good for 24 hours unless you pass `-ttl`, 168 hours at most), the other enters it:
+
+```bash
+{{exe}} partner invite
+{{exe}} partner join ABCD-EFGH-IJKL-MNOP
+```
+
+From then on, when you ask for a model, the coordinator first looks among your partners' online nodes. When one of them can take the request, it is free. When your partners do not offer the model, are offline or busy, or used up what they share, the request goes to the network and is paid as usual.
+
+| Action | Command |
+|---|---|
+| See your partners, the tokens you gave and used in the last 24 hours, open invites and your settings | `{{exe}} partner` |
+| Use partners' nodes only, never buy on the network | `{{exe}} partner set -only on` (`-only off` to undo) |
+| The tokens your nodes give all partners per 24 hours | `{{exe}} partner set -limit 200000` (`0`: no limit) |
+| The percent of each of your nodes' concurrent jobs partners may take | `{{exe}} partner set -share 50` (`100`: no limit, `0`: pause sharing) |
+| Withdraw an open invite | `{{exe}} partner revoke 7` |
+| Stop sharing with a partner | `{{exe}} partner rm 42` |
+
+- **The limits cover what you give:** the daily limit counts the last 24 hours, all partners together. A job counts once it ends, so jobs still running when the limit is reached can take it a little past. The share is counted per node and is at least one job: at 4 concurrent jobs and 50%, partners take at most 2 at a time.
+- **Past the limits:** your partners buy on the network instead, where they may be matched to your nodes again, paying your price.
+- **Partners only:** when no partner node can take a request, it fails and costs nothing. Available models then lists only your partners' (and your own).
+- **Reputation:** jobs between partners do not count toward your nodes' record or reputation on the market.
+- **How many:** an invite works once. An account can have up to 5 partners at a time.
+- **Who sees what:** part of your partner's account name, and the tokens each of you used of the other in the last 24 hours.
+- **Ending it:** either side can end it at any time; then neither uses the other's nodes for free any more.
+- **Private mode:** the private mode of pairing (below) only concerns paying buyers. It does not affect partners.
+
+In the desktop app it is under **Pairing → Share partners**.
+
 ## Pair with your buyers {#pairing}
 
 Pairing ties buyers to you. Make a pairing code and hand it to the people you want as buyers. Once a buyer joins with the code, that buyer's requests go only to the sellers it is paired with, on all of its devices. One code admits as many buyers as you allow, so a team can share one.
@@ -214,7 +247,7 @@ The command prints the code, for example `ABCD-EFGH-IJKL-MNOP`. It lasts 24 hour
 - **Who sees what:** you see part of each buyer's account name, and they see part of yours.
 - **Ending it:** either side can end a pairing at any time. A buyer with no pairings left buys from any seller again.
 
-The desktop app has the same under **Sharing → Pairing** for sellers and **Overview → Paired sellers** for buyers, and so does the portal's [pairing page](/app/#/pairing).
+The desktop app has the same under **Pairing → My buyers** for sellers and **Pairing → My sellers** for buyers, and so does the portal's [pairing page](/app/#/pairing).
 
 ## Concurrency and performance {#tuning}
 

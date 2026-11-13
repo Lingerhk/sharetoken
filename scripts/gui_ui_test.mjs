@@ -443,8 +443,11 @@ const buyOnce = async () => {
 };
 const clickRow = (panel, needle, button) => ev(`[...document.querySelectorAll(${q(panel + ' tbody tr')})].find(r => r.textContent.includes(${q(needle)})).querySelector(${q(button)}).click()`);
 await click('#nav-pairing');
+await waitFor(el('#partners-empty'));
+ok(await shown('#share-partners') && await shown('#share-settings') && !(await shown('#paired-sellers')), 'the pairing view opens on the share partners');
+await click('#tab-pairing-sellers');
 await waitFor(el('#pair-sellers-empty'));
-ok(await shown('#paired-sellers') && !(await shown('#pairing')), 'the pairing view opens on the sellers');
+ok(await shown('#paired-sellers') && !(await shown('#pairing')), 'the sellers tab shows the paired sellers');
 ok(!(await has('#pair-restricted')) && (await text('#paired-sellers-body')).includes('3'), 'an account that is not paired buys from everyone; it may pair with three sellers');
 await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
 await click('#pair-join-ok');
@@ -539,6 +542,89 @@ ok((await buyOnce()).status !== 200, "a private seller's models are hidden from 
 cli('seller', 'pair', 'private', 'off');
 await waitFor(`${el('#models-body')}.textContent.includes('mock-fast')`, 40000);
 ok((await buyOnce()).status === 200, 'with private mode off the seller serves everyone again');
+
+console.log('share partners');
+// The seller account shares mock-fast; once this account is its partner, it
+// buys from it for free.
+const buyPaid = async () => {
+  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKeyFile().key }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
+  await r.text();
+  return { status: r.status, cost: Number(r.headers.get('X-Sharetoken-Cost-Micros') || -1) };
+};
+const sharing = async () => JSON.parse(await ev(`kfetch('/api/v1/sharing').then(r => r.text())`));
+await click('#nav-pairing'); await click('#tab-pairing-partners');
+await waitFor(el('#partners-empty'));
+ok(await ev(`${el('#partner-pct')}.value`) === '100' && await ev(`${el('#partner-limit')}.value`) === '' && !(await ev(`${el('#partner-only')}.checked`)),
+  'by default partners get all of it, with no daily limit, and the market stays open');
+const before = await buyPaid();
+ok(before.status === 200 && before.cost > 0, `without partners a request is paid (${before.cost} micros)`);
+await click('#partner-invite'); await waitFor(el('#dlg-partner-invite'));
+ok(await ev(`[...${el('#partner-ttl')}.options].map(o => o.value).join()`) === '24,72,168', 'an invite lasts one, three or seven days');
+await click('#partner-invite-ok');
+await waitFor(el('#dlg-partner-shown'));
+const invite = await text('#partner-shown-code');
+ok(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){3}$/.test(invite), 'an invite code is shown');
+await shot('25-partner-invite');
+await click('#partner-shown-done');
+await waitFor(`${el('#share-partners-body')}.textContent.includes(${q(invite)})`);
+await click('#partner-join'); await waitFor(el('#dlg-partner-join'));
+await fill('#partner-code-input', invite); await click('#partner-join-ok');
+await waitFor(`${el('#partner-join-error')}.textContent.includes('自己的邀请码')`);
+ok(true, 'nobody joins their own invite');
+await click('#dlg-partner-join-close');
+ok(cli('seller', 'partner', 'join', invite).includes('now sharing with de***@example.com'), "the other account joins and sees this account's masked name");
+await waitFor(`${el('#share-partners-body')}.textContent.includes('se***')`, 40000);
+ok(!(await text('#share-partners-body')).includes(invite), 'the used invite is gone and the partner is listed');
+let reused = false;
+try { cli('idle', 'partner', 'join', invite); } catch (e) { reused = true; }
+ok(reused, 'an invite admits one person');
+await click('#nav-overview');
+await waitFor(el('#models-body .model-shared'), 40000);
+ok(true, "the partner's model is marked free on the overview");
+const free = await buyPaid();
+ok(free.status === 200 && free.cost === 0, 'a request served by a partner costs nothing');
+await waitFor(el('#jobs-body .job-shared'), 40000);
+ok(true, 'the job is listed as shared');
+await click('#nav-pairing'); await click('#tab-pairing-partners');
+const usedOf = async () => (await sharing()).partners[0].taken;
+for (let i = 0; i < 40 && !(await usedOf()); i++) await sleep(500);
+ok(await usedOf() > 0, 'the tokens used of the partner are counted');
+await waitFor(`${el('#share-partners-body')}.querySelector('tbody td:nth-child(4)')?.textContent !== '0'`, 40000);
+ok(true, 'and shown');
+await fullShot('25b-partners');
+
+// The partner pauses sharing: this account goes to the market and pays.
+ok(cli('seller', 'partner', 'set', '-share', '0').includes('paused'), 'the partner pauses sharing from the command line');
+const paused = await buyPaid();
+ok(paused.status === 200 && paused.cost > 0, 'with sharing paused, a request goes to the market and is paid');
+// Partners only: no market, so the request fails.
+await click('#partner-only'); await click('#partner-save');
+await waitFor(el('#partner-settings-flash'));
+ok((await sharing()).settings.only_partners, 'partners only is saved');
+ok((await buyPaid()).status !== 200, 'with partners only and the partner paused, a request fails instead of going to the market');
+cli('seller', 'partner', 'set', '-share', '100');
+ok((await buyPaid()).cost === 0, 'sharing again, the partner serves it for free');
+await click('#partner-only');
+await fill('#partner-limit', 'many'); await click('#partner-save');
+await waitFor(`${el('#partner-settings-error')}.textContent.includes('整数')`);
+await fill('#partner-limit', '5000'); await fill('#partner-pct', '101'); await click('#partner-save');
+await waitFor(`${el('#partner-settings-error')}.textContent.includes('0 到 100')`);
+await fill('#partner-pct', '0'); await click('#partner-save');
+await waitFor(el('#partner-paused'));
+const mine = (await sharing()).settings;
+ok(!mine.only_partners && mine.daily_limit_tokens === 5000 && mine.share_pct === 0, 'the limits are checked and saved');
+ok((await text('#share-settings-body')).includes('5,000') || (await text('#share-settings-body')).includes('5000'), 'the daily limit is shown with what was given');
+await fullShot('25c-partner-settings');
+await fill('#partner-limit', ''); await fill('#partner-pct', '100'); await click('#partner-save');
+await waitFor(`!${el('#partner-paused')}`);
+await cdp('Emulation.setDeviceMetricsOverride', { width: 760, height: 488, deviceScaleFactor: 2, mobile: false });
+await sleep(300);
+ok(await fits(), 'no scrolling of the window with partners at its smallest size');
+await cdp('Emulation.setDeviceMetricsOverride', WINDOW);
+await clickRow('#share-partners', 'se***', '.partner-leave'); await waitFor(el('#dlg-confirm'));
+await click('#confirm-ok');
+await waitFor(el('#partners-empty'));
+ok((await buyPaid()).cost > 0, 'after parting, requests are paid again');
 
 console.log('languages');
 await cdp('Page.navigate', { url: env.DAEMON + '/?lang=en' });

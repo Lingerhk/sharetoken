@@ -451,17 +451,24 @@ func (e *Engine) Offers() []protocol.Offer {
 }
 
 // Models aggregates live offers per model.
-func (e *Engine) Models() []protocol.ModelSummary { return e.models(nil) }
+func (e *Engine) Models() []protocol.ModelSummary { return e.models(nil, nil) }
 
 // ModelsFor is Models as peer may buy them: a device of a paired buyer sees
 // the offers of the sellers it is paired with, nobody sees a private seller
 // it is not paired with, and a user always sees its own offers.
+//
+// The nodes of the peer's share partners that share now (not paused, not past
+// their daily limit) count among SharedNodes; with "partners only" on, only
+// partners' nodes (and the user's own) are listed.
 func (e *Engine) ModelsFor(peer string) ([]protocol.ModelSummary, error) {
-	sc, err := scopeOf(e.db, peer)
+	sc, err := scopeOf(e.db, peer, e.cfg.Now())
 	if err != nil {
 		return nil, err
 	}
-	return e.models(func(acct string) bool { return acct == sc.own || sc.allows(acct) }), nil
+	return e.models(func(acct string) bool {
+		_, partner := sc.partners[acct]
+		return acct == sc.own || partner || (!sc.onlyPartners && sc.allows(acct))
+	}, func(acct string) bool { g, ok := sc.partners[acct]; return ok && g.sharePct > 0 && !g.exhausted }), nil
 }
 
 // buyScope is which sellers a buyer may be matched to (package accounts,
@@ -472,6 +479,10 @@ type buyScope struct {
 	paired  map[string]bool // accounts of the sellers the buyer is paired with
 	private map[string]bool // accounts that serve their paired buyers only
 	auditor bool            // an audit identity: private sellers are audited like any other
+
+	// Share partners (sharing.go): their nodes serve the buyer for free.
+	partners     map[string]partnerGrant
+	onlyPartners bool // never go to the market
 }
 
 // restricted says the buyer buys only from its paired sellers.
@@ -493,7 +504,7 @@ func (s *buyScope) allows(acct string) bool {
 func scopeOf(q interface {
 	accounts.Querier
 	Query(query string, args ...any) (*sql.Rows, error)
-}, peer string) (*buyScope, error) {
+}, peer string, now time.Time) (*buyScope, error) {
 	sc := &buyScope{}
 	ids, err := accounts.PrivateSellers(q)
 	if err != nil {
@@ -508,6 +519,9 @@ func scopeOf(q interface {
 			return nil, err
 		}
 		sc.paired = userAccounts(ids)
+		if err := readPartners(q, sc, userID, now); err != nil {
+			return nil, err
+		}
 	case errors.Is(err, accounts.ErrUnknownDevice), errors.Is(err, accounts.ErrDisabled):
 		// Not a user's device: an audit identity, or a peer of an open network.
 		var auditor int
@@ -529,8 +543,9 @@ func userAccounts(ids []int64) map[string]bool {
 	return out
 }
 
-// models aggregates the live offers of the accounts show accepts (nil: of everyone).
-func (e *Engine) models(show func(acct string) bool) []protocol.ModelSummary {
+// models aggregates the live offers of the accounts show accepts (nil: of
+// everyone); shared says which of them are the asker's share partners.
+func (e *Engine) models(show, shared func(acct string) bool) []protocol.ModelSummary {
 	now := e.cfg.Now().UnixNano()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -546,6 +561,9 @@ func (e *Engine) models(show func(acct string) bool) []protocol.ModelSummary {
 				agg[m.Model] = s
 			}
 			s.Nodes++
+			if shared != nil && shared(oe.acct) {
+				s.SharedNodes++
+			}
 			if oe.tee != "" {
 				s.AttestedNodes++
 			}
@@ -656,7 +674,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		}
 		// A paired buyer buys only from the sellers it is paired with, and a
 		// private seller serves only its paired buyers.
-		scope, err := scopeOf(tx, buyer)
+		scope, err := scopeOf(tx, buyer, now)
 		if err != nil {
 			return err
 		}
@@ -681,7 +699,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		if stale >= e.cfg.MaxStaleTickets || failed >= 4*e.cfg.MaxStaleTickets {
 			return protocol.Errorf(protocol.CodeBusy, "%d earlier tickets were never used (%d more reported failed); they are released when they expire", stale, failed)
 		}
-		busy, err := busyNodes(tx, now.Add(-e.cfg.StartGrace).UnixNano())
+		busy, sharedBusy, err := busyNodes(tx, now.Add(-e.cfg.StartGrace).UnixNano())
 		if err != nil {
 			return err
 		}
@@ -689,39 +707,85 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		for _, n := range req.Exclude {
 			excluded[n] = true
 		}
+		// gather collects the nodes accept takes that can run the job now,
+		// and counts those skipped only because they are at capacity.
+		// Price limits apply to paid jobs only.
+		gather := func(accept func(node string, oe *offerEntry) bool, paid bool) (cands []candidate, full int, err error) {
+			for node, oe := range e.offers {
+				o := &oe.offer
+				// A user may not buy from itself (from any of its devices): it
+				// would only churn fees and farm reputation.
+				if o.ExpiresAt <= now.UnixNano() || node == buyer || oe.acct == buyerAcct || excluded[node] ||
+					(req.Node != "" && node != req.Node) || (req.RequireTEE && oe.tee == "") || !accept(node, oe) {
+					continue
+				}
+				if e.cfg.NodeOnline != nil && !e.cfg.NodeOnline(node) {
+					continue
+				}
+				inferVersion := protocol.BestInferVersion(o.InferVersions, req.InferVersions)
+				if inferVersion == 0 { // buyer and node have no protocol in common
+					continue
+				}
+				p, ok := o.Price(req.Model)
+				if !ok || (paid && ((req.MaxPriceIn > 0 && p.PriceInMicros > req.MaxPriceIn) || (req.MaxPriceOut > 0 && p.PriceOutMicros > req.MaxPriceOut))) {
+					continue
+				}
+				st, err := loadStats(tx, node)
+				if err != nil {
+					return nil, 0, err
+				}
+				if st.SuspendedUntil > now.UnixNano() {
+					continue
+				}
+				if o.MaxConcurrency > 0 && busy[node] >= o.MaxConcurrency {
+					full++
+					continue
+				}
+				cands = append(cands, candidate{offer: o, acct: oe.acct, price: p, stats: st, inferVersion: inferVersion})
+			}
+			return cands, full, nil
+		}
+		// Share partners first: their nodes serve the buyer for free, within
+		// what each partner gives (its daily tokens and its part of each
+		// node's slots).
+		shared := false
 		var cands []candidate
-		full := 0 // eligible nodes skipped only because they are at capacity
-		for node, oe := range e.offers {
-			o := &oe.offer
-			// A user may not buy from itself (from any of its devices): it
-			// would only churn fees and farm reputation.
-			if o.ExpiresAt <= now.UnixNano() || node == buyer || oe.acct == buyerAcct || excluded[node] ||
-				(req.Node != "" && node != req.Node) || (req.RequireTEE && oe.tee == "") || !scope.allows(oe.acct) {
-				continue
-			}
-			if e.cfg.NodeOnline != nil && !e.cfg.NodeOnline(node) {
-				continue
-			}
-			inferVersion := protocol.BestInferVersion(o.InferVersions, req.InferVersions)
-			if inferVersion == 0 { // buyer and node have no protocol in common
-				continue
-			}
-			p, ok := o.Price(req.Model)
-			if !ok || (req.MaxPriceIn > 0 && p.PriceInMicros > req.MaxPriceIn) || (req.MaxPriceOut > 0 && p.PriceOutMicros > req.MaxPriceOut) {
-				continue
-			}
-			st, err := loadStats(tx, node)
-			if err != nil {
+		// sharedFull counts partner nodes that offer something but are busy,
+		// at capacity or past what their owner shares.
+		full, sharedFull, partnerOffers := 0, 0, false
+		if len(scope.partners) > 0 {
+			var busyFull int
+			if cands, busyFull, err = gather(func(node string, oe *offerEntry) bool {
+				g, ok := scope.partners[oe.acct]
+				if !ok {
+					return false
+				}
+				partnerOffers = partnerOffers || slices.ContainsFunc(oe.offer.Models, func(m protocol.ModelPrice) bool { return m.Model == req.Model })
+				if g.exhausted {
+					sharedFull++
+					return false
+				}
+				if slots := accounts.PartnerSlots(oe.offer.MaxConcurrency, g.sharePct); oe.offer.MaxConcurrency > 0 && sharedBusy[node] >= slots {
+					sharedFull++
+					return false
+				}
+				return true
+			}, false); err != nil {
 				return err
 			}
-			if st.SuspendedUntil > now.UnixNano() {
-				continue
+			sharedFull += busyFull
+			shared = len(cands) > 0
+		}
+		if !shared && scope.onlyPartners {
+			if sharedFull > 0 && partnerOffers {
+				return protocol.Errorf(protocol.CodeCapacity, "your share partners' nodes offering %q are busy or used up what they share today", req.Model)
 			}
-			if o.MaxConcurrency > 0 && busy[node] >= o.MaxConcurrency {
-				full++
-				continue
+			return protocol.Errorf(protocol.CodeNoOffers, "none of your share partners' nodes currently offers %q", req.Model)
+		}
+		if !shared {
+			if cands, full, err = gather(func(_ string, oe *offerEntry) bool { return scope.allows(oe.acct) }, true); err != nil {
+				return err
 			}
-			cands = append(cands, candidate{offer: o, acct: oe.acct, price: p, stats: st, inferVersion: inferVersion})
 		}
 		if len(cands) == 0 && full > 0 {
 			return protocol.Errorf(protocol.CodeCapacity, "all %d nodes offering %q are at capacity", full, req.Model)
@@ -757,11 +821,14 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		if req.MaxTokens > 0 && req.PromptTokens > 0 {
 			hold = min(hold, max(e.cfg.MinBudgetMicros, protocol.HoldFor(req.PromptTokens, req.MaxTokens, best.price.PriceInMicros, best.price.PriceOutMicros)))
 		}
-		if err := led.Hold(jobID, buyerAcct, int64(hold)); err != nil {
-			if errors.Is(err, ledger.ErrInsufficientFunds) {
-				return protocol.Errorf(protocol.CodeInsufficientFunds, "balance does not cover the %d micro reservation", hold)
+		// A shared job moves no credits; its reservation only caps the output.
+		if !shared {
+			if err := led.Hold(jobID, buyerAcct, int64(hold)); err != nil {
+				if errors.Is(err, ledger.ErrInsufficientFunds) {
+					return protocol.Errorf(protocol.CodeInsufficientFunds, "balance does not cover the %d micro reservation", hold)
+				}
+				return err
 			}
-			return err
 		}
 		t := protocol.Ticket{
 			InferVersion:   best.inferVersion,
@@ -778,6 +845,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			IssuedAt:       now.UnixNano(),
 			ExpiresAt:      now.Add(e.cfg.TicketTTL).UnixNano(),
 			Coordinator:    e.self,
+			Shared:         shared,
 		}
 		t.Sign(e.priv)
 		j := &job{ticket: t, buyerAcct: buyerAcct, nodeAcct: best.acct, status: StatusHeld,
@@ -971,7 +1039,7 @@ func (e *Engine) Settle(submitter string, req protocol.SettleRequest) (*protocol
 			// Only the billed cost waits out the dispute window: the rest of
 			// the reservation, a whole request budget when the request set no
 			// max_tokens, goes back to the buyer now.
-			if err := led.ShrinkHold(j.ticket.JobID, max(int64(j.cost), 1)); err != nil {
+			if err := shrinkHold(led, j, max(int64(j.cost), 1)); err != nil {
 				return err
 			}
 			j.status, j.finalizeAt = StatusPending, now.Add(e.cfg.DisputeWindow).UnixNano()
@@ -1017,7 +1085,7 @@ func (e *Engine) settleLate(tx *sql.Tx, led *ledger.Tx, j *job, req *protocol.Se
 	sr := req.Receipt
 	j.receipt, j.cost, j.fee = &sr, cost, fee
 	j.status, j.doneAt, j.disputeDetail = StatusFinal, now.UnixNano(), ""
-	if _, err := updateStats(tx, t.Node, func(s *NodeStats) {
+	if _, err := jobStats(tx, j, func(s *NodeStats) {
 		s.Successes++
 		s.Reputation = min(maxReputation, s.Reputation+repPerSuccess)
 	}); err != nil {
@@ -1052,7 +1120,7 @@ func (e *Engine) Abandon(submitter string, req protocol.AbandonRequest) error {
 		case j.status != StatusHeld || j.receipt != nil:
 			return protocol.Errorf(protocol.CodeConflict, "job is %s and can no longer be abandoned", j.status)
 		}
-		if err := led.Release(j.ticket.JobID, "release (node abandoned the job)"); err != nil {
+		if err := releaseHold(led, j, "release (node abandoned the job)"); err != nil {
 			return err
 		}
 		j.status, j.doneAt = StatusReleased, now.UnixNano()
@@ -1062,7 +1130,7 @@ func (e *Engine) Abandon(submitter string, req protocol.AbandonRequest) error {
 			// otherwise any buyer could drain honest nodes' reputation for free.
 			return saveJob(tx, j)
 		}
-		if _, err := updateStats(tx, j.ticket.Node, func(s *NodeStats) {
+		if _, err := jobStats(tx, j, func(s *NodeStats) {
 			s.Failures++
 			s.Reputation = max(0, s.Reputation-repPerFailure)
 		}); err != nil {
@@ -1085,7 +1153,7 @@ func (e *Engine) ReleaseUndelivered(jobID string) error {
 		if j.status != StatusHeld || j.startedAt != 0 || j.receipt != nil {
 			return nil
 		}
-		if err := led.Release(jobID, "release (ticket reply undelivered)"); err != nil {
+		if err := releaseHold(led, j, "release (ticket reply undelivered)"); err != nil {
 			return err
 		}
 		j.status, j.doneAt = StatusReleased, now.UnixNano()
@@ -1132,12 +1200,15 @@ func (e *Engine) finalize(tx *sql.Tx, led *ledger.Tx, j *job, now time.Time) err
 // finalizeJob captures j's hold for the node (minus the platform fee) and
 // credits the node's record. It is shared with the portal's dispute resolution.
 func finalizeJob(tx *sql.Tx, led *ledger.Tx, j *job, now time.Time, feeBps int64) error {
-	fee, err := led.Capture(j.ticket.JobID, j.nodeAcct, int64(j.cost), feeBps)
-	if err != nil {
-		return fmt.Errorf("coordinator: capture %s: %w", j.ticket.JobID, err)
+	var fee int64
+	if !j.ticket.Shared {
+		var err error
+		if fee, err = led.Capture(j.ticket.JobID, j.nodeAcct, int64(j.cost), feeBps); err != nil {
+			return fmt.Errorf("coordinator: capture %s: %w", j.ticket.JobID, err)
+		}
 	}
 	j.fee, j.status, j.doneAt = fee, StatusFinal, now.UnixNano()
-	if _, err := updateStats(tx, j.ticket.Node, func(s *NodeStats) {
+	if _, err := jobStats(tx, j, func(s *NodeStats) {
 		s.Successes++
 		s.Reputation = min(maxReputation, s.Reputation+repPerSuccess)
 	}); err != nil {
@@ -1153,17 +1224,43 @@ func (e *Engine) refund(tx *sql.Tx, led *ledger.Tx, j *job, now time.Time) error
 
 // refundJob returns j's hold to the buyer and charges the node a lost dispute.
 func refundJob(tx *sql.Tx, led *ledger.Tx, j *job, now time.Time) error {
-	if err := led.Release(j.ticket.JobID, "refund (dispute upheld)"); err != nil {
+	if err := releaseHold(led, j, "refund (dispute upheld)"); err != nil {
 		return fmt.Errorf("coordinator: refund %s: %w", j.ticket.JobID, err)
 	}
 	j.status, j.doneAt = StatusRefunded, now.UnixNano()
-	if _, err := updateStats(tx, j.ticket.Node, func(s *NodeStats) {
+	if _, err := jobStats(tx, j, func(s *NodeStats) {
 		s.DisputesLost++
 		s.Reputation = max(0, s.Reputation-repPerLostDispute)
 	}); err != nil {
 		return err
 	}
 	return saveJob(tx, j)
+}
+
+// jobStats applies fn to the record of j's node. Jobs between share partners
+// leave it as it is: they cost nothing, so two accounts of one person could
+// otherwise farm reputation with them, and a partner could harm it for free.
+func jobStats(tx *sql.Tx, j *job, fn func(s *NodeStats)) (*NodeStats, error) {
+	if j.ticket.Shared {
+		return nil, nil
+	}
+	return updateStats(tx, j.ticket.Node, fn)
+}
+
+// releaseHold returns j's hold to the buyer; a shared job has none.
+func releaseHold(led *ledger.Tx, j *job, memo string) error {
+	if j.ticket.Shared {
+		return nil
+	}
+	return led.Release(j.ticket.JobID, memo)
+}
+
+// shrinkHold gives back what of j's hold exceeds keep; a shared job has none.
+func shrinkHold(led *ledger.Tx, j *job, keep int64) error {
+	if j.ticket.Shared {
+		return nil
+	}
+	return led.ShrinkHold(j.ticket.JobID, keep)
 }
 
 func settled(j *job) *protocol.SettleResponse {
@@ -1371,11 +1468,11 @@ func (e *Engine) Tick(now time.Time) {
 			if j.status != StatusHeld || j.releaseAt > now.UnixNano() {
 				return nil
 			}
-			if err := led.Release(id, "release (not settled in time)"); err != nil {
+			if err := releaseHold(led, j, "release (not settled in time)"); err != nil {
 				return err
 			}
 			j.status, j.doneAt = StatusReleased, now.UnixNano()
-			if _, err := updateStats(tx, j.ticket.Node, func(s *NodeStats) {
+			if _, err := jobStats(tx, j, func(s *NodeStats) {
 				s.Failures++
 				s.Reputation = max(0, s.Reputation-repPerFailure)
 			}); err != nil {
@@ -1399,7 +1496,7 @@ func (e *Engine) Tick(now time.Time) {
 					return nil
 				}
 			}
-			if err := led.Release(id, "release (job never started)"); err != nil {
+			if err := releaseHold(led, j, "release (job never started)"); err != nil {
 				return err
 			}
 			j.status, j.doneAt = StatusReleased, now.UnixNano()

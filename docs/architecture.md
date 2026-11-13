@@ -181,6 +181,17 @@ The coordinator enforces it, not the client. When it issues a ticket or lists mo
 
 Pairing is between accounts: every device of the buyer is bound by it and every device of the seller serves it. The portal shows each side only a masked form of the other's account name, because a code can travel further than its seller intended. Wrong codes are throttled like failed logins.
 
+### 2.14 Share partners: free use of each other's nodes
+
+Next to buying and selling there is a second way to share: two users pair up as share partners and each uses the other's nodes for free (`internal/accounts/sharing.go`, `internal/coordinator/sharing.go`). One makes an invite, a code like a pairing code, valid for a day by default and at most 7 days, that admits one person; the other joins with it at the portal. A user can have up to 5 partners and 10 open invites.
+
+- **Data model.** Partners are kept as share groups: `share_groups` (with `max_members`), `share_members` and `share_invites`. Today an invite makes a new group of two, and everyone a user shares a group with is its partner. The tables already allow a pool of more members: a group has its own size limit and an invite can name an existing group (`share_invites.group_id`), so pools can be added later without a migration. `share_settings` holds each user's settings; a user who never changed them shares everything and falls back to the market.
+- **Matching order.** When a user with partners asks for a model, `IssueTicket` first looks among the partners' online nodes. If one can take the job, the ticket is marked `Shared`. Only when none can (no partner offers the model, all are offline or busy, or past what they give) does the request go to the market and is paid as usual, unless the user turned on "partners only": then it fails with no offers or capacity. Partners are matched whatever the user's pairings; private mode only concerns paying buyers. The model list counts partner nodes in `ModelSummary.SharedNodes`, and with "partners only" lists only partners' and the user's own models.
+- **Free settlement.** `Ticket.Shared` is a signed field, so neither peer can change it. A shared job takes no hold, charges nothing and pays no platform fee; its reservation only caps the output, `protocol.TicketCost` returns 0 for it, and the job row is marked `jobs.shared`. Receipts, hashes and audits work as for any job. `JobInfo` and the admin's job list carry `Shared`. Shared jobs leave the node's record (successes, failures, lost disputes, reputation) as it is: they cost nothing, so two accounts of one person could otherwise farm reputation for the market with them, and a partner could lower it for free.
+- **Limits.** Each user bounds what it gives, all partners together. `daily_limit_tokens` caps the tokens (prompt + completion) its nodes serve partners in a rolling 24 hours, counted from settled shared jobs, so jobs in flight when the limit is reached can pass it a little. `share_pct` is the part of each node's `MaxConcurrency` slots partner jobs may take, at least one slot; 0 pauses sharing. Past either limit, partners buy on the market, where they may be matched to the same nodes at their price.
+
+As with pairing, the coordinator enforces it and reads partners and settings from the database on each request. The portal shows each side a masked form of the other's account name and the tokens moved each way in the last 24 hours; wrong invite codes are throttled like wrong pairing codes. Either side can end a partnership at any time. The admin console lists the share groups (`GET /api/v1/admin/share-groups`).
+
 ## 3. Database
 
 The portal, the coordinator and the mail server share one MySQL 8 (InnoDB) database (`internal/mysqldb`). It is named with `-db mysql://user@host:port/db` (`database.dsn`) and can run on a separate machine.
@@ -189,9 +200,10 @@ The portal, the coordinator and the mail server share one MySQL 8 (InnoDB) datab
 |---|---|---|
 | `users`, `api_tokens`, `devices` | Portal | Coordinator (`devices`, to resolve accounts), portal |
 | `pairing_codes`, `pairings`, `pairing_private` | Portal | Coordinator (`pairings` and `pairing_private`, to match), portal |
+| `share_groups`, `share_members`, `share_invites`, `share_settings` | Portal | Coordinator (`share_members` and `share_settings`, to match), portal |
 | `relays` | Portal (registry), coordinator (reachability) | Portal, coordinator |
 | `ledger_accounts`, `ledger_holds`, `ledger_entries` | Portal (grants and deductions), coordinator (holds, settlements, refunds) | Both |
-| `jobs`, `nodes`, `audits`, `peers`, `meta` | Coordinator | Portal (billing, usage, coordinator ID) |
+| `jobs` (`shared` marks jobs between share partners), `nodes`, `audits`, `peers`, `meta` | Coordinator | Portal (billing, usage, coordinator ID) |
 | `portal_settings`, `admin_audit_log`, `invite_codes`, `relay_samples`, `feedback` | Portal | Portal |
 | `mail_outbox`, `mail_inbox`, `mail_codes`, `mail_status` | Portal, mail server | Portal, mail server ([mail.md](mail.md)) |
 | `schema_migrations` | Whichever process applies a migration | All processes |

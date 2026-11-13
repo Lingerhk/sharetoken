@@ -631,7 +631,7 @@ I18N.ready.then(() => {
         { title: tr('模型'), get: j => j.model },
         { title: tr('状态'), get: j => JOB_STATUS[j.status] || j.status },
         { title: 'Tokens', num: true, get: j => num(j.prompt_tokens + j.completion_tokens) },
-        { title: 'Credit', num: true, get: j => '+' + credit(j.earned_micros, 6) },
+        { title: 'Credit', num: true, get: j => j.shared ? h('span', { class: 'pill ok job-shared' }, tr('伙伴共享')) : '+' + credit(j.earned_micros, 6) },
       ], sold));
     }
 
@@ -1040,6 +1040,159 @@ I18N.ready.then(() => {
     return { sellers: sellers.el, buyers: buyers.el, reload };
   }
 
+  // ---- share partners ----
+
+  // Share partners use each other's nodes for free, before the market. One
+  // makes an invite, the other enters it. Each limits what it gives: tokens per
+  // 24 hours and a part of each node's concurrent jobs. The portal keeps it all;
+  // the daemon passes the requests on. Two panels: partners and invites, and
+  // the settings.
+  function partnersView() {
+    let view = null, error = '', flash = null, settingsFlash = null, dirty = false;
+    const partners = section('share-partners', tr('共享伙伴'), { fill: true,
+      hint: tr('和伙伴配对后，双方优先使用对方的节点，不扣费。伙伴的节点不可用时，再到网络上付费购买。'),
+      actions: [
+        h('button', { type: 'button', id: 'partner-join', onclick: () => joinDialog() }, tr('输入邀请码')),
+        h('button', { type: 'button', class: 'primary', id: 'partner-invite', onclick: () => inviteDialog() }, tr('邀请伙伴')),
+      ] });
+    const settings = section('share-settings', tr('共享设置'), {
+      hint: tr('限制你的节点给伙伴用多少，对所有伙伴合计生效。每日上限按最近 24 小时计，不填表示不限；并发比例 100 表示不限，0 表示暂停共享。打开「只用伙伴的节点」后，不再到网络上付费购买，伙伴的节点不可用时请求会失败。') });
+
+    function partnerError(e) {
+      if (e.code === 'bad_code') return tr('邀请码不对，或者已经过期、被撤销或用过了');
+      if (e.code === 'own_code') return tr('这是你自己的邀请码，请把它发给要共享的伙伴');
+      if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
+      if (e.code === 'not_found') return tr('这一项已经不存在了');
+      if (e.code === 'not_logged_in') return tr('请先登录');
+      return message(e);
+    }
+
+    async function reload() {
+      try { view = await api('GET', '/api/v1/sharing'); error = ''; }
+      catch (e) { error = partnerError(e); }
+      render();
+    }
+
+    const failed = () => error ? h('div', { class: 'notice warn small partner-error' }, tr('暂时获取不到共享伙伴信息：{error}', { error })) : null;
+    const flashLine = (f, id) => f ? h('div', { class: 'notice ' + f.cls, id }, f.text) : null;
+    const who = u => [u.username, u.disabled ? h('span', { class: 'pill bad partner-off' }, tr('已停用')) : null];
+
+    // The settings form keeps what is typed until saved; a reload does not
+    // overwrite it.
+    const onlyBox = h('input', { type: 'checkbox', id: 'partner-only', onchange: () => { dirty = true; } });
+    const limitInput = h('input', { type: 'text', id: 'partner-limit', class: 'narrow', inputmode: 'numeric', placeholder: tr('不限'), 'aria-label': tr('每天最多给伙伴的 tokens'), oninput: () => { dirty = true; } });
+    const pctInput = h('input', { type: 'text', id: 'partner-pct', class: 'narrow short', inputmode: 'numeric', 'aria-label': tr('伙伴最多占用每个节点并发的百分比'), oninput: () => { dirty = true; } });
+    const servedText = h('span', { class: 'v muted', id: 'partner-served' });
+    const saveBtn = h('button', { type: 'submit', class: 'primary', id: 'partner-save' }, tr('保存'));
+    const settingsErr = errorBox('partner-settings-error');
+    const settingsForm = h('form', { novalidate: true, id: 'partner-settings', onsubmit: e => { e.preventDefault(); run(saveBtn, settingsErr, async () => {
+      const lim = limitInput.value.trim().replace(/[,\s]/g, '');
+      const limit = lim === '' ? 0 : Number(lim);
+      if (!Number.isInteger(limit) || limit < 0) throw new Error(tr('每日上限需要是不小于 0 的整数，不填表示不限'));
+      const pct = Number(pctInput.value);
+      if (!Number.isInteger(pct) || pct < 0 || pct > 100) throw new Error(tr('并发比例需要是 0 到 100 的整数'));
+      await api('PUT', '/api/v1/sharing/settings', { only_partners: onlyBox.checked, daily_limit_tokens: limit, share_pct: pct });
+      dirty = false;
+      settingsFlash = { cls: 'ok', text: tr('已保存') };
+      await reload();
+    }, partnerError); } },
+      h('div', { class: 'rows' },
+        h('span', { class: 'k' }, tr('使用')), h('label', { class: 'v check' }, onlyBox, h('span', null, tr('只用伙伴的节点，不到网络上购买'))), h('span'),
+        h('span', { class: 'k' }, tr('每日上限')), h('span', { class: 'v' }, limitInput, ' ', h('span', { class: 'muted small' }, tr('tokens / 24 小时，所有伙伴合计'))), h('span'),
+        h('span', { class: 'k' }, tr('并发比例')), h('span', { class: 'v' }, pctInput, ' ', h('span', { class: 'muted small' }, tr('% 每个节点的并发，0 暂停共享'))), h('span'),
+        h('span', { class: 'k' }, tr('已给出')), servedText, saveBtn),
+      settingsErr.el);
+
+    function fillSettings(st) {
+      if (dirty) return;
+      onlyBox.checked = !!st.only_partners;
+      limitInput.value = st.daily_limit_tokens ? String(st.daily_limit_tokens) : '';
+      pctInput.value = String(st.share_pct);
+    }
+
+    function render() {
+      const v = view || { partners: [], invites: [], settings: { only_partners: false, daily_limit_tokens: 0, share_pct: 100 }, served: 0, window_hours: 24, max_partners: 0 };
+      partners.set([v.partners, v.invites, error, flash, !view],
+        failed(),
+        flashLine(flash, 'partner-flash'),
+        v.max_partners ? h('p', { class: 'small muted', id: 'partner-max' }, tr('最多同时和 {n} 个伙伴共享。下表是最近 {h} 小时的用量。', { n: num(v.max_partners), h: num(v.window_hours) })) : null,
+        v.partners.length === 0 ? h('div', { class: 'empty', id: 'partners-empty' }, tr('还没有共享伙伴')) : table([
+          { title: tr('伙伴'), get: u => who(u) },
+          { title: tr('配对时间'), get: u => time(u.since) },
+          { title: tr('我给出'), num: true, get: u => num(u.given || 0) },
+          { title: tr('我使用'), num: true, get: u => num(u.taken || 0) },
+          { title: '', get: u => h('button', { type: 'button', class: 'mini danger partner-leave', 'data-id': String(u.id), onclick: () => leave(u) }, tr('解除')) },
+        ], v.partners),
+        v.invites.length === 0 ? null : [
+          h('h3', { class: 'sub-title' }, tr('未使用的邀请码')),
+          table([
+            { title: tr('邀请码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'partner-copy-' + c.id)) },
+            { title: tr('到期时间'), get: c => time(c.expires_at) },
+            { title: '', get: c => h('button', { type: 'button', class: 'mini danger partner-revoke', 'data-id': String(c.id), onclick: () => revoke(c) }, tr('撤销')) },
+          ], v.invites)]);
+      if (view) fillSettings(v.settings);
+      saveBtn.disabled = !view;
+      const st = v.settings;
+      servedText.textContent = st.daily_limit_tokens > 0
+        ? tr('最近 {h} 小时已给出 {used} / {limit} tokens', { h: num(v.window_hours), used: num(v.served), limit: num(st.daily_limit_tokens) })
+        : tr('最近 {h} 小时已给出 {used} tokens', { h: num(v.window_hours), used: num(v.served) });
+      settings.set([st, error, settingsFlash, !view],
+        failed(),
+        flashLine(settingsFlash, 'partner-settings-flash'),
+        st.share_pct === 0 ? h('div', { class: 'notice warn small', id: 'partner-paused' }, tr('共享已暂停：伙伴现在不能使用你的节点。')) : null,
+        settingsForm);
+    }
+
+    function joinDialog() {
+      const code = h('input', { type: 'text', id: 'partner-code-input', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', maxlength: '64', placeholder: 'XXXX-XXXX-XXXX-XXXX', class: 'mono' });
+      const err = errorBox('partner-join-error');
+      const okBtn = h('button', { class: 'primary', type: 'submit', id: 'partner-join-ok' }, tr('配对'));
+      modal('dlg-partner-join', tr('输入邀请码'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
+        if (!code.value.trim()) throw new Error(tr('请输入邀请码'));
+        const p = await api('POST', '/api/v1/sharing/join', { code: code.value.trim() });
+        closeModal();
+        flash = { cls: 'ok', text: tr('已和 {name} 成为共享伙伴', { name: p.username }) };
+        await reload();
+      }, partnerError); } },
+        field(tr('邀请码'), code, tr('配对后，你们双方的所有设备都优先使用对方的节点，不扣费。随时可以解除。')),
+        err.el, okBtn));
+    }
+
+    const TTLS = [[24, tr('1 天')], [72, tr('3 天')], [168, tr('7 天')]];
+    function inviteDialog() {
+      const ttl = h('select', { id: 'partner-ttl' }, TTLS.map(([hours, text]) => h('option', { value: String(hours), selected: hours === 24 }, text)));
+      const err = errorBox('partner-invite-error');
+      const okBtn = h('button', { class: 'primary', type: 'submit', id: 'partner-invite-ok' }, tr('生成'));
+      modal('dlg-partner-invite', tr('邀请伙伴'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
+        const c = await api('POST', '/api/v1/sharing/invites', { ttl_hours: Number(ttl.value) });
+        flash = null;
+        await reload();
+        shownInvite(c);
+      }, partnerError); } },
+        field(tr('有效期'), ttl, tr('邀请码只能用一次，到期后失效。')),
+        err.el, okBtn));
+    }
+    function shownInvite(c) {
+      modal('dlg-partner-shown', tr('邀请码已生成'),
+        h('p', { class: 'small muted' }, tr('把它发给要共享的伙伴。对方输入后，你们就能免费使用对方的节点。')),
+        h('div', { class: 'endpoint' }, h('code', { id: 'partner-shown-code', class: 'pair-code big' }, c.code), copyButton(() => c.code, 'partner-shown-copy')),
+        h('p', { class: 'small muted', id: 'partner-shown-meta' }, tr('到期时间：{time}', { time: time(c.expires_at) })),
+        h('div', { class: 'modal-actions' }, h('button', { type: 'button', class: 'primary', id: 'partner-shown-done', onclick: () => closeModal() }, tr('完成'))));
+    }
+
+    function leave(u) {
+      confirmBox(tr('解除和 {name} 的共享？之后双方不能再免费使用对方的节点，除非重新配对。', { name: u.username }), tr('解除'),
+        () => api('DELETE', '/api/v1/sharing/partners/' + u.id), async () => { flash = null; await reload(); }, partnerError);
+    }
+    function revoke(c) {
+      confirmBox(tr('撤销邀请码 {code}？', { code: c.code }), tr('撤销'),
+        () => api('DELETE', '/api/v1/sharing/invites/' + c.id), async () => { flash = null; await reload(); }, partnerError);
+    }
+
+    render();
+    return { partners: partners.el, settings: settings.el, reload };
+  }
+
   // subTabs puts panels of one view behind a row of tabs: one shows at a time,
   // the first at the start. items: [name, label, panels].
   function subTabs(view, items) {
@@ -1128,13 +1281,14 @@ I18N.ready.then(() => {
       h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈'))));
     let market = [];
     const pairing = pairingView();
+    const partners = partnersView();
     const share = shareView(() => market);
 
     // name, label, panels, or tabs of panels.
     const VIEWS = [
       ['overview', tr('概览'), [tiles, endpoint.el, h('div', { class: 'cols' }, network.el, models.el)]],
       ['share', tr('共享'), null, [['state', tr('状态'), share.panes.state], ['providers', tr('厂商 API'), share.panes.providers], ['local', tr('本机模型'), share.panes.local]]],
-      ['pairing', tr('配对'), null, [['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
+      ['pairing', tr('配对'), null, [['partners', tr('共享伙伴'), [partners.partners, partners.settings]], ['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
       ['activity', tr('记录'), null, [['all', tr('全部'), [jobs.el]], ['sold', tr('卖出'), [share.sold]]]],
       ['settings', tr('设置'), [settings, devices.el]],
     ];
@@ -1253,7 +1407,7 @@ I18N.ready.then(() => {
       market = ms || [];
       models.set(ms, !ms || ms.length === 0 ? h('div', { class: 'empty', id: 'models-empty' }, tr('网络上暂时没有在线的模型')) : table([
         { title: tr('模型'), get: m => m.model },
-        { title: tr('节点'), num: true, get: m => num(m.nodes) },
+        { title: tr('节点'), num: true, get: m => m.shared_nodes ? [num(m.nodes), ' ', h('span', { class: 'pill ok model-shared', title: tr('伙伴的节点：免费') }, tr('伙伴 {n}', { n: num(m.shared_nodes) }))] : num(m.nodes) },
         { title: tr('最低输入价'), num: true, get: m => pricePerM(m.min_price_in) },
         { title: tr('最低输出价'), num: true, get: m => pricePerM(m.min_price_out) },
       ], ms));
@@ -1266,7 +1420,7 @@ I18N.ready.then(() => {
         { title: tr('模型'), get: j => j.model },
         { title: tr('状态'), get: j => JOB_STATUS[j.status] || j.status },
         { title: 'Tokens', num: true, get: j => num(j.prompt_tokens + j.completion_tokens) },
-        { title: 'Credit', num: true, get: j => j.role === 'sell' ? '+' + credit(j.earned_micros, 6) : '-' + credit(j.cost_micros, 6) },
+        { title: 'Credit', num: true, get: j => j.shared ? h('span', { class: 'pill ok job-shared' }, tr('伙伴共享')) : j.role === 'sell' ? '+' + credit(j.earned_micros, 6) : '-' + credit(j.cost_micros, 6) },
       ], js));
     }
 
@@ -1408,6 +1562,7 @@ I18N.ready.then(() => {
             share.account(me, sj.jobs);
             setBanner('');
             await pairing.reload();
+            await partners.reload();
           } catch (e) {
             if (e.status === 401) { boot(); return; }
             setBanner(tr('暂时连不上门户，下面是上次获取的账户信息（{error}）', { error: message(e) }));

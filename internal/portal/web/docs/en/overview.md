@@ -44,6 +44,7 @@ Use the system switch at the top of the page and the commands change to match. P
 | coordinator | Handles matching, settlement and disputes, and keeps the ledger |
 | job | One model call. The node signs a receipt, and the buyer checks it before settlement |
 | pairing | A tie between a buyer and a seller, made with the seller's pairing code. A paired buyer buys only from its sellers. See [Buy only from sellers you know](/docs/use-models#pairing) |
+| share partner | Someone you pair with by invite code so that each of you uses the other's nodes first, for free. It is the second way to share, next to buying and selling. See [Share with partners for free](/docs/share#partners) |
 
 ## Privacy boundary {#privacy}
 

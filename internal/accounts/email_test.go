@@ -16,7 +16,7 @@ func testStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := mysqldb.Migrate(db, "accounts", []mysqldb.Migration{{Version: 1, Name: "accounts", SQL: ledger.Schema + Schema + PairingSchema + NoPasswords}}); err != nil {
+	if err := mysqldb.Migrate(db, "accounts", []mysqldb.Migration{{Version: 1, Name: "accounts", SQL: ledger.Schema + Schema + PairingSchema + NoPasswords + SharingSchema}}); err != nil {
 		t.Fatal(err)
 	}
 	return &Store{DB: db}

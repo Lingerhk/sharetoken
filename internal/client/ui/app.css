@@ -249,3 +249,7 @@ html.i18n-pending body { visibility: hidden; }
 .warn-text { color: var(--warn); }
 .rows > .check { margin-top: 0; align-items: center; }
 .rows > .check input { margin-top: 0; }
+/* Share partners: short inputs inside a settings row. */
+.rows input.narrow { width: 10em; padding: 4px 8px; }
+.rows input.narrow.short { width: 4.5em; }
+#partner-settings .rows { margin-bottom: 4px; }

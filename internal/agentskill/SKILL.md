@@ -23,7 +23,7 @@ The examples below write `sharetoken`; use the command above if `sharetoken` is 
 ## Ground rules
 
 - **Credits are money.** Requests through the endpoint spend the user's credits. Do not send large batches, loops or long generations without the user's go-ahead, and set `max_tokens` on requests.
-- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private`, `apikey on/off/rotate`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `share`, `provider`, `pair`, `config`) is always fine.
+- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private`, `partner invite/join/rm/revoke/set`, `apikey on/off/rotate`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `share`, `provider`, `pair`, `partner`, `config`) is always fine.
 - **Never put secrets on a command line.** A provider API key goes in through standard input or `$SHARETOKEN_PROVIDER_KEY`, never as an argument. Never print the `token` from `config.json` or `providers.json`; `sharetoken config` masks it.
 - **Sign-in needs the user.** `login` mails a six-digit code to the user's address. Ask the user for the address and then for the code; do not guess them.
 - **`up` runs until stopped.** Start it in the background (or ask the user to run it in a terminal); never wait on it in the foreground.
@@ -127,9 +127,21 @@ sharetoken pair leave SELLER_ID | pair rm BUYER_ID | pair revoke CODE_ID
 sharetoken pair private on | off
 ```
 
+## Share partners
+
+Two users who pair as partners use each other's nodes first and free (no credits move); when no partner node can take a request it goes to the network and is paid, unless `-only on`. Each limits what it gives.
+
+```bash
+sharetoken partner                                # partners, tokens given/used in 24h, open invites, settings
+sharetoken partner invite [-ttl 24h]              # a one-person invite code
+sharetoken partner join CODE
+sharetoken partner rm USER_ID | partner revoke INVITE_ID
+sharetoken partner set [-only on|off] [-limit TOKENS_PER_24H] [-share PERCENT]
+```
+
 ## Local management API
 
-While the client runs, `http://@HTTP@/api/v1/…` serves JSON for scripts: `GET status`, `GET models`, `GET account`, `GET jobs?role=buy&limit=20`, `GET share`, `GET pairing`. Each request needs the key the client writes to `@HOME@/run.json` at each start (field `key`), as `Authorization: Bearer <key>`; without it the answer is 401 `local_auth`. Never print the key or put it in files or messages. Prefer the commands above unless JSON is needed.
+While the client runs, `http://@HTTP@/api/v1/…` serves JSON for scripts: `GET status`, `GET models`, `GET account`, `GET jobs?role=buy&limit=20`, `GET share`, `GET pairing`, `GET sharing`. Each request needs the key the client writes to `@HOME@/run.json` at each start (field `key`), as `Authorization: Bearer <key>`; without it the answer is 401 `local_auth`. Never print the key or put it in files or messages. Prefer the commands above unless JSON is needed.
 
 ## More
 

@@ -26,7 +26,7 @@ func TestSignedEncodingsAreStable(t *testing.T) {
 	offer.Sign(priv)
 	ticket := protocol.Ticket{
 		JobID: "job", Model: "m", Node: "node", NodeAddrs: []string{"/ip4/127.0.0.1/tcp/1"}, NodeBoxPub: box32, NodeReceiptKey: key32,
-		Buyer: "buyer", PriceInMicros: 1, PriceOutMicros: 2, ReservedMicros: 3, IssuedAt: 4, ExpiresAt: 5, Coordinator: "coord", InferVersion: 1,
+		Buyer: "buyer", PriceInMicros: 1, PriceOutMicros: 2, ReservedMicros: 3, IssuedAt: 4, ExpiresAt: 5, Coordinator: "coord", InferVersion: 1, Shared: true,
 	}
 	ticket.Sign(priv)
 	sr, err := receipt.Sign(priv, receipt.Receipt{JobID: "job", ModelID: "m", NodeID: priv.Public().(ed25519.PublicKey), RequestHash: key32, ResponseHash: key32,
@@ -41,7 +41,7 @@ func TestSignedEncodingsAreStable(t *testing.T) {
 		want string
 	}{
 		"offer":   {offer.Sig, "510d4d42a5a9ab26b1a02639e5fbee7a6e42ddd2aba5cbb075a2b5b2da871758962a104da4c8bdd6a0e48c097e66d887a70f4ab23abb0b7a93f4d7d2370ad00c"},
-		"ticket":  {ticket.Sig, "b17bf70946e4ff9f64236fa962a3c7268a8ec48f8aecc1f63e5bfb4e5f36de6bf5f838eb4ceda4ee047e5d7bfde1b9000c17e25c2f09148dbde1b59e3a5fea05"},
+		"ticket":  {ticket.Sig, "7da000864f3dd691f0a6d3aec214622871ef0ea32f48541f463bb8d98fe054d48e0ccde3be0f4f4436287386a6d0571ecb484d3d7ee7815bd6a512a2c2e72306"},
 		"receipt": {sr.Sig, "f8e4b4e3ad30c7e76c9a011b1b2ce7e72a840bd376455c1c337967a3381ea53dfe0044cc4ac444b83a05a6b399ff8c2fbc0940eed166282e9c35898b0af5050f"},
 		"ack":     {ed25519.Sign(priv, protocol.AckBytes(&sr.Receipt)), "abb31db93c13ae1c89ecc69f2d568f7f96633afc62b8ef8c75abd8ebe9eb1e1f43a760569d4660d1033d9346b882d32196edc00541409beea64f0b8ffff2c10c"},
 		"pass":    {pass.Sig, "0880a433f11945095548d18cf91959cf2854cf82dc8003d0a31d2fd8723a845836387aa1dfb90db486650983578387f41482b9107869240c6d6f50d4fd3b3b08"},

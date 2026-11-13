@@ -121,6 +121,27 @@
 
 命令里的 id 就是 `pair` 列出的编号。详见[和买家配对](/docs/share#pairing)。
 
+## 共享伙伴 {#partners}
+
+两个用户配对成为伙伴后，双方优先使用对方的节点，不扣费；伙伴的节点不能接时，再到网络上付费购买。
+
+| 命令 | 作用 |
+|---|---|
+| `partner` | 显示伙伴、最近 24 小时互相用了多少 tokens、未使用的邀请码和你的设置 |
+| `partner invite [-ttl 24h]` | 生成一个邀请码，只能一个人用。默认 24 小时有效（最长 168 小时） |
+| `partner join <code>` | 成为生成这个邀请码的人的伙伴 |
+| `partner rm <user id>` | 和某个伙伴解除共享 |
+| `partner revoke <invite id>` | 撤销一个未使用的邀请码 |
+| `partner set [-only on\|off] [-limit N] [-share P]` | `-only`：只用伙伴的节点；`-limit`：每 24 小时最多给所有伙伴的 tokens（0 不限）；`-share`：伙伴最多占用你每个节点并发的百分比（0 暂停） |
+
+```bash
+{{exe}} partner invite
+{{exe}} partner join ABCD-EFGH-IJKL-MNOP
+{{exe}} partner set -limit 200000 -share 50
+```
+
+详见[和伙伴互相共享](/docs/share#partners)。
+
 ## 编程助手 {#agents}
 
 `skill install` 让本机的 Claude Code 和 Codex 学会使用客户端：查看状态和余额、通过本地接口调用模型、共享模型。它在 `~/.claude` 和 `~/.codex` 下写入 `skills/sharetoken/SKILL.md`（Windows 上在 `%USERPROFILE%` 下；设置了 `CLAUDE_CONFIG_DIR`、`CODEX_HOME` 时以它们为准）。这个 skill 要求助手在修改设置或大量花费 credit 之前先征得你的同意。

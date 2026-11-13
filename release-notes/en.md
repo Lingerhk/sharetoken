@@ -12,6 +12,11 @@ A smaller, tighter window; relay and latency in the menu bar.
 - A status bar with the connection, the relay in use and its latency
 - Latency is coloured green, amber or red by how fast it is
 
+## Share partners
+- Pair with a partner by invite code and each of you uses the other's nodes first, for free
+- Limit what you give: tokens per day and a share of each node's concurrency
+- "Partners only" never buys on the network; under Pairing → Share partners, or `sharetoken partner`
+
 ## Menu bar
 - The menu shows the relay in use, its latency, sharing and your available credit
 - Linux now has the icon too (needs Ubuntu 24.04 or Debian 13 or later)

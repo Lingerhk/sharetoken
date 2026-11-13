@@ -19,7 +19,7 @@
     title: '管理控制台', role: '管理员',
     items: [
       { route: 'dashboard', icon: 'chart', label: '仪表盘' }, { route: 'overview', icon: 'grid', label: '总览' }, { route: 'users', icon: 'users', label: '用户' }, { route: 'relays', icon: 'server', label: '中继' }, { route: 'versions', icon: 'cube', label: '版本' },
-      { route: 'jobs', icon: 'bolt', label: '作业' }, { route: 'nodes', icon: 'cpu', label: '节点' }, { route: 'audits', icon: 'shield', label: '推理审计' }, { route: 'disputes', icon: 'warning', label: '争议' }, { route: 'pairings', icon: 'swap', label: '配对' },
+      { route: 'jobs', icon: 'bolt', label: '作业' }, { route: 'nodes', icon: 'cpu', label: '节点' }, { route: 'audits', icon: 'shield', label: '推理审计' }, { route: 'disputes', icon: 'warning', label: '争议' }, { route: 'pairings', icon: 'swap', label: '配对' }, { route: 'partners', icon: 'link', label: '共享伙伴' },
       { route: 'ledger', icon: 'database', label: '账本' }, { route: 'mail', icon: 'mail', label: '邮件', badge: mailBadge }, { route: 'feedback', icon: 'chat', label: '反馈', badge: feedbackBadge },
       { route: 'oplog', icon: 'book', label: '操作日志' }, { route: 'settings', icon: 'cog', label: '系统设置' },
     ],
@@ -806,6 +806,21 @@
     await list.reload();
   }
 
+  // ---- share partners ----
+  // Who uses whose nodes for free: every share group, members in full.
+  async function partners(m) {
+    const user = input({ type: 'search', id: 'partners-user', placeholder: '成员的账户名' });
+    let timer;
+    user.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => list.reload(), 300); });
+    const list = ST.listView({ path: '/api/v1/admin/share-groups', key: 'groups', empty: '没有共享伙伴', params: () => ({ user: user.value.trim() }), tools: [user],
+      columns: [
+        { title: '配对时间', cell: g => ST.time(g.created_at) },
+        { title: '成员', cell: g => g.members.map((name, i) => [i ? '、' : null, userLink(name)]) },
+      ] });
+    add(m, pageTitle('共享伙伴', h('small', null, '组内成员优先使用彼此的节点，不扣费；每人可限制给出的 tokens 和并发比例')), list.el);
+    await list.reload();
+  }
+
   // ---- audit log ----
   const AUDIT_ACTIONS = {
     'auth.admin_login': '管理员登录', 'user.create': '创建用户', 'user.credit': '调整 credit', 'user.disable': '禁用用户', 'user.enable': '启用用户', 'user.set_admin': '变更管理员权限',
@@ -1015,7 +1030,7 @@
       h('div', { class: 'settings-actions' }, saveBtn, updated, err));
   }
 
-  const go = ST.router({ dashboard, overview, users, relays, versions, jobs, nodes, audits, disputes, pairings, ledger, mail, feedback, oplog, settings }, nav, main, 'dashboard');
+  const go = ST.router({ dashboard, overview, users, relays, versions, jobs, nodes, audits, disputes, pairings, partners, ledger, mail, feedback, oplog, settings }, nav, main, 'dashboard');
   refreshUnread();
   await go();
 })();
