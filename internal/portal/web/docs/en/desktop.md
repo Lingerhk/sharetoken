@@ -13,7 +13,7 @@ The desktop app gives you a graphical interface to sign in, check your account a
 :::
 
 ::: linux
-The package works on Ubuntu 22.04 or later and Debian 12 or later. Install it with `apt`, which also installs the WebKitGTK it needs:
+The package works on Ubuntu 24.04 or later and Debian 13 or later. Install it with `apt`, which also installs the GTK and WebKitGTK it needs:
 
 ```bash
 sudo apt install ./sharetoken-{{version}}-linux-<arch>.deb
@@ -59,8 +59,8 @@ The app has two parts: the window, and the background service that does the real
 :::
 
 ::: linux
-- The Linux edition has no tray icon. Closing the window quits the app, and the background service stops with it.
-- To keep sharing models in the background, [run it from the command line](/docs/running#background).
+- There is an icon in the top bar (on Ubuntu, and on other desktops that show app indicators). Click it to see the connection, the relay in use and its latency, whether you are sharing and your available credit, or to open the window or quit. Closing the window only hides it; the background service keeps running.
+- On a desktop without app indicators, such as GNOME without an indicator extension, there is no icon: closing the window quits the app, and the background service stops with it. To keep sharing models in the background there, [run it from the command line](/docs/running#background).
 :::
 
 ::: windows

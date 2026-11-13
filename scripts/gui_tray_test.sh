@@ -2,7 +2,8 @@
 # Runs the built desktop app through its tray self-test: closing the window, the
 # menu's Open and Quit, the status line, the language, a second start. The window
 # and the menu-bar icon do show for about 15 seconds. No account or network is
-# involved. macOS only.
+# involved. macOS and Linux (on Wayland the minimise steps are skipped; run with
+# GDK_BACKEND=x11 for them); on Windows start the app with SHARETOKEN_GUI_SELFTEST=tray.
 #
 #   scripts/gui_tray_test.sh <dev|prod> <dir with the programs of that build (sharetoken and sharetoken-gui, or sharetoken-dev and sharetoken-gui-dev)>
 set -euo pipefail

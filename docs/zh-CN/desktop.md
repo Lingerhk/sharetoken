@@ -26,7 +26,7 @@
 ## 结构
 
 ```
-sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（internal/client/daemon.go）
+sharetoken-gui（Wails v3 窗口，gui/）        sharetoken daemon（internal/client/daemon.go）
 
   ┌──────────────┐  fetch   ┌───────┐  HTTP       ┌──────────────────────────────────────┐
   │ 系统 WebView │ ───────▶ │ 代理  │ ──────────▶ │ /          页面（internal/client/ui） │
@@ -44,6 +44,7 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（internal/cl
 - Daemon **未登录也能运行**（`sharetoken up` 不行）。登录后它在后台启动 Agent。网络连不上时自动重试，间隔从 2 秒退避到 1 分钟；账户信息仍可查看，因为它只依赖门户。
 - 已有 daemon 在运行时，窗口直接连上去，退出时不动它。
 - 默认端口被无关程序占用时，窗口把 daemon 启动在第一个空闲的备用端口上，页面显示实际地址。`config.json` 里指定的端口不会被替换，这时直接报错。同一数据目录上已有 `sharetoken up` 在运行时也报错，否则同一把设备密钥会同时在线两次。
+- 代理在页面的 head 里加一个 script 标签，指向窗口壳自己提供的 `/__shell/boot.js`（`gui/main.go` 的 `shellBootJS`）。它标记系统（`<html>` 上的 `os-<系统>`），加载 Wails 的页面运行时（`/wails/runtime.js`，由 Wails 的资源服务应答：macOS 上拖动窗口要用它，而且它加载之后 Wails 才会在页面里执行脚本），并把页面语言报给窗口壳。两者都和页面同源，页面的 CSP 允许执行。`/__shell/` 下的请求不会到 daemon。
 - 窗口持有它所启动的 daemon 的标准输入（`-stop-on-stdin-eof`）。窗口退出或崩溃时管道关闭，daemon 正常收尾后退出。
 
 ## 窗口布局
@@ -56,7 +57,7 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（internal/cl
 - **状态栏**：连接状态、当前中继和它的延迟、账户、版本。
 - **延迟的颜色**和门户一致：低于 80 ms 绿色，低于 250 ms 黄色，其余红色（`app.js` 的 `rtt`）。网络面板的中继表、链路质量、中继预约和状态栏都用它。
 - 文字默认不可选中，只有适合复制的内容（地址、代码、表格、提示）可以选中。
-- **macOS** 隐藏标题栏（`mac.TitleBarHiddenInset`），页面一直铺到窗口顶部。窗口壳在页面加载后给 `<html>` 加上 `os-<系统>` 类；`os-darwin` 下侧边栏给红绿灯按钮留出位置，侧边栏和视图标题栏可以拖动窗口（`--wails-draggable`），其中的按钮不可拖。Windows 和 Linux 保留系统标题栏。
+- **macOS** 隐藏标题栏（`application.MacTitleBarHiddenInset`），页面一直铺到窗口顶部。窗口壳的启动脚本给 `<html>` 加上 `os-<系统>` 类；`os-darwin` 下侧边栏给红绿灯按钮留出位置，侧边栏和视图标题栏可以拖动窗口（`--wails-draggable`，由 Wails 的页面运行时处理），其中的按钮不可拖。Windows 和 Linux 保留系统标题栏。
 
 ## 共享页（卖家模式）
 
@@ -86,26 +87,28 @@ sharetoken-gui（Wails 窗口，gui/）          sharetoken daemon（internal/cl
 
 ## 菜单栏和托盘
 
-macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘：关闭窗口就是退出应用，daemon 一起停止。
+macOS 在菜单栏、Windows 在通知区、Linux 以状态通知项（StatusNotifierItem）显示图标；Linux 上 KDE、带 AppIndicator 扩展的 Ubuntu GNOME 等支持它的桌面会显示。不支持的桌面（比如原版 GNOME）没有图标，这时关闭窗口就是退出应用，daemon 一起停止，因为没有别的办法再打开窗口。
 
 | 操作 | 结果 |
 |---|---|
 | 关闭窗口（红色按钮、X、macOS 的 Cmd+W） | 只隐藏窗口。应用和 daemon 继续运行，共享和本地 API 不中断 |
 | Windows 左键点图标 | 打开窗口（最小化时恢复） |
-| macOS 点图标、Windows 右键点图标 | 菜单：状态行、信息行（当前中继和延迟、共享中的在售模型数、可用 credit，都不可点）、有新版本时的更新行（点击打开窗口）、打开、退出 |
+| macOS、Linux 点图标，Windows 右键点图标 | 菜单：状态行、信息行（当前中继和延迟、共享中的在售模型数、可用 credit，都不可点）、有新版本时的更新行（点击打开窗口）、打开、退出 |
 | 菜单里的退出、macOS 的 Cmd+Q | 退出应用；daemon 如果是这个应用启动的，一起停止 |
 | 再次启动程序 | 同一数据目录只保留一个实例：第二个进程唤回窗口后退出。dev 和 prod、不同数据目录互不影响 |
 
 - 状态行每 3 秒从 `GET /api/v1/session` 更新，例如 `已连接 · a@example.com`、`未登录`、`后台服务未运行`。
 - 信息行只在已连接时显示，同样每 3 秒从 `GET /api/v1/status` 更新：`中继：relay-sg · 42 ms`（延迟取当前中继的实时 ping 均值，没有时取上次测速）、`正在共享 · 在售模型：2`。`可用 credit：4.99` 每分钟从 `GET /api/v1/account` 取一次，因为它要问门户。鼠标停在图标上的提示也带上中继和延迟。
 - 新版本的系统通知会带上发布说明里的一句话摘要（见 [versioning.md](versioning.md) 的“发布说明”）。
-- 新版本：每个新构建发一次系统通知（[`gui/notify.go`](../../gui/notify.go)，点击打开窗口）。Linux 没有托盘也会发。规则见 [versioning.md](versioning.md) 的“升级提醒”。Windows 上 Wails 会在 HKCU 登记通知激活器，卸载程序会删掉它。
-- 菜单文字跟随页面语言：页面每次加载都把自己的语言报给窗口壳（`/__shell/lang`，不到 daemon）。文字在 [`gui/tray_text.go`](../../gui/tray_text.go)，有测试检查它和页面的语言列表、相同词条的译文是否一致。
+- 新版本：每个新构建发一次系统通知（[`gui/notify.go`](../../gui/notify.go)，点击打开窗口）。规则见 [versioning.md](versioning.md) 的“升级提醒”。Windows 上 Wails 每次启动都会在 HKCU 下以应用名登记通知激活器，卸载程序会删掉它。
+- 菜单文字跟随页面语言：页面加载时和语言变化时都把自己的语言报给窗口壳（`/__shell/lang`，不到 daemon）。文字在 [`gui/tray_text.go`](../../gui/tray_text.go)，有测试检查它和页面的语言列表、相同词条的译文是否一致。
 - Windows 11 默认把新图标收进 `^` 溢出区，用户可以把它拖到任务栏上。
-- 图标由 `go run packaging/gen_tray_icons.go` 生成（在 `gui/` 下运行）。macOS 是模板图，由系统配色；Windows 是彩色 ICO。
-- 实现：macOS 直接用 AppKit（`tray_darwin.m`），因为常见的 Go 托盘库和 Wails 各自定义了 `AppDelegate`，链接时冲突。Windows 用 `fyne.io/systray`，运行在单独的线程上。
-- **Linux 的退出：** Wails 在 goroutine 里调用 `gtk_main_quit`。GTK 不是线程安全的，信号偶尔丢失：窗口没了，进程和 daemon 还在。`quit_linux.go` 用 `OnBeforeClose` 把这个调用排到 GTK 线程上。
-- **Windows 的焦点保护：** Wails 收到 `WM_SETFOCUS` 就调用 WebView2 的 `MoveFocus`，失败时直接 `os.Exit(1)`，而窗口最小化或隐藏时它可能失败。`tray_windows.go` 在 Wails 的窗口过程之前拦下这种状态下的消息，打开窗口也不走 Wails 的 `WindowShow`。升级 Wails 后要重新跑托盘自检。
+- 图标由 `go run packaging/gen_tray_icons.go` 生成（在 `gui/` 下运行）。macOS 是模板图，由系统配色；Windows 是彩色 ICO；Linux 用 `packaging/tray.png`，即 64×64 的应用图标。
+- 实现：三个系统都用 Wails v3 的系统托盘（[`gui/tray_native.go`](../../gui/tray_native.go)；图标和各系统的差异在 `tray_platform_<系统>.go`）。系统会把某个字符当助记符标记的地方，菜单文字做了转义（Windows 的 `&`、Linux 的 `_`）。
+- 单实例锁用 Wails 的。ID 是 `app.sharetoken.desktop.<构建类型>.h<数据目录的哈希>`；在 Linux 上它是 D-Bus 名字，各段不能以数字开头。
+- Wails v3 自己处理 WebView2 拒绝 `MoveFocus` 的情况（v2 会直接结束进程）；托盘自检里快速最小化再打开的步骤覆盖了它。升级 Wails 后要重新跑托盘自检。
+- `App.Show`（macOS 上用来唤回被 Command-H 隐藏的应用）用 `application.InvokeSync` 放到主线程调用：它不像窗口的方法那样自己切到主线程，否则 AppKit 会结束进程。
+- `app.Run()` 在 macOS 上不返回：应用退出时进程直接结束。所以停止 daemon 和自检的结果输出放在 Wails 的 `OnShutdown`、`PostShutdown` 钩子里。
 
 ## daemon 的本地 API
 
@@ -171,8 +174,9 @@ scripts/build-gui-linux.sh prod arm64    # Linux 包，任何装有 Docker 的�
 
 `dist/SHA256SUMS-<版本>` 列出这些安装包。
 
-- macOS 和 Linux 的窗口壳需要 cgo，要在目标系统上构建（Linux 版不能从 macOS 交叉编译；`scripts/build-gui-linux.sh` 改为在 Docker 容器里构建）。Windows 的窗口壳不需要 cgo，可以在任何系统上交叉编译。它运行时需要 WebView2 Runtime，没有代码签名。安装程序用 `makensis` 制作；没有安装 `makensis` 时，在 `scripts/build-gui-linux.sh` 的 Docker 镜像里制作。
-- Linux 构建依赖（Debian/Ubuntu 24.04 的包名）：`build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev`。运行时需要 WebKitGTK。脚本检测到 WebKitGTK 4.1 时加上 `webkit2_41` 构建标签，只有 4.0 的旧系统不加。`.deb` 把程序装到 `/usr/bin`，并添加应用菜单项。
+- macOS 和 Linux 的窗口壳需要 cgo，要在目标系统上构建（Linux 版不能从 macOS 交叉编译；`scripts/build-gui-linux.sh` 改为在 Docker 容器里构建）。Windows 的窗口壳不需要 cgo，可以在任何系统上交叉编译。它运行时需要 WebView2 Runtime，没有代码签名。图标和 manifest 来自 `gui/packaging/winres.json`（go-winres）：Wails 从 32512 号图标组取窗口图标，从 3 号取通知图标。安装程序用 `makensis` 制作；没有安装 `makensis` 时，在 `scripts/build-gui-linux.sh` 的 Docker 镜像里制作。
+- Linux 构建依赖（Debian/Ubuntu 24.04 的包名）：`build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev`。Wails v3 用 GTK 4 和 WebKitGTK 6.0，要求 GTK 4.10 以上，所以 Linux 版支持 Ubuntu 24.04、Debian 13 及以后的版本，不支持 Ubuntu 22.04（GTK 4.6）和 Debian 12（4.8）。Docker 构建镜像是 Ubuntu 24.04（`scripts/gui-builder.Dockerfile`）。`.deb`（`Depends: libgtk-4-1 (>= 4.10), libwebkitgtk-6.0-4`）把程序装到 `/usr/bin`，并添加应用菜单项。
+- **AppArmor：** WebKitGTK 6.0 总是用 bubblewrap 给网页进程开沙箱，需要非特权用户命名空间。Ubuntu 23.10 起只有 AppArmor 配置里允许的程序才能用；没有配置时窗口一启动就中止（`bwrap: setting up uid map: Permission denied`）。`.deb` 安装 `/etc/apparmor.d/sharetoken-gui`（`gui/packaging/apparmor-profile`：不加限制，只声明 `userns`，和 Ubuntu 给自带浏览器的配置一样），在 `postinst` 里加载，`postrm` 里卸载。不经安装包构建、运行的窗口壳需要给它自己的路径加配置，测试时也可以设 `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`。
 - macOS 应用只有 ad-hoc 签名。它能在构建它的机器上运行；分发给别人需要 Developer ID 签名和公证，否则会被 Gatekeeper 拦下。
 - 日志：窗口启动的 daemon 写到数据目录的 `daemon.log`（prod 是 `~/.sharetoken`，dev 是 `~/.sharetoken-dev`；Windows 上在 `%USERPROFILE%` 下）。
 
@@ -207,7 +211,7 @@ scripts/gui_stack.sh stop DIR
 | Daemon API | `scripts/test.sh -race ./internal/client` | 验证码登录（新老账户）和退出的正常和失败路径；证书确认和固定；MFA；token 吊销；用户停用；换账号；并发登录；请求防护；日志不含密钥 |
 | 账号规则 | `scripts/test.sh ./internal/accounts ./internal/portal` | 邮箱校验和规范化；管理接口 URL 含 `@` 和 `+` |
 | 全链路 API | `scripts/test.sh -race -run Daemon ./test/e2e` | 在真实的 libp2p 拓扑上：登录、经中继接入、购买模型、记账、重启后恢复、退出、网络恢复后自动接入 |
-| 窗口壳 | `cd gui && go test -tags desktop,production .`（Linux 再加 `webkit2_41`） | 启动、连接、停止 daemon；端口冲突；转发 |
+| 窗口壳 | `cd gui && go test .` | 启动、连接、停止 daemon；端口冲突；转发 |
 | 页面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调。配对：错误的码和自己的码，和不卖任何模型的卖家配对（没有模型、请求被拒）以及和有模型的卖家配对，生成和撤销配对码，买家加入和被移除，在页面上开关私有模式及其对未配对买家的效果 |
 | 真实 WebView | `scripts/gui_shell_test.sh <dev\|prod> <程序目录>` | 不显示窗口，用系统 WebView 加载页面并向真实 daemon 发 POST；检查应用退出时 daemon 一起停止 |
-| 菜单栏和托盘 | `scripts/gui_tray_test.sh <dev\|prod> <程序目录>`（macOS） | 窗口和图标会显示约 15 秒。经系统路径操作真实的图标、菜单和窗口：关闭、打开、最小化和恢复、快速连点、语言跟随、再次启动、退出后 daemon 停止。Windows 上用 `SHARETOKEN_GUI_SELFTEST=tray` 启动应用即可运行同一套自检 |
+| 菜单栏和托盘 | `scripts/gui_tray_test.sh <dev\|prod> <程序目录>`（macOS、Linux） | 窗口和图标会显示约 15 秒。先向系统确认图标已显示，再执行菜单项的动作、操作真实窗口：关闭、打开、最小化和恢复、快速最小化再打开、语言跟随、点击图标（Windows，走系统的托盘消息）、Command-W（macOS）、再次启动、退出后 daemon 停止。Wayland 不告诉应用窗口是否已最小化，所以 Wayland 会话上跳过最小化的步骤，`GDK_BACKEND=x11` 时会跑。Windows 上用 `SHARETOKEN_GUI_SELFTEST=tray` 启动应用即可运行同一套自检 |

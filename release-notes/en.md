@@ -14,6 +14,7 @@ A smaller, tighter window; relay and latency in the menu bar.
 
 ## Menu bar
 - The menu shows the relay in use, its latency, sharing and your available credit
+- Linux now has the icon too (needs Ubuntu 24.04 or Debian 13 or later)
 
 ## Updates
 - A new release comes with a one-line description; open it for the full notes

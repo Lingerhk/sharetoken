@@ -214,6 +214,15 @@ func TestSingleInstancePerDataDirectory(t *testing.T) {
 	if strings.ContainsAny(a, `/\: `) || len(a) > 200 || !strings.Contains(a, Env) {
 		t.Fatal(a)
 	}
+	// On Linux it is a D-Bus name: elements of letters, digits, _ and -, none
+	// starting with a digit, at most 255 in all.
+	for _, id := range []string{a, b} {
+		for _, el := range strings.Split(id, ".") {
+			if el == "" || (el[0] >= '0' && el[0] <= '9') || strings.Trim(el, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != "" {
+				t.Fatalf("%s: element %q is not valid in a D-Bus name", id, el)
+			}
+		}
+	}
 }
 
 // menuRecorder is the native side of the tray in these tests.

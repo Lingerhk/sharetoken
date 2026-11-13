@@ -23,7 +23,7 @@
 #   prod: https://sharetoken.app       ~/.sharetoken       127.0.0.1:9787
 #
 # Linux build dependencies (Debian/Ubuntu 24.04 names):
-#   sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+#   sudo apt install build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -45,8 +45,8 @@ SHELL_LDFLAGS="-s -w -X main.buildType=$STAMP -X main.version=$VERSION"
 fill() { # template: the packaging files name the build type with @ENV@ and so on
   sed -e "s/@EXE@/$EXE/g" -e "s/@GUI@/$GUI/g" -e "s/@NAME@/$NAME/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" -e "s/@VERSION@/$NUMERIC/g" "$1"
 }
-build_shell() { # output path, extra tags
-  (cd gui && CGO_ENABLED=1 go build -trimpath -tags "desktop,production$2" -ldflags "$SHELL_LDFLAGS" -o "../$1" .)
+build_shell() { # output path
+  (cd gui && CGO_ENABLED=1 go build -trimpath -ldflags "$SHELL_LDFLAGS" -o "../$1" .)
 }
 # -X says nothing when it misses its variable, and a wrong build type here sends
 # users to the wrong network: look for the stamp in what was built. Works on
@@ -70,7 +70,7 @@ build_macos() { # architecture
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$app/Contents/MacOS/$EXE" ./cmd/sharetoken
-  build_shell "$app/Contents/MacOS/$GUI" ""
+  build_shell "$app/Contents/MacOS/$GUI"
   verify "$app/Contents/MacOS/$EXE" "$app/Contents/MacOS/$GUI"
   fill gui/packaging/Info.plist > "$app/Contents/Info.plist"
   icons=$(mktemp -d)/app.iconset
@@ -140,7 +140,9 @@ case "${1:-$(uname -s)}" in
 windows)
   # Wails needs no cgo on Windows, so this cross-compiles. The .syso carries the
   # icon and the manifest (DPI awareness, common controls v6 for its dialogs);
-  # go build links it by its name, and it must not outlive this build.
+  # go build links it by its name, and it must not outlive this build. Wails
+  # takes the window's icon from icon group 32512 and the notifications' from 3
+  # (gui/packaging/winres.json).
   ARCH=${2:-amd64}
   BASE=sharetoken$SUFFIX-$VERSION-windows-$ARCH
   DIR=$OUT/$BASE
@@ -148,8 +150,8 @@ windows)
   mkdir -p "$DIR"
   CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/$EXE.exe" ./cmd/sharetoken
   trap 'rm -f gui/rsrc_windows_*.syso' EXIT
-  go run github.com/tc-hib/go-winres@v0.3.3 simply --arch "$ARCH" --manifest gui --icon gui/packaging/icon.png --out gui/rsrc
-  (cd gui && CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -tags desktop,production -ldflags "$SHELL_LDFLAGS -H windowsgui" -o "../$DIR/$GUI.exe" .)
+  go run github.com/tc-hib/go-winres@v0.3.3 make --in gui/packaging/winres.json --arch "$ARCH" --out gui/rsrc
+  (cd gui && CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -ldflags "$SHELL_LDFLAGS -H windowsgui" -o "../$DIR/$GUI.exe" .)
   verify "$DIR/$EXE.exe" "$DIR/$GUI.exe"
   cp gui/packaging/icon.ico gui/packaging/user-path.ps1 "$DIR/"
   nsis -V2 "-DNAME=$NAME" "-DEXE=$EXE" "-DGUI=$GUI" "-DVERSION=$NUMERIC" "-DSRC=$BASE" "-DOUTFILE=$BASE.exe" "-DSUFFIX=$SUFFIX"
@@ -163,30 +165,32 @@ Darwin)
   build_macos "$(go env GOARCH)"
   ;;
 Linux)
-  # webkit2gtk 4.1 (Ubuntu 22.04+, Debian 12+); older systems only have 4.0.
-  TAG=""
-  pkg-config --exists webkit2gtk-4.1 && TAG=",webkit2_41"
   ARCH=$(go env GOARCH)
   BASE=sharetoken$SUFFIX-$VERSION-linux-$ARCH
   DIR=$OUT/$BASE
   rm -rf "$DIR"
   mkdir -p "$DIR"
   CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/$EXE" ./cmd/sharetoken
-  build_shell "$DIR/$GUI" "$TAG"
+  build_shell "$DIR/$GUI"
   verify "$DIR/$EXE" "$DIR/$GUI"
-  # The package: programs on every user's PATH, an entry in the application menu.
+  # The package: programs on every user's PATH, an entry in the application menu,
+  # and the AppArmor profile that lets WebKitGTK sandbox its web processes.
   ROOT=$(mktemp -d)
-  install -d "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/usr/share/icons/hicolor/512x512/apps"
+  install -d "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/usr/share/icons/hicolor/512x512/apps" "$ROOT/etc/apparmor.d"
   install -m 755 "$DIR/$EXE" "$DIR/$GUI" "$ROOT/usr/bin/"
   install -m 644 gui/packaging/icon.png "$ROOT/usr/share/icons/hicolor/512x512/apps/$EXE.png"
   fill gui/packaging/sharetoken.desktop > "$ROOT/usr/share/applications/$EXE.desktop"
   chmod 644 "$ROOT/usr/share/applications/$EXE.desktop"
+  fill gui/packaging/apparmor-profile > "$ROOT/etc/apparmor.d/$GUI"
+  chmod 644 "$ROOT/etc/apparmor.d/$GUI"
+  echo "/etc/apparmor.d/$GUI" > "$ROOT/DEBIAN/conffiles"
   { fill gui/packaging/deb-control
     echo "Architecture: $ARCH"
     echo "Installed-Size: $(du -sk "$ROOT/usr" | cut -f1)"
   } > "$ROOT/DEBIAN/control"
-  install -m 755 gui/packaging/deb-postchange "$ROOT/DEBIAN/postinst"
-  install -m 755 gui/packaging/deb-postchange "$ROOT/DEBIAN/postrm"
+  fill gui/packaging/deb-postchange > "$ROOT/DEBIAN/postinst"
+  fill gui/packaging/deb-postchange > "$ROOT/DEBIAN/postrm"
+  chmod 755 "$ROOT/DEBIAN/postinst" "$ROOT/DEBIAN/postrm"
   chmod -R go-w "$ROOT"
   dpkg-deb --root-owner-group -Zxz --build "$ROOT" "$DIR.deb" >/dev/null
   rm -rf "$ROOT"

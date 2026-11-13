@@ -26,7 +26,7 @@ Every client is built as either `dev` or `prod` ([`internal/client/env.go`](../i
 ## Architecture
 
 ```
-sharetoken-gui (Wails window, gui/)        sharetoken daemon (internal/client/daemon.go)
+sharetoken-gui (Wails v3 window, gui/)      sharetoken daemon (internal/client/daemon.go)
 
   ┌────────────────┐  fetch   ┌───────┐  HTTP on   ┌─────────────────────────────────────┐
   │ system WebView │ ───────▶ │ proxy │ ─────────▶ │ /          page (internal/client/ui) │
@@ -45,6 +45,7 @@ sharetoken-gui (Wails window, gui/)        sharetoken daemon (internal/client/da
 - If a daemon is already running, the window connects to it and leaves it running on exit.
 - If the default port is taken by an unrelated program, the window starts its daemon on the first free spare port, and the page shows the actual address. A port set in `config.json` is not replaced; that case is an error. If `sharetoken up` is already running on the same data directory, the window reports an error too, because the same device key would otherwise be online twice.
 - The window holds the stdin of the daemon it starts (`-stop-on-stdin-eof`). When the window exits or crashes, the pipe closes and the daemon shuts down in order.
+- The proxy adds one script tag to the page's head, for `/__shell/boot.js`, which the shell serves itself (`shellBootJS` in `gui/main.go`). It marks the system (`os-<system>` on `<html>`), loads Wails' page runtime (`/wails/runtime.js`, answered by Wails' asset server: window dragging on macOS, and Wails runs script in the page only once it is there), and reports the page's language to the shell. Both are of the page's own origin, so the page's CSP lets them run. Requests under `/__shell/` never reach the daemon.
 
 ## Window layout
 
@@ -56,7 +57,7 @@ The window is small (880×600 by default, 760×520 at least), and the page is la
 - **Status bar**: the connection, the relay in use and its latency, the account, the version.
 - **Latency colours** are the portal's: green under 80 ms, amber under 250 ms, red otherwise (`rtt` in `app.js`). The relay table, the link quality, the relay reservations and the status bar use them.
 - Text is not selectable by default; only what is worth copying is (addresses, code, tables, notices).
-- **macOS** hides the title bar (`mac.TitleBarHiddenInset`), so the page reaches the top of the window. Once the page has loaded, the shell adds the class `os-<system>` to `<html>`; under `os-darwin` the sidebar leaves room for the window's buttons, and the sidebar and the view's title bar drag the window (`--wails-draggable`), their buttons excepted. Windows and Linux keep the system's title bar.
+- **macOS** hides the title bar (`application.MacTitleBarHiddenInset`), so the page reaches the top of the window. The shell's boot script adds the class `os-<system>` to `<html>`; under `os-darwin` the sidebar leaves room for the window's buttons, and the sidebar and the view's title bar drag the window (`--wails-draggable`, through Wails' page runtime), their buttons excepted. Windows and Linux keep the system's title bar.
 
 ## Sharing view (seller mode)
 
@@ -86,26 +87,28 @@ Sharing in the sidebar opens the Sharing view (`shareView` in [`internal/client/
 
 ## Menu bar and tray
 
-The app shows an icon in the menu bar on macOS and in the notification area on Windows. Linux has no tray: closing the window quits the app and stops the daemon.
+The app shows an icon in the menu bar on macOS, in the notification area on Windows, and as a status notifier item on Linux (KDE, Ubuntu's GNOME with its AppIndicator extension, and other desktops that implement it). A Linux desktop without one, such as a plain GNOME, gets no icon: there, closing the window quits the app and stops the daemon, because nothing could open the window again.
 
 | Action | Result |
 |---|---|
 | Close the window (red button, X, Cmd+W on macOS) | The window is hidden. The app and the daemon keep running; sharing and the local API are not interrupted |
 | Left-click the icon on Windows | Opens the window (restores it if minimized) |
-| Click the icon on macOS, right-click on Windows | Menu: a status line, information lines (the relay in use and its latency, the models on sale while sharing, the available credit; none clickable), an update line when a new version exists (opens the window), Open, Quit |
+| Click the icon on macOS and Linux, right-click on Windows | Menu: a status line, information lines (the relay in use and its latency, the models on sale while sharing, the available credit; none clickable), an update line when a new version exists (opens the window), Open, Quit |
 | Quit in the menu, Cmd+Q on macOS | Quits the app; a daemon that this app started stops with it |
 | Start the program again | One instance per data directory: the second process brings the window back and exits. dev and prod, and different data directories, do not affect each other |
 
 - The status line is refreshed every 3 seconds from `GET /api/v1/session`, for example `Connected · a@example.com`, `Not signed in`, `The background service is not running`.
 - The information lines show only while connected, and are also updated every 3 seconds, from `GET /api/v1/status`: `Relay: relay-sg · 42 ms` (the latency is the mean of the live pings of the relay in use, or else its last measurement) and `Sharing · models on sale: 2`. `Available credit: 4.99` is fetched once a minute from `GET /api/v1/account`, because that asks the portal. The tooltip of the icon carries the relay and its latency too.
 - The system notification about a new release carries the one-line summary of its release notes (see "Release notes" in [versioning.md](versioning.md)).
-- New versions: one system notification per new build ([`gui/notify.go`](../gui/notify.go); clicking it opens the window). Linux sends it too, without a tray. The rules are in [versioning.md](versioning.md), under "Update notices". On Windows, Wails registers a notification activator under HKCU; the uninstaller removes it.
-- The menu text follows the page's language: each time the page loads, it reports its language to the shell (`/__shell/lang`, which never reaches the daemon). The text is in [`gui/tray_text.go`](../gui/tray_text.go); a test checks it against the page's language list and the page's wording for the shared entries.
+- New versions: one system notification per new build ([`gui/notify.go`](../gui/notify.go); clicking it opens the window). The rules are in [versioning.md](versioning.md), under "Update notices". On Windows, Wails registers a notification activator under HKCU, under the app's name, each time the app starts; the uninstaller removes it.
+- The menu text follows the page's language: the page reports its language to the shell when it loads and whenever it changes (`/__shell/lang`, which never reaches the daemon). The text is in [`gui/tray_text.go`](../gui/tray_text.go); a test checks it against the page's language list and the page's wording for the shared entries.
 - Windows 11 puts new icons in the `^` overflow area by default; the user can drag the icon onto the taskbar.
-- The icons are generated with `go run packaging/gen_tray_icons.go` (run in `gui/`). The macOS icon is a template image coloured by the system; the Windows icon is a colour ICO.
-- Implementation: macOS uses AppKit directly (`tray_darwin.m`), because the common Go tray libraries and Wails each define an `AppDelegate`, which clashes at link time. Windows uses `fyne.io/systray` on its own thread.
-- **Quitting on Linux:** Wails calls `gtk_main_quit` from a goroutine. GTK is not thread-safe, and the signal is sometimes lost: the window is gone but the process and the daemon stay. `quit_linux.go` uses `OnBeforeClose` to queue the call on the GTK thread.
-- **Focus guard on Windows:** on `WM_SETFOCUS` Wails calls WebView2's `MoveFocus` and exits the process with `os.Exit(1)` if that fails, which can happen while the window is minimized or hidden. `tray_windows.go` intercepts the message in that state before Wails' window procedure, and opens the window without Wails' `WindowShow`. Rerun the tray self-test after upgrading Wails.
+- The icons are generated with `go run packaging/gen_tray_icons.go` (run in `gui/`). The macOS icon is a template image coloured by the system; the Windows icon is a colour ICO; Linux uses `packaging/tray.png`, the app icon at 64×64.
+- Implementation: Wails v3's system tray on all three systems ([`gui/tray_native.go`](../gui/tray_native.go); icons and per-system details in `tray_platform_<system>.go`). Menu labels are escaped where the system reads a character as a mnemonic mark (`&` on Windows, `_` on Linux).
+- The single-instance lock is Wails'. Its ID is `app.sharetoken.desktop.<build type>.h<hash of the data directory>`; on Linux it is a D-Bus name, whose elements may not start with a digit.
+- Wails v3 handles a refused WebView2 `MoveFocus` itself (v2 ended the process); the tray self-test's rapid minimise and Open steps cover it. Rerun the tray self-test after upgrading Wails.
+- `App.Show` (used on macOS to bring back an app hidden with Command-H) is called on the main thread with `application.InvokeSync`: unlike the window's methods it does not move there itself, and AppKit ends the process otherwise.
+- `app.Run()` does not return on macOS: the app terminates the process. Stopping the daemon and the self-tests' reports therefore run from Wails' `OnShutdown` and `PostShutdown` hooks.
 
 ## Local API of the daemon
 
@@ -171,8 +174,9 @@ scripts/build-gui-linux.sh prod arm64    # Linux package, from any system with D
 
 `dist/SHA256SUMS-<version>` lists the installers.
 
-- The macOS and Linux shells need cgo and are built on the target system (a Linux build cannot be cross-compiled from macOS; `scripts/build-gui-linux.sh` builds it in a Docker container instead). The Windows shell needs no cgo and cross-compiles from anywhere. It needs the WebView2 Runtime to run, and is not code-signed. Its installer is made with `makensis`, or in the Docker image of `scripts/build-gui-linux.sh` when that is not installed.
-- Linux build dependencies (Debian/Ubuntu 24.04 names): `build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev`. WebKitGTK is needed at run time. The script adds the `webkit2_41` build tag when it finds WebKitGTK 4.1, and leaves it out on older systems that only have 4.0. The `.deb` installs the programs into `/usr/bin` and adds an entry to the application menu.
+- The macOS and Linux shells need cgo and are built on the target system (a Linux build cannot be cross-compiled from macOS; `scripts/build-gui-linux.sh` builds it in a Docker container instead). The Windows shell needs no cgo and cross-compiles from anywhere. It needs the WebView2 Runtime to run, and is not code-signed. Its icon and manifest come from `gui/packaging/winres.json` (go-winres): Wails takes the window's icon from icon group 32512 and the notifications' from 3. Its installer is made with `makensis`, or in the Docker image of `scripts/build-gui-linux.sh` when that is not installed.
+- Linux build dependencies (Debian/Ubuntu 24.04 names): `build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev`. Wails v3 uses GTK 4 and WebKitGTK 6.0 and needs GTK 4.10 or later, so the Linux app runs on Ubuntu 24.04 and later and Debian 13 and later, not on Ubuntu 22.04 (GTK 4.6) or Debian 12 (4.8). The Docker builder is Ubuntu 24.04 (`scripts/gui-builder.Dockerfile`). The `.deb` (`Depends: libgtk-4-1 (>= 4.10), libwebkitgtk-6.0-4`) installs the programs into `/usr/bin` and adds an entry to the application menu.
+- **AppArmor:** WebKitGTK 6.0 always sandboxes its web processes with bubblewrap, which needs an unprivileged user namespace. Ubuntu 23.10 and later allow one only to programs whose AppArmor profile says so; without one the window aborts at start (`bwrap: setting up uid map: Permission denied`). The `.deb` installs `/etc/apparmor.d/sharetoken-gui` (`gui/packaging/apparmor-profile`: unconfined, `userns`, like Ubuntu's profile for its own browser) and loads it in `postinst`; `postrm` unloads it. A shell built and run outside the package needs a profile for its own path, or `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` for a test.
 - The macOS app carries only an ad-hoc signature. It runs on the machine that built it; distributing it needs a Developer ID signature and notarization, otherwise Gatekeeper blocks it.
 - Log: a daemon started by the window writes to `daemon.log` in the data directory (`~/.sharetoken` for prod, `~/.sharetoken-dev` for dev; under `%USERPROFILE%` on Windows).
 
@@ -207,7 +211,7 @@ See [development.md](development.md) for the general build and test setup. `scri
 | Daemon API | `scripts/test.sh -race ./internal/client` | Sign-in by code (new and existing accounts) and sign-out, success and failure paths; certificate confirmation and pinning; MFA; token revocation; disabled users; switching accounts; concurrent sign-ins; request guards; no secrets in the log |
 | Account rules | `scripts/test.sh ./internal/accounts ./internal/portal` | Email validation and normalization; admin API URLs containing `@` and `+`. |
 | End-to-end API | `scripts/test.sh -race -run Daemon ./test/e2e` | On a real libp2p topology: sign-in, joining through a relay, buying from a model, accounting, recovery after a restart, sign-out, joining once the network comes back |
-| Window shell | `cd gui && go test -tags desktop,production .` (add `webkit2_41` on Linux) | Starting, connecting to and stopping the daemon; port conflicts; forwarding |
+| Window shell | `cd gui && go test .` | Starting, connecting to and stopping the daemon; port conflicts; forwarding |
 | Page | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | Headless Chrome runs every flow of the page against real processes (relay, HTTPS portal, coordinator, seller, daemon). The Sharing view uses a `custom` provider pointed at a mock model server: add, pick a model, price, start, test, reprice, local models, turn off, remove. Account login is checked up to the sign-in address and a bad callback. Pairing: wrong and own codes, pairing with a seller that sells nothing (no models, requests refused) and with one that sells, creating and revoking a code, a buyer joining and being removed, private mode from the page and its effect on a buyer that is not paired |
 | Real WebView | `scripts/gui_shell_test.sh <dev\|prod> <program directory>` | Without showing a window, the system WebView loads the page and POSTs to a real daemon; checks that the daemon stops when the app quits |
-| Menu bar and tray | `scripts/gui_tray_test.sh <dev\|prod> <program directory>` (macOS) | The window and the icon show for about 15 seconds. Drives the real icon, menu and window through the system: close, open, minimize and restore, rapid clicks, language following, a second start, the daemon stopping after Quit. On Windows the same self-test runs when the app is started with `SHARETOKEN_GUI_SELFTEST=tray` |
+| Menu bar and tray | `scripts/gui_tray_test.sh <dev\|prod> <program directory>` (macOS, Linux) | The window and the icon show for about 15 seconds. Checks with the system that the icon is shown, then drives the menu items' actions and the real window: close, Open, minimise and restore, rapid minimise and Open, language following, a click on the icon (Windows, through the shell's message), Command-W (macOS), a second start, the daemon stopping after Quit. Wayland does not tell an app that its window is minimised, so on a Wayland session the minimise steps are skipped; `GDK_BACKEND=x11` runs them. On Windows the same self-test runs when the app is started with `SHARETOKEN_GUI_SELFTEST=tray` |

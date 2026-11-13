@@ -367,9 +367,10 @@ func renderTray(text trayText, st trayState) trayMenu {
 // singleInstanceID names this app on one data directory: a second start on the
 // same directory only brings the running window back, because a second client on
 // it would put the same device key on the network twice. A dev and a prod app,
-// or a test on its own directory, are separate.
+// or a test on its own directory, are separate. On Linux it is a D-Bus name,
+// whose elements may not start with a digit: the hash gets a letter in front.
 func singleInstanceID(home string) string {
 	h := fnv.New64a()
 	h.Write([]byte(home))
-	return fmt.Sprintf("app.sharetoken.desktop.%s.%016x", Env, h.Sum64())
+	return fmt.Sprintf("app.sharetoken.desktop.%s.h%016x", Env, h.Sum64())
 }

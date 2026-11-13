@@ -88,9 +88,16 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "${UNINSTKEY}"
   DeleteRegKey HKCU "Software\ShareToken${SUFFIX}"
-  ; what the system notifications registered (Wails: the toast activator of this program)
-  ReadRegStr $0 HKCU "Software\Classes\AppUserModelId\${GUI}.exe" "CustomActivator"
+  ; what the system notifications registered at each start (Wails v3: the toast
+  ; activator, under the app's name, and its notification categories)
+  ; This program is 32-bit, and Windows shows a 32-bit program its own copy of
+  ; HKCU\Software\Classes\CLSID: the app wrote the 64-bit (native) one.
+  SetRegView 64
+  ReadRegStr $0 HKCU "Software\Classes\AppUserModelId\${NAME}" "CustomActivator"
   StrCmp $0 "" +2
   DeleteRegKey HKCU "Software\Classes\CLSID\$0"
-  DeleteRegKey HKCU "Software\Classes\AppUserModelId\${GUI}.exe"
+  DeleteRegKey HKCU "Software\Classes\AppUserModelId\${NAME}"
+  DeleteRegKey HKCU "Software\${NAME}\NotificationCategories"
+  DeleteRegKey /ifempty HKCU "Software\${NAME}"
+  SetRegView default
 SectionEnd

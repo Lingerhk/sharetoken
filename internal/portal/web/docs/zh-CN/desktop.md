@@ -13,7 +13,7 @@
 :::
 
 ::: linux
-安装包适用于 Ubuntu 22.04 或更新版本、Debian 12 或更新版本。用 `apt` 安装，它会一起装好需要的 WebKitGTK：
+安装包适用于 Ubuntu 24.04 或更新版本、Debian 13 或更新版本。用 `apt` 安装，它会一起装好需要的 GTK 和 WebKitGTK：
 
 ```bash
 sudo apt install ./sharetoken-{{version}}-linux-<arch>.deb
@@ -59,8 +59,8 @@ sudo apt remove sharetoken
 :::
 
 ::: linux
-- Linux 版没有托盘图标。关闭窗口就是退出应用，后台服务一起停止。
-- 想一直在后台共享模型，请用[命令行方式运行](/docs/running#background)。
+- 顶栏有一个图标（Ubuntu，以及其他能显示应用指示器的桌面）。点击它可以看到连接状态、当前中继和延迟、共享状态和可用 credit，也可以打开窗口或退出。关闭窗口只是隐藏，后台服务继续运行。
+- 不显示应用指示器的桌面（比如没装指示器扩展的 GNOME）没有图标：关闭窗口就是退出应用，后台服务一起停止。想在这类桌面上一直在后台共享模型，请用[命令行方式运行](/docs/running#background)。
 :::
 
 ::: windows
