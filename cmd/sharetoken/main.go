@@ -21,8 +21,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,6 +36,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"golang.org/x/term"
 
+	"sharetoken/internal/agentskill"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/client"
 	"sharetoken/internal/node"
@@ -96,6 +99,15 @@ Pairing (a buyer that pairs with a seller buys only from the sellers it is paire
   pair revoke <code id>                 seller: stop a code from admitting more buyers
   pair private on|off                   seller: serve only the buyers paired with you, or anyone
 
+Coding agents (Claude Code, Codex):
+  skill                                 which agents are found, and whether they have the skill
+  skill install [-agent claude|codex|all] [-force]
+                                        teach the agents to use this client: writes skills/sharetoken/SKILL.md
+                                        under ~/.claude and ~/.codex ($CLAUDE_CONFIG_DIR, $CODEX_HOME);
+                                        default: every agent found. Run it again after an update
+  skill uninstall [-agent …] [-force]   remove it again
+  skill show                            print the skill
+
   config                                show the configuration file
   version [--check]                     show what this client was built for; --check asks the portal for a newer release`
 
@@ -149,6 +161,8 @@ func main() {
 		run = c.provider
 	case "pair":
 		run = c.pair
+	case "skill":
+		run = c.skill
 	case "config":
 		run = c.showConfig
 	default:
@@ -1288,4 +1302,124 @@ func (c *cmdCtx) showConfig([]string) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(cfg)
+}
+
+// ---- skill for coding agents ----
+
+func (c *cmdCtx) skill(args []string) error {
+	sub := ""
+	if len(args) > 0 {
+		sub, args = args[0], args[1:]
+	}
+	fs := flag.NewFlagSet("skill "+sub, flag.ExitOnError)
+	which := fs.String("agent", "", "claude, codex or all (default: every agent found on this machine)")
+	force := fs.Bool("force", false, "replace or remove a SKILL.md that sharetoken did not write")
+	_ = fs.Parse(args)
+	agents, err := agentskill.DefaultAgents()
+	if err != nil {
+		return err
+	}
+	content := agentskill.Render(c.skillParams())
+	switch sub {
+	case "", "status", "ls", "list":
+		for _, a := range agents {
+			state := "not found"
+			if a.Present() {
+				state = "found"
+			}
+			switch present, current := agentskill.Installed(a, content); {
+			case current:
+				state += ", skill installed"
+			case present:
+				state += ", skill installed but out of date: `sharetoken skill install`"
+			case a.Present():
+				state += ", no skill: `sharetoken skill install`"
+			}
+			fmt.Printf("%-12s %s\n             %s\n", a.Name, state, a.Path())
+		}
+	case "install", "add":
+		sel, err := agentskill.Select(agents, *which)
+		if err != nil {
+			return err
+		}
+		var failed error
+		for _, a := range sel {
+			res, err := agentskill.Install(a, content, *force)
+			switch {
+			case err != nil:
+				fmt.Fprintf(os.Stderr, "%s: %v\n", a.Name, err)
+				failed = errors.New("not every agent got the skill")
+			case res.Changed:
+				fmt.Printf("%s: installed %s\n", a.Name, res.Path)
+			default:
+				fmt.Printf("%s: already up to date, %s\n", a.Name, res.Path)
+			}
+		}
+		if failed == nil {
+			fmt.Println("an agent session that is already open picks it up when it is started again")
+		}
+		return failed
+	case "uninstall", "rm", "remove":
+		sel, err := agentskill.Select(agents, cmpOr(*which, "all"))
+		if err != nil {
+			return err
+		}
+		var failed error
+		for _, a := range sel {
+			res, err := agentskill.Remove(a, *force)
+			switch {
+			case err != nil:
+				fmt.Fprintf(os.Stderr, "%s: %v\n", a.Name, err)
+				failed = errors.New("not every copy was removed")
+			case res.Changed:
+				fmt.Printf("%s: removed %s\n", a.Name, res.Path)
+			default:
+				fmt.Printf("%s: not installed\n", a.Name)
+			}
+		}
+		return failed
+	case "show", "cat":
+		fmt.Print(content)
+	default:
+		return errors.New("usage: sharetoken skill [install|uninstall|show] [-agent claude|codex|all] [-force]")
+	}
+	return nil
+}
+
+// skillParams describe this client to the skill: how to run it and where it
+// listens.
+func (c *cmdCtx) skillParams() agentskill.Params {
+	portal := cmpOr(c.cfg.Portal, client.PortalAddr())
+	return agentskill.Params{
+		Command: commandName(),
+		Env:     client.Env,
+		Portal:  portal,
+		Home:    c.home,
+		HTTP:    cmpOr(c.cfg.HTTP, client.DefaultHTTP()),
+		OS:      runtime.GOOS,
+	}
+}
+
+// commandName is "sharetoken" when that name on the PATH is this program, else
+// the full path of this program.
+func commandName() string {
+	self, err := os.Executable()
+	if err != nil {
+		return "sharetoken"
+	}
+	if real, err := filepath.EvalSymlinks(self); err == nil {
+		self = real
+	}
+	if p, err := exec.LookPath("sharetoken"); err == nil {
+		if real, err := filepath.EvalSymlinks(p); err == nil && sameFile(real, self) {
+			return "sharetoken"
+		}
+	}
+	return self
+}
+
+func sameFile(a, b string) bool {
+	sa, err1 := os.Stat(a)
+	sb, err2 := os.Stat(b)
+	return err1 == nil && err2 == nil && os.SameFile(sa, sb)
 }

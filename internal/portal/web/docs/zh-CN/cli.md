@@ -110,6 +110,24 @@
 
 命令里的 id 就是 `pair` 列出的编号。详见[和买家配对](/docs/share#pairing)。
 
+## 编程助手 {#agents}
+
+`skill install` 让本机的 Claude Code 和 Codex 学会使用客户端：查看状态和余额、通过本地接口调用模型、共享模型。它在 `~/.claude` 和 `~/.codex` 下写入 `skills/sharetoken/SKILL.md`（Windows 上在 `%USERPROFILE%` 下；设置了 `CLAUDE_CONFIG_DIR`、`CODEX_HOME` 时以它们为准）。这个 skill 要求助手在修改设置或大量花费积分之前先征得你的同意。
+
+| 命令 | 作用 |
+|---|---|
+| `skill` | 找到了哪些助手，各自是否已装好 skill |
+| `skill install [-agent claude\|codex\|all]` | 安装，默认装给找到的每个助手。客户端更新后再运行一次 |
+| `skill uninstall [-agent …]` | 卸载 |
+| `skill show` | 打印 skill 内容 |
+
+```bash
+{{exe}} skill install
+{{exe}} skill install -agent codex
+```
+
+同名但不是客户端写的文件不会被覆盖或删除，除非加 `-force`。已打开的助手会话重启后才会加载。
+
 ## 其他 {#other}
 
 | 命令 | 作用 |

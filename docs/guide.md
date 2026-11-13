@@ -83,6 +83,7 @@ Before it sends anything, the client decides how to trust the portal:
 | `pair join <code>` | Buyer: pair with the seller that made the code. From then on the account buys only from the sellers it is paired with. |
 | `pair leave <seller id>`, `pair rm <buyer id>`, `pair revoke <code id>` | End a pairing from the buyer's side or the seller's side; stop a code from admitting more buyers. |
 | `pair private on\|off` | Seller: private mode. While it is on, only the buyers paired with this account are matched to it and see its models. |
+| `skill [install\|uninstall\|show] [-agent claude\|codex\|all] [-force]` | The skill that teaches coding agents to use the client: `install` writes `skills/sharetoken/SKILL.md` under `~/.claude` (or `$CLAUDE_CONFIG_DIR`) and `~/.codex` (or `$CODEX_HOME`), by default for every agent found; the copy names this build's command, state directory and endpoint. Without a subcommand it shows which agents have it. A `SKILL.md` the client did not write is kept unless `-force`. The text is [`internal/agentskill/SKILL.md`](../internal/agentskill/SKILL.md). |
 | `logout` | Revoke this device's token. A running client stops. |
 | `config` | Show the configuration (the token is masked). |
 | `version [--check]` | What this client was built for; `--check` asks the portal for a newer release. |

@@ -83,6 +83,7 @@ sharetoken up                               # 客户端已在运行时，share �
 | `pair join <code>` | 买家：和生成这个配对码的卖家配对。此后本账户只向配对的卖家购买。 |
 | `pair leave <seller id>`、`pair rm <buyer id>`、`pair revoke <code id>` | 买家一侧或卖家一侧解除配对；让一个配对码不再接纳新买家。 |
 | `pair private on\|off` | 卖家：私有模式。开启期间，只有和本账户配对的买家会被撮合过来，也只有他们能看到它的模型。 |
+| `skill [install\|uninstall\|show] [-agent claude\|codex\|all] [-force]` | 教编程助手使用客户端的 skill：`install` 在 `~/.claude`（或 `$CLAUDE_CONFIG_DIR`）和 `~/.codex`（或 `$CODEX_HOME`）下写入 `skills/sharetoken/SKILL.md`，默认装给找到的每个助手；写入的内容带有本构建的命令、数据目录和接口地址。不带子命令时显示哪些助手已装。不是客户端写的 `SKILL.md` 不会被覆盖，除非加 `-force`。正文见 [`internal/agentskill/SKILL.md`](../../internal/agentskill/SKILL.md)。 |
 | `logout` | 吊销本机的 token。运行中的客户端随即停止。 |
 | `config` | 查看配置（token 打码）。 |
 | `version [--check]` | 本客户端的构建信息；`--check` 向门户查询是否有新版本。 |

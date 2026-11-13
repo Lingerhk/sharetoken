@@ -110,6 +110,24 @@ A seller hands out a pairing code. A buyer that joins with it buys only from the
 
 The ids are the ones `pair` lists. See [Pair with your buyers](/docs/share#pairing).
 
+## Coding agents {#agents}
+
+`skill install` teaches Claude Code and Codex on this computer to use the client: check its status and balance, call models through the local endpoint, share a model. It writes `skills/sharetoken/SKILL.md` under `~/.claude` and `~/.codex` (`%USERPROFILE%` on Windows; `CLAUDE_CONFIG_DIR` and `CODEX_HOME` move them). The skill asks the agent to check with you before it changes settings or spends many credits.
+
+| Command | What it does |
+|---|---|
+| `skill` | Which agents were found, and whether they have the skill |
+| `skill install [-agent claude\|codex\|all]` | Install it, by default for every agent found. Run it again after updating the client |
+| `skill uninstall [-agent …]` | Remove it again |
+| `skill show` | Print the skill |
+
+```bash
+{{exe}} skill install
+{{exe}} skill install -agent codex
+```
+
+A file of the same name that the client did not write is left alone unless you add `-force`. Restart an open agent session to pick the skill up.
+
 ## Other {#other}
 
 | Command | What it does |
