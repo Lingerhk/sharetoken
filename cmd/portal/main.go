@@ -7,13 +7,14 @@
 //	                                            # (fingerprint printed; clients pin it); plain HTTP only on
 //	                                            # loopback or with -insecure-http
 //	                                            # web pages: / (users) and /admin/ (operators)
-//	portal useradd [-admin] <username>          # password from $SHARETOKEN_PASSWORD or a prompt
-//	portal passwd <username>
+//	portal useradd [-admin] <email>             # people sign in with a code mailed to the address
+//	portal rename <username> <email>            # e.g. an old account without an address
+//	portal login-code <email>                   # a sign-in code without the mail (10 minutes, once)
 //	portal grant <username> <micros> [memo]     # negative micros deduct
 //	portal users | user <username> | disable <username> | enable <username>
 //	portal relay add <multiaddr> [name] [region] | relay ls | relay rm|enable|disable <id>
 //	portal overview                             # totals, and a replay of the ledger journal
-//	portal pass-key                             # public key relays verify passes with (relay -portal-key)
+//	portal pass-key                             # public key relays verify passes with (portal_keys in relay.yaml)
 //
 // Operator commands work on the database directly and may run beside the
 // live portal and coordinator.
@@ -43,14 +44,14 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"sharetoken/accounts"
+	"sharetoken/internal/accounts"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/config"
 	"sharetoken/internal/mysqldb"
+	"sharetoken/internal/p2p"
+	"sharetoken/internal/portal"
+	"sharetoken/internal/relaypass"
 	"sharetoken/internal/version"
-	"sharetoken/p2p"
-	"sharetoken/portal"
-	"sharetoken/relaypass"
 )
 
 // File is portal.yaml (configs/portal.example.yaml).
@@ -68,7 +69,6 @@ type File struct {
 		ReadTimeout       config.Duration `yaml:"read_timeout"`
 		WriteTimeout      config.Duration `yaml:"write_timeout"`
 		ShutdownTimeout   config.Duration `yaml:"shutdown_timeout"`
-		PublicURL         string          `yaml:"public_url"` // for links in mail (password reset); only here, not on the settings page
 	} `yaml:"http"`
 	TLS struct {
 		Mode            string   `yaml:"mode"` // auto, files, self-signed, proxy, insecure
@@ -80,20 +80,20 @@ type File struct {
 	Accounts struct {
 		OpenRegistration   bool   `yaml:"open_registration"`
 		SignupCreditMicros uint64 `yaml:"signup_credit_micros"`
-		EmailVerification  bool   `yaml:"email_verification"` // sign-up needs an emailed code (mail.from must be set, mailserver running)
-		MFAIssuer          string `yaml:"mfa_issuer"`         // name shown in authenticator apps (default ShareToken)
+		MFAIssuer          string `yaml:"mfa_issuer"` // name shown in authenticator apps (default ShareToken)
 	} `yaml:"accounts"`
 	// Mail is who the portal's mail comes from; cmd/mailserver delivers it (docs/mail.md).
+	// Sign-in codes are mail: without a sender nobody can sign in.
 	Mail struct {
 		From    string `yaml:"from"`    // ShareToken <team@sharetoken.app>
 		Support string `yaml:"support"` // ShareToken Support <support@sharetoken.app>
 	} `yaml:"mail"`
-	// Downloads: the client packages the portal offers at /downloads/ (scripts/*/deploy.sh puts them there).
+	// Downloads: the client packages the portal offers at /downloads/ (scripts/publish-packages.sh puts them there).
 	Downloads struct {
 		Dir string `yaml:"dir"`
 	} `yaml:"downloads"`
 	// RelayMetrics: read each relay's /metrics over SSH for the admin dashboard
-	// (scripts/relay/authorize-metrics.sh restricts the key on the relay).
+	// (on the relay, restrict the key to that one command in authorized_keys).
 	RelayMetrics struct {
 		KeyFile        string          `yaml:"key_file"`
 		KnownHostsFile string          `yaml:"known_hosts_file"`
@@ -121,7 +121,7 @@ func defaults() File {
 	f.HTTP.Listen = ":8092"
 	f.HTTP.ReadHeaderTimeout, f.HTTP.ReadTimeout, f.HTTP.WriteTimeout, f.HTTP.ShutdownTimeout = config.D("10s"), config.D("30s"), config.D("60s"), config.D("5s")
 	f.TLS.Mode, f.TLS.SelfSignedDir = "auto", "portal-tls"
-	f.Sessions.LoginTTL, f.Sessions.WebSessionTTL, f.Sessions.PassTTL = config.D("720h"), config.D("24h"), config.D("1h")
+	f.Sessions.LoginTTL, f.Sessions.WebSessionTTL, f.Sessions.PassTTL = config.D("1440h"), config.D("360h"), config.D("1h")
 	f.Log = config.DefaultLog()
 	return f
 }
@@ -164,9 +164,6 @@ func (f *File) validate() error {
 			bad("%s must be positive", name)
 		}
 	}
-	if f.Accounts.EmailVerification && f.Mail.From == "" {
-		bad("accounts.email_verification needs mail.from")
-	}
 	for name, a := range map[string]string{"mail.from": f.Mail.From, "mail.support": f.Mail.Support} {
 		if a == "" {
 			continue
@@ -195,7 +192,7 @@ func main() {
 	flag.StringVar(&f.Keys.PassKeyFile, "pass-key", f.Keys.PassKeyFile, "key that signs relay passes (created with mode 0600 if missing; relays trust its public key: `portal pass-key`)")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, `usage: portal [-config portal.yaml] [-db file] <command>
-commands: version, version-policy, serve, check-config, useradd, passwd, grant, users, user, disable, enable, mfa-reset, relay, overview, pass-key`)
+commands: version, version-policy, serve, check-config, useradd, rename, login-code, grant, users, user, disable, enable, mfa-reset, relay, overview, pass-key`)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -267,9 +264,9 @@ commands: version, version-policy, serve, check-config, useradd, passwd, grant, 
 func serveFlags(f *File, args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	fs.StringVar(&f.HTTP.Listen, "listen", f.HTTP.Listen, "listen address")
-	fs.BoolVar(&f.Accounts.OpenRegistration, "open-registration", f.Accounts.OpenRegistration, "let anyone sign up (otherwise admins create users)")
+	fs.BoolVar(&f.Accounts.OpenRegistration, "open-registration", f.Accounts.OpenRegistration, "an address without an account gets one at its first sign-in (otherwise admins create users)")
 	fs.Uint64Var(&f.Accounts.SignupCreditMicros, "signup-credit", f.Accounts.SignupCreditMicros, "micro-credits granted to each new user")
-	(config.Flags{FlagSet: fs}).Duration(&f.Sessions.LoginTTL, "login-ttl", "lifetime of tokens issued at login")
+	(config.Flags{FlagSet: fs}).Duration(&f.Sessions.LoginTTL, "login-ttl", "lifetime of the tokens clients get at sign-in")
 	fs.StringVar(&f.TLS.CertFile, "tls-cert", f.TLS.CertFile, "TLS certificate file, e.g. from Let's Encrypt (default: a self-signed certificate that clients pin)")
 	fs.StringVar(&f.TLS.KeyFile, "tls-key", f.TLS.KeyFile, "TLS key file for -tls-cert")
 	fs.StringVar(&f.TLS.SelfSignedDir, "tls-dir", f.TLS.SelfSignedDir, "where the self-signed certificate is kept (keep it: clients pin its fingerprint)")
@@ -331,8 +328,8 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 	p, err := portal.New(portal.Config{DB: db, OpenRegistration: f.Accounts.OpenRegistration, SignupCreditMicros: f.Accounts.SignupCreditMicros,
 		LoginTTL: f.Sessions.LoginTTL.T(), PassKey: passKey, PassTTL: f.Sessions.PassTTL.T(), WebSessionTTL: f.Sessions.WebSessionTTL.T(),
 		SecureCookies: mode == "proxy", TrustedProxies: trustedProxies(f.HTTP.TrustedProxies), MFAKey: mfaKey, Log: lg,
-		EmailVerification: f.Accounts.EmailVerification, Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir,
-		MFAIssuer: f.Accounts.MFAIssuer, PublicURL: strings.TrimRight(f.HTTP.PublicURL, "/"), RelayMetrics: relayMetricsConfig(f)})
+		Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir,
+		MFAIssuer: f.Accounts.MFAIssuer, RelayMetrics: relayMetricsConfig(f)})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -374,7 +371,7 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 			log.Fatal(err)
 		}
 		hs.TLSConfig = &tls.Config{Certificates: []tls.Certificate{c}, MinVersion: tls.VersionTLS12}
-		fmt.Printf("self-signed certificate %s\n   fingerprint %s\n   users: sharetoken login -portal https://<host>%s -portal-pin %s\n",
+		fmt.Printf("self-signed certificate %s\n   fingerprint %s\n   users: SHARETOKEN_PORTAL=https://<host>%s sharetoken login -portal-pin %s\n",
 			filepath.Join(f.TLS.SelfSignedDir, portal.SelfSignedCertFile), portal.CertFingerprint(c.Certificate[0]), portPart(listen), portal.CertFingerprint(c.Certificate[0]))
 	}
 	fmt.Printf("relay pass key %s\n   relays: access.portal_keys: [%s]\n", passPub, passPub)
@@ -436,34 +433,44 @@ func admin(p *portal.Server, cmd string, args []string) error {
 		isAdmin := fs.Bool("admin", false, "grant admin rights")
 		_ = fs.Parse(args)
 		if fs.NArg() != 1 {
-			return errors.New("usage: portal useradd [-admin] <username>")
+			return errors.New("usage: portal useradd [-admin] <email>")
 		}
-		pw, err := cli.ReadPassword("Password for "+fs.Arg(0)+": ", true)
-		if err != nil {
-			return err
-		}
-		u, err := p.CreateUser(fs.Arg(0), pw, *isAdmin)
+		u, err := p.CreateUser(fs.Arg(0), *isAdmin)
 		if err != nil {
 			return err
 		}
 		p.AuditCLI("user.create", u.Username, map[string]any{"is_admin": *isAdmin})
 		return printJSON(u)
-	case "passwd":
-		if err := need(1, "<username>"); err != nil {
+	case "rename":
+		if err := need(2, "<username> <email>"); err != nil {
 			return err
 		}
 		id, err := user(args[0])
 		if err != nil {
 			return err
 		}
-		pw, err := cli.ReadPassword("New password for "+args[0]+": ", true)
+		u, err := st.RenameUser(id, args[1])
 		if err != nil {
 			return err
 		}
-		if err := st.SetPassword(id, pw); err != nil {
+		p.AuditCLI("user.rename", u.Username, map[string]any{"from": args[0]})
+		return printJSON(u)
+	case "login-code":
+		// For someone whose mail does not arrive: the code a mail would carry,
+		// printed here. It is as good as access to the mailbox; it is audited.
+		if err := need(1, "<email>"); err != nil {
 			return err
 		}
-		p.AuditCLI("user.set_password", args[0], nil)
+		code, exp, err := p.IssueSignInCode(args[0])
+		if errors.Is(err, accounts.ErrNotFound) {
+			return fmt.Errorf("%s has no account (create it with: portal useradd %s)", args[0], args[0])
+		}
+		if err != nil {
+			return err
+		}
+		p.AuditCLI("user.login_code", accounts.NormalizeEmail(args[0]), nil)
+		fmt.Printf("%s\nsigns in %s on the web pages or in a client, once, until %s (an earlier code of the address no longer works; two-factor authentication still applies)\n",
+			code, accounts.NormalizeEmail(args[0]), exp.Local().Format("15:04:05"))
 		return nil
 	case "grant":
 		if err := need(2, "<username> <micros> [memo]"); err != nil {

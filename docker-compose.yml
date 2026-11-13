@@ -1,0 +1,120 @@
+# A complete sharetoken network on one machine: MySQL, portal, coordinator and
+# one relay. Meant for trying the project out and for small private
+# deployments; docs/self-hosting.md walks through it.
+#
+#   cp .env.example .env      # set the passwords and PUBLIC_HOST
+#   docker compose up -d --build
+#   docker compose logs portal | grep sha256:     # certificate fingerprint for clients
+#
+# Each program keeps its configuration file and keys in its own volume. The
+# one-shot `init` service writes them on first start and registers the relay.
+name: sharetoken
+
+x-sharetoken: &sharetoken
+  image: sharetoken:${ST_TAG:-local}
+  build:
+    context: .
+    args:
+      ST_VERSION: ${ST_VERSION:-}
+      ST_COMMIT: ${ST_COMMIT:-docker}
+  restart: unless-stopped
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+      - --transaction-isolation=READ-COMMITTED
+      - --skip-name-resolve
+      - --mysqlx=OFF
+    environment:
+      MYSQL_DATABASE: sharetoken
+      MYSQL_USER: sharetoken
+      MYSQL_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?set DB_ROOT_PASSWORD in .env}
+    volumes:
+      - mysql:/var/lib/mysql
+    healthcheck:
+      # TCP, not the socket: the image first runs a socket-only temporary server.
+      test: ["CMD-SHELL", "mysql -h127.0.0.1 -usharetoken -p\"$$MYSQL_PASSWORD\" -e 'select 1' sharetoken"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  # Runs once per `up` and exits: configuration files, keys, relay registration, admin user.
+  init:
+    <<: *sharetoken
+    restart: "no"
+    command: ["init"]
+    depends_on:
+      mysql: { condition: service_healthy }
+    environment:
+      SHARETOKEN_DB_PASSWORD: ${DB_PASSWORD}
+      PUBLIC_HOST: ${PUBLIC_HOST:-127.0.0.1}
+      RELAY_PORT: ${RELAY_PORT:-4001}
+      RELAY_NAME: ${RELAY_NAME:-relay-1}
+      RELAY_REGION: ${RELAY_REGION:-}
+      PORTAL_TLS_MODE: ${PORTAL_TLS_MODE:-auto}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_SUPPORT: ${MAIL_SUPPORT:-}
+      OPEN_REGISTRATION: ${OPEN_REGISTRATION:-true}
+      SIGNUP_CREDIT_MICROS: ${SIGNUP_CREDIT_MICROS:-0}
+      FEE_BPS: ${FEE_BPS:-500}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+    volumes:
+      - portal:/var/lib/sharetoken/portal
+      - coordinator:/var/lib/sharetoken/coordinator
+      - relay:/var/lib/sharetoken/relay
+
+  portal:
+    <<: *sharetoken
+    command: ["portal"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+    environment:
+      SHARETOKEN_DB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "${PORTAL_BIND:-0.0.0.0}:${PORTAL_PORT:-8092}:8092"
+    volumes:
+      - portal:/var/lib/sharetoken/portal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --no-check-certificate -O /dev/null https://127.0.0.1:8092/api/v1/info || wget -q -O /dev/null http://127.0.0.1:8092/api/v1/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  relay:
+    <<: *sharetoken
+    command: ["relay"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+    ports:
+      # same port on both sides: it is the one the relay announces
+      - "${RELAY_PORT:-4001}:${RELAY_PORT:-4001}/tcp"
+      - "${RELAY_PORT:-4001}:${RELAY_PORT:-4001}/udp"
+    volumes:
+      - relay:/var/lib/sharetoken/relay
+
+  # The coordinator listens nowhere: it dials out to the relays registered with
+  # the portal and is reached through them. It shares the relay's network
+  # namespace so that the relay's public address (PUBLIC_HOST, which may be
+  # 127.0.0.1 on a one-machine trial) also leads to the relay from here.
+  coordinator:
+    <<: *sharetoken
+    command: ["coordinator"]
+    network_mode: "service:relay"
+    depends_on:
+      init: { condition: service_completed_successfully }
+      relay: { condition: service_started }
+    environment:
+      SHARETOKEN_DB_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - coordinator:/var/lib/sharetoken/coordinator
+
+volumes:
+  mysql:
+  portal:
+  coordinator:
+  relay:

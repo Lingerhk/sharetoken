@@ -12,7 +12,7 @@
 # type in these names (sharetoken-cli-dev-…, sharetoken-dev), so they can live
 # next to the real thing.
 #
-# See scripts/client_ldflags.sh for usage statistics. macOS programs carry only
+# macOS programs carry only
 # the linker's ad-hoc signature: a downloaded one needs a Developer ID signature
 # and notarization to run without a Gatekeeper warning, and Windows ones are not
 # code-signed.

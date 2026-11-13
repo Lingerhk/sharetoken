@@ -1,9 +1,0 @@
-#!/bin/sh
-# 每夜 mysqldump 生产库到 /var/backups/sharetoken（root 0700），保留 7 份。由 /etc/cron.d/sharetoken 调用。
-set -e
-umask 077
-d=/var/backups/sharetoken
-install -d -m 700 "$d"
-MYSQL_PWD=$(cat /root/sharetoken/mysql-root.pass); export MYSQL_PWD
-docker exec -e MYSQL_PWD st-mysql mysqldump -uroot --single-transaction sharetoken | gzip > "$d/sharetoken-$(date +%F).sql.gz"
-ls -1t "$d"/*.sql.gz | tail -n +8 | xargs -r rm

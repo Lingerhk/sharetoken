@@ -10,7 +10,9 @@
 # packages share. The portal reads it to tell clients about the release
 # (GET /api/v1/update); before launch the version stays 1.0.0, and the commit and
 # build time are what tell a client a newer build exists.
-# --owner names the portal's service user (st-portal, see scripts/ops/st-host-setup.sh):
+# release-notes/<lang>.md, when there, go along as RELEASE-<version>.<lang>.md: what
+# this build brings, shown by the clients that are offered it (docs/versioning.md).
+# --owner names the portal's service user (for example st-portal):
 # the files are staged in the login user's home and moved into place with sudo, owned by it.
 set -euo pipefail
 V=$1 TARGET=$2 DIR=$3; shift 3
@@ -22,7 +24,7 @@ Q="-o LogLevel=ERROR -o ConnectTimeout=10"
 # The version does not identify the code before launch, so nothing is reused.
 COMMIT=$(git rev-parse --short=7 HEAD)
 export ST_BUILD_TIME=${ST_BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
-rm -rf "dist/SHA256SUMS-$V" "dist/RELEASE-$V.json" dist/sharetoken-cli-* dist/sharetoken-[0-9]* dist/sharetoken-dev-[0-9]*
+rm -rf "dist/SHA256SUMS-$V" "dist/RELEASE-$V.json" dist/RELEASE-"$V".*.md dist/sharetoken-cli-* dist/sharetoken-[0-9]* dist/sharetoken-dev-[0-9]*
 scripts/build-cli.sh prod all >/dev/null
 for arch in amd64 arm64; do
   scripts/build-gui.sh prod macos "$arch" >/dev/null
@@ -37,10 +39,22 @@ if [ -n "$WITH_DEV" ]; then
   [ "${#FILES[@]}" = 18 ] || { echo "expected 18 packages for $V, built ${#FILES[@]}" >&2; exit 1; }
 fi
 printf '{"version":"%s","commit":"%s","build_time":"%s"}\n' "$V" "$COMMIT" "$ST_BUILD_TIME" > "dist/RELEASE-$V.json"
+# The first paragraph line of the notes is shown on one line: keep it short.
+NOTES=()
+for f in release-notes/*.md; do
+  [ -e "$f" ] || continue
+  lang=$(basename "$f" .md)
+  [ "$(wc -c < "$f")" -le 4096 ] || { echo "$f is larger than 4096 bytes" >&2; exit 2; }
+  summary=$(grep -v -E '^[[:space:]]*($|#|[-*] )' "$f" | head -1 || true)
+  limit=90; case $lang in zh*|ja|ko) limit=30;; esac
+  [ "$(printf %s "$summary" | wc -m)" -le "$limit" ] || { echo "$f: the summary line is longer than $limit characters: $summary" >&2; exit 2; }
+  cp "$f" "dist/RELEASE-$V.$lang.md"
+  NOTES+=("dist/RELEASE-$V.$lang.md")
+done
 STAGE=$DIR.new
 [ -z "$OWNER" ] || STAGE=st-downloads.new   # relative to the login user's home
 ssh $Q -n "$TARGET" "mkdir -p '$STAGE' && rm -f '$STAGE'/*"
-for f in "${FILES[@]}" "dist/SHA256SUMS-$V" "dist/RELEASE-$V.json"; do
+for f in "${FILES[@]}" "dist/SHA256SUMS-$V" "dist/RELEASE-$V.json" ${NOTES[@]+"${NOTES[@]}"}; do
   scp $Q "$f" "$TARGET:$STAGE/" >/dev/null
 done
 # Checks on the server what arrived, then swaps the directory in one step.

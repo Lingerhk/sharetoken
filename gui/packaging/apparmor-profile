@@ -1,0 +1,13 @@
+# The desktop app's window. WebKitGTK runs each web page in a sandbox
+# (bubblewrap), which needs an unprivileged user namespace; Ubuntu 23.10 and
+# later allow one only to programs whose profile says so. The profile adds no
+# confinement, like the one Ubuntu ships for its own browser (epiphany).
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile @GUI@ /usr/bin/@GUI@ flags=(unconfined) {
+  userns,
+
+  include if exists <local/@GUI@>
+}

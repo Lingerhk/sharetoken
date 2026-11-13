@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"sync"
 )
 
@@ -19,6 +22,9 @@ type proxy struct {
 	start  func() error // waits for the daemon; its error is shown instead of the pages
 	result chan<- string
 	onLang func(string)
+	// boot is the shell's script for the page (shellBootJS), served at bootPath
+	// and loaded by a tag the proxy adds to the page's head.
+	boot string
 
 	mu   sync.Mutex
 	last string
@@ -30,17 +36,26 @@ const selftestPath = "/__selftest"
 // shellLangPath is where langReportJS reports; it never reaches the daemon.
 const shellLangPath = "/__shell/lang"
 
+// bootPath serves the shell's script for the page; it never reaches the daemon.
+// The script is of the page's own origin, so the page's CSP lets it run.
+const bootPath = "/__shell/boot.js"
+
+// bootTag is what the proxy adds to the end of the page's head.
+const bootTag = `<script src="` + bootPath + `"></script>`
+
 // selftestJS checks in the real webview that the page's script ran under its
-// CSP, and that a POST with a body gets through to the daemon and back.
+// CSP, that Wails' page runtime loaded, and that a POST with a body gets through
+// to the daemon and back.
 const selftestJS = `(async () => {
   let r;
   try {
+    const rt = await import('/wails/runtime.js').then(() => true, e => 'runtime: ' + e);
     const resp = await fetch('/api/v1/portal/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portal: 'ftp://body-reached-the-daemon' }) });
     const data = await resp.json();
     // The page draws itself once it has its dictionary.
     for (let i = 0; i < 100 && !document.querySelector('#app > *'); i++) await new Promise(res => setTimeout(res, 50));
     const pageRan = !!document.querySelector('#app > *');
-    r = (resp.status === 400 && data.error.code === 'bad_portal' && pageRan) ? 'ok' : 'unexpected reply ' + resp.status + ' ' + JSON.stringify(data) + ' pageRan=' + pageRan;
+    r = (resp.status === 400 && data.error.code === 'bad_portal' && pageRan && rt === true) ? 'ok' : 'unexpected reply ' + resp.status + ' ' + JSON.stringify(data) + ' pageRan=' + pageRan + ' runtime=' + rt;
     r += ' origin=' + location.origin;
   } catch (e) { r = 'failed: ' + e; }
   await fetch('` + selftestPath + `?r=' + encodeURIComponent(r));
@@ -54,6 +69,26 @@ func newProxy(sup *supervisor, start func() error, result chan<- string, onLang 
 			r.Out.Host = sup.addr
 			r.Out.Header.Del("Origin")
 			r.Out.Header.Del("Referer")
+			if r.In.URL.Path == "/" { // the page is changed on its way back: always take it whole
+				for _, h := range []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match", "Accept-Encoding"} {
+					r.Out.Header.Del(h)
+				}
+			}
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			if p.boot == "" || resp.Request.URL.Path != "/" || resp.StatusCode != http.StatusOK {
+				return nil
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				return err
+			}
+			body = addBootTag(body)
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			resp.ContentLength = int64(len(body))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			w.Header().Set("Content-Type", "application/json")
@@ -62,6 +97,15 @@ func newProxy(sup *supervisor, start func() error, result chan<- string, onLang 
 		},
 	}
 	return p
+}
+
+// addBootTag puts bootTag at the end of the page's head, after the page's own
+// scripts, or at the start of a page without one.
+func addBootTag(page []byte) []byte {
+	if i := bytes.Index(page, []byte("</head>")); i >= 0 {
+		return bytes.Join([][]byte{page[:i], []byte(bootTag), page[i:]}, nil)
+	}
+	return append([]byte(bootTag), page...)
 }
 
 func (p *proxy) lastResult() string {
@@ -81,6 +125,12 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.URL.Path == bootPath {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		fmt.Fprint(w, p.boot)
 		return
 	}
 	if r.URL.Path == shellLangPath {

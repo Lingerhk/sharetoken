@@ -1,67 +1,69 @@
-# 卖家模式：托管 API（多 provider）
+# Seller mode: hosted APIs (providers)
 
-> 对应提交 `997be6c`（2026-11-11，分支 `feat/develop`）。本文件**不含任何密钥**。
-> 面向用户的说明在门户文档 `portal/web/docs/{en,zh-CN}/share.md` 的 `#providers` 一节；本文是给开发者的实现说明和验证记录。
+**English** | [简体中文](zh-CN/providers.md)
 
-## 1. 做了什么
+This is the developer-level description of how a seller shares models that are hosted by a model vendor. The user-facing instructions are in the portal's documentation pages, [`internal/portal/web/docs/en/share.md`](../internal/portal/web/docs/en/share.md) (section `#providers`). This file contains no secrets.
 
-卖家除了共享本机模型服务（Ollama 等），还可以共享自己在模型厂商开通的服务：客户端把买家发来的 OpenAI chat-completions 请求改写成厂商自己的格式，用卖家的 API key 或 OAuth 登录转发出去，再把回答改写回 OpenAI 流式分片。买家侧没有任何变化，仍然只看到 OpenAI 格式。
+## 1. Overview
 
-- 一个卖家可以配多个 provider，同一类型可以配多个（用 `-name` 区分），各自可开可关。
-- 本机模型和 provider 的模型可以同时卖。
-- 凭据单独存在 `providers.json`，不进 `config.json`。
-- 所有操作既有 CLI 子命令，也有本机 HTTP API（给 GUI 用）。
+Besides a model server on its own machine (Ollama and the like), a seller can share a service it has with a model vendor. The client rewrites the buyer's OpenAI chat-completions request into the vendor's own format, sends it with the seller's API key or OAuth login, and rewrites the answer back into OpenAI streaming chunks. Nothing changes for the buyer, who still sees only the OpenAI format.
 
-> **注意**
-> - 买家的提示词以明文发给厂商，用量记在卖家的厂商账户上。
-> - OAuth 登录用的是各厂商官方客户端的 client ID 和身份头，把订阅额度提供给他人使用很可能违反厂商条款，账号有被封的风险。用户文档里已写明“请确认厂商条款允许这种用法”。
+- A seller can configure several providers, including several of the same kind (told apart with `-name`), and turn each on or off.
+- Local models and provider models can be sold at the same time.
+- Credentials are kept apart in `providers.json`, not in `config.json`.
+- Every operation exists as a CLI subcommand and as a local HTTP endpoint (used by the desktop app, see [desktop.md](desktop.md)).
 
-## 2. 支持的类型
+> **Note**
+> - The buyer's prompt goes to the vendor in clear text, and the usage is billed to the seller's account with that vendor.
+> - The OAuth logins use the client IDs and identifying headers of each vendor's own client application.
+> - Selling access to a hosted API is subject to that provider's terms of service. Checking that they allow it is the user's responsibility.
 
-| 类型 | API key | OAuth 登录 | API key 地址 | OAuth 后端 | 上游格式 |
+## 2. Provider kinds
+
+| Kind | API key | OAuth login | Address with a key | Address with a login | Upstream format |
 |---|---|---|---|---|---|
-| `anthropic` | ✓ | 本文不涵盖（见 §9） | `api.anthropic.com` | — | Messages API |
-| `openai` | ✓ | ✓（ChatGPT / Codex） | `api.openai.com/v1` | `chatgpt.com/backend-api/codex` | key：chat completions；OAuth：Responses |
-| `gemini` | ✓ | ✓（Gemini CLI） | `generativelanguage.googleapis.com/v1beta/openai` | `cloudcode-pa.googleapis.com` | key：OpenAI 兼容；OAuth：原生 generateContent |
-| `antigravity` | ✗ | ✓ | — | `cloudcode-pa.googleapis.com` | 原生 generateContent 加 Antigravity 封装 |
-| `grok` | ✓ | ✓ | `api.x.ai/v1` | `cli-chat-proxy.grok.com/v1` | OpenAI 兼容 |
-| `deepseek` | ✓ | ✗ | `api.deepseek.com` | — | OpenAI 兼容 |
-| `custom` | ✓（可留空） | ✗ | 用 `-url` 指定 | — | OpenAI 兼容 |
+| `anthropic` | yes | yes (Claude subscription) | `api.anthropic.com` | `api.anthropic.com` | Messages API |
+| `openai` | yes | yes (ChatGPT / Codex) | `api.openai.com/v1` | `chatgpt.com/backend-api/codex` | key: chat completions; login: Responses |
+| `gemini` | yes | yes (Gemini CLI) | `generativelanguage.googleapis.com/v1beta/openai` | `cloudcode-pa.googleapis.com` | key: OpenAI-compatible; login: native generateContent |
+| `antigravity` | no | yes | — | `cloudcode-pa.googleapis.com` | native generateContent in the Antigravity envelope |
+| `grok` | yes | yes | `api.x.ai/v1` | `cli-chat-proxy.grok.com/v1` | OpenAI-compatible |
+| `deepseek` | yes | no | `api.deepseek.com` | — | OpenAI-compatible |
+| `custom` | yes (may be empty) | no | given with `-url` | — | OpenAI-compatible |
 
-类型表在 `provider/kind.go`。密钥和令牌只发往 HTTPS 地址或本地网络地址（`CheckSecretURL`）。
+The kinds are defined in [`internal/provider/kind.go`](../internal/provider/kind.go). A key or token is only ever sent to an HTTPS address or to a machine on the local network (`CheckSecretURL`).
 
-## 3. 代码结构
+## 3. Code layout
 
-新包 `provider/`：
+Package [`internal/provider`](../internal/provider):
 
-| 文件 | 内容 |
+| File | Contents |
 |---|---|
-| `store.go` | `providers.json` 的读写：`File`、`Entry`、`Token`，`Load` / `Save` / `Update`，`View`（密钥打码） |
-| `kind.go` | 类型表，`CheckSecretURL` |
-| `build.go` | `Entry.Upstream`（配置 → `node.Upstream`）、`ListModels`、`Check`、`Probe`、`billable` |
-| `ops.go` | CLI 和 API 共用的操作：`AddWithKey`、`SaveLogin`、`FinishLoginAndSave`、`SetEnabled`、`Remove`、`SetModel`、`RemoveModel`、`Models`、`Test`、`Views`、`KindViews` |
-| `chat.go`、`sse.go` | 解析买家的 chat 请求；发 SSE 请求、把结果写成 OpenAI 分片 |
-| `openai.go` | OpenAI 兼容上游，输出上限的学习与重试 |
+| `store.go` | Reading and writing `providers.json`: `File`, `Entry`, `Token`; `Load`, `Save`, `Update`; `View` (keys masked) |
+| `kind.go` | The table of kinds, `CheckSecretURL` |
+| `build.go` | `Entry.Upstream` (configuration → `node.Upstream`), `ListModels`, `Check`, `Probe`, `billable` |
+| `ops.go` | Operations shared by the CLI and the API: `AddWithKey`, `SaveLogin`, `FinishLoginAndSave`, `SetEnabled`, `Remove`, `SetModel`, `RemoveModel`, `Models`, `Test`, `Views`, `KindViews` |
+| `chat.go`, `sse.go` | Parsing the buyer's chat request; sending SSE requests and writing the result as OpenAI chunks |
+| `openai.go` | OpenAI-compatible upstream; learning the output limit and retrying |
 | `anthropic.go` | chat ↔ Messages API |
-| `responses.go` | chat ↔ Responses（Codex 后端） |
-| `gemini.go` | chat ↔ Gemini 原生格式，工具 schema 清理 |
-| `oauth.go` | 两步登录、令牌续期、401 重试 |
-| `oauth_openai.go`、`oauth_google.go`、`oauth_grok.go` | 各家的登录流程和请求封装 |
-| `provider_test.go` | 格式转换、流、存储、上限、隐藏推理、登录地址、令牌续期 |
+| `responses.go` | chat ↔ Responses (the Codex backend) |
+| `gemini.go` | chat ↔ native Gemini format; tool schema clean-up |
+| `oauth.go` | Two-step login, token renewal, retry on 401 |
+| `oauth_anthropic.go`, `oauth_openai.go`, `oauth_google.go`, `oauth_grok.go` | Each vendor's login flow and request envelope |
+| `provider_test.go` | Format conversion, streams, the store, limits, hidden reasoning, sign-in addresses, token renewal |
 
-其他改动：
+Related code elsewhere:
 
-- `node/node.go`：`ModelConfig` 增加 `MaxOutputTokens`（`max_output`）和每模型的 `Upstream`（不序列化）；节点不再要求全局 `Upstream`。
-- `client/agent.go`：`shareModelsLocked` 把本机模型和已开启 provider 的模型合成一份报价；`watchedUpstream` 在凭据被拒时给卖家告警。
-- `client/providers.go`：providers API。
-- `client/api.go`：`ShareStatus` 增加 `Providers`、`Serving`。
-- `cmd/sharetoken/main.go`：`provider` 子命令，`share add -provider`。
-- `internal/cli/cli.go`：`ReadSecret`（不回显地读密钥）。
-- `e2e/providers_test.go`：两个端到端测试。
+- [`internal/node/node.go`](../internal/node/node.go): `ModelConfig` carries `MaxOutputTokens` (`max_output`) and a per-model `Upstream` (not serialized). A node needs no global `Upstream`.
+- [`internal/client/agent.go`](../internal/client/agent.go): `shareModelsLocked` merges the local models and the models of every enabled provider into one set of offers; `watchedUpstream` warns the seller when credentials are refused.
+- [`internal/client/providers.go`](../internal/client/providers.go): the providers API.
+- [`internal/client/api.go`](../internal/client/api.go): `ShareStatus` carries `Providers` and `Serving`.
+- [`cmd/sharetoken/main.go`](../cmd/sharetoken/main.go): the `provider` subcommand and `share add -provider`.
+- [`internal/cli/cli.go`](../internal/cli/cli.go): `ReadSecret` (reads a key without echo).
+- [`test/e2e/providers_test.go`](../test/e2e/providers_test.go): two end-to-end tests.
 
 ## 4. providers.json
 
-位置：客户端状态目录下的 `providers.json`，权限 0600，先写临时文件再改名。`version` 为 1；比当前程序新的版本会拒绝读取。
+The file is `providers.json` in the client's state directory, mode 0600, written to a temporary file and renamed. `version` is 1; a file with a higher version than the program knows is refused.
 
 ```json
 {
@@ -72,11 +74,11 @@
       "type": "deepseek",
       "auth": "apikey",
       "enabled": true,
-      "api_key": "<密钥>",
+      "api_key": "<key>",
       "models": [
         {"id": "deepseek-flash", "upstream_model": "deepseek-flash", "price_in": 100000, "price_out": 200000, "max_output": 8192}
       ],
-      "added_at": "2026-11-11T12:00:00Z"
+      "added_at": "2030-01-01T12:00:00Z"
     },
     {
       "name": "chatgpt",
@@ -84,9 +86,9 @@
       "auth": "oauth",
       "enabled": true,
       "oauth": {
-        "access_token": "<令牌>",
-        "refresh_token": "<令牌>",
-        "expires_at": "2026-11-11T13:00:00Z",
+        "access_token": "<token>",
+        "refresh_token": "<token>",
+        "expires_at": "2030-01-01T13:00:00Z",
         "email": "…",
         "account_id": "…"
       },
@@ -96,145 +98,147 @@
 }
 ```
 
-| 字段 | 含义 |
+| Field | Meaning |
 |---|---|
-| `name` | 用户起的名字，文件内唯一；默认等于类型名 |
-| `type` | 类型 ID（§2） |
-| `auth` | `apikey` 或 `oauth` |
-| `enabled` | 关掉后它的模型不再报价，配置和凭据保留 |
-| `base_url` | 覆盖类型自带的地址；`custom` 必填 |
-| `api_key` | 密钥 |
-| `headers` | 每个请求附带的头，例如 `anthropic-workspace-id` |
-| `oauth` | 登录得到的令牌；`project_id` 用于 Gemini / Antigravity，`plan`、`extra` 按类型使用 |
-| `models` | 这个 provider 卖的模型：网络 ID、厂商侧模型名、价格、`max_output` |
+| `name` | The user's name for the provider, unique in the file; defaults to the kind |
+| `type` | The kind's ID (section 2) |
+| `auth` | `apikey` or `oauth` |
+| `enabled` | When off, its models are no longer offered; configuration and credentials stay |
+| `base_url` | Overrides the kind's own address; required for `custom` |
+| `api_key` | The key |
+| `headers` | Headers sent with every request, for example `anthropic-workspace-id` |
+| `oauth` | The token from a login. `account_id` is the account the token acts for (ChatGPT account, Anthropic organization); `project_id` is used by Gemini and Antigravity; `plan` and `extra` depend on the kind |
+| `models` | The models this provider sells: network ID, the vendor's model name, prices, `max_output` |
 
-模型条目的价格字段与 `config.json` 里本机模型的相同（`node.ModelConfig`）。
+A model entry has the same fields as a local model in `config.json` (`node.ModelConfig`).
 
-所有修改都经过 `provider.Update`（进程内串行的读-改-写），所以运行中的客户端续期令牌和命令行改设置不会互相覆盖。
+Every change goes through `provider.Update`, which re-reads the file, applies the change and writes it back (serialized within a process), so a token renewed by the running client and a setting changed by a command do not undo each other.
 
-## 5. 命令行
+## 5. Command line
 
 ```bash
-sharetoken provider                               # 列出可添加的类型和已配置的 provider
-sharetoken provider add <类型> [-name N] [-url URL] [-header K=V] [-no-check]
-sharetoken provider login <类型> [-name N] [-project ID]
-sharetoken provider models <名字>                 # 这份凭据能用的模型
-sharetoken provider test <名字> [-model M] [-prompt TEXT]
-sharetoken provider on|off <名字>
-sharetoken provider rm <名字>                     # 连同凭据一起删除
+sharetoken provider                               # kinds that can be added, and the configured providers
+sharetoken provider add <kind> [-name N] [-url URL] [-header K=V] [-no-check]
+sharetoken provider login <kind> [-name N] [-project ID]
+sharetoken provider models <name>                 # models these credentials may use
+sharetoken provider test <name> [-model M] [-prompt TEXT]
+sharetoken provider on|off <name>
+sharetoken provider rm <name>                     # removes the credentials too
 
-sharetoken share add <厂商模型名> -provider <名字> [-id ID] [-in P] [-out P] [-max-output N]
-sharetoken share rm <ID>                          # 本机模型和 provider 的模型都会找
+sharetoken share add <vendor model> -provider <name> [-id ID] [-in P] [-out P] [-max-output N]
+sharetoken share rm <ID>                          # looks among local models and provider models
 ```
 
-- **密钥输入**：隐藏提示、标准输入或环境变量 `SHARETOKEN_PROVIDER_KEY`。不提供命令行参数，因为参数会出现在进程列表和 shell 历史里。
-- **添加时校验**：`provider add` 会向厂商列一次模型来确认密钥可用，被拒绝就不保存；`-no-check` 跳过。DeepSeek 还会读出余额。
-- **立即生效**：`sharetoken up` 在运行时，这些命令改完文件后会让它重新加载，不用重启。
-- **示例**：
+- **Entering a key:** a hidden prompt, standard input, or the environment variable `SHARETOKEN_PROVIDER_KEY`. There is no command-line argument for it, because arguments show up in the process list and the shell history.
+- **Check on add:** `provider add` lists the vendor's models once to confirm the key works, and does not save a key that is refused; `-no-check` skips this. For DeepSeek it also reads the account balance.
+- **Immediate effect:** while `sharetoken up` is running, these commands change the file and then tell the running client to reload it. No restart is needed.
+- **Examples:**
 
 ```bash
 sharetoken provider add deepseek
 sharetoken share add deepseek-flash -provider deepseek
 sharetoken provider add custom -name lab -url https://llm.example.com/v1
-sharetoken provider add anthropic -header anthropic-workspace-id=<工作区 ID>
+sharetoken provider add anthropic -header anthropic-workspace-id=<workspace ID>
 ```
 
-## 6. 本机 API
+## 6. Local API
 
-路由在 `client/providers.go`，挂在客户端的本机 API 上：
+The routes are in [`internal/client/providers.go`](../internal/client/providers.go), on the client's local API:
 
-| 方法 | 路径 | 作用 |
+| Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/providers` | 可添加的类型（含 `needs_url`、`key_optional`，界面据此决定显示哪些输入框）和已配置的 provider |
-| POST | `/api/v1/providers` | 用 API key 添加（`provider.AddRequest`） |
+| GET | `/api/v1/providers` | The kinds that can be added (with `needs_url` and `key_optional`, which tell the page which inputs to show) and the configured providers |
+| POST | `/api/v1/providers` | Add one with an API key (`provider.AddRequest`) |
 | PATCH | `/api/v1/providers/{name}` | `{"enabled": bool}` |
-| DELETE | `/api/v1/providers/{name}` | 删除 |
-| GET | `/api/v1/providers/{name}/models` | 凭据能用的模型 |
-| PUT | `/api/v1/providers/{name}/models` | 添加或改价（`node.ModelConfig`） |
-| DELETE | `/api/v1/providers/{name}/models/{id}` | 移除一个模型 |
-| POST | `/api/v1/providers/{name}/test` | `{"model", "prompt"}`：经它发一次请求 |
-| POST | `/api/v1/providers/oauth/start` | `{"type", "project"}` → 登录地址 |
+| DELETE | `/api/v1/providers/{name}` | Remove it |
+| GET | `/api/v1/providers/{name}/models` | Models the credentials may use |
+| PUT | `/api/v1/providers/{name}/models` | Add a model or change its price (`node.ModelConfig`) |
+| DELETE | `/api/v1/providers/{name}/models/{id}` | Remove one model |
+| POST | `/api/v1/providers/{name}/test` | `{"model", "prompt"}`: send one request through it |
+| POST | `/api/v1/providers/oauth/start` | `{"type", "project"}` → the sign-in address |
 | POST | `/api/v1/providers/oauth/finish` | `{"id", "code", "name"}` |
 
-- 返回里从不包含密钥或令牌，只有打码后的形式。
-- 带 `Origin` 且不等于 `http://<本机 host>` 的请求一律 403 `bad_origin`：密钥从这里进，任何网页都不许调用。
-- 错误码：找不到 404，凭据被拒 401，模型 ID 已被占用 409，厂商返回错误 502，其余 400。
-- `GET /api/v1/share` 的状态里增加了 `providers` 和 `serving`。
+- An answer never contains a key or a token, only the masked form.
+- A request with an `Origin` other than `http://<local host>` gets 403 `bad_origin`. Keys enter here, so no web page may call it.
+- Status codes: 404 not found, 401 credentials refused, 409 model ID already taken, 502 the vendor returned an error, 400 otherwise.
+- The state returned by `GET /api/v1/share` includes `providers` and `serving`.
 
-## 7. 请求改写
+## 7. Request rewriting
 
-每个 provider 最终是一个 `node.Upstream`：输入买家的 chat-completions 请求体，输出 OpenAI `chat.completion.chunk`。
+Each provider ends up as a `node.Upstream`: it takes the body of the buyer's chat-completions request and emits OpenAI `chat.completion.chunk` objects.
 
-| 上游 | 改写要点 |
+| Upstream | What is rewritten |
 |---|---|
-| OpenAI 兼容（deepseek、grok、custom、gemini key、openai key） | 基本透传，替换模型名；OpenAI 官方接口用 `max_completion_tokens` 代替 `max_tokens` |
-| Anthropic Messages | system 消息提到顶层；工具定义和工具调用/结果转成 `tool_use` / `tool_result` 块；`x-api-key` 加 `anthropic-version: 2023-06-01`；流事件转回分片 |
-| Responses（Codex 后端） | 消息转成 `input` 项；后端不接受输出上限，所以流在买家的 `max_tokens` 处截断；名为 `python` 的工具改名为 `python__st`，回来时还原 |
-| Gemini 原生 | 消息转成 `contents` / `systemInstruction`，工具转成 `functionDeclarations`，`cleanSchema` 去掉 Gemini 不接受的 schema 字段 |
-| Antigravity | 在 Gemini 原生格式外再包一层（`requestId`、`userAgent`、`requestType`、项目 ID）并加身份 system prompt；按套餐选正式或 daily 主机 |
+| OpenAI-compatible (deepseek, grok, custom, gemini with a key, openai with a key) | Mostly passed through, with the model name replaced. OpenAI's own API gets `max_completion_tokens` instead of `max_tokens` |
+| Anthropic Messages | System messages move to the top level; tool definitions, tool calls and tool results become `tool_use` / `tool_result` blocks; `x-api-key` plus `anthropic-version: 2023-06-01`; stream events are turned back into chunks |
+| Anthropic Messages with a login | As above, with a bearer token and the `anthropic-beta: oauth-2025-04-20` header instead of `x-api-key`. The API serves such a token to Claude Code only, so the request's system prompt leads with Claude Code's identity line. The short names `claude-sonnet-4-5`, `claude-opus-4-5` and `claude-haiku-4-5` are sent as their dated IDs |
+| Responses (Codex backend) | Messages become `input` items. The backend takes no output limit, so the stream is cut at the buyer's `max_tokens`. A tool named `python` is renamed `python__st` on the way out and restored on the way back |
+| Native Gemini | Messages become `contents` / `systemInstruction`, tools become `functionDeclarations`, and `cleanSchema` drops the schema fields Gemini does not accept |
+| Antigravity | The native Gemini request wrapped in another envelope (`requestId`, `userAgent`, `requestType`, project ID) with an identity system prompt; the production or the daily host is chosen by plan |
 
-### 输出上限
+### Output limit
 
-节点默认向上游要 32768 个输出 token，有些模型接受不了（例如 `gpt-4o-mini` 只到 16384，直接 400）。`outputLimits` 的处理：
+By default the node asks the upstream for up to 32768 output tokens, which some models refuse (`gpt-4o-mini`, for example, stops at 16384 and answers 400). `outputLimits` handles this:
 
-1. 模型配置了 `max_output` 就用它封顶。
-2. 否则照发；厂商以“上限是 N”拒绝时，从错误信息里读出 N，重发一次，之后这个模型一直用 N。
+1. A model configured with `max_output` is capped at that value.
+2. Otherwise the request goes out as it is. If the vendor refuses it with "the limit is N", N is read from the error message, the request is sent once more, and the model uses N from then on.
 
-Anthropic 必须带 `max_tokens`，用 `anthropicMaxOutput` 给出默认值。
+Anthropic requires `max_tokens`; `anthropicMaxOutput` supplies the default.
 
-### 隐藏推理与计费
+### Hidden reasoning and billing
 
-买家会核对卖家申报的输出 token：不得超过可见输出估算值的 2 倍加 64（`protocol.UsagePlausible`），超了整单拒收。带隐藏推理的模型（例如 `gpt-5-nano`）报的 token 远多于买家看到的内容。
+A buyer checks the output tokens a seller claims: they may not exceed twice the estimate of the visible output plus 64 (`protocol.UsagePlausible`), and a job that claims more is rejected as a whole. A model with hidden reasoning (`gpt-5-nano`, for example) reports far more tokens than the buyer sees.
 
-`billable` 包在每个 provider 外面，把申报量压到这个上限以内，厂商原始数字保留在分片的 `completion_tokens_reported` 里。结果是：**隐藏推理的 token 卖家收不到钱**，定价时要算进去。`provider test` 遇到这种情况会提示。
+`billable` wraps every provider and brings the claim down to that bound; the vendor's own number stays in the chunk as `completion_tokens_reported`. The consequence: **the seller is not paid for hidden reasoning tokens**, and prices should allow for that. `provider test` says so when it happens.
 
-## 8. OAuth 登录
+## 8. OAuth login
 
-登录分两步，这样没有浏览器的机器也能用：
+A login takes two steps, so it also works on a machine without a browser:
 
-1. `StartLogin(类型, project)` 生成登录地址（PKCE + state）。CLI 把地址打印出来，API 返回 `id` 和地址。
-2. 用户在任意浏览器登录，把得到的授权码或整个回调地址粘贴回来；`FinishLogin` 解析（`parseCallback`）、换取令牌并保存。
+1. `StartLogin(kind, project)` builds the sign-in address (PKCE and state). The CLI prints the address; the API returns an `id` and the address.
+2. The user signs in with any browser and pastes back the authorization code, or the whole callback address. `FinishLogin` parses it (`parseCallback`), exchanges it for a token and saves it.
 
-| 类型 | 授权端 | 回调地址 | 备注 |
+| Kind | Authorization | Callback | Notes |
 |---|---|---|---|
-| `openai` | `auth.openai.com` | `localhost:1455` | 令牌里带 ChatGPT 账户 ID；模型列表取不到时用内置列表 |
-| `gemini` | Google | `codeassist.google.com/authcode` | 页面上直接显示授权码；`-project` 指定 GCP 项目，否则经 `loadCodeAssist` / `onboardUser` 找 |
-| `antigravity` | Google | `localhost:8085` | 同上找项目 |
+| `anthropic` | `claude.com` | `platform.claude.com/oauth/code/callback` | The page shows a code of the form `code#state` to paste back. The token keeps the account's email and organization. A built-in model list is used when the models cannot be listed |
+| `openai` | `auth.openai.com` | `localhost:1455` | The token carries the ChatGPT account ID. A built-in model list is used when the backend's cannot be read |
+| `gemini` | Google | `codeassist.google.com/authcode` | The page shows the authorization code. `-project` names the Google Cloud project; otherwise it is found through `loadCodeAssist` / `onboardUser` |
+| `antigravity` | Google | `localhost:8085` | The project is found the same way |
 | `grok` | `auth.x.ai` | `127.0.0.1:56121` | — |
 
-回调地址是 localhost 的几家，浏览器最后会停在一个打不开的页面上，把地址栏里的地址整个粘贴回来即可。
+Where the callback is a localhost address, the browser ends on a page that does not load. Paste the whole address from the address bar.
 
-令牌的维护（`Tokens` / `TokenSource`）：
+A started login that is not finished expires after 30 minutes.
 
-- 距过期不到 5 分钟时续期，新令牌写回 `providers.json`。
-- 请求得到 401 时强制续期并重试一次（`withToken`）。
-- 续期失败或再次被拒，按凭据被拒处理（见下）。
+Token upkeep (`Tokens` / `TokenSource`):
 
-### 凭据失效
+- A token is renewed when it has less than 5 minutes left, and the new one is written back to `providers.json`.
+- A request that gets 401 forces a renewal and is retried once (`withToken`).
+- If renewal fails, or the request is refused again, it is handled as refused credentials (below).
 
-上游返回 401、403 或 402 时，`watchedUpstream` 给卖家一条告警 `source:<名字>:credentials`，在 `sharetoken status` 和 API 里可见；修好之前这个 provider 的作业都会失败。其他错误不触发这条告警。
+### Refused credentials
 
-## 9. 验证记录
+When the upstream answers 401 or 403 (credentials refused) or 402 (out of balance), `watchedUpstream` raises the warning `source:<name>:credentials` for the seller. It shows in `sharetoken status` and in the API. Until it is fixed, every job through that provider fails. Other errors do not raise this warning.
 
-| 项目 | 状态 |
+## 9. What is verified
+
+| Item | State |
 |---|---|
-| DeepSeek API key | **已实测**：真实密钥，dev 环境端到端 |
-| OpenAI API key | **已实测**：真实密钥，dev 环境端到端，含流式工具调用 |
-| Anthropic API key | **未实测**：手头的密钥未绑定工作区，需要 `anthropic-workspace-id`；格式转换只用模拟服务测过 |
-| Gemini、Grok API key | **未实测**：没有密钥 |
-| OAuth：openai、gemini、antigravity、grok | **未实测登录**：只测了登录地址、令牌续期和格式转换，待手动验证 |
-| Anthropic OAuth | **本文不涵盖**：`997be6c` 里没有注册登录流程；之后另有一份实现（`provider/oauth_anthropic.go`），其流程、请求改写和验证情况未写入本文 |
+| Format conversion, streams, output limits, hidden reasoning, the store, callback parsing, sign-in addresses of every login kind, token renewal | Covered by unit tests against mock servers ([`internal/provider/provider_test.go`](../internal/provider/provider_test.go)) |
+| Several providers each selling through their own API; a refused key warning the seller | Covered by the two end-to-end tests in [`test/e2e/providers_test.go`](../test/e2e/providers_test.go), against mock servers |
+| DeepSeek with an API key | Tested against the real service, end to end through the network |
+| OpenAI with an API key | Tested against the real service, end to end, including streaming tool calls |
+| Anthropic with an API key | Not tested against the real service; the format conversion is tested against a mock only |
+| Gemini and Grok with an API key | Not tested against the real service |
+| OAuth logins (anthropic, openai, gemini, antigravity, grok) | Not verified against the real services by any test in this repository. The tests cover the sign-in address, token renewal and format conversion; signing in and exchanging the code have to be checked by hand |
 
-dev 端到端：卖家在 st-db 上挂 deepseek 和 openai 两个 provider，卖 `deepseek-flash`、`deepseek-v4-pro`、`gpt-4o-mini`、`gpt-5-nano`；买家在 instabox。作业都到 `final` 且 `verified=true`，卖家入账，providers API 不泄漏密钥，带外部 `Origin` 的请求得到 403。
+In the tests against the real services, jobs reached `final` with `verified=true`, the seller was credited, the providers API leaked no key, and a request with a foreign `Origin` got 403.
 
-自动测试：`scripts/test.sh ./...` 全部通过。`e2e/providers_test.go` 有两个用例：多个 provider 各走各的 API 成交；密钥被拒时卖家收到告警。
+Run the automated tests with `scripts/test.sh ./...` (see [development.md](development.md)).
 
-继续在 dev 上试：st-db 的 `~/st-sell` 保留了两个 provider 的配置，`cd ~/st-sell && ./sharetoken up`。环境说明见 [dev-env.md](dev-env.md)。
+## 10. Known limits
 
-## 10. 已知限制
-
-- `PUT /api/v1/share` 仍然可以改 `upstream_key_env`（[security-audit.md](security-audit.md) 第 1 项），与本功能无关但同属凭据面。
-- 桌面应用的“共享”页覆盖了这些操作（见 [gui.md](gui.md)）；各家的账号登录在界面上只验证到生成登录地址，换取令牌仍待手动验证。
-- Codex 后端没有可靠的模型列表接口，取不到时用内置列表，新模型需要更新代码。
-- 不同 provider 不能卖同一个网络模型 ID：后加载的那个被跳过并告警，`share add` 会提示改用 `-id`。
-- 隐藏推理的 token 不计费（§7）。
+- `PUT /api/v1/share` can still set `upstream_key_env`, the name of the environment variable that holds the local model server's key. It is unrelated to providers but belongs to the same credential surface.
+- The Codex backend has no dependable model list endpoint. When it cannot be read, a built-in list is used, and new models need a code change. The same holds for the built-in lists of the other logins.
+- Two providers cannot sell the same network model ID: the one loaded later is skipped with a warning, and `share add` asks for another ID with `-id`.
+- Hidden reasoning tokens are not billed (section 7).

@@ -1,0 +1,11 @@
+# Only go.mod, go.sum, VERSION, cmd/, internal/ and docker/ go into the image.
+*
+!go.mod
+!go.sum
+!VERSION
+!cmd
+!internal
+!docker
+**/*_test.go
+**/*.key
+**/*.env

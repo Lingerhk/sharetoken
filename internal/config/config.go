@@ -1,6 +1,6 @@
 // Package config loads the YAML configuration files of the server binaries
 // (relay, coordinator, portal); see configs/*.example.yaml and
-// docs/config-v2.md.
+// docs/configuration.md.
 //
 // Precedence: built-in defaults < the YAML file < command-line flags that are
 // given explicitly. A binary fills its settings struct with defaults, loads

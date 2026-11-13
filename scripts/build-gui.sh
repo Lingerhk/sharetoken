@@ -18,16 +18,13 @@
 # build says so in all its names: sharetoken-dev, sharetoken-gui-dev, sharetoken-dev-<version>-…
 #
 # The build type decides the portal, the state directory and the local port
-# (client/env.go, gui/env.go), so a dev and a prod app can live on one machine:
+# (internal/client/env.go, gui/env.go), so a dev and a prod app can live on one machine:
 #   dev:  https://dev.sharetoken.app   ~/.sharetoken-dev   127.0.0.1:9887
 #   prod: https://sharetoken.app       ~/.sharetoken       127.0.0.1:9787
 #
 # Linux build dependencies (Debian/Ubuntu 24.04 names):
-#   sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+#   sudo apt install build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
 #
-# Usage statistics go to the built-in PostHog project from prod builds only
-# (client/telemetry.go). TELEMETRY_KEY=… replaces the key, TELEMETRY_OFF=1 builds
-# an app that sends nothing, and TELEMETRY_HOST=https://… selects another instance.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ENV=${1:-}
@@ -48,8 +45,8 @@ SHELL_LDFLAGS="-s -w -X main.buildType=$STAMP -X main.version=$VERSION"
 fill() { # template: the packaging files name the build type with @ENV@ and so on
   sed -e "s/@EXE@/$EXE/g" -e "s/@GUI@/$GUI/g" -e "s/@NAME@/$NAME/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" -e "s/@VERSION@/$NUMERIC/g" "$1"
 }
-build_shell() { # output path, extra tags
-  (cd gui && CGO_ENABLED=1 go build -trimpath -tags "desktop,production$2" -ldflags "$SHELL_LDFLAGS" -o "../$1" .)
+build_shell() { # output path
+  (cd gui && CGO_ENABLED=1 go build -trimpath -ldflags "$SHELL_LDFLAGS" -o "../$1" .)
 }
 # -X says nothing when it misses its variable, and a wrong build type here sends
 # users to the wrong network: look for the stamp in what was built. Works on
@@ -70,10 +67,15 @@ build_macos() { # architecture
   # Cgo builds for the other architecture too: Go passes -arch to clang.
   local arch=$1 app="$OUT/ShareToken$SUFFIX.app" dmg stage icons
   export GOARCH=$arch
+  # The oldest macOS the app runs on, for clang's Objective-C and the linker as
+  # well: Go 1.27 programs need macOS 13, and Info.plist says the same. Without it
+  # the cgo objects target this machine's macOS (checks for newer systems compile
+  # away), and Wails' own -mmacosx-version-min=10.13 sets the program's.
+  export MACOSX_DEPLOYMENT_TARGET=13.0 CGO_LDFLAGS="-mmacosx-version-min=13.0"
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$app/Contents/MacOS/$EXE" ./cmd/sharetoken
-  build_shell "$app/Contents/MacOS/$GUI" ""
+  build_shell "$app/Contents/MacOS/$GUI"
   verify "$app/Contents/MacOS/$EXE" "$app/Contents/MacOS/$GUI"
   fill gui/packaging/Info.plist > "$app/Contents/Info.plist"
   icons=$(mktemp -d)/app.iconset
@@ -87,14 +89,54 @@ build_macos() { # architecture
   # copies still need a Developer ID signature and notarization to open without
   # a Gatekeeper warning.
   codesign --force --deep --sign - "$app" 2>/dev/null
-  # The disk image opens on the app and a link to drag it onto.
+  # The disk image opens as a small window: the app, an arrow, the Applications
+  # link. Finder keeps the layout in the volume's .DS_Store, so the image is made
+  # writable, laid out through Finder, and then compressed.
   dmg=sharetoken$SUFFIX-$VERSION-macos-$arch.dmg
   stage=$(mktemp -d)
   ditto "$app" "$stage/$NAME.app"
   ln -s /Applications "$stage/Applications"
-  rm -f "$OUT/$dmg"
-  hdiutil create -quiet -volname "$NAME" -srcfolder "$stage" -fs HFS+ -format UDZO "$OUT/$dmg"
-  rm -rf "$stage"
+  mkdir "$stage/.background"
+  tiffutil -cathidpicheck gui/packaging/dmg-background.png gui/packaging/dmg-background@2x.png -out "$stage/.background/background.tiff" 2>/dev/null
+  rm -f "$OUT/$dmg" "$stage.rw.dmg"
+  hdiutil create -quiet -volname "$NAME" -srcfolder "$stage" -fs HFS+ -format UDRW "$stage.rw.dmg"
+  local mnt
+  mnt=$(hdiutil attach -readwrite -noverify -noautoopen "$stage.rw.dmg" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -1)
+  # Finder may not know a volume yet just after it was attached: wait for it, and try twice.
+  local tries=0
+  until osascript <<OSA; do
+tell application "Finder"
+  repeat 20 times
+    if exists disk "$(basename "$mnt")" then exit repeat
+    delay 0.5
+  end repeat
+  tell disk "$(basename "$mnt")"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {200, 120, 800, 520}
+    set opts to the icon view options of container window
+    set arrangement of opts to not arranged
+    set icon size of opts to 112
+    set text size of opts to 13
+    set background picture of opts to file ".background:background.tiff"
+    set position of item "$NAME.app" of container window to {150, 190}
+    set position of item "Applications" of container window to {450, 190}
+    update without registering applications
+    delay 2
+    close
+  end tell
+end tell
+OSA
+    tries=$((tries + 1))
+    [ "$tries" -lt 2 ] || { echo "warning: Finder could not lay out the disk image; it opens as a plain folder" >&2; break; }
+    sleep 3
+  done
+  sync
+  hdiutil detach -quiet "$mnt" || { sleep 3; hdiutil detach -quiet -force "$mnt"; }
+  hdiutil convert -quiet "$stage.rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$OUT/$dmg"
+  rm -rf "$stage" "$stage.rw.dmg"
   sums "$dmg"
   echo "built $OUT/$dmg"
 }
@@ -113,7 +155,9 @@ case "${1:-$(uname -s)}" in
 windows)
   # Wails needs no cgo on Windows, so this cross-compiles. The .syso carries the
   # icon and the manifest (DPI awareness, common controls v6 for its dialogs);
-  # go build links it by its name, and it must not outlive this build.
+  # go build links it by its name, and it must not outlive this build. Wails
+  # takes the window's icon from icon group 32512 and the notifications' from 3
+  # (gui/packaging/winres.json).
   ARCH=${2:-amd64}
   BASE=sharetoken$SUFFIX-$VERSION-windows-$ARCH
   DIR=$OUT/$BASE
@@ -121,8 +165,8 @@ windows)
   mkdir -p "$DIR"
   CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/$EXE.exe" ./cmd/sharetoken
   trap 'rm -f gui/rsrc_windows_*.syso' EXIT
-  go run github.com/tc-hib/go-winres@v0.3.3 simply --arch "$ARCH" --manifest gui --icon gui/packaging/icon.png --out gui/rsrc
-  (cd gui && CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -tags desktop,production -ldflags "$SHELL_LDFLAGS -H windowsgui" -o "../$DIR/$GUI.exe" .)
+  go run github.com/tc-hib/go-winres@v0.3.3 make --in gui/packaging/winres.json --arch "$ARCH" --out gui/rsrc
+  (cd gui && CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -ldflags "$SHELL_LDFLAGS -H windowsgui" -o "../$DIR/$GUI.exe" .)
   verify "$DIR/$EXE.exe" "$DIR/$GUI.exe"
   cp gui/packaging/icon.ico gui/packaging/user-path.ps1 "$DIR/"
   nsis -V2 "-DNAME=$NAME" "-DEXE=$EXE" "-DGUI=$GUI" "-DVERSION=$NUMERIC" "-DSRC=$BASE" "-DOUTFILE=$BASE.exe" "-DSUFFIX=$SUFFIX"
@@ -136,30 +180,32 @@ Darwin)
   build_macos "$(go env GOARCH)"
   ;;
 Linux)
-  # webkit2gtk 4.1 (Ubuntu 22.04+, Debian 12+); older systems only have 4.0.
-  TAG=""
-  pkg-config --exists webkit2gtk-4.1 && TAG=",webkit2_41"
   ARCH=$(go env GOARCH)
   BASE=sharetoken$SUFFIX-$VERSION-linux-$ARCH
   DIR=$OUT/$BASE
   rm -rf "$DIR"
   mkdir -p "$DIR"
   CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/$EXE" ./cmd/sharetoken
-  build_shell "$DIR/$GUI" "$TAG"
+  build_shell "$DIR/$GUI"
   verify "$DIR/$EXE" "$DIR/$GUI"
-  # The package: programs on every user's PATH, an entry in the application menu.
+  # The package: programs on every user's PATH, an entry in the application menu,
+  # and the AppArmor profile that lets WebKitGTK sandbox its web processes.
   ROOT=$(mktemp -d)
-  install -d "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/usr/share/icons/hicolor/512x512/apps"
+  install -d "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/usr/share/icons/hicolor/512x512/apps" "$ROOT/etc/apparmor.d"
   install -m 755 "$DIR/$EXE" "$DIR/$GUI" "$ROOT/usr/bin/"
   install -m 644 gui/packaging/icon.png "$ROOT/usr/share/icons/hicolor/512x512/apps/$EXE.png"
   fill gui/packaging/sharetoken.desktop > "$ROOT/usr/share/applications/$EXE.desktop"
   chmod 644 "$ROOT/usr/share/applications/$EXE.desktop"
+  fill gui/packaging/apparmor-profile > "$ROOT/etc/apparmor.d/$GUI"
+  chmod 644 "$ROOT/etc/apparmor.d/$GUI"
+  echo "/etc/apparmor.d/$GUI" > "$ROOT/DEBIAN/conffiles"
   { fill gui/packaging/deb-control
     echo "Architecture: $ARCH"
     echo "Installed-Size: $(du -sk "$ROOT/usr" | cut -f1)"
   } > "$ROOT/DEBIAN/control"
-  install -m 755 gui/packaging/deb-postchange "$ROOT/DEBIAN/postinst"
-  install -m 755 gui/packaging/deb-postchange "$ROOT/DEBIAN/postrm"
+  fill gui/packaging/deb-postchange > "$ROOT/DEBIAN/postinst"
+  fill gui/packaging/deb-postchange > "$ROOT/DEBIAN/postrm"
+  chmod 755 "$ROOT/DEBIAN/postinst" "$ROOT/DEBIAN/postrm"
   chmod -R go-w "$ROOT"
   dpkg-deb --root-owner-group -Zxz --build "$ROOT" "$DIR.deb" >/dev/null
   rm -rf "$ROOT"

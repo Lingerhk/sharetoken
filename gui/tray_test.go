@@ -43,7 +43,7 @@ func TestTrayStatusForEachState(t *testing.T) {
 // The menu speaks every language the page does, and uses the page's words where
 // they say the same thing.
 func TestTrayTextsMatchPageLanguages(t *testing.T) {
-	dir := filepath.Join("..", "client", "ui", "i18n", "client")
+	dir := filepath.Join("..", "internal", "client", "ui", "i18n", "client")
 	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	if err != nil || len(files) == 0 {
 		t.Skipf("no dictionaries here (a test binary copied to another machine): %v", err)
@@ -88,6 +88,10 @@ func TestTrayTextsMatchPageLanguages(t *testing.T) {
 				t.Errorf("%s: no {version} in %q", lang, s)
 			}
 		}
+		if strings.Contains(text.Relay, "{ms}") || !strings.Contains(text.Relay, "{name}") || !strings.Contains(text.RelayRTT, "{name}") || !strings.Contains(text.RelayRTT, "{ms}") ||
+			!strings.Contains(text.Sharing, "{n}") || !strings.Contains(text.Balance, "{n}") {
+			t.Errorf("%s: info lines: %+v", lang, text)
+		}
 		if !strings.Contains(text.NotifyAvailable+text.NotifyRequired, "{app}") || strings.Contains(text.UpdateAvailable+text.UpdateRequired, "{app}") {
 			t.Errorf("%s: update texts: %+v", lang, text)
 		}
@@ -116,6 +120,40 @@ func TestTrayUpdateItem(t *testing.T) {
 	}
 }
 
+// The lines under the status line: only while connected, and only what is known.
+func TestTrayInfoLines(t *testing.T) {
+	text := trayTexts["en"]
+	bal := int64(12_000_000)
+	for _, c := range []struct {
+		st   trayState
+		want string
+	}{
+		{trayState{State: stateRunning, LoggedIn: true}, ""},
+		{trayState{State: stateRunning, LoggedIn: true, Net: &trayNet{Relay: "us"}}, "Relay: us"},
+		{trayState{State: stateRunning, LoggedIn: true, Net: &trayNet{Relay: "us", RTT: 0.2}}, "Relay: us"},
+		{trayState{State: stateRunning, LoggedIn: true, Net: &trayNet{Relay: "us", RTT: 87.4}, Balance: &bal}, "Relay: us · 87 ms|Available credit: 12"},
+		{trayState{State: stateRetrying, LoggedIn: true, Net: &trayNet{Relay: "us", RTT: 87}, Balance: &bal}, "Available credit: 12"},
+		{trayState{State: stateLoggedOut, Balance: &bal}, ""},
+		{trayState{Down: true, LoggedIn: true, Net: &trayNet{Relay: "us"}, Balance: &bal}, ""},
+	} {
+		m := renderTray(text, c.st)
+		if got := strings.Join(m.Info, "|"); got != c.want || len(m.Info) > trayInfoLines {
+			t.Errorf("%+v: %q, want %q", c.st, got, c.want)
+		}
+	}
+	for micros, want := range map[int64]string{0: "0", 5_000_000: "5", 4_990_000: "4.99", 1_500_000: "1.5", 1234: "0"} {
+		if got := trayCredit(micros); got != want {
+			t.Errorf("%d: %q, want %q", micros, got, want)
+		}
+	}
+	// A relay the portal does not name shows the end of its address.
+	var s trayStatus
+	_ = json.Unmarshal([]byte(`{"relays":[{"addr":"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWabcdef","current":true,"rtt_ms":9}]}`), &s)
+	if n := s.net(); n.Relay != "…abcdef" || n.RTT != 9 || n.Sharing {
+		t.Fatalf("%+v", n)
+	}
+}
+
 // One notification per offered build, recorded with the daemon; none for a
 // skipped build, nor again for one the daemon says was notified.
 func TestTrayNotifiesOncePerBuild(t *testing.T) {
@@ -138,11 +176,12 @@ func TestTrayNotifiesOncePerBuild(t *testing.T) {
 	}
 	ctx := context.Background()
 	u := trayUpdate{Available: true, Latest: "1.2.0", Key: "1.2.0+abc"}
+	_ = json.Unmarshal([]byte(`{"en":{"summary":"A smaller window."},"zh-CN":{"summary":"窗口更小。"}}`), &u.Notes)
 	tc.notifyUpdate(ctx, u)
 	tc.notifyUpdate(ctx, u) // the next poll, before the daemon reports it
 	tc.notifyUpdate(ctx, trayUpdate{Available: true, Latest: "1.3.0", Key: "1.3.0", Skipped: true})
 	tc.notifyUpdate(ctx, trayUpdate{Available: true, Latest: "1.3.0", Key: "1.3.0", Notified: true})
-	if len(sent) != 1 || !strings.Contains(sent[0], "1.2.0") || !strings.HasPrefix(sent[0], windowTitle()+": ") || strings.Contains(sent[0], "{") {
+	if len(sent) != 1 || !strings.HasSuffix(sent[0], "\nA smaller window.") || !strings.Contains(sent[0], "1.2.0") || !strings.HasPrefix(sent[0], windowTitle()+": ") || strings.Contains(sent[0], "{") {
 		t.Fatalf("sent %q", sent)
 	}
 	mu.Lock()
@@ -174,6 +213,15 @@ func TestSingleInstancePerDataDirectory(t *testing.T) {
 	// It names a lock file, a notification and a Windows window class.
 	if strings.ContainsAny(a, `/\: `) || len(a) > 200 || !strings.Contains(a, Env) {
 		t.Fatal(a)
+	}
+	// On Linux it is a D-Bus name: elements of letters, digits, _ and -, none
+	// starting with a digit, at most 255 in all.
+	for _, id := range []string{a, b} {
+		for _, el := range strings.Split(id, ".") {
+			if el == "" || (el[0] >= '0' && el[0] <= '9') || strings.Trim(el, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != "" {
+				t.Fatalf("%s: element %q is not valid in a D-Bus name", id, el)
+			}
+		}
 	}
 }
 
@@ -219,10 +267,16 @@ func TestTrayFollowsDaemonAndLanguage(t *testing.T) {
 	var body atomic.Value
 	body.Store(`{"state":"logged_out"}`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/session" {
+		switch r.URL.Path {
+		case "/api/v1/session":
+			io.WriteString(w, body.Load().(string))
+		case "/api/v1/status":
+			io.WriteString(w, `{"coordinator":{"via":"/x/relay-b","link":{"samples":3,"avg_ms":41.6}},"relays":[{"addr":"/x/relay-a","name":"relay-a","rtt_ms":12},{"addr":"/x/relay-b","name":"relay-b","rtt_ms":300,"current":true}],"share":{"running":true,"serving":[{},{}]}}`)
+		case "/api/v1/account":
+			io.WriteString(w, `{"balance":{"available_micros":4990000}}`)
+		default:
 			t.Errorf("asked for %s", r.URL.Path)
 		}
-		io.WriteString(w, body.Load().(string))
 	}))
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	rec := &menuRecorder{seen: make(chan trayMenu, 64)}
@@ -241,6 +295,10 @@ func TestTrayFollowsDaemonAndLanguage(t *testing.T) {
 
 	body.Store(`{"state":"running","logged_in":true,"user":"a@b.c"}`)
 	rec.waitFor(t, en.Connected+" · a@b.c")
+	// The relay in use with its live latency, what is shared, the balance.
+	if m := rec.latest(); strings.Join(m.Info, "|") != "Relay: relay-b · 42 ms|Sharing · models on sale: 2|Available credit: 4.99" || m.Tooltip != windowTitle()+" · Relay: relay-b · 42 ms" {
+		t.Fatalf("%+v", m)
+	}
 
 	tc.setLang("zh-CN")
 	rec.waitFor(t, zh.Connected+" · a@b.c")

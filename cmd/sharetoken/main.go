@@ -1,7 +1,7 @@
 // Command sharetoken is the user client: one program to buy and to share
 // open-weight model inference on the sharetoken network.
 //
-//	sharetoken register -user alice     # or: login
+//	sharetoken login -email alice@example.com    # a code is mailed; a new address gets an account
 //	sharetoken share add qwen2.5:7b                            # optional: share a local model
 //	sharetoken provider add deepseek                           # or a hosted API, with your own API key
 //	sharetoken up                                              # run; OpenAI endpoint at http://127.0.0.1:9787/v1
@@ -21,9 +21,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -33,25 +36,26 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"golang.org/x/term"
 
-	"sharetoken/client"
+	"sharetoken/internal/agentskill"
 	"sharetoken/internal/cli"
+	"sharetoken/internal/client"
+	"sharetoken/internal/node"
+	"sharetoken/internal/p2p"
+	"sharetoken/internal/protocol"
+	"sharetoken/internal/provider"
 	"sharetoken/internal/version"
-	"sharetoken/node"
-	"sharetoken/p2p"
-	"sharetoken/protocol"
-	"sharetoken/provider"
 )
 
 const usage = `usage: sharetoken [-home DIR] <command> [flags]
 
 Getting started:
-  register [-email ADDR | -user NAME] [-code CODE] [-portal-pin FP]
-                                           create an account and bind this device; portals that verify
-                                           addresses mail a code (asked for here, or give it with -code)
-  login    [-user NAME] [-portal-pin FP]   log in and bind this device
+  login [-email ADDR] [-code CODE] [-invite CODE] [-totp CODE] [-device NAME] [-portal-pin FP]
+                                        sign in with a code mailed to ADDR and bind this device; an
+                                        address without an account gets one. -send only mails the code,
+                                        -code only redeems one (for scripts: two steps)
   up [-http ADDR] [-listen MADDRS]      run the client (buy, and share if enabled)
   daemon [-http ADDR] [-listen MADDRS]  run the service behind the desktop app: like up, but it
-                                        also runs logged out; sign-up and login go through its API
+                                        also runs logged out; signing in goes through its API
 
 While running:
   status                                connection, relays, sharing
@@ -79,11 +83,30 @@ Hosted APIs to share (kept in providers.json, apart from the configuration):
                                         add one with an API key (asked for; or stdin, or $SHARETOKEN_PROVIDER_KEY):
                                         anthropic, openai, gemini, grok, deepseek, or custom with -url
   provider login <kind> [-name N] [-project ID]
-                                        add one with an OAuth login: openai, gemini, antigravity, grok
+                                        add one with an OAuth login: anthropic, openai, gemini, antigravity, grok
   provider models <name>                models its credentials may use
   provider test <name> [-model M]       send one small request through it
   provider on | off <name>              sell its models, or stop
   provider rm <name>
+
+Pairing (a buyer that pairs with a seller buys only from the sellers it is paired with):
+  pair                                  who you are paired with, and your pairing codes
+  pair code [-label L] [-ttl 24h] [-uses N]
+                                        seller: make a code to hand to your buyers (any number of them, or -uses N)
+  pair join <code>                      buyer: pair with the seller that made the code
+  pair leave <seller id>                buyer: end the pairing with a seller
+  pair rm <buyer id>                    seller: remove one of your buyers
+  pair revoke <code id>                 seller: stop a code from admitting more buyers
+  pair private on|off                   seller: serve only the buyers paired with you, or anyone
+
+Coding agents (Claude Code, Codex):
+  skill                                 which agents are found, and whether they have the skill
+  skill install [-agent claude|codex|all] [-force]
+                                        teach the agents to use this client: writes skills/sharetoken/SKILL.md
+                                        under ~/.claude and ~/.codex ($CLAUDE_CONFIG_DIR, $CODEX_HOME);
+                                        default: every agent found. Run it again after an update
+  skill uninstall [-agent …] [-force]   remove it again
+  skill show                            print the skill
 
   config                                show the configuration file
   version [--check]                     show what this client was built for; --check asks the portal for a newer release`
@@ -114,10 +137,8 @@ func main() {
 	c := &cmdCtx{home: *home, cfg: cfg}
 	var run func([]string) error
 	switch cmd {
-	case "register":
-		run = func(a []string) error { return c.auth(a, true) }
 	case "login":
-		run = func(a []string) error { return c.auth(a, false) }
+		run = c.login
 	case "logout":
 		run = c.logout
 	case "up", "run":
@@ -138,6 +159,10 @@ func main() {
 		run = c.share
 	case "provider":
 		run = c.provider
+	case "pair":
+		run = c.pair
+	case "skill":
+		run = c.skill
 	case "config":
 		run = c.showConfig
 	default:
@@ -160,7 +185,7 @@ func (c *cmdCtx) save() error { return client.SaveConfig(c.home, c.cfg) }
 
 func (c *cmdCtx) portal() (*client.PortalClient, error) {
 	if c.cfg.Portal == "" || c.cfg.Token == "" {
-		return nil, errors.New("not logged in: run `sharetoken login` (or `sharetoken register`) first")
+		return nil, errors.New("not logged in: run `sharetoken login` first")
 	}
 	return client.NewPortalClient(c.cfg.Portal, c.cfg.Token, c.cfg.PortalPin), nil
 }
@@ -171,78 +196,84 @@ func ctx() (context.Context, context.CancelFunc) {
 
 // ---- account ----
 
-func (c *cmdCtx) auth(args []string, register bool) error {
-	name := "login"
-	if register {
-		name = "register"
+func (c *cmdCtx) login(args []string) error {
+	fs := flag.NewFlagSet("login", flag.ExitOnError)
+	portalURL := client.PortalAddr() // not a flag: the portal is built in (SHARETOKEN_PORTAL points a test network elsewhere)
+	last := ""
+	if strings.Contains(c.cfg.User, "@") {
+		last = c.cfg.User
 	}
-	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	portalURL := new(string) // not a flag: the portal is built in (SHARETOKEN_PORTAL points a test network elsewhere)
-	*portalURL = client.PortalAddr()
-	user := fs.String("user", c.cfg.User, "username")
-	var email, code *string
-	if register {
-		email = fs.String("email", "", "email address to sign up with")
-		code = fs.String("code", "", "verification code already received by email")
-	}
+	email := fs.String("email", last, "your email address: a sign-in code is mailed there")
+	code := fs.String("code", "", "the code from the email: only redeem it (after -send)")
+	send := fs.Bool("send", false, "only mail the code, and exit")
+	invite := fs.String("invite", "", "invite code, for a new account on portals that require one")
+	totpCode := fs.String("totp", "", "code from your authenticator app, for accounts with two-factor authentication")
 	device := fs.String("device", c.cfg.DeviceName, "name of this device (default: host name)")
 	pin := fs.String("portal-pin", "", "fingerprint of the portal's self-signed certificate (sha256:…), as its operator published it")
 	allowHTTP := fs.Bool("allow-http", false, "allow a plain-HTTP portal on another machine (test networks only)")
 	_ = fs.Parse(args)
-	var err error
-	if register && *email != "" {
-		*user = ""
+	if *send && *code != "" {
+		return errors.New("-send mails a code and -code redeems one: give one of them")
 	}
-	if *user == "" && !(register && *email != "") {
-		if *user, err = cli.Prompt("Email (or username): "); err != nil {
+	var err error
+	if *email == "" {
+		if *email, err = cli.Prompt("Email: "); err != nil {
 			return err
 		}
 	}
-	*portalURL = strings.TrimRight(*portalURL, "/")
+	*email = strings.TrimSpace(*email)
+	portalURL = strings.TrimRight(portalURL, "/")
 	cx, cancel := ctx()
 	defer cancel()
-	if *pin == "" && *portalURL == c.cfg.Portal {
-		*pin = c.cfg.PortalPin // logging in again to the same portal
+	if *pin == "" && portalURL == c.cfg.Portal {
+		*pin = c.cfg.PortalPin // signing in again to the same portal
 	}
-	if *pin, err = trustPortal(cx, *portalURL, *pin, *allowHTTP); err != nil {
+	if *pin, err = trustPortal(cx, portalURL, *pin, *allowHTTP); err != nil {
 		return err
 	}
-	pw, err := cli.ReadPassword("Password: ", register)
-	if err != nil {
-		return err
+	pc := client.NewPortalClient(portalURL, "", *pin)
+	if *code == "" {
+		sent, err := pc.RequestCode(cx, *email, *invite)
+		var pe *client.PortalError
+		if errors.As(err, &pe) && pe.Code == "invite_required" && !*send {
+			if *invite, err = cli.Prompt("This address has no account yet, and new accounts need an invite code: "); err != nil {
+				return err
+			}
+			sent, err = pc.RequestCode(cx, *email, *invite)
+		}
+		if err != nil {
+			return err
+		}
+		if sent.NewAccount {
+			fmt.Printf("%s has no account yet: signing in creates one\n", *email)
+		}
+		fmt.Printf("a sign-in code was sent to %s (valid %d minutes)\n", *email, sent.ExpiresInSeconds/60)
+		if *send {
+			return nil
+		}
+		if *code, err = cli.Prompt("Code from the email: "); err != nil {
+			return err
+		}
+		// The time the user took to read the mail counts against ctx().
+		cancel()
+		cx, cancel = ctx()
+		defer cancel()
 	}
 	if *device == "" {
 		*device, _ = os.Hostname()
 	}
-	pc := client.NewPortalClient(*portalURL, "", *pin)
-	var res *client.AuthResult
-	if register && *email == "" {
-		if info, ierr := pc.Info(cx); ierr == nil && info.EmailVerification {
-			// This portal only takes email sign-ups: what was typed must be one.
-			*email, *user = *user, ""
+	tokenName := "client on " + *device
+	res, err := pc.SignIn(cx, *email, strings.TrimSpace(*code), strings.TrimSpace(*invite), strings.TrimSpace(*totpCode), tokenName)
+	var pe *client.PortalError
+	switch {
+	case errors.As(err, &pe) && pe.Code == "mfa_required" && pe.Challenge != "":
+		second, perr := cli.Prompt("Code from your authenticator app: ")
+		if perr != nil {
+			return perr
 		}
-	}
-	if register && *email != "" {
-		if *code == "" {
-			if info, ierr := pc.Info(cx); ierr == nil && info.EmailVerification {
-				if _, err := pc.RequestRegisterCode(cx, *email); err != nil {
-					return err
-				}
-				fmt.Printf("a verification code was sent to %s\n", *email)
-				if *code, err = cli.Prompt("Verification code: "); err != nil {
-					return err
-				}
-				// The time the user took to read the mail counts against ctx().
-				cancel()
-				cx, cancel = ctx()
-				defer cancel()
-			}
-		}
-		res, err = pc.RegisterEmail(cx, *email, pw, strings.TrimSpace(*code), "client on "+*device)
-	} else if register {
-		res, err = pc.Register(cx, *user, pw, "client on "+*device)
-	} else {
-		res, err = pc.Login(cx, *user, pw, "client on "+*device)
+		res, err = pc.CompleteMFA(cx, pe.Challenge, strings.TrimSpace(second), tokenName)
+	case errors.As(err, &pe) && pe.Code == "mfa_setup_required":
+		return errors.New("administrators must set up two-factor authentication: sign in on the web portal first")
 	}
 	if err != nil {
 		return err
@@ -256,18 +287,21 @@ func (c *cmdCtx) auth(args []string, register bool) error {
 	}
 	pc.Token = res.Token
 	if _, err := pc.BindDevice(cx, keys, res.User.Username, *device); err != nil {
-		return fmt.Errorf("logged in, but binding this device failed: %w", err)
+		return fmt.Errorf("signed in, but binding this device failed: %w", err)
 	}
-	c.cfg.Portal, c.cfg.PortalPin, c.cfg.User, c.cfg.Token, c.cfg.DeviceName = *portalURL, *pin, res.User.Username, res.Token, *device
+	c.cfg.Portal, c.cfg.PortalPin, c.cfg.User, c.cfg.Token, c.cfg.DeviceName = portalURL, *pin, res.User.Username, res.Token, *device
 	if err := c.save(); err != nil {
 		return err
 	}
-	fmt.Printf("logged in as %s; this device (%s) is bound to your account\n", res.User.Username, keys.ID())
+	if res.Created {
+		fmt.Printf("account %s created\n", res.User.Username)
+	}
+	fmt.Printf("signed in as %s; this device (%s) is bound to your account\n", res.User.Username, keys.ID())
 	fmt.Println("next: `sharetoken up` (and `sharetoken share add <model>` to earn credits)")
 	return nil
 }
 
-// trustPortal decides how to trust the portal before a password is sent to
+// trustPortal decides how to trust the portal before an address or code is sent to
 // it, and returns the certificate pin to keep ("" when none is needed).
 //   - http:// to another machine: refused unless allowHTTP.
 //   - https:// with a certificate from a trusted CA: no pin.
@@ -277,7 +311,7 @@ func (c *cmdCtx) auth(args []string, register bool) error {
 func trustPortal(ctx context.Context, portalURL, pin string, allowHTTP bool) (string, error) {
 	if strings.HasPrefix(portalURL, "http://") {
 		if client.InsecurePortalURL(portalURL) && !allowHTTP {
-			return "", fmt.Errorf("refusing to send your password over plain HTTP to %s: use https:// (or -allow-http on a trusted test network)", portalURL)
+			return "", fmt.Errorf("refusing to send your sign-in code over plain HTTP to %s: use https:// (or -allow-http on a trusted test network)", portalURL)
 		}
 		return "", nil
 	}
@@ -380,6 +414,159 @@ func (c *cmdCtx) jobs(args []string) error {
 	return tw.Flush()
 }
 
+// ---- pairing ----
+
+func (c *cmdCtx) pair(args []string) error {
+	pc, err := c.portal()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	sub := ""
+	if len(args) > 0 {
+		sub, args = args[0], args[1:]
+	}
+	id := func(what string) (int64, error) {
+		if len(args) != 1 {
+			return 0, fmt.Errorf("usage: sharetoken pair %s <%s> (`sharetoken pair` lists them)", sub, what)
+		}
+		n, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%q is not an id: `sharetoken pair` lists them", args[0])
+		}
+		return n, nil
+	}
+	switch sub {
+	case "", "ls", "list":
+		return showPairing(cx, pc)
+	case "code", "new":
+		fs := flag.NewFlagSet("pair code", flag.ExitOnError)
+		label := fs.String("label", "", "a note for yourself: who the code is for")
+		ttl := fs.Duration("ttl", 0, "how long the code can be used (default 24h, at most 720h)")
+		uses := fs.Int64("uses", 0, "how many buyers it admits (default: any number)")
+		_ = fs.Parse(args)
+		code, err := pc.NewPairingCode(cx, *label, ttl.Hours(), *uses)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("pairing code  %s\n", code.Code)
+		fmt.Printf("  good until %s, for %s\n", time.Unix(0, code.ExpiresAt).Format("2006-01-02 15:04"), usesText(code.MaxUses, 0))
+		fmt.Println("  a buyer runs: sharetoken pair join " + code.Code)
+		fmt.Println("  from then on that buyer's requests go only to the sellers it is paired with")
+		return nil
+	case "join", "redeem":
+		if len(args) != 1 {
+			return errors.New("usage: sharetoken pair join <code>")
+		}
+		seller, err := pc.RedeemPairingCode(cx, args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("paired with seller %s (id %d)\n", seller.Username, seller.ID)
+		fmt.Println("  this account now buys only from the sellers it is paired with; `sharetoken pair leave " + fmt.Sprint(seller.ID) + "` ends it")
+		return nil
+	case "leave":
+		n, err := id("seller id")
+		if err != nil {
+			return err
+		}
+		if err := pc.LeaveSeller(cx, n); err != nil {
+			return err
+		}
+		fmt.Println("left seller", n)
+		return nil
+	case "rm", "remove":
+		n, err := id("buyer id")
+		if err != nil {
+			return err
+		}
+		if err := pc.RemoveBuyer(cx, n); err != nil {
+			return err
+		}
+		fmt.Println("removed buyer", n)
+		return nil
+	case "revoke":
+		n, err := id("code id")
+		if err != nil {
+			return err
+		}
+		if err := pc.RevokePairingCode(cx, n); err != nil {
+			return err
+		}
+		fmt.Println("revoked code", n, "(the buyers already paired with it stay)")
+		return nil
+	case "private":
+		if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
+			return errors.New("usage: sharetoken pair private on|off")
+		}
+		if err := pc.SetPrivateSeller(cx, args[0] == "on"); err != nil {
+			return err
+		}
+		if args[0] == "on" {
+			fmt.Println("private mode on: only the buyers paired with you are matched to you and see your models")
+		} else {
+			fmt.Println("private mode off: any buyer can buy from you")
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown: pair %s (pair | pair code | pair join <code> | pair leave <id> | pair rm <id> | pair revoke <id> | pair private on|off)", sub)
+}
+
+func usesText(maxUses, used int64) string {
+	if maxUses == 0 {
+		return fmt.Sprintf("any number of buyers (%d so far)", used)
+	}
+	return fmt.Sprintf("%d of %d buyers", used, maxUses)
+}
+
+func showPairing(cx context.Context, pc *client.PortalClient) error {
+	v, err := pc.Pairing(cx)
+	if err != nil {
+		return err
+	}
+	day := func(ns int64) string { return time.Unix(0, ns).Format("2006-01-02 15:04") }
+	if len(v.Sellers) == 0 {
+		fmt.Println("buying: not paired, requests go to any seller")
+	} else {
+		fmt.Println("buying: only from these sellers")
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tSELLER\tSINCE")
+		for _, s := range v.Sellers {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\n", s.ID, s.Username, day(s.Since))
+		}
+		_ = tw.Flush()
+	}
+	fmt.Println()
+	open := "anyone else can buy too"
+	if v.Private {
+		open = "private mode: nobody else can buy"
+	}
+	if len(v.Buyers) == 0 {
+		fmt.Printf("selling: no paired buyers (%s)\n", open)
+	} else {
+		fmt.Printf("selling: %d paired buyers (%s)\n", len(v.Buyers), open)
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tBUYER\tSINCE\tCODE")
+		for _, b := range v.Buyers {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\n", b.ID, b.Username, day(b.Since), b.Label)
+		}
+		_ = tw.Flush()
+	}
+	if len(v.Codes) > 0 {
+		fmt.Println("\npairing codes:")
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tCODE\tGOOD UNTIL\tUSED BY\tLABEL")
+		for _, c := range v.Codes {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\t%s\n", c.ID, c.Code, day(c.ExpiresAt), usesText(c.MaxUses, c.Used), c.Label)
+		}
+		_ = tw.Flush()
+	} else {
+		fmt.Println("\nno pairing codes; `sharetoken pair code` makes one")
+	}
+	return nil
+}
+
 // ---- running ----
 
 func (c *cmdCtx) up(args []string) error {
@@ -390,7 +577,7 @@ func (c *cmdCtx) up(args []string) error {
 	_ = fs.Parse(args)
 	c.cfg.HTTP, c.cfg.Listen, c.cfg.NAT = *httpAddr, cli.List(*listen), *nat
 	if c.cfg.Token == "" {
-		return errors.New("not logged in: run `sharetoken login` (or `sharetoken register`) first")
+		return errors.New("not logged in: run `sharetoken login` first")
 	}
 	sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -565,6 +752,9 @@ func printUpdate(u client.Update) {
 		fmt.Printf("upgrade required: this version is no longer served; jobs already made still settle, but new ones need %s\n", u.Latest)
 	} else {
 		fmt.Printf("update available: %s\n", u.Latest)
+	}
+	if n := u.Notes["en"]; n.Summary != "" {
+		fmt.Printf("   %s\n", n.Summary)
 	}
 	if u.Package != nil {
 		fmt.Printf("   download %s\n", u.Package.URL)
@@ -1112,4 +1302,124 @@ func (c *cmdCtx) showConfig([]string) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(cfg)
+}
+
+// ---- skill for coding agents ----
+
+func (c *cmdCtx) skill(args []string) error {
+	sub := ""
+	if len(args) > 0 {
+		sub, args = args[0], args[1:]
+	}
+	fs := flag.NewFlagSet("skill "+sub, flag.ExitOnError)
+	which := fs.String("agent", "", "claude, codex or all (default: every agent found on this machine)")
+	force := fs.Bool("force", false, "replace or remove a SKILL.md that sharetoken did not write")
+	_ = fs.Parse(args)
+	agents, err := agentskill.DefaultAgents()
+	if err != nil {
+		return err
+	}
+	content := agentskill.Render(c.skillParams())
+	switch sub {
+	case "", "status", "ls", "list":
+		for _, a := range agents {
+			state := "not found"
+			if a.Present() {
+				state = "found"
+			}
+			switch present, current := agentskill.Installed(a, content); {
+			case current:
+				state += ", skill installed"
+			case present:
+				state += ", skill installed but out of date: `sharetoken skill install`"
+			case a.Present():
+				state += ", no skill: `sharetoken skill install`"
+			}
+			fmt.Printf("%-12s %s\n             %s\n", a.Name, state, a.Path())
+		}
+	case "install", "add":
+		sel, err := agentskill.Select(agents, *which)
+		if err != nil {
+			return err
+		}
+		var failed error
+		for _, a := range sel {
+			res, err := agentskill.Install(a, content, *force)
+			switch {
+			case err != nil:
+				fmt.Fprintf(os.Stderr, "%s: %v\n", a.Name, err)
+				failed = errors.New("not every agent got the skill")
+			case res.Changed:
+				fmt.Printf("%s: installed %s\n", a.Name, res.Path)
+			default:
+				fmt.Printf("%s: already up to date, %s\n", a.Name, res.Path)
+			}
+		}
+		if failed == nil {
+			fmt.Println("an agent session that is already open picks it up when it is started again")
+		}
+		return failed
+	case "uninstall", "rm", "remove":
+		sel, err := agentskill.Select(agents, cmpOr(*which, "all"))
+		if err != nil {
+			return err
+		}
+		var failed error
+		for _, a := range sel {
+			res, err := agentskill.Remove(a, *force)
+			switch {
+			case err != nil:
+				fmt.Fprintf(os.Stderr, "%s: %v\n", a.Name, err)
+				failed = errors.New("not every copy was removed")
+			case res.Changed:
+				fmt.Printf("%s: removed %s\n", a.Name, res.Path)
+			default:
+				fmt.Printf("%s: not installed\n", a.Name)
+			}
+		}
+		return failed
+	case "show", "cat":
+		fmt.Print(content)
+	default:
+		return errors.New("usage: sharetoken skill [install|uninstall|show] [-agent claude|codex|all] [-force]")
+	}
+	return nil
+}
+
+// skillParams describe this client to the skill: how to run it and where it
+// listens.
+func (c *cmdCtx) skillParams() agentskill.Params {
+	portal := cmpOr(c.cfg.Portal, client.PortalAddr())
+	return agentskill.Params{
+		Command: commandName(),
+		Env:     client.Env,
+		Portal:  portal,
+		Home:    c.home,
+		HTTP:    cmpOr(c.cfg.HTTP, client.DefaultHTTP()),
+		OS:      runtime.GOOS,
+	}
+}
+
+// commandName is "sharetoken" when that name on the PATH is this program, else
+// the full path of this program.
+func commandName() string {
+	self, err := os.Executable()
+	if err != nil {
+		return "sharetoken"
+	}
+	if real, err := filepath.EvalSymlinks(self); err == nil {
+		self = real
+	}
+	if p, err := exec.LookPath("sharetoken"); err == nil {
+		if real, err := filepath.EvalSymlinks(p); err == nil && sameFile(real, self) {
+			return "sharetoken"
+		}
+	}
+	return self
+}
+
+func sameFile(a, b string) bool {
+	sa, err1 := os.Stat(a)
+	sb, err2 := os.Stat(b)
+	return err1 == nil && err2 == nil && os.SameFile(sa, sb)
 }

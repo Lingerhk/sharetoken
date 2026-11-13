@@ -3,7 +3,6 @@ package cli
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -13,9 +12,9 @@ import (
 
 	"golang.org/x/term"
 
-	"sharetoken/attest"
-	"sharetoken/attest/sevsnp"
-	"sharetoken/attest/tdx"
+	"sharetoken/internal/attest"
+	"sharetoken/internal/attest/sevsnp"
+	"sharetoken/internal/attest/tdx"
 )
 
 // List splits a comma-separated flag value, dropping empty items.
@@ -93,49 +92,16 @@ func Lines(text string) []string {
 	return out
 }
 
-// ReadPassword returns $SHARETOKEN_PASSWORD if set; otherwise it prompts on
-// the terminal without echo (asking twice when confirm is set), or reads one
-// line from stdin when stdin is not a terminal.
-func ReadPassword(prompt string, confirm bool) (string, error) {
-	if p := os.Getenv("SHARETOKEN_PASSWORD"); p != "" {
-		return p, nil
-	}
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil && line == "" {
-			return "", err
-		}
-		return strings.TrimRight(line, "\r\n"), nil
-	}
-	read := func(p string) (string, error) {
-		fmt.Fprint(os.Stderr, p)
-		b, err := term.ReadPassword(fd)
-		fmt.Fprintln(os.Stderr)
-		return string(b), err
-	}
-	pw, err := read(prompt)
-	if err != nil {
-		return "", err
-	}
-	if confirm {
-		again, err := read("Repeat password: ")
-		if err != nil {
-			return "", err
-		}
-		if again != pw {
-			return "", errors.New("passwords do not match")
-		}
-	}
-	return pw, nil
-}
+// stdin is shared by every read, so that lines piped in one after another
+// (a sign-in code, then an authenticator code) all arrive.
+var stdin = bufio.NewReader(os.Stdin)
 
 // ReadSecret reads a secret such as an API key: from the terminal without
 // echo, or one line from stdin when stdin is not a terminal.
 func ReadSecret(prompt string) (string, error) {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, err := stdin.ReadString('\n')
 		if err != nil && line == "" {
 			return "", err
 		}
@@ -147,10 +113,11 @@ func ReadSecret(prompt string) (string, error) {
 	return strings.TrimSpace(string(b)), err
 }
 
-// Prompt asks for one line of input on the terminal.
+// Prompt asks for one line of input: on the terminal, or the next line of a
+// piped stdin.
 func Prompt(prompt string) (string, error) {
 	fmt.Fprint(os.Stderr, prompt)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	line, err := stdin.ReadString('\n')
 	if err != nil && line == "" {
 		return "", err
 	}

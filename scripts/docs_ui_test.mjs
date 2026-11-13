@@ -8,7 +8,7 @@
 //
 // With a downloads directory the test lays out package sets of its own. Without
 // one it only reads, so it can run against a live portal:
-//   node scripts/docs_ui_test.mjs https://dev.sharetoken.app "" [shots-dir]
+//   node scripts/docs_ui_test.mjs https://portal.example.com "" [shots-dir]
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
