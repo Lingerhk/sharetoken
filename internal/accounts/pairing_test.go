@@ -12,7 +12,7 @@ func TestPairing(t *testing.T) {
 	s.Now = func() time.Time { return now }
 	user := func(name string) *User {
 		t.Helper()
-		u, err := s.CreateUser(name, "correct horse", false)
+		u, err := s.CreateUser(name, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +154,7 @@ func TestPairingLimitPrivateAndListing(t *testing.T) {
 	s.Now = func() time.Time { return now }
 	user := func(name string) *User {
 		t.Helper()
-		u, err := s.CreateUser(name, "correct horse", false)
+		u, err := s.CreateUser(name, false)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -21,10 +21,10 @@ const (
 	CodeTTL          = 10 * time.Minute
 	CodeCooldown     = 60 * time.Second
 	maxCodeAttempts  = 5
-	maxCodesPerEmail = 5   // per hour
-	maxCodesPerIP    = 20  // per hour
-	maxCodesPerHour  = 500 // all together: a floor under what an abuser can make this IP send
-	PurposeRegister  = "register"
+	maxCodesPerEmail = 5       // per hour
+	maxCodesPerIP    = 20      // per hour
+	maxCodesPerHour  = 500     // all together: a floor under what an abuser can make this IP send
+	PurposeLogin     = "login" // signing in; an address without an account gets one
 )
 
 // Errors of code requests.
@@ -150,8 +150,8 @@ func (s *Store) VerifyCode(purpose, email, code string) error {
 var verifyHTML = template.Must(template.New("verify").Parse(`<!doctype html>
 <html lang="en"><body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;color:#1f2933">
 <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:32px">
-<h1 style="font-size:18px;margin:0 0 16px">Your ShareToken verification code</h1>
-<p style="margin:0 0 16px">You are signing up for ShareToken with this email address. Your verification code is:</p>
+<h1 style="font-size:18px;margin:0 0 16px">Your ShareToken sign-in code</h1>
+<p style="margin:0 0 16px">Use this code to sign in to ShareToken. If this address has no account yet, signing in creates one.</p>
 <p style="font-size:32px;font-weight:600;letter-spacing:6px;margin:0 0 16px">{{.Code}}</p>
 <p style="margin:0 0 8px;color:#52606d">The code is valid for {{.Minutes}} minutes. Do not share it with anyone. ShareToken staff will never ask you for it.</p>
 <p style="margin:0;color:#52606d">If this wasn't you, you can ignore this email.</p>
@@ -165,45 +165,16 @@ func verifyMail(email, code string) Message {
 		Kind:    KindVerify,
 		To:      email,
 		Subject: "Your ShareToken verification code: " + code,
-		Text: fmt.Sprintf("You are signing up for ShareToken with this email address. Your verification code is:\r\n\r\n    %s\r\n\r\nThe code is valid for %d minutes. Do not share it with anyone. ShareToken staff will never ask you for it.\r\nIf this wasn't you, you can ignore this email.\r\n",
+		Text: fmt.Sprintf("Use this code to sign in to ShareToken. If this address has no account yet, signing in creates one.\r\n\r\n    %s\r\n\r\nThe code is valid for %d minutes. Do not share it with anyone. ShareToken staff will never ask you for it.\r\nIf this wasn't you, you can ignore this email.\r\n",
 			code, minutes),
 		HTML: html.String(),
 	}
 }
 
-var resetHTML = template.Must(template.New("reset").Parse(`<!doctype html>
+var mfaChangedHTML = template.Must(template.New("mfa-changed").Parse(`<!doctype html>
 <html lang="en"><body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;color:#1f2933">
 <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:32px">
-<h1 style="font-size:18px;margin:0 0 16px">Reset your ShareToken password</h1>
-<p style="margin:0 0 16px">Someone (possibly you) asked to reset the password of the ShareToken account with this email address.</p>
-<p style="margin:0 0 16px"><a href="{{.Link}}" style="display:inline-block;padding:10px 18px;background:#0d9488;color:#fff;border-radius:6px;text-decoration:none">Choose a new password</a></p>
-<p style="margin:0 0 16px;word-break:break-all;color:#52606d">{{.Link}}</p>
-<p style="margin:0 0 8px;color:#52606d">The link works once and is valid for {{.Minutes}} minutes. Do not share it with anyone. ShareToken staff will never ask you for it.</p>
-<p style="margin:0;color:#52606d">If this wasn't you, you can ignore this email. Your password has not changed.</p>
-</div></body></html>`))
-
-// ResetMail mails a password-reset link. Like a verification code it is as good
-// as a password while it lives: administrators do not get to read it.
-func ResetMail(to, link string, ttl time.Duration, now time.Time) Message {
-	minutes := int(ttl / time.Minute)
-	var html strings.Builder
-	_ = resetHTML.Execute(&html, map[string]any{"Link": link, "Minutes": minutes})
-	return Message{
-		Kind:      KindVerify,
-		Sensitive: true,
-		ExpiresAt: now.Add(ttl),
-		To:        to,
-		Subject:   "Reset your ShareToken password",
-		Text: fmt.Sprintf("Someone (possibly you) asked to reset the password of the ShareToken account with this email address. To choose a new password, open:\r\n\r\n    %s\r\n\r\nThe link works once and is valid for %d minutes. Do not share it with anyone. ShareToken staff will never ask you for it.\r\nIf this wasn't you, you can ignore this email. Your password has not changed.\r\n",
-			link, minutes),
-		HTML: html.String(),
-	}
-}
-
-var passwordChangedHTML = template.Must(template.New("password-changed").Parse(`<!doctype html>
-<html lang="en"><body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;color:#1f2933">
-<div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:32px">
-<h1 style="font-size:18px;margin:0 0 16px">Your ShareToken password was changed</h1>
+<h1 style="font-size:18px;margin:0 0 16px">{{.Title}}</h1>
 <p style="margin:0 0 16px">{{.Lead}}</p>
 <table style="border-collapse:collapse;margin:0 0 16px;font-size:14px">
 <tr><td style="padding:4px 16px 4px 0;color:#52606d">Account</td><td style="padding:4px 0;word-break:break-all">{{.Account}}</td></tr>
@@ -211,20 +182,19 @@ var passwordChangedHTML = template.Must(template.New("password-changed").Parse(`
 {{if .IP}}<tr><td style="padding:4px 16px 4px 0;color:#52606d">IP address</td><td style="padding:4px 0">{{.IP}}</td></tr>{{end}}
 </table>
 <p style="margin:0 0 8px;color:#52606d">If this was you, there is nothing more to do.</p>
-<p style="margin:0;color:#52606d">If this wasn't you, {{if .Support}}contact <a href="mailto:{{.Support}}" style="color:#0d9488">{{.Support}}</a> immediately{{else}}contact your ShareToken administrator immediately{{end}}. ShareToken staff will never ask you for your password.</p>
+<p style="margin:0;color:#52606d">If this wasn't you, {{if .Support}}contact <a href="mailto:{{.Support}}" style="color:#0d9488">{{.Support}}</a> immediately{{else}}contact your ShareToken administrator immediately{{end}}. ShareToken staff will never ask you for a sign-in code.</p>
 </div></body></html>`))
 
-// PasswordChangedMail tells an account its password changed: in the settings
-// (viaLink false) or with a reset link from this mailbox (viaLink true, which
-// also signed every device out). ip may be empty, support too.
-func PasswordChangedMail(to string, viaLink bool, when time.Time, ip, support string) Message {
-	lead := "The password of your ShareToken account was just changed."
-	if viaLink {
-		lead = "The password of your ShareToken account was just reset with a link sent to this address. Every device and browser was signed out."
+// MFAChangedMail tells an account that two-factor authentication was turned
+// on or off for it. ip may be empty, support too.
+func MFAChangedMail(to string, enabled bool, when time.Time, ip, support string) Message {
+	title, lead := "Two-factor authentication is on", "Two-factor authentication was just turned on for your ShareToken account. Signing in now also asks for a code from your authenticator app."
+	if !enabled {
+		title, lead = "Two-factor authentication is off", "Two-factor authentication was just turned off for your ShareToken account. Signing in now only needs the code mailed to this address."
 	}
 	at := when.UTC().Format("2006-01-02 15:04 UTC")
 	var html strings.Builder
-	_ = passwordChangedHTML.Execute(&html, map[string]any{"Lead": lead, "Account": to, "Time": at, "IP": ip, "Support": support})
+	_ = mfaChangedHTML.Execute(&html, map[string]any{"Title": title, "Lead": lead, "Account": to, "Time": at, "IP": ip, "Support": support})
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s\r\n\r\n    Account: %s\r\n    Time: %s\r\n", lead, to, at)
 	if ip != "" {
@@ -232,9 +202,9 @@ func PasswordChangedMail(to string, viaLink bool, when time.Time, ip, support st
 	}
 	text.WriteString("\r\nIf this was you, there is nothing more to do.\r\n")
 	if support != "" {
-		fmt.Fprintf(&text, "If this wasn't you, contact %s immediately. ShareToken staff will never ask you for your password.\r\n", support)
+		fmt.Fprintf(&text, "If this wasn't you, contact %s immediately. ShareToken staff will never ask you for a sign-in code.\r\n", support)
 	} else {
-		text.WriteString("If this wasn't you, contact your ShareToken administrator immediately. ShareToken staff will never ask you for your password.\r\n")
+		text.WriteString("If this wasn't you, contact your ShareToken administrator immediately. ShareToken staff will never ask you for a sign-in code.\r\n")
 	}
-	return Message{Kind: KindNotice, To: to, Subject: "Your ShareToken password was changed", Text: text.String(), HTML: html.String()}
+	return Message{Kind: KindNotice, To: to, Subject: "ShareToken: " + title, Text: text.String(), HTML: html.String()}
 }

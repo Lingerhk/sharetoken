@@ -16,7 +16,7 @@ can and cannot do, and where the protection stops. The design behind it is in
 | Seller's client | The plaintext of the jobs it serves (unless it runs in a TEE) | Running the advertised model, reporting usage honestly, returning what the model produced |
 | Relay | Forwarding bytes | Anything else. It sees who talks to whom and how much, never content |
 | Coordinator | The ledger, matching, dispute decisions | Prompts and answers: they do not pass through it. It sees one job's content only when the buyer discloses it as evidence |
-| Portal | Passwords (hashed), tokens (hashed), device bindings, credit grants | Prompts and answers, device private keys |
+| Portal | Accounts (email addresses; no passwords), sign-in codes (salted hashes), tokens (hashed), two-factor secrets (encrypted), device bindings, credit grants | Prompts and answers, device private keys |
 | Network | Nothing | |
 
 Every party is a libp2p Ed25519 identity. Offers are signed by the seller,
@@ -152,11 +152,12 @@ cannot step around it.
 |---|---|---|
 | Binding someone else's device to your account, to collect its earnings | A binding needs the device's signature over the user name, the peer ID and a timestamp within five minutes. A bound device cannot be bound elsewhere. | `internal/accounts` |
 | Stolen API token | Tokens can be revoked at any time, login tokens expire, and only their SHA-256 is stored. | `internal/accounts`, `internal/portal` |
-| Password guessing | argon2id. Failed logins are throttled per user name and per IP address. | `internal/portal` |
+| Guessing a sign-in code | There are no passwords: a sign-in needs a six-digit code mailed to the account's address. A code lives 10 minutes and allows 5 tries; an address gets at most 5 codes an hour (20 per IP, 500 in total); wrong codes are also throttled per IP and per address. Only a salted hash of a code is stored, and the message is erased from the outbox once sent. | `internal/mailer/codes.go`, `internal/portal/auth.go` |
+| Someone else's mailbox | The mailbox is the key to the account: whoever reads it can sign in. Users may add TOTP two-factor authentication on the account page, and a notice is mailed when it is turned on or off. A portal without a working mail sender lets nobody sign in. | `internal/portal/mfa.go` |
 | A disabled user keeps trading | The coordinator checks the user's state on every request, tokens stop working at once, and relay passes run out within their lifetime (one hour by default). | `internal/accounts`, `internal/relaypass` |
-| Stolen administrator password | Administrators must use TOTP two-step verification. A token issued without it cannot reach the admin API. Wrong codes are throttled, a challenge is void after five mistakes, and a code cannot be replayed. TOTP secrets are stored encrypted (AES-GCM). | `internal/portal/mfa.go`, `internal/totp` |
+| An administrator's mailbox read by someone else | Administrators must use TOTP two-step verification and cannot turn it off. A token issued without it cannot reach the admin API. Wrong codes are throttled, a challenge is void after five mistakes, and a code cannot be replayed. TOTP secrets are stored encrypted (AES-GCM). | `internal/portal/mfa.go`, `internal/totp` |
 | Session theft, cross-site request forgery, script injection in the web pages | Sessions are HttpOnly, SameSite=Strict cookies that only count together with a custom header, and the Origin must be the portal's own. A strict Content-Security-Policy allows no inline code and no third-party resources. The pages build the DOM from text and never from HTML strings. | `internal/portal/web.go` |
-| Eavesdropping on the portal connection | HTTPS by default. A self-signed certificate is pinned by fingerprint in the client, and the client refuses to send a password over plain HTTP to another machine. | `internal/portal/tls.go`, `internal/client` |
+| Eavesdropping on the portal connection | HTTPS by default. A self-signed certificate is pinned by fingerprint in the client, and the client refuses to send sign-in codes over plain HTTP to another machine. | `internal/portal/tls.go`, `internal/client` |
 | A web page calls the local client API to spend the user's credit | The local API binds to loopback and refuses any request whose Origin is not local. | `internal/client` |
 | Bypassing the relays to reach the coordinator | The coordinator listens on no address. | `cmd/coordinator` |
 | Strangers filling a relay's reservation slots | A reservation needs a short-lived pass signed by the portal and bound to the device's peer ID, with a limit on devices per user. Relays verify it offline. | `internal/relaypass`, `internal/relay` |

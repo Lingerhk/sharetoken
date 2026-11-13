@@ -12,7 +12,7 @@ ShareToken 让人们向自己控制不了的机器购买推理，用平台保管
 | 卖家的客户端 | 它所处理作业的明文（运行在 TEE 里时除外） | 运行声称的模型、如实报告用量、原样返回模型的输出 |
 | 中继 | 转发字节 | 其他任何事。它能看到谁和谁通信、流量多少，看不到内容 |
 | 协调器 | 账本、撮合、争议裁决 | prompt 和答案：它们不经过协调器。只有买家把某一单作为证据披露时，协调器才看到这一单的内容 |
-| 门户 | 密码（哈希）、token（哈希）、设备绑定、credit 发放 | prompt 和答案、设备私钥 |
+| 门户 | 账户（邮箱，没有密码）、登录验证码（加盐哈希）、token（哈希）、两步验证密钥（加密）、设备绑定、credit 发放 | prompt 和答案、设备私钥 |
 | 网络 | 无 | |
 
 每一方都是一个 libp2p Ed25519 身份。报价由卖家签名，Ticket 由协调器签名，收据由卖家签名，确认由买家签名。每个签名覆盖的是带长度前缀的规范编码，并带有各自的域字符串（`internal/canon`、`internal/protocol`），所以为一种消息做的签名不能被当作另一种消息重放。
@@ -79,11 +79,12 @@ prompt 只从买家到卖家，不去别处。它有两层保护：
 |---|---|---|
 | 把别人的设备绑到自己的账户上，截走它的收入 | 绑定需要设备对用户名、peer ID 和时间戳的签名，时间戳要在五分钟以内。已绑定的设备不能再绑到别处。 | `internal/accounts` |
 | API token 被盗 | token 可以随时吊销，登录 token 会过期，数据库里只存 SHA-256。 | `internal/accounts`、`internal/portal` |
-| 猜密码 | argon2id。登录失败按用户名和 IP 限流。 | `internal/portal` |
+| 猜登录验证码 | 没有密码：登录需要发到账户邮箱的 6 位验证码。验证码 10 分钟有效，可以试 5 次；一个邮箱每小时最多 5 个验证码（每个 IP 20 个，全站 500 个）；错误的验证码还按 IP 和邮箱限流。只保存验证码的加盐哈希，邮件发出后从发件箱清除。 | `internal/mailer/codes.go`、`internal/portal/auth.go` |
+| 别人能读你的邮箱 | 邮箱就是账户的钥匙：能读它的人就能登录。用户可以在账户页加开 TOTP 两步验证，开启和关闭时都会发邮件通知。没有可用发件人的门户谁都登录不了。 | `internal/portal/mfa.go` |
 | 被禁用的用户继续交易 | 协调器每次请求都检查用户状态，token 立即失效，中继凭证在有效期内（默认一小时）用完。 | `internal/accounts`、`internal/relaypass` |
-| 管理员密码被盗 | 管理员强制 TOTP 两步验证。没有经过两步验证的 token 进不了管理 API。错码有限流，一个 challenge 错五次作废，同一个验证码不能重放。TOTP 密钥加密存放（AES-GCM）。 | `internal/portal/mfa.go`、`internal/totp` |
+| 管理员邮箱被别人读到 | 管理员强制 TOTP 两步验证，不能关闭。没有经过两步验证的 token 进不了管理 API。错码有限流，一个 challenge 错五次作废，同一个验证码不能重放。TOTP 密钥加密存放（AES-GCM）。 | `internal/portal/mfa.go`、`internal/totp` |
 | 网页会话被窃取、跨站请求伪造、脚本注入 | 会话放在 HttpOnly、SameSite=Strict 的 cookie 里，而且只有同时带自定义请求头才有效，Origin 必须是门户自己。严格的 Content-Security-Policy 不允许内联代码和第三方资源。页面用文本构建 DOM，从不拼接 HTML 字符串。 | `internal/portal/web.go` |
-| 窃听与门户之间的连接 | 默认 HTTPS。自签名证书由客户端按指纹固定，客户端拒绝把密码以明文 HTTP 发往其他机器。 | `internal/portal/tls.go`、`internal/client` |
+| 窃听与门户之间的连接 | 默认 HTTPS。自签名证书由客户端按指纹固定，客户端拒绝把登录验证码以明文 HTTP 发往其他机器。 | `internal/portal/tls.go`、`internal/client` |
 | 网页调用本机客户端 API 来花用户的 credit | 本机 API 只绑定回环地址，拒绝 Origin 不是本机的请求。 | `internal/client` |
 | 绕过中继直连协调器 | 协调器不监听任何地址。 | `cmd/coordinator` |
 | 陌生人占满中继的预约名额 | 预约需要门户签发、绑定到设备 peer ID 的短期凭证，每个用户的设备数有上限。中继离线验证凭证。 | `internal/relaypass`、`internal/relay` |

@@ -17,7 +17,6 @@ import (
 	"sharetoken/internal/accounts"
 	"sharetoken/internal/ledger"
 	"sharetoken/internal/mailer"
-	"sharetoken/internal/totp"
 )
 
 // adminFixture is a portal with mail set up and a signed-in administrator.
@@ -47,7 +46,7 @@ func newAdminFixture(t *testing.T, cfg Config) *adminFixture {
 	}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
-	admin, err := s.store.CreateUser("root", "adminadmin", true)
+	admin, err := s.store.CreateUser("root", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,27 +127,25 @@ func (f *adminFixture) auditEntries(query string) []AuditEntry {
 }
 
 func TestSettingsChangeBehaviourWithoutRestart(t *testing.T) {
-	f := newAdminFixture(t, Config{OpenRegistration: true, SignupCreditMicros: 7, PublicURL: "https://p.example.com"})
+	f := newAdminFixture(t, Config{OpenRegistration: true, SignupCreditMicros: 7})
 
 	// The configuration supplies the values until somebody saves.
 	var info Info
 	f.ok("GET", "/api/v1/info", nil, &info)
-	if !info.RegistrationOpen || info.SignupCredit != 7 || !info.PasswordReset || info.DefaultPageSize != defaultPageSize {
+	if !info.RegistrationOpen || info.SignupCredit != 7 || info.DefaultPageSize != defaultPageSize || !info.CodeSignIn {
 		t.Fatalf("defaults: %+v", info)
 	}
 
 	// A field left out keeps its value.
-	f.setSettings(map[string]any{"signup_credit_micros": 9, "default_page_size": 50, "open_registration": false})
+	f.setSettings(map[string]any{"signup_credit_micros": 9, "default_page_size": 50})
+	f.setSettings(map[string]any{"open_registration": false})
 	f.ok("GET", "/api/v1/info", nil, &info)
 	if info.SignupCredit != 9 || info.DefaultPageSize != 50 || info.RegistrationOpen {
 		t.Fatalf("after saving: %+v", info)
 	}
-	if !info.PasswordReset {
-		t.Fatalf("a field left out changed: %+v", info)
-	}
 
-	// Closing registration takes effect at once, for the API and the code endpoint.
-	f.wantCode("POST", "/api/v1/register", "", map[string]string{"username": "newbie", "password": "password1"}, 403, "registration_closed")
+	// Closing registration takes effect at once: new addresses get no code.
+	f.wantCode("POST", "/api/v1/auth/code", "", map[string]string{"email": "newbie@example.com"}, 403, "registration_closed")
 
 	// A restart reads the database, not the configuration.
 	s2, err := New(Config{DB: f.s.db, OpenRegistration: true, MFAKey: make([]byte, 32)})
@@ -183,20 +180,16 @@ func TestSettingsValidation(t *testing.T) {
 		}
 	}
 
-	// What depends on something else says so.
-	f.wantCode("PUT", "/api/v1/admin/settings", f.token, map[string]any{"email_domain_allow": []string{"example.com"}}, 400, "bad_setting")
-	f.wantCode("PUT", "/api/v1/admin/settings", f.token, map[string]any{"email_verification": true, "mail_from": ""}, 400, "bad_setting")
-
 	// Nothing above was stored; good values are cleaned up.
 	var v settingsView
-	f.ok("PUT", "/api/v1/admin/settings", map[string]any{"email_verification": true,
+	f.ok("PUT", "/api/v1/admin/settings", map[string]any{
 		"email_domain_allow": []string{" Example.COM ", "*.edu.cn", "example.com", ""}, "email_block": []string{"A@Example.com", "a@example.com"}}, &v)
 	if fmt.Sprint(v.Settings.EmailDomainAllow) != "[example.com *.edu.cn]" || fmt.Sprint(v.Settings.EmailBlock) != "[a@example.com]" {
 		t.Fatalf("not cleaned: %+v", v.Settings)
 	}
 
 	// Admins only.
-	u, _ := f.s.store.CreateUser("alice", "alicealice", false)
+	u, _ := f.s.store.CreateUser("alice", false)
 	tok, _, _ := f.s.store.IssueToken(u.ID, "t", time.Hour)
 	f.wantCode("GET", "/api/v1/admin/settings", tok, nil, 403, "forbidden")
 	f.wantCode("PUT", "/api/v1/admin/settings", tok, map[string]any{"open_registration": false}, 403, "forbidden")
@@ -224,40 +217,51 @@ func TestDomainAllowed(t *testing.T) {
 }
 
 func TestRegistrationRules(t *testing.T) {
-	f := newAdminFixture(t, Config{OpenRegistration: true, EmailVerification: true})
+	f := newAdminFixture(t, Config{OpenRegistration: true})
 	f.setSettings(map[string]any{"email_domain_allow": []string{"corp.example", "*.edu.cn"}, "email_block": []string{"bad@corp.example"}})
-	code := "/api/v1/register/code"
+	code, verify := "/api/v1/auth/code", "/api/v1/auth/verify"
 
 	// No mail goes out to an address that could not sign up anyway.
 	f.wantCode("POST", code, "", map[string]string{"email": "x@other.example"}, 403, "email_not_allowed")
 	f.wantCode("POST", code, "", map[string]string{"email": "bad@corp.example"}, 403, "email_not_allowed")
 	f.wantCode("POST", code, "", map[string]string{"email": "good@corp.example"}, 200, "")
 	f.wantCode("POST", code, "", map[string]string{"email": "s@pku.edu.cn"}, 200, "")
-	f.wantCode("POST", "/api/v1/register", "", map[string]string{"email": "bad@corp.example", "password": "password1", "code": "000000"}, 403, "email_not_allowed")
+	f.wantCode("POST", verify, "", map[string]string{"email": "bad@corp.example", "code": "000000"}, 403, "email_not_allowed")
 
-	// Invite codes: one use, and a failed sign-up gives it back.
+	// Invite codes: one use, spent only by the account it creates.
 	var inv Invite
 	f.ok("POST", "/api/v1/admin/invites", map[string]any{"note": "for good", "max_uses": 1}, &inv)
 	if inv.Code == "" || inv.MaxUses != 1 {
 		t.Fatalf("invite: %+v", inv)
 	}
-	f.setSettings(map[string]any{"invite_required": true, "email_verification": false, "email_domain_allow": []string{}})
-	reg := "/api/v1/register"
-	body := func(name, invite string) map[string]string {
-		return map[string]string{"username": name, "password": "password1", "invite_code": invite}
+	f.setSettings(map[string]any{"invite_required": true, "email_domain_allow": []string{}})
+	if _, err := f.s.store.CreateUser("member@example.com", false); err != nil {
+		t.Fatal(err)
 	}
-	f.wantCode("POST", reg, "", body("first", ""), 403, "invite_required")
-	f.wantCode("POST", reg, "", body("first", "WRONG"), 403, "bad_invite")
-	f.wantCode("POST", reg, "", body("root", inv.Code), 409, "exists")
-	f.wantCode("POST", reg, "", body("first", strings.ToLower(inv.Code)), 201, "") // lower case is the same code
-	f.wantCode("POST", reg, "", body("second", inv.Code), 403, "bad_invite")
+	// signIn asks for a code and, when one is mailed, redeems it.
+	signIn := func(email, invite string, status int, ecode string) {
+		t.Helper()
+		st, raw := f.call("POST", code, "", map[string]string{"email": email, "invite_code": invite})
+		if st != 200 {
+			if st != status || errCode(t, raw) != ecode {
+				t.Fatalf("code for %s: %d %s, want %d %s", email, st, raw, status, ecode)
+			}
+			return
+		}
+		f.wantCode("POST", verify, "", map[string]string{"email": email, "code": mailedCode(t, f.s, email), "invite_code": invite}, status, ecode)
+	}
+	signIn("first@example.com", "", 403, "invite_required")
+	signIn("first@example.com", "WRONG", 403, "bad_invite")
+	signIn("member@example.com", "", 200, "")                       // an existing account needs none
+	signIn("first@example.com", strings.ToLower(inv.Code), 201, "") // lower case is the same code
+	signIn("second@example.com", inv.Code, 403, "bad_invite")
 
 	// A disabled one is gone, whatever uses it has left.
 	var open Invite
 	f.ok("POST", "/api/v1/admin/invites", map[string]any{"max_uses": 0, "ttl_hours": 1}, &open)
-	f.wantCode("POST", reg, "", body("third", open.Code), 201, "")
+	signIn("third@example.com", open.Code, 201, "")
 	f.ok("DELETE", fmt.Sprintf("/api/v1/admin/invites/%d", open.ID), nil, nil)
-	f.wantCode("POST", reg, "", body("fourth", open.Code), 403, "bad_invite")
+	signIn("fourth@example.com", open.Code, 403, "bad_invite")
 
 	var list struct {
 		Invites []Invite `json:"invites"`
@@ -269,18 +273,18 @@ func TestRegistrationRules(t *testing.T) {
 
 	// Guessing is throttled.
 	for i := range maxFails {
-		f.call("POST", reg, "", body(fmt.Sprintf("guess%d", i), "WRONG")) // some wrong ones came before
+		f.call("POST", code, "", map[string]string{"email": fmt.Sprintf("guess%d@example.com", i), "invite_code": "WRONG"}) // some wrong ones came before
 	}
-	f.wantCode("POST", reg, "", body("guess", "WRONG"), 429, "throttled")
+	f.wantCode("POST", code, "", map[string]string{"email": "guess@example.com", "invite_code": "WRONG"}, 429, "throttled")
 }
 
 func TestApplyBlocklist(t *testing.T) {
 	f := newAdminFixture(t, Config{OpenRegistration: true})
-	bad, _ := f.s.store.CreateUser("bad@example.com", "password1", false)
-	if _, err := f.s.store.CreateUser("ok@example.com", "password1", false); err != nil {
+	bad, _ := f.s.store.CreateUser("bad@example.com", false)
+	if _, err := f.s.store.CreateUser("ok@example.com", false); err != nil {
 		t.Fatal(err)
 	}
-	boss, _ := f.s.store.CreateUser("boss@example.com", "password1", true)
+	boss, _ := f.s.store.CreateUser("boss@example.com", true)
 	f.setSettings(map[string]any{"email_block": []string{"bad@example.com", "boss@example.com", "gone@example.com"}})
 
 	var dry struct {
@@ -329,7 +333,7 @@ func TestRateLimits(t *testing.T) {
 	var clock time.Time = time.Unix(1_800_000_000, 0)
 	now := &clock
 	f := newAdminFixture(t, Config{OpenRegistration: true, Now: func() time.Time { return *now }})
-	u, _ := f.s.store.CreateUser("alice", "alicealice", false)
+	u, _ := f.s.store.CreateUser("alice", false)
 	tok, _, _ := f.s.store.IssueToken(u.ID, "t", 365*24*time.Hour)
 
 	// Off by default: well past any limit below.
@@ -364,11 +368,10 @@ func TestRateLimits(t *testing.T) {
 
 func TestAuditLogRecordsAdminActions(t *testing.T) {
 	f := newAdminFixture(t, Config{})
-	alice, _ := f.s.store.CreateUser("alice", "alicealice", false)
+	alice, _ := f.s.store.CreateUser("alice", false)
 
 	f.ok("POST", "/api/v1/admin/users/alice/credit", map[string]any{"micros": 5, "memo": "gift"}, nil)
-	f.ok("POST", "/api/v1/admin/users/alice/password", map[string]any{"new_password": "SECRET-PASSWORD", "revoke_tokens": true}, nil)
-	f.ok("POST", "/api/v1/admin/users", map[string]any{"username": "bob", "password": "SECRET-PASSWORD-2"}, nil)
+	f.ok("POST", "/api/v1/admin/users", map[string]any{"username": "bob@example.com"}, nil)
 	f.wantCode("POST", "/api/v1/admin/users/ghost/disable", f.token, nil, 404, "not_found")
 	f.ok("POST", "/api/v1/admin/users/alice/disable", nil, nil)
 	f.ok("GET", "/api/v1/admin/users/alice", nil, nil) // reads are not actions
@@ -378,7 +381,7 @@ func TestAuditLogRecordsAdminActions(t *testing.T) {
 	for _, e := range es {
 		got = append(got, fmt.Sprintf("%s %s %d", e.Action, e.Target, e.Status))
 	}
-	want := []string{"user.disable alice 200", "user.disable ghost 404", "user.create bob 201", "user.set_password alice 200", "user.credit alice 200"}
+	want := []string{"user.disable alice 200", "user.disable ghost 404", "user.create bob@example.com 201", "user.credit alice 200"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("log:\n got %q\nwant %q", got, want)
 	}
@@ -389,21 +392,16 @@ func TestAuditLogRecordsAdminActions(t *testing.T) {
 		Micros int64  `json:"micros"`
 		Memo   string `json:"memo"`
 	}
-	if err := json.Unmarshal(es[4].Detail, &credit); err != nil || credit.Micros != 5 || credit.Memo != "gift" {
-		t.Fatalf("detail: %s", es[4].Detail)
+	if err := json.Unmarshal(es[3].Detail, &credit); err != nil || credit.Micros != 5 || credit.Memo != "gift" {
+		t.Fatalf("detail: %s", es[3].Detail)
 	}
 	// Each entry names its request, and a refusal says why.
 	var req struct{ Method, Path, Error string }
-	if err := json.Unmarshal(es[4].Detail, &req); err != nil || req.Method != "POST" || req.Path != "/api/v1/admin/users/alice/credit" || req.Error != "" {
-		t.Fatalf("request: %s", es[4].Detail)
+	if err := json.Unmarshal(es[3].Detail, &req); err != nil || req.Method != "POST" || req.Path != "/api/v1/admin/users/alice/credit" || req.Error != "" {
+		t.Fatalf("request: %s", es[3].Detail)
 	}
 	if err := json.Unmarshal(es[1].Detail, &req); err != nil || !strings.HasPrefix(req.Error, "not_found") {
 		t.Fatalf("refusal: %s", es[1].Detail)
-	}
-	// A password never reaches the log.
-	var n int
-	if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM admin_audit_log WHERE detail LIKE '%SECRET%'`).Scan(&n); err != nil || n != 0 {
-		t.Fatalf("passwords in the log: %d %v", n, err)
 	}
 	_ = alice
 
@@ -411,7 +409,7 @@ func TestAuditLogRecordsAdminActions(t *testing.T) {
 	if es := f.auditEntries("action=user.credit"); len(es) != 1 {
 		t.Fatalf("by action: %+v", es)
 	}
-	if es := f.auditEntries("actor=ROOT&target=ali"); len(es) != 3 {
+	if es := f.auditEntries("actor=ROOT&target=ali"); len(es) != 2 {
 		t.Fatalf("by actor and target: %+v", es)
 	}
 	if es := f.auditEntries("actor=nobody"); len(es) != 0 {
@@ -420,7 +418,7 @@ func TestAuditLogRecordsAdminActions(t *testing.T) {
 	if es := f.auditEntries("target=" + url.QueryEscape("%")); len(es) != 0 {
 		t.Fatalf("a wildcard searched: %+v", es)
 	}
-	u, _ := f.s.store.CreateUser("carol", "carolcarol", false)
+	u, _ := f.s.store.CreateUser("carol", false)
 	tok, _, _ := f.s.store.IssueToken(u.ID, "t", time.Hour)
 	f.wantCode("GET", "/api/v1/admin/oplog", tok, nil, 403, "forbidden")
 
@@ -489,193 +487,6 @@ func TestAuditRetention(t *testing.T) {
 	}
 }
 
-// ---- password reset ----
-
-// resetLink waits for the mail and takes the token out of its text.
-func (f *adminFixture) resetLink(to string) string {
-	f.t.Helper()
-	f.s.background.Wait()
-	ms, err := f.s.mail.Outbox(mailer.OutFilter{Kind: mailer.KindVerify, Q: to, Limit: 1})
-	if err != nil || len(ms) == 0 {
-		f.t.Fatalf("no mail to %s: %v", to, err)
-	}
-	m, err := f.s.mail.OutMessage(ms[0].ID)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	if !m.Sensitive || m.ExpiresAt == 0 {
-		f.t.Fatalf("a reset mail must be sensitive and expire: %+v", m)
-	}
-	match := regexp.MustCompile(`https://p\.example\.com/app/#reset=([A-Za-z0-9_-]+)`).FindStringSubmatch(m.Text)
-	if match == nil {
-		f.t.Fatalf("no link in: %s", m.Text)
-	}
-	return match[1]
-}
-
-func (f *adminFixture) forgotCount(to string) int {
-	f.t.Helper()
-	f.s.background.Wait()
-	ms, err := f.s.mail.Outbox(mailer.OutFilter{Kind: mailer.KindVerify, Q: to})
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	return len(ms)
-}
-
-func TestPasswordReset(t *testing.T) {
-	clock := time.Unix(1_800_000_000, 0)
-	f := newAdminFixture(t, Config{OpenRegistration: true, PublicURL: "https://p.example.com", Now: func() time.Time { return clock }})
-	u, err := f.s.store.CreateUser("a@example.com", "oldpassword", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, _, _ := f.s.store.IssueToken(u.ID, "laptop", 0)
-	forgot, reset := "/api/v1/password/forgot", "/api/v1/password/reset"
-
-	// The answer says nothing about who has an account.
-	st1, b1 := f.call("POST", forgot, "", map[string]string{"email": "a@example.com"})
-	st2, b2 := f.call("POST", forgot, "", map[string]string{"email": "ghost@example.com"})
-	st3, b3 := f.call("POST", forgot, "", map[string]string{"email": "not an address"})
-	if st1 != 200 || st2 != 200 || st3 != 200 || string(b1) != string(b2) || string(b1) != string(b3) {
-		t.Fatalf("answers differ: %d %s / %d %s / %d %s", st1, b1, st2, b2, st3, b3)
-	}
-	token := f.resetLink("a@example.com")
-	if f.forgotCount("ghost@example.com") != 0 {
-		t.Fatal("mail to an address without an account")
-	}
-
-	// Only a hash is stored.
-	var stored []byte
-	if err := f.s.db.QueryRow(`SELECT token_hash FROM password_resets`).Scan(&stored); err != nil || strings.Contains(string(stored), token) {
-		t.Fatalf("%v", err)
-	}
-	// The admin outbox does not show the link.
-	var box struct {
-		Messages []mailer.OutMail `json:"messages"`
-	}
-	f.ok("GET", "/api/v1/admin/mail/outbox?kind=verify", nil, &box)
-	if len(box.Messages) != 1 || strings.Contains(box.Messages[0].Text+box.Messages[0].Subject, token) {
-		t.Fatalf("outbox: %+v", box.Messages)
-	}
-
-	// A short password does not use the link up; a wrong token is refused.
-	f.wantCode("POST", reset, "", map[string]string{"token": token, "new_password": "short"}, 400, "bad_request")
-	f.wantCode("POST", reset, "", map[string]string{"token": "wrong", "new_password": "newpassword"}, 400, "bad_reset_link")
-
-	// It works once: the old password and every session are gone.
-	f.wantCode("POST", reset, "", map[string]string{"token": token, "new_password": "newpassword"}, 200, "")
-	f.wantCode("POST", reset, "", map[string]string{"token": token, "new_password": "another-one"}, 400, "bad_reset_link")
-	if _, err := f.s.store.Authenticate("a@example.com", "oldpassword"); err == nil {
-		t.Fatal("the old password still works")
-	}
-	if _, err := f.s.store.Authenticate("a@example.com", "newpassword"); err != nil {
-		t.Fatal(err)
-	}
-	f.wantCode("GET", "/api/v1/me", session, nil, 401, "unauthorized")
-	// The owner is told, and it is on the record.
-	if ms, _ := f.s.mail.Outbox(mailer.OutFilter{Kind: mailer.KindNotice, Q: "a@example.com"}); len(ms) != 1 {
-		t.Fatalf("no notice: %+v", ms)
-	}
-	if es := f.auditEntries("action=" + actionPasswordReset); len(es) != 1 || es[0].Actor != "a@example.com" {
-		t.Fatalf("audit: %+v", es)
-	}
-
-	// A second request within the cooldown sends nothing new.
-	before := f.forgotCount("a@example.com")
-	clock = clock.Add(time.Second)
-	f.wantCode("POST", forgot, "", map[string]string{"email": "a@example.com"}, 200, "")
-	if n := f.forgotCount("a@example.com"); n != before {
-		t.Fatalf("cooldown: %d mails, had %d", n, before)
-	}
-
-	// A newer link replaces the older; links expire.
-	clock = clock.Add(2 * resetCooldown)
-	f.wantCode("POST", forgot, "", map[string]string{"email": "a@example.com"}, 200, "")
-	first := f.resetLink("a@example.com")
-	clock = clock.Add(2 * resetCooldown)
-	f.wantCode("POST", forgot, "", map[string]string{"email": "a@example.com"}, 200, "")
-	second := f.resetLink("a@example.com")
-	f.wantCode("POST", reset, "", map[string]string{"token": first, "new_password": "newpassword"}, 400, "bad_reset_link")
-	clock = clock.Add(resetTTL + time.Second)
-	f.wantCode("POST", reset, "", map[string]string{"token": second, "new_password": "newpassword"}, 400, "bad_reset_link")
-
-	// A disabled account gets no link, and cannot use one it already has.
-	clock = clock.Add(2 * resetCooldown)
-	f.wantCode("POST", forgot, "", map[string]string{"email": "a@example.com"}, 200, "")
-	third := f.resetLink("a@example.com")
-	if err := f.s.store.SetDisabled(u.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	f.wantCode("POST", reset, "", map[string]string{"token": third, "new_password": "newpassword"}, 400, "bad_reset_link")
-	before = f.forgotCount("a@example.com")
-	clock = clock.Add(2 * resetCooldown)
-	f.wantCode("POST", forgot, "", map[string]string{"email": "a@example.com"}, 200, "")
-	if n := f.forgotCount("a@example.com"); n != before {
-		t.Fatal("mail to a disabled account")
-	}
-}
-
-func TestPasswordResetKeepsAdminSecondFactor(t *testing.T) {
-	f := newAdminFixture(t, Config{PublicURL: "https://p.example.com"})
-	boss, err := f.s.store.CreateUser("boss@example.com", "oldpassword", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secret, _ := totp.NewSecret()
-	sealed, _ := f.s.seal(secret)
-	if err := f.s.store.SetMFASecret(boss.ID, sealed); err != nil {
-		t.Fatal(err)
-	}
-	f.wantCode("POST", "/api/v1/password/forgot", "", map[string]string{"email": "boss@example.com"}, 200, "")
-	f.wantCode("POST", "/api/v1/password/reset", "", map[string]string{"token": f.resetLink("boss@example.com"), "new_password": "newpassword"}, 200, "")
-	u, _ := f.s.store.User(boss.ID)
-	if !u.MFAEnrolled() {
-		t.Fatal("a reset removed the second factor")
-	}
-	f.wantCode("POST", "/api/v1/web/login", "", map[string]string{"username": "boss@example.com", "password": "newpassword"}, 401, "mfa_required")
-}
-
-func TestPasswordResetOffUntilItCanWork(t *testing.T) {
-	f := newAdminFixture(t, Config{}) // no public address
-	var info Info
-	f.ok("GET", "/api/v1/info", nil, &info)
-	if info.PasswordReset {
-		t.Fatal("offered without a public address")
-	}
-	f.wantCode("POST", "/api/v1/password/forgot", "", map[string]string{"email": "a@example.com"}, 404, "not_supported")
-	// The address comes from the configuration only: the settings page cannot
-	// point the links elsewhere.
-	f.setSettings(map[string]any{"public_url": "https://evil.example.com"})
-	f.wantCode("POST", "/api/v1/password/forgot", "", map[string]string{"email": "a@example.com"}, 404, "not_supported")
-	f.s.cfg.PublicURL = "https://p.example.com"
-	f.wantCode("POST", "/api/v1/password/forgot", "", map[string]string{"email": "a@example.com"}, 200, "")
-	f.setSettings(map[string]any{"password_reset": false})
-	f.wantCode("POST", "/api/v1/password/forgot", "", map[string]string{"email": "a@example.com"}, 404, "not_supported")
-
-	// Cross-site pages cannot make a visitor's browser send mail, or use a link.
-	f.setSettings(map[string]any{"password_reset": true})
-	req, _ := http.NewRequest("POST", f.url+"/api/v1/password/forgot", strings.NewReader(`{"email":"a@example.com"}`))
-	req.Header.Set("Origin", "https://evil.example")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 403 {
-		t.Fatalf("cross-site forgot: %d", resp.StatusCode)
-	}
-	req, _ = http.NewRequest("POST", f.url+"/api/v1/password/reset", strings.NewReader(`{}`))
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 403 {
-		t.Fatalf("reset without the page's header: %d", resp.StatusCode)
-	}
-}
-
 // ---- listings ----
 
 type pageOf[T any] struct {
@@ -693,7 +504,7 @@ func TestListingPagesAndDates(t *testing.T) {
 	var ids []int64
 	for i := range 25 {
 		clock = clock.Add(time.Hour)
-		u, err := f.s.store.CreateUser(acct(i), "password1", false)
+		u, err := f.s.store.CreateUser(acct(i), false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -731,8 +542,8 @@ func TestListingPagesAndDates(t *testing.T) {
 func TestLedgerListingByDate(t *testing.T) {
 	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	f := newAdminFixture(t, Config{Now: func() time.Time { return clock }})
-	a, _ := f.s.store.CreateUser("alice", "alicealice", false)
-	b, _ := f.s.store.CreateUser("bob_2", "bobbobbob", false)
+	a, _ := f.s.store.CreateUser("alice", false)
+	b, _ := f.s.store.CreateUser("bob_2", false)
 	tok, _, _ := f.s.store.IssueToken(a.ID, "t", 0)
 	day := func(d int) time.Time { return time.Date(2026, 6, d, 12, 0, 0, 0, time.UTC) }
 	for d := 1; d <= 10; d++ {
@@ -801,7 +612,7 @@ func TestLedgerListingByDate(t *testing.T) {
 func TestCSVExport(t *testing.T) {
 	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	f := newAdminFixture(t, Config{Now: func() time.Time { return clock }})
-	a, _ := f.s.store.CreateUser("alice", "alicealice", false)
+	a, _ := f.s.store.CreateUser("alice", false)
 	tok, _, _ := f.s.store.IssueToken(a.ID, "t", 0)
 	if err := f.s.AdjustCredit(a.ID, 2_500_000, "=HYPERLINK(\"http://evil\")"); err != nil {
 		t.Fatal(err)

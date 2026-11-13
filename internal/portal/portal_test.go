@@ -60,8 +60,14 @@ func (a *api) call(method, path, token string, body any, wantStatus int, out any
 // openSharedDB opens a fresh shared database.
 func openSharedDB(t *testing.T) (*sql.DB, error) { return mysqldb.OpenTest() }
 
+// testMail is the sender test portals have: sign-in codes are mail.
+var testMail = MailConfig{From: "ShareToken <team@sharetoken.test>", Support: "ShareToken Support <support@sharetoken.test>"}
+
 func newPortal(t *testing.T, cfg Config) (*Server, *api) {
 	t.Helper()
+	if cfg.Mail.From == "" {
+		cfg.Mail = testMail
+	}
 	db, err := openSharedDB(t)
 	if err != nil {
 		t.Fatal(err)
@@ -78,15 +84,14 @@ func newPortal(t *testing.T, cfg Config) (*Server, *api) {
 }
 
 func TestPortalAccountLifecycle(t *testing.T) {
-	s, a := newPortal(t, Config{OpenRegistration: true, SignupCreditMicros: 5_000_000})
+	clock := time.Now()
+	s, a := newPortal(t, Config{OpenRegistration: true, SignupCreditMicros: 5_000_000, Now: func() time.Time { return clock }})
+	const alice = "alice@example.com"
 
-	var reg AuthResponse
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "Alice", "password": "correct horse"}, 201, &reg)
-	if reg.User.Username != "alice" || reg.Token == "" {
-		t.Fatalf("register: %+v", reg)
+	reg := clientSignIn(t, s, a.url, "Alice@Example.com")
+	if reg.User.Username != alice || !reg.Created {
+		t.Fatalf("first sign-in: %+v", reg)
 	}
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "alice", "password": "correct horse"}, 409, nil)
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "bob", "password": "short"}, 400, nil)
 
 	var me Me
 	a.call("GET", "/api/v1/me", reg.Token, nil, 200, &me)
@@ -96,13 +101,12 @@ func TestPortalAccountLifecycle(t *testing.T) {
 	a.call("GET", "/api/v1/me", "", nil, 401, nil)
 	a.call("GET", "/api/v1/me", "st_bogus", nil, 401, nil)
 
-	// Login, and throttling after repeated failures.
-	var login AuthResponse
-	a.call("POST", "/api/v1/login", "", map[string]string{"username": "alice", "password": "correct horse"}, 200, &login)
-	for i := 0; i < maxFails; i++ {
-		a.call("POST", "/api/v1/login", "", map[string]string{"username": "alice", "password": "wrong"}, 401, nil)
+	// Signing in again: the same account.
+	clock = clock.Add(2 * time.Minute)
+	login := clientSignIn(t, s, a.url, alice)
+	if login.Created || login.User.ID != reg.User.ID {
+		t.Fatalf("second sign-in: %+v", login)
 	}
-	a.call("POST", "/api/v1/login", "", map[string]string{"username": "alice", "password": "correct horse"}, 429, nil)
 
 	// API tokens: create, list, revoke.
 	var nt struct {
@@ -113,7 +117,7 @@ func TestPortalAccountLifecycle(t *testing.T) {
 	var tl struct{ Tokens []accounts.Token }
 	a.call("GET", "/api/v1/tokens", nt.Token, nil, 200, &tl)
 	if len(tl.Tokens) != 3 {
-		t.Fatalf("want 3 tokens (register, login, ci), got %+v", tl.Tokens)
+		t.Fatalf("want 3 tokens (two sign-ins, ci), got %+v", tl.Tokens)
 	}
 	a.call("DELETE", fmt.Sprintf("/api/v1/tokens/%d", nt.Info.ID), login.Token, nil, 200, nil)
 	a.call("GET", "/api/v1/me", nt.Token, nil, 401, nil)
@@ -123,26 +127,25 @@ func TestPortalAccountLifecycle(t *testing.T) {
 	// Device binding needs the device's signature over the username.
 	k, _ := p2p.NewKeys()
 	ts := time.Now().UnixNano()
-	good := BindRequest{Peer: k.ID(), Name: "laptop", UnixNano: ts, Sig: accounts.SignBind(k.Signer, "alice", k.ID(), ts)}
+	good := BindRequest{Peer: k.ID(), Name: "laptop", UnixNano: ts, Sig: accounts.SignBind(k.Signer, alice, k.ID(), ts)}
 	forged := good
 	forged.Sig = accounts.SignBind(k.Signer, "mallory", k.ID(), ts)
 	a.call("POST", "/api/v1/devices", reg.Token, forged, 400, nil)
 	stale := good
 	stale.UnixNano = ts - int64(time.Hour)
-	stale.Sig = accounts.SignBind(k.Signer, "alice", k.ID(), stale.UnixNano)
+	stale.Sig = accounts.SignBind(k.Signer, alice, k.ID(), stale.UnixNano)
 	a.call("POST", "/api/v1/devices", reg.Token, stale, 400, nil)
 	a.call("POST", "/api/v1/devices", reg.Token, good, 200, nil)
 	a.call("POST", "/api/v1/devices", reg.Token, good, 200, nil) // idempotent
 
 	// Someone else cannot take the device over, even with its signature.
-	var bob AuthResponse
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "bob", "password": "hunter2hunter2"}, 201, &bob)
-	steal := BindRequest{Peer: k.ID(), Name: "x", UnixNano: ts, Sig: accounts.SignBind(k.Signer, "bob", k.ID(), ts)}
+	bob := clientSignIn(t, s, a.url, "bob@example.com")
+	steal := BindRequest{Peer: k.ID(), Name: "x", UnixNano: ts, Sig: accounts.SignBind(k.Signer, "bob@example.com", k.ID(), ts)}
 	a.call("POST", "/api/v1/devices", bob.Token, steal, 409, nil)
 
 	// Admin: only admins; credit grants and deductions land in the ledger.
 	a.call("GET", "/api/v1/admin/overview", reg.Token, nil, 403, nil)
-	admin, err := s.CreateUser("root", "rootrootroot", true)
+	admin, err := s.CreateUser("root@example.com", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,12 +154,12 @@ func TestPortalAccountLifecycle(t *testing.T) {
 	a.call("GET", "/api/v1/admin/overview", plainTok, nil, 403, nil)
 	rootTok, _, _ := s.Store().IssueSessionToken(admin.ID, "test", 0, true)
 	var b Balance
-	a.call("POST", "/api/v1/admin/users/alice/credit", rootTok, map[string]any{"micros": 1_000_000, "memo": "top-up"}, 200, &b)
+	a.call("POST", "/api/v1/admin/users/alice@example.com/credit", rootTok, map[string]any{"micros": 1_000_000, "memo": "top-up"}, 200, &b)
 	if b.AvailableMicros != 6_000_000 {
 		t.Fatalf("after grant: %+v", b)
 	}
-	a.call("POST", "/api/v1/admin/users/alice/credit", rootTok, map[string]any{"micros": -7_000_000}, 409, nil)
-	a.call("POST", "/api/v1/admin/users/alice/credit", rootTok, map[string]any{"micros": -500_000, "memo": "correction"}, 200, &b)
+	a.call("POST", "/api/v1/admin/users/alice@example.com/credit", rootTok, map[string]any{"micros": -7_000_000}, 409, nil)
+	a.call("POST", "/api/v1/admin/users/alice@example.com/credit", rootTok, map[string]any{"micros": -500_000, "memo": "correction"}, 200, &b)
 	var led struct {
 		Entries []LedgerLine `json:"entries"`
 	}
@@ -166,9 +169,9 @@ func TestPortalAccountLifecycle(t *testing.T) {
 	}
 
 	// Disabling a user locks its tokens out.
-	a.call("POST", "/api/v1/admin/users/bob/disable", rootTok, nil, 200, nil)
+	a.call("POST", "/api/v1/admin/users/bob@example.com/disable", rootTok, nil, 200, nil)
 	a.call("GET", "/api/v1/me", bob.Token, nil, 401, nil)
-	a.call("POST", "/api/v1/admin/users/root/disable", rootTok, nil, 400, nil)
+	a.call("POST", "/api/v1/admin/users/root@example.com/disable", rootTok, nil, 400, nil)
 
 	// Relays: registry, and the public network endpoint.
 	a.call("GET", "/api/v1/network", "", nil, 503, nil) // no coordinator has started on this database
@@ -190,17 +193,12 @@ func TestPortalAccountLifecycle(t *testing.T) {
 	}
 }
 
-func TestRegistrationCanBeClosed(t *testing.T) {
-	_, a := newPortal(t, Config{})
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "alice", "password": "correct horse"}, 403, nil)
-}
-
 func TestRelayPassEndpoint(t *testing.T) {
 	_, key, _ := ed25519.GenerateKey(nil)
 	s, a := newPortal(t, Config{OpenRegistration: true, PassKey: key, PassTTL: time.Hour})
 	var alice, bob AuthResponse
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "alice", "password": "correct horse"}, 201, &alice)
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "bob", "password": "correct horse"}, 201, &bob)
+	_, alice.Token = testUser(t, s, "alice")
+	_, bob.Token = testUser(t, s, "bob")
 	k, _ := p2p.NewKeys()
 	a.call("POST", "/api/v1/relay-pass", alice.Token, map[string]string{"peer": k.ID()}, 403, nil) // not bound yet
 	ts := time.Now().UnixNano()
@@ -225,9 +223,9 @@ func TestRelayPassEndpoint(t *testing.T) {
 	a.call("POST", "/api/v1/relay-pass", bob.Token, map[string]string{"peer": k.ID()}, 403, nil) // alice's device
 	_ = s
 
-	_, b := newPortal(t, Config{OpenRegistration: true})
+	s2, b := newPortal(t, Config{OpenRegistration: true})
 	var u AuthResponse
-	b.call("POST", "/api/v1/register", "", map[string]string{"username": "carol", "password": "correct horse"}, 201, &u)
+	_, u.Token = testUser(t, s2, "carol")
 	b.call("POST", "/api/v1/relay-pass", u.Token, map[string]string{"peer": k.ID()}, 404, nil) // passes disabled
 }
 

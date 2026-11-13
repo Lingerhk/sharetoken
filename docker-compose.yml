@@ -57,12 +57,12 @@ services:
       RELAY_NAME: ${RELAY_NAME:-relay-1}
       RELAY_REGION: ${RELAY_REGION:-}
       PORTAL_TLS_MODE: ${PORTAL_TLS_MODE:-auto}
-      PORTAL_PUBLIC_URL: ${PORTAL_PUBLIC_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_SUPPORT: ${MAIL_SUPPORT:-}
       OPEN_REGISTRATION: ${OPEN_REGISTRATION:-true}
       SIGNUP_CREDIT_MICROS: ${SIGNUP_CREDIT_MICROS:-0}
       FEE_BPS: ${FEE_BPS:-500}
-      ADMIN_USER: ${ADMIN_USER:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
     volumes:
       - portal:/var/lib/sharetoken/portal
       - coordinator:/var/lib/sharetoken/coordinator

@@ -9,12 +9,11 @@ import (
 )
 
 func TestPairingAPI(t *testing.T) {
-	_, a := newPortal(t, Config{OpenRegistration: true})
+	s, a := newPortal(t, Config{OpenRegistration: true})
 	signUp := func(name string) (string, int64) {
 		t.Helper()
-		var reg AuthResponse
-		a.call("POST", "/api/v1/register", "", map[string]string{"username": name, "password": "correct horse"}, 201, &reg)
-		return reg.Token, reg.User.ID
+		u, tok := testUser(t, s, name)
+		return tok, u.ID
 	}
 	seller, sellerID := signUp("seller@example.com")
 	b1, b1ID := signUp("buyer-one")
@@ -80,7 +79,7 @@ func TestPairingAPI(t *testing.T) {
 	a.call("DELETE", fmt.Sprintf("/api/v1/pairing/codes/%d", code.ID), seller, nil, 200, nil)
 	a.call("POST", "/api/v1/pairing/redeem", b1, map[string]string{"code": code.Code}, 404, nil)
 
-	// Guessing codes is throttled like guessing passwords.
+	// Guessing pairing codes is throttled like guessing sign-in codes.
 	for i := 1; i < maxFails; i++ {
 		a.call("POST", "/api/v1/pairing/redeem", b1, map[string]string{"code": "AAAA-AAAA-AAAA-AAAA"}, 404, nil)
 	}
@@ -91,9 +90,8 @@ func TestPairingPrivateLimitAndAdminList(t *testing.T) {
 	s, a := newPortal(t, Config{OpenRegistration: true})
 	signUp := func(name string) (string, int64) {
 		t.Helper()
-		var reg AuthResponse
-		a.call("POST", "/api/v1/register", "", map[string]string{"username": name, "password": "correct horse"}, 201, &reg)
-		return reg.Token, reg.User.ID
+		u, tok := testUser(t, s, name)
+		return tok, u.ID
 	}
 	buyer, _ := signUp("buyer@example.com")
 	var v PairingView
@@ -131,7 +129,7 @@ func TestPairingPrivateLimitAndAdminList(t *testing.T) {
 
 	// Administrators see every pairing with full names; nobody else does.
 	a.call("GET", "/api/v1/admin/pairings", buyer, nil, 403, nil)
-	root, err := s.store.CreateUser("root", "hunter2hunter2", true)
+	root, err := s.store.CreateUser("root", true)
 	if err != nil {
 		t.Fatal(err)
 	}

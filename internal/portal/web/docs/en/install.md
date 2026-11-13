@@ -158,4 +158,4 @@ A newly opened PowerShell window picks up the new PATH. The program is not yet c
 {{exe}} version
 ```
 
-The output shows the version, the network (`env prod`), the portal address, the state directory and the local API address (`127.0.0.1:{{port}}`). This command does not connect to the network and does not write any file. Next, [register an account](/docs/account#register).
+The output shows the version, the network (`env prod`), the portal address, the state directory and the local API address (`127.0.0.1:{{port}}`). This command does not connect to the network and does not write any file. Next, [sign in](/docs/account#login).

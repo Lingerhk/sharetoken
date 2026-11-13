@@ -16,9 +16,9 @@
 ### 1.1 开始使用
 
 ```bash
-# 首次：注册（或登录）。本机设备会绑定到账户。
-sharetoken register -email you@example.com     # 或：sharetoken register -user alice
-sharetoken login -user you@example.com
+# 首次：用发到邮箱的验证码登录；没有账户的邮箱会自动创建账户。
+# 本机设备会绑定到账户。
+sharetoken login -email you@example.com
 
 # 只想用：直接启动客户端。
 sharetoken up
@@ -38,7 +38,7 @@ sharetoken up                               # 客户端已在运行时，share �
 
 任何 OpenAI 兼容的工具，把 base URL 设为 `http://127.0.0.1:9787/v1` 即可。API key 随便填。
 
-门户要求验证邮箱时，`register` 会发送验证码并提示输入（也可以用 `-code` 直接给出）。
+没有密码。`login` 发送 6 位验证码并提示输入；还没有账户的邮箱在同一步注册（门户开放注册时）。脚本里可以分两步：`login -send` 只发送验证码，`login -code 123456` 用它登录。开启了两步验证时，`login` 接着询问身份验证器里的动态码（或用 `-totp` 给出）。
 
 ### 1.2 客户端连接哪个门户
 
@@ -49,9 +49,9 @@ sharetoken up                               # 客户端已在运行时，share �
 | prod | `https://sharetoken.app`，即托管服务。忽略 `SHARETOKEN_PORTAL`。 | `~/.sharetoken` | `127.0.0.1:9787` |
 | dev（未指定构建类型时的默认值） | `SHARETOKEN_PORTAL` 里的地址。务必设置：内置的默认值是本项目自己的测试网络。 | `~/.sharetoken-dev` | `127.0.0.1:9887` |
 
-要连接自己的部署，用 dev 构建，并在注册或登录时设置 `SHARETOKEN_PORTAL=https://portal.example.com`；之后地址保存在 `config.json` 里。构建类型见 [desktop.md](desktop.md)。
+要连接自己的部署，用 dev 构建，并在登录时设置 `SHARETOKEN_PORTAL=https://portal.example.com`；之后地址保存在 `config.json` 里。构建类型见 [desktop.md](desktop.md)。
 
-发送密码之前，客户端先决定如何信任门户：
+发送任何内容之前，客户端先决定如何信任门户：
 
 - `https://`，证书由公共 CA 签发：不需要别的。
 - `https://`，自签名证书：用 `-portal-pin sha256:…` 给出运维公布的指纹。不带这个参数时，客户端显示指纹并请你确认。指纹保存在配置里。
@@ -61,7 +61,7 @@ sharetoken up                               # 客户端已在运行时，share �
 
 | 命令 | 作用 |
 |---|---|
-| `register [-email ADDR \| -user NAME] [-code CODE]`、`login [-user NAME]` | 注册或登录，并绑定本机设备。两者都接受 `-device NAME`、`-portal-pin sha256:…` 和 `-allow-http`。 |
+| `login [-email ADDR] [-send] [-code CODE] [-invite CODE] [-totp CODE]` | 用邮件验证码登录（没有账户的邮箱会创建账户），并绑定本机设备。`-send` 只发送验证码；`-code` 使用已收到的验证码。也接受 `-device NAME`、`-portal-pin sha256:…` 和 `-allow-http`。 |
 | `up [-http ADDR] [-listen MADDRS] [-nat=false]` | 运行客户端：买入，开启共享时同时卖出。这些参数只对本次运行有效，不写入配置。 |
 | `daemon` | 桌面应用背后的服务：和 `up` 一样，但未登录时也运行。见 [desktop.md](desktop.md)。 |
 | `status` | 与协调器的连接和所用中继，当前中继的实时延迟、抖动和丢包（`link:` 行），各中继的往返时间及测量时间，共享情况，告警。 |
@@ -90,7 +90,7 @@ sharetoken up                               # 客户端已在运行时，share �
 说明：
 
 - 命令前的 `-home DIR` 或环境变量 `$SHARETOKEN_HOME` 指定另一个状态目录。
-- 密码可以从 `$SHARETOKEN_PASSWORD` 读取（供脚本使用）。
+- 客户端的登录有效 60 天（门户的 `sessions.login_ttl`）。
 - 客户端默认同时监听 IPv4 和 IPv6、TCP 和 QUIC（`/ip4/0.0.0.0`、`/ip6/::`，端口由系统分配）。没有 IPv6 的机器自动跳过对应监听。
 - 不需要开放任何端口。卖家在中继上预约，买家经中继或打洞连过来。
 - 出售托管 API 的卖家模式见 [providers.md](providers.md)。
@@ -227,14 +227,15 @@ relay -config relay.yaml -key relay.key \
 
 ```bash
 portal -db $DSN serve -listen :8092 -open-registration -signup-credit 5000000
-SHARETOKEN_PASSWORD=… portal -db $DSN useradd -admin root
+portal -db $DSN useradd -admin ops@example.com
 portal -db $DSN relay add '/ip4/203.0.113.7/tcp/8091/p2p/12D3Koo…,/ip6/2001:db8::7/tcp/8091/p2p/12D3Koo…' relay-1 eu-west
 ```
 
 - TLS：给出 `-tls-cert fullchain.pem -tls-key privkey.pem` 时，门户使用该证书。没有证书时，它在 `portal-tls/` 里生成自签名证书并打印指纹 `sha256:…`；把指纹公布给用户，并保留这个目录，因为客户端固定了这个指纹。前面有终止 TLS 的反向代理时用 `-behind-tls-proxy`。明文 HTTP 只在监听回环地址时使用，或者加 `-insecure-http`（仅测试网）。这些选择对应配置文件里的 `tls.mode`。
 - 一个中继登记一条。同一 peer ID 的多个地址用逗号连接。已登记的中继要改地址，先 `relay rm` 再重新添加。
 - 这里给出的开放注册和注册赠送额度是初始值。管理员在后台的系统设置页保存之后，以保存的值为准。
-- 不加 `-open-registration` 时，只有管理员能创建用户。
+- 不加 `-open-registration` 时，只有管理员能创建用户（`portal useradd <邮箱>` 或管理后台）。
+- 所有人都用发到邮箱的验证码登录，所以门户必须配置发件人（`mail.from`）并运行邮件服务（[mail.md](mail.md)）；否则谁都登录不了，管理员也一样。
 
 **协调器**。它不监听端口，自己在所有登记的中继上预约：
 
@@ -249,10 +250,11 @@ coordinator -db $DSN -fee-bps 500 \
 
 | 命令 | 作用 |
 |---|---|
-| `portal useradd [-admin] <user>`、`portal passwd <user>` | 创建用户；设置密码。密码来自 `$SHARETOKEN_PASSWORD` 或提示输入。 |
+| `portal useradd [-admin] <email>` | 创建账户。账户名是邮箱，用户用发到那里的验证码登录。没有密码。 |
+| `portal rename <user> <email>` | 给账户改名，新名字必须是没有被占用的邮箱：用于没有邮箱的老账户（比如 `root`），不改名就登录不了。余额、设备、token 和两步验证都保留。 |
 | `portal grant <user> <micros> [memo]` | 发放 credit。负数为扣减；余额不能扣到负数。 |
 | `portal users`、`portal user <user>`、`portal disable\|enable <user>` | 列出和查看用户。禁用立即生效：token 失效，协调器拒绝该用户的设备。 |
-| `portal mfa-reset <user>` | 清除管理员的两步验证密钥并吊销其 token（见[第 4.2 节](#42-浏览器会话与管理员两步验证)）。 |
+| `portal mfa-reset <user>` | 清除用户的两步验证密钥并吊销其 token（见[第 4.2 节](#42-浏览器会话与两步验证)）。 |
 | `portal relay add\|ls\|rm\|enable\|disable` | 中继登记。协调器在 15 秒内跟进变化。 |
 | `portal overview` | 用户数、流通中的 credit、平台手续费、未结冻结额、账本回放结果、各状态的作业数、可达的中继数。 |
 | `portal version-policy [set -min V -recommended V -latest V -download-url URL -allow-dev]` | 服务哪些客户端版本（[versioning.md](versioning.md)）。 |
@@ -279,8 +281,8 @@ coordinator -db $DSN -fee-bps 500 \
 | `/` | 所有人 | 官网：项目介绍、安全设计、下载。 |
 | `/docs/`、`/changelog/` | 所有人 | 用户指南和更新日志。 |
 | `/downloads/<file>` | 所有人 | `downloads.dir` 目录里的客户端安装包；`GET /api/v1/downloads` 列出每一类的最新版本，官网显示实际存在的包。没有配置目录时不提供下载。 |
-| `/app/`（`/login` 跳转到这里） | 用户 | 注册和登录；总览（余额、冻结额、买卖汇总）；账单；作业（按买入或卖出筛选）；API token（明文只显示一次）及其吊销；设备改名和解绑；配对（兑换配对码、解除卖家；生成和撤销配对码、移除买家、私有模式）；网络（协调器、中继可达性）；账户（改密码，可同时吊销其它会话）；反馈。 |
-| `/admin/` | 管理员 | 仪表盘和总览（账本回放、流通额、手续费、中继、作业统计、各账户余额）；用户（搜索、新建、发放或扣减 credit、禁用、设置或撤销管理员、重置密码、吊销 token、解绑设备、账单与作业）；中继（登记、编辑、启用、停用、删除）；客户端版本；全部作业（按状态和用户筛选）；节点记录；推理审计；争议及其人工裁决（付款给节点或退款给买家）；配对（谁只向谁购买、私有卖家）；全局账本；邮件；反馈；操作日志；系统设置。 |
+| `/app/`（`/login` 跳转到这里） | 用户 | 邮件验证码登录（新邮箱同时注册）；总览（余额、冻结额、买卖汇总）；账单；作业（按买入或卖出筛选）；API token（明文只显示一次）及其吊销；设备改名和解绑；配对（兑换配对码、解除卖家；生成和撤销配对码、移除买家、私有模式）；网络（协调器、中继可达性）；账户（开启或关闭两步验证）；反馈。 |
+| `/admin/` | 管理员 | 仪表盘和总览（账本回放、流通额、手续费、中继、作业统计、各账户余额）；用户（搜索、新建、发放或扣减 credit、禁用、设置或撤销管理员、重置两步验证、吊销 token、解绑设备、账单与作业）；中继（登记、编辑、启用、停用、删除）；客户端版本；全部作业（按状态和用户筛选）；节点记录；推理审计；争议及其人工裁决（付款给节点或退款给买家）；配对（谁只向谁购买、私有卖家）；全局账本；邮件；反馈；操作日志；系统设置。 |
 
 - 浏览器会话默认 24 小时（`serve -session-ttl`，或系统设置页）。它存放在 HttpOnly cookie 里，页面脚本读不到。在 API Token 页上它显示为「web session」，当前会话有标记，任何一个都可以吊销。
 - 管理员用同一个账号进入 `/admin/`。其他人打开它只会看到「不是管理员」。
@@ -292,7 +294,7 @@ coordinator -db $DSN -fee-bps 500 \
 
 ## 3. 本地管理 API
 
-`sharetoken up` 监听 `http` 里的地址（prod 构建为 `127.0.0.1:9787`）。带有非本地 `Origin` 的请求返回 403，所以用户浏览器里的网页无法花掉 credit。桌面应用使用的 `sharetoken daemon` 提供同一套 API，另加未登录时可用的注册、登录接口；见 [desktop.md](desktop.md)。
+`sharetoken up` 监听 `http` 里的地址（prod 构建为 `127.0.0.1:9787`）。带有非本地 `Origin` 的请求返回 403，所以用户浏览器里的网页无法花掉 credit。桌面应用使用的 `sharetoken daemon` 提供同一套 API，另加未登录时可用的登录接口；见 [desktop.md](desktop.md)。
 
 | 方法与路径 | 说明 |
 |---|---|
@@ -324,25 +326,24 @@ coordinator -db $DSN -fee-bps 500 \
 
 ### 4.1 接口
 
-认证方式是 `Authorization: Bearer st_…`。门户自己的页面改用 cookie 会话（[第 4.2 节](#42-浏览器会话与管理员两步验证)）。错误统一为 `{"error":{"code":"…","message":"…"}}`。
+认证方式是 `Authorization: Bearer st_…`。门户自己的页面改用 cookie 会话（[第 4.2 节](#42-浏览器会话与两步验证)）。错误统一为 `{"error":{"code":"…","message":"…"}}`。
 
 列表接口接受 `limit`（默认 50，最大 500）、`page` 或 `offset`、`from` 和 `to`，以及用于导出的 `format=csv`。
 
 | 方法与路径 | 认证 | 说明 |
 |---|---|---|
 | `GET /healthz` | 无 | `{"ok":true}`。 |
-| `GET /api/v1/info` | 无 | `{registration_open, signup_credit_micros, session_hours, passes_enabled, email_verification, support_email, invite_required, password_reset, default_page_size}`：登录页需要的信息。 |
+| `GET /api/v1/info` | 无 | `{registration_open, signup_credit_micros, session_hours, passes_enabled, support_email, invite_required, default_page_size, code_sign_in}`：登录页需要的信息。`code_sign_in` 恒为 true：用邮件验证码登录。 |
 | `GET /api/v1/network` | 无 | `{coordinator, relays:[{addr,name,region,ok,rtt_ms}], pass_key}`。可用的中继在前，其中延迟低的排在最前。`rtt_ms` 是协调器到该中继的往返时间，测得之前省略。协调器从未启动过时返回 503 `not_ready`。 |
 | `GET /api/v1/version`、`GET /api/v1/update`、`GET /api/v1/downloads` | 无 | 服务端版本和客户端版本策略；针对 `kind`、`channel`、`os`、`arch` 是否有更新的客户端；提供下载的客户端安装包。见 [versioning.md](versioning.md)。 |
-| `POST /api/v1/register` | 无 | `{email, password, token_name?, code?, invite_code?}`，或者在不验证邮箱的门户上用 `{username, password, …}`，→ 201 `{user, token}`。规范化后的邮箱就是账户名。需要开放注册。 |
-| `POST /api/v1/register/code` | 无 | `{email, invite_code?}`：发送验证码（[mail.md](mail.md)）。 |
-| `POST /api/v1/login` | 无 | `{username, password, token_name?}` → `{user, token}`。同一用户名或同一 IP 在 5 分钟内失败 8 次后：429 `throttled`。 |
-| `POST /api/v1/login`，管理员 | 无 | 密码正确还不够。尚未绑定两步验证：401 `mfa_setup_required`（绑定在网页上完成）。已绑定：401 `mfa_required` 并带 `challenge`；或者随密码一并发送 `totp`，一步完成。 |
-| `POST /api/v1/mfa` | 无 | `{challenge, code, token_name}` → `{user, token}`。challenge 有效 5 分钟，错 5 次作废；错误的验证码计入登录失败。 |
-| `POST /api/v1/password/forgot`、`POST /api/v1/password/reset` | 无 | 通过邮件重置密码（[mail.md](mail.md)）。 |
+| `POST /api/v1/auth/code` | 无 | `{email, invite_code?}`：发送登录验证码（[mail.md](mail.md)）→ `{ok, new_account, cooldown_seconds, expires_in_seconds}`。没有账户的邮箱先检查注册规则：403 `registration_closed`、`email_not_allowed`、`invite_required`（带上 `invite_code` 再请求）或 `bad_invite`；被禁用的账户 403 `account_disabled`。距上一个验证码不到一分钟 429 `code_cooldown`，超过限额 429 `throttled`。门户没有发件人时 503 `mail_unavailable`。 |
+| `POST /api/v1/auth/verify` | 无 | `{email, code, invite_code?, token_name?, totp?}` → `{user, token, created}`；邮箱新建了账户（并获得注册赠送额度）时 201，否则 200。token 有效期是 `sessions.login_ttl`（默认 60 天）。验证码错误或过期 401 `bad_code`；错误次数按 IP 和邮箱分别计数，之后 429 `throttled`。开启了两步验证的账户得到 401 `mfa_required` 并带 `challenge`（用 `/api/v1/mfa` 完成），除非 `totp` 里带了正确的动态码；尚未绑定的管理员得到 401 `mfa_setup_required`（绑定在网页上完成）。 |
+| `POST /api/v1/mfa` | 无 | `{challenge, code, token_name}` → `{user, token}`。challenge 有效 5 分钟，错 5 次作废；错误的动态码计入登录失败。 |
 | `POST /api/v1/logout` | 是 | 吊销当前 token。 |
 | `GET /api/v1/me` | 是 | `{user, balance{account,available_micros,held_micros}, usage{bought,sold}, devices}`。 |
-| `POST /api/v1/password` | 是 | `{old_password, new_password, revoke_others?}`。当前密码答错计入登录失败。 |
+| `POST /api/v1/account/mfa/setup` | 是 | 开始开启两步验证：→ `{challenge, secret, url, qr}`（base32 密钥、`otpauth://` 链接、data URI 形式的二维码）。已开启时 409 `mfa_enrolled`。 |
+| `POST /api/v1/account/mfa/enable` | 是 | `{challenge, code}`：用 App 里的第一个动态码开启 → `{user}`。400 `bad_code`、400 `challenge_expired`。会发邮件通知。 |
+| `POST /api/v1/account/mfa/disable` | 是 | `{code}`：用当前动态码关闭 → `{user}`。管理员得到 403 `mfa_required`，必须保留。会发邮件通知。 |
 | `GET /api/v1/tokens`、`POST /api/v1/tokens`、`DELETE /api/v1/tokens/{id}` | 是 | API token。`POST {name, ttl_hours}`（0 为不过期）只返回一次明文。 |
 | `GET /api/v1/devices`、`POST /api/v1/devices`、`DELETE /api/v1/devices/{peer}` | 是 | 设备。`POST {peer, name, ts, sig}`，其中 `sig` 是设备对 `accounts.BindMessage` 的签名（[`internal/accounts`](../../internal/accounts)）。 |
 | `PATCH /api/v1/devices/{peer}` | 是 | `{name}`：改名。 |
@@ -358,12 +359,11 @@ coordinator -db $DSN -fee-bps 500 \
 | `PUT /api/v1/pairing/private` | 是 | `{enabled}`：开启或关闭调用者的私有模式。 |
 | `GET /api/v1/admin/pairings?user=` | 管理员 | 全部配对：买家、卖家（完整账户名）、配对码备注、时间、卖家是否私有。`user` 匹配任一方账户名的一部分。 |
 | `GET /api/v1/admin/overview`、`GET /api/v1/admin/dashboard`、`GET /api/v1/admin/relay-history?range=` | 管理员 | 平台汇总与账本回放；仪表盘数据；中继历史。 |
-| `GET /api/v1/admin/users`、`POST /api/v1/admin/users`、`GET /api/v1/admin/users/{name}` | 管理员 | 用户列表、创建用户、用户详情（余额、用量、设备、token）。 |
+| `GET /api/v1/admin/users`、`POST /api/v1/admin/users`、`GET /api/v1/admin/users/{name}` | 管理员 | 用户列表、创建用户（`{username, is_admin}`，名字是邮箱）、用户详情（余额、用量、设备、token）。 |
 | `GET /api/v1/admin/users/search?q=&limit=&offset=` | 管理员 | 按用户名搜索（通配符按字面匹配）。每行带余额、冻结额、设备数和 token 数；同时返回总数。 |
 | `POST /api/v1/admin/users/{name}/credit` | 管理员 | `{micros, memo}`；负数为扣减。 |
 | `POST /api/v1/admin/users/{name}/disable`、`…/enable` | 管理员 | 禁用或启用（不能对自己）。 |
 | `POST /api/v1/admin/users/{name}/admin` | 管理员 | `{is_admin}`（不能撤销自己的权限）。 |
-| `POST /api/v1/admin/users/{name}/password` | 管理员 | `{new_password, revoke_tokens?}`：重置密码。 |
 | `POST /api/v1/admin/users/{name}/mfa/reset` | 管理员 | 清除该用户的两步验证密钥并吊销其全部 token：丢失验证器时的恢复手段。 |
 | `GET /api/v1/admin/users/{name}/tokens`、`DELETE …/tokens/{id}`、`POST …/tokens/revoke` | 管理员 | 列出 token、吊销一个、吊销全部。 |
 | `DELETE /api/v1/admin/users/{name}/devices/{peer}` | 管理员 | 解绑设备。 |
@@ -381,25 +381,25 @@ coordinator -db $DSN -fee-bps 500 \
 | `GET /api/v1/admin/oplog` | 管理员 | 操作日志：通过管理 API 和 `portal` 运维命令所做的更改。 |
 | `/api/v1/admin/mail/…`、`/api/v1/admin/feedback…` | 管理员 | 邮件部分（[mail.md](mail.md)）和用户反馈。 |
 
-版本策略不再服务的客户端，在 `register`、`login`、`mfa` 和绑定设备时得到 426 `upgrade_required`；它已有的东西继续可用。
+版本策略不再服务的客户端，在 `auth/verify`、`mfa` 和绑定设备时得到 426 `upgrade_required`；它已有的东西继续可用。
 
-### 4.2 浏览器会话与管理员两步验证
+### 4.2 浏览器会话与两步验证
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /api/v1/web/login`、`POST /api/v1/web/register` | 请求体与 `login`、`register` 相同。成功后，把一个有效期为会话时长的 token 放进 `st_session` cookie（HttpOnly、SameSite=Strict，HTTPS 下带 Secure）；响应体里没有 token。 |
-| `POST /api/v1/web/mfa`、`POST /api/v1/web/mfa/setup`、`POST /api/v1/web/mfa/confirm` | 管理员浏览器登录的第二步：校验验证码；开始绑定（返回 base32 密钥、`otpauth://` 链接和 data URI 形式的二维码）；用第一个验证码确认绑定并建立会话。 |
+| `POST /api/v1/web/auth/verify` | `{email, code, invite_code?}`，在 `POST /api/v1/auth/code` 之后调用，检查和 `auth/verify` 相同。成功后，把一个有效期为会话时长（`sessions.web_session_ttl`，默认 15 天）的 token 放进 `st_session` cookie（HttpOnly、SameSite=Strict，HTTPS 下带 Secure）；响应体是 `{user}`，没有 token。 |
+| `POST /api/v1/web/mfa`、`POST /api/v1/web/mfa/setup`、`POST /api/v1/web/mfa/confirm` | 开启了两步验证时浏览器登录的第二步：校验动态码；尚未绑定的管理员开始绑定（返回 base32 密钥、`otpauth://` 链接和 data URI 形式的二维码），再用第一个动态码确认绑定并建立会话。 |
 | `POST /api/v1/web/logout` | 吊销会话并清除 cookie。 |
 
 用 cookie 认证的请求还必须带请求头 `X-Sharetoken-Web: 1`，并且 `Origin`（浏览器附带时）必须是门户自己；否则返回 403 `cross_site`。Bearer 请求不受影响。门户不响应 CORS 预检，所以别的网站构造不出这样的请求。
 
-**管理员必须使用两步验证。** 只凭密码永远不会建立管理员会话。第一次登录时，门户要求管理员用验证器应用（Google Authenticator、Microsoft Authenticator、1Password 等）扫描二维码或输入密钥，并填入第一个 6 位验证码。此后每次登录都需要验证码：RFC 6238 定义的 TOTP，每 30 秒换一次，每个验证码只能用一次，前后各容忍一个周期的时钟偏差。
+**管理员必须使用两步验证，其他人可以自选**，在账户设置里开启（上面的 `/api/v1/account/mfa/…`）。开启了的账户，只凭邮件验证码永远不会建立会话。管理员第一次登录时，门户要求他用验证器应用（Google Authenticator、Microsoft Authenticator、1Password 等）扫描二维码或输入密钥，并填入第一个 6 位验证码。此后每次登录都需要验证码：RFC 6238 定义的 TOTP，每 30 秒换一次，每个验证码只能用一次，前后各容忍一个周期的时钟偏差。
 
 token 和会话会记录是否通过了第二步，所有 `/api/v1/admin/*` 接口只接受通过了的那些。把普通用户提升为管理员之后，其现有会话会被拒绝（403 `mfa_required`），直到重新登录。
 
 密钥用 `keys.mfa_key_file` 以 AES-GCM 加密后存放；没有设置时，使用由门户 pass key 派生的密钥。
 
-管理员丢失验证器时，由另一位管理员在后台该用户的页面上重置，或者由运维在服务器上执行下面的命令。下次登录时重新绑定。
+有人丢失验证器时，由管理员在后台该用户的页面上重置，或者由运维在服务器上执行下面的命令。管理员下次登录时重新绑定；其他人之后只用邮件验证码登录，直到再次开启。
 
 ```bash
 portal -db mysql://sharetoken@127.0.0.1:3306/sharetoken mfa-reset <user>
@@ -411,4 +411,4 @@ portal -db mysql://sharetoken@127.0.0.1:3306/sharetoken mfa-reset <user>
 scripts/demo-local.sh     # 需要 Docker（用于 MySQL）、Ollama 和模型 gemma4:e4b；MODEL_UPSTREAM 可换成别的模型
 ```
 
-脚本构建各个程序，并在 127.0.0.1 上启动两个中继、一个门户、一个协调器和三个用户：alice，诚实的卖家；carol，虚报用量的卖家；bob，买家。它演示注册与设备绑定、中继选择、作弊被抓并按证据退款、抽检两个卖家、一个中继宕机后客户端切换、credit 在账户之间流动且账目平衡，以及日志里没有任何 prompt。脚本退出时停止所有进程。
+脚本构建各个程序，并在 127.0.0.1 上启动两个中继、一个门户、一个协调器和三个用户：alice，诚实的卖家；carol，虚报用量的卖家；bob，买家。它演示验证码登录与设备绑定、中继选择、作弊被抓并按证据退款、抽检两个卖家、一个中继宕机后客户端切换、credit 在账户之间流动且账目平衡，以及日志里没有任何 prompt。脚本退出时停止所有进程。

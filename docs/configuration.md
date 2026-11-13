@@ -115,7 +115,6 @@ Example: [`configs/portal.example.yaml`](../configs/portal.example.yaml). `-db` 
 | `keys.pass_key_file` | `-pass-key` | `portal-pass.key` | The key that signs relay passes, created with mode 0600 if missing. Relays list its public key in `portal_keys` |
 | `keys.mfa_key_file` | — | empty | A 32-byte key (64 hex characters) that encrypts administrators' TOTP secrets. Empty: derived from the pass key. With its own key, rotating the pass key does not invalidate administrators' two-factor enrollment |
 | `http.listen` | `serve -listen` | `:8092` | Listen address |
-| `http.public_url` | — | empty | The portal's public address, used for links in mail. See below |
 | `http.trusted_proxies` | — | empty | IP addresses of reverse proxies on other machines whose `X-Real-IP` is believed (used for login throttling). A proxy on loopback is always believed |
 | `http.read_header_timeout` | — | 10s | Server timeout |
 | `http.read_timeout` | — | 30s | Server timeout |
@@ -125,16 +124,15 @@ Example: [`configs/portal.example.yaml`](../configs/portal.example.yaml). `-db` 
 | `tls.cert_file`, `tls.key_file` | `serve -tls-cert`, `-tls-key` | empty | Certificate and key, for example from Let's Encrypt. They go together |
 | `tls.self_signed_dir` | `serve -tls-dir` | `portal-tls` | Where the self-signed certificate is kept. Keep it: clients pin its fingerprint |
 | `tls.self_signed_hosts` | `serve -tls-hosts` | empty | Host names and IPs in the self-signed certificate |
-| `accounts.open_registration` | `serve -open-registration` | false | Let anyone sign up; otherwise administrators create users |
+| `accounts.open_registration` | `serve -open-registration` | false | An address without an account gets one at its first sign-in; otherwise administrators create users (`portal useradd <email>`) |
 | `accounts.signup_credit_micros` | `serve -signup-credit` | 0 | Credit granted to each new user |
-| `accounts.email_verification` | — | false | Sign-up requires a code sent by email. Needs `mail.from` and a running `mailserver` |
 | `accounts.mfa_issuer` | — | empty (shown as ShareToken) | Name shown in authenticator apps |
-| `mail.from` | — | empty | Sender of the portal's mail, e.g. `ShareToken <team@example.com>`. Empty: no mail is sent |
+| `mail.from` | — | empty | Sender of the portal's mail, e.g. `ShareToken <team@example.com>`. Everyone signs in with a code mailed from here, so without it (and a running `mailserver`) nobody can sign in. Empty: no mail is sent |
 | `mail.support` | — | empty | Address for user feedback; administrators' replies are sent from it |
 | `downloads.dir` | — | empty | Directory of client packages served at `/downloads/`. Empty: no downloads |
 | `relay_metrics.*` | — | off | Reads each relay's `/metrics` over SSH for the admin dashboard: `key_file`, `known_hosts_file`, `interval` (1m), `timeout` (20s) and `targets[]` with `relay` (name in the registry), `ssh` (`user@host[:port]`) and `command` |
-| `sessions.login_ttl` | `serve -login-ttl` | 720h | Lifetime of tokens issued at login |
-| `sessions.web_session_ttl` | `serve -session-ttl` | 24h | Lifetime of browser sessions |
+| `sessions.login_ttl` | `serve -login-ttl` | 1440h | Lifetime of the token a client gets at sign-in (60 days) |
+| `sessions.web_session_ttl` | `serve -session-ttl` | 360h | Lifetime of browser sessions (15 days) |
 | `sessions.pass_ttl` | `serve -pass-ttl` | 1h | Lifetime of relay passes; at least 5m. Disabling a user takes effect on relays within this time |
 | `log.*` | — | info / text / stderr | See section 1 |
 
@@ -150,9 +148,7 @@ Example: [`configs/portal.example.yaml`](../configs/portal.example.yaml). `-db` 
 
 ### System settings stored in the database
 
-The values edited on the admin console's settings page (`/admin/#/settings`) are stored in the database (table `portal_settings`) and take effect when saved, without a restart. For `accounts.open_registration`, `accounts.signup_credit_micros`, `accounts.email_verification`, `mail.from`, `mail.support`, `sessions.login_ttl` and `sessions.web_session_ttl`, the value in `portal.yaml` is only the default **until settings have been saved once**. After the first save the database wins and changing the file has no effect. Everything else (database, keys, listen address, public URL, TLS, downloads directory) is set only in the file.
-
-`http.public_url` is used for links in mail and can only be set in the configuration file, not on the settings page: someone who can change settings should not be able to point password-reset links elsewhere. Without it there is no "forgot password". The portal does not build links from the request's Host header, because a forged Host header could then point a reset link at another site.
+The values edited on the admin console's settings page (`/admin/#/settings`) are stored in the database (table `portal_settings`) and take effect when saved, without a restart. For `accounts.open_registration`, `accounts.signup_credit_micros`, `mail.from`, `mail.support`, `sessions.login_ttl` and `sessions.web_session_ttl`, the value in `portal.yaml` is only the default **until settings have been saved once**. After the first save the database wins and changing the file has no effect. Everything else (database, keys, listen address, TLS, downloads directory) is set only in the file.
 
 ## 5. mailserver
 
@@ -177,7 +173,7 @@ The directory is created with mode 0700. Files in it:
 | `update.json` | 0600 | The result of the last check for a new release |
 | `daemon.log` | 0600 | Log of the service started by the desktop app ([desktop.md](desktop.md)) |
 
-`config.json` is written by the client itself (`login`, `register`, `share …`, and the local API used by the desktop app); `sharetoken config` prints it. It is written to a temporary file and renamed, so a crash does not leave half a file. Its fields:
+`config.json` is written by the client itself (`login`, `share …`, and the local API used by the desktop app); `sharetoken config` prints it. It is written to a temporary file and renamed, so a crash does not leave half a file. Its fields:
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -211,6 +207,5 @@ Environment variables:
 | Variable | Meaning |
 |---|---|
 | `SHARETOKEN_HOME` | State directory |
-| `SHARETOKEN_PORTAL` | Portal for a new login. Ignored by release builds, so the environment cannot send a password elsewhere |
-| `SHARETOKEN_PASSWORD` | Password, instead of a prompt |
+| `SHARETOKEN_PORTAL` | Portal for a new sign-in. Ignored by release builds, so the environment cannot send sign-in codes elsewhere |
 | `SHARETOKEN_PROVIDER_KEY` | API key for `provider add`, instead of a prompt |

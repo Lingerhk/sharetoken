@@ -48,10 +48,10 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
 
 | 操作 | 客户端低于最低版本、是开发构建而 `allow_dev` 关闭，或没有带版本时 |
 |---|---|
-| `POST /api/v1/register`、`/login`、`/mfa`、`/devices` | 门户返回 426，错误码 `upgrade_required` |
+| `POST /api/v1/auth/verify`、`/mfa`、`/devices` | 门户返回 426，错误码 `upgrade_required` |
 | `announce`、`ticket_request` | 协调器返回 `upgrade_required`；本地 OpenAI 接口返回 426 |
 | `settle`、`started`、`abandon`、`dispute`、`evidence`、`relay-pass`、账户查询 | **永不拦截：** 结算和争议涉及资金 |
-| 网页登录和注册（`/api/v1/web/*`）、`/api/v1/register/code` | 不受影响 |
+| 网页登录（`/api/v1/web/*`）、`/api/v1/auth/code` | 不受影响 |
 
 版本号是客户端自报的，所以这项校验只为兼容，不是安全手段。数据库里没有策略时不拦任何客户端。
 

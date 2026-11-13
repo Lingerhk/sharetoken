@@ -2,7 +2,7 @@
 
 **English** | [简体中文](zh-CN/desktop.md)
 
-The desktop client covers signing up with an email address, signing in and out, viewing the account and the network, and setting up seller mode (the Sharing view, below).
+The desktop client covers signing in by emailed code (which signs up a new address), signing out, viewing the account and the network, and setting up seller mode (the Sharing view, below).
 
 ## Build types
 
@@ -113,11 +113,11 @@ Errors have the form `{"error":{"code","message"}}`; the page chooses its text b
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/v1/session` | `{env, state, logged_in, first_run, portal, user, device, peer, api, error, version, api_version, update}`. `state` is `logged_out`, `expired` (the portal rejected the token and the daemon signed out), `starting`, `retrying` (`error` says why) or `running`. When signed out, `portal` is the built-in address (below) and `user` is the last one used, to prefill the form. `first_run` is true when the daemon started without a `config.json` and nobody has signed in since: the app then opens on sign-up instead of login |
-| `POST /api/v1/portal/probe` | `{}` (`portal` is optional and defaults to the built-in address) → `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, signup_credit_micros, email_verification, support_email}`. Called before any password is sent |
-| `POST /api/v1/register/code` | `{pin, email}`: sends a verification code, when the portal requires one |
-| `POST /api/v1/register` | `{pin, email, password, code, device}` → 201 and the session |
-| `POST /api/v1/login` | `{pin, account, password, totp, device}` → 200 and the session. `account` is an email address or a user name. An administrator first gets 401 `mfa_required` and resends with `totp` |
+| `GET /api/v1/session` | `{env, state, logged_in, portal, user, device, peer, api, error, version, api_version, update}`. `state` is `logged_out`, `expired` (the portal rejected the token and the daemon signed out), `starting`, `retrying` (`error` says why) or `running`. When signed out, `portal` is the built-in address (below) and `user` is the last one used, to prefill the form |
+| `POST /api/v1/portal/probe` | `{}` (`portal` is optional and defaults to the built-in address) → `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, invite_required, signup_credit_micros, support_email}`. Called before anything is sent to the portal |
+| `POST /api/v1/auth/code` | `{pin, email, invite_code}`: the portal mails a sign-in code. The answer says whether the address is new; `invite_required` asks for an invite code first |
+| `POST /api/v1/auth/verify` | `{pin, email, code, invite_code, device}` → the session. An account with two-factor authentication gets 401 `mfa_required`: the daemon keeps the portal's challenge and the page asks for the authenticator code |
+| `POST /api/v1/auth/mfa` | `{code}`: finishes a sign-in waiting for two-factor authentication → the session. 401 `challenge_expired` after 5 minutes or 5 wrong codes: start again with a new emailed code |
 | `POST /api/v1/logout` | Stops the Agent, revokes the token (skipped if the portal is unreachable) and removes the token from `config.json`; other settings stay |
 | `GET /api/v1/account`, `/api/v1/jobs`, `/api/v1/ledger` | Passed through to the portal; they do not need the Agent. If the portal answers 401, the session becomes `expired` |
 | `POST /api/v1/update/check`, `/skip`, `/notified` | Update notices, see [versioning.md](versioning.md) |
@@ -127,26 +127,24 @@ Errors have the form `{"error":{"code","message"}}`; the page chooses its text b
 
 **Login expiry.** The Agent asks the portal once a minute whether its token is still valid (an unreachable portal does not count as a rejection). A device key can still trade with the coordinator after its token is revoked, so the client must stop: the daemon goes to `expired`, and `sharetoken up` exits and asks the user to sign in again.
 
-**The portal address is built in.** It is the build type's portal (`client.BuiltInPortal`). The sign-in page does not ask for an address; it connects when opened, and shows the reason and a Retry button if it cannot. A request that omits `portal` (or leaves it empty) uses the built-in address. A dev build can be pointed at a test network with the environment variable `SHARETOKEN_PORTAL=https://…` (read by both the daemon and the CLI; the CLI has no `-portal` flag). A prod build ignores it, so the environment cannot send passwords elsewhere. An account that is signed in keeps using the portal saved at sign-in. The `TestMain` of the package's Go tests points the variable at the unreachable `127.0.0.1:1`, so tests never touch a real portal.
+**The portal address is built in.** It is the build type's portal (`client.BuiltInPortal`). The sign-in page does not ask for an address; it connects when opened, and shows the reason and a Retry button if it cannot. A request that omits `portal` (or leaves it empty) uses the built-in address. A dev build can be pointed at a test network with the environment variable `SHARETOKEN_PORTAL=https://…` (read by both the daemon and the CLI; the CLI has no `-portal` flag). A prod build ignores it, so the environment cannot send sign-in codes elsewhere. An account that is signed in keeps using the portal saved at sign-in. The `TestMain` of the package's Go tests points the variable at the unreachable `127.0.0.1:1`, so tests never touch a real portal.
 
-Common error codes: `bad_portal`, `insecure_portal`, `portal_unreachable`, `not_a_portal`, `pin_required`, `pin_mismatch`, `bad_request`, `exists`, `registration_closed`, `email_required`, `code_cooldown`, `bad_credentials`, `throttled`, `mfa_required`, `bad_code`, `mfa_setup_required`, `already_logged_in`, `bind_failed`, `bad_origin`, `bad_host`.
+Common error codes: `bad_portal`, `insecure_portal`, `portal_unreachable`, `not_a_portal`, `pin_required`, `pin_mismatch`, `bad_request`, `bad_email`, `registration_closed`, `email_not_allowed`, `invite_required`, `bad_invite`, `account_disabled`, `mail_unavailable`, `code_cooldown`, `throttled`, `bad_code`, `mfa_required`, `challenge_expired`, `mfa_setup_required`, `already_logged_in`, `bind_failed`, `bad_origin`, `bad_host`.
 
 ## The account is an email address
 
-- Self-service sign-up uses an email address. It is normalized (trimmed, lower-cased) and stored as the account name. The maximum length is 191 characters.
-- Accounts that an administrator created with a plain user name also work; the sign-in form accepts either.
-- By default the portal does not check that the address exists. It does once verification codes are turned on.
-
-### Email verification codes
-
-When the portal sets `accounts.email_verification`, sign-up needs a code sent by email, and sign-up with a plain user name is closed; see [mail.md](mail.md). `/api/v1/portal/probe` returns `email_verification`, and the page shows the code field accordingly. `POST /api/v1/register/code {pin, email}` sends the code, and `POST /api/v1/register` carries it in `code`.
+- There are no passwords. The sign-in page has one form for new and existing accounts: the email address, "Send code", the six-digit code (and an invite code when the portal asks for one). The first sign-in of an address creates its account; see [mail.md](mail.md) for the codes.
+- The address is normalized (trimmed, lower-cased) and stored as the account name. The maximum length is 191 characters.
+- An account named without an address (older ones) cannot sign in until an operator renames it (`portal rename <user> <email>`).
+- With two-factor authentication on (the user turns it on on the portal's account page; administrators always have it), the page asks for the authenticator code after the emailed one.
+- A client's sign-in lasts 60 days (`sessions.login_ttl` of the portal).
 
 ## Security
 
 | Concern | What the client does |
 |---|---|
-| Portal certificate | The portal is probed before a password is sent. A self-signed certificate must be confirmed by the user against its fingerprint; it is then pinned, and a later change is refused with a warning. Plain HTTP to another machine is refused (`-allow-http` exists for test networks only) |
-| Token | Kept only in the daemon and in `config.json` (mode 0600). The API never returns it, and the page cannot read it. The password is only forwarded to the portal; it is not written to disk or to the log |
+| Portal certificate | The portal is probed before anything is sent to it. A self-signed certificate must be confirmed by the user against its fingerprint; it is then pinned, and a later change is refused with a warning. Plain HTTP to another machine is refused (`-allow-http` exists for test networks only) |
+| Token | Kept only in the daemon and in `config.json` (mode 0600). The API never returns it, and the page cannot read it. Sign-in codes are only forwarded to the portal; they are not written to disk or to the log |
 | Hostile web pages | The `Host` header is checked (against DNS rebinding). `/api/v1/` accepts only requests with no `Origin` or the same origin; `/v1/` allows local origins only, as `sharetoken up` does. JSON endpoints require `Content-Type: application/json` |
 | XSS in the page | The CSP forbids inline scripts and external resources; the DOM is built with `textContent` only |
 | Switching accounts | A device key belongs to one account. Signing in as another account renames the old key to `device.key.retired-<time>` and generates a new one. Credits belong to the account and are not affected |
@@ -190,7 +188,7 @@ scripts/build-cli.sh prod all          # all six packages
 
 The output is `dist/sharetoken-cli-<version>-<os>-<arch>.tar.gz` (`.zip` for Windows; dev builds are named `sharetoken-cli-dev-…`), listed in `dist/SHA256SUMS-<version>`. It holds the program and a `README.txt`. The macOS program carries only the linker's ad-hoc signature and the Windows program is not code-signed, so a downloaded copy triggers the same system warnings as the desktop app.
 
-A whole-session test (register, run, query, buy an answer over the network, stop, sign in, sign out) runs against the local network of `scripts/gui_stack.sh`. It needs a dev build, because a prod build ignores `SHARETOKEN_PORTAL`:
+A whole-session test (sign in by code, run, query, buy an answer over the network, stop, sign in, sign out) runs against the local network of `scripts/gui_stack.sh`. It needs a dev build, because a prod build ignores `SHARETOKEN_PORTAL`:
 
 ```bash
 scripts/gui_stack.sh start DIR && . DIR/env
@@ -206,9 +204,9 @@ See [development.md](development.md) for the general build and test setup. `scri
 
 | Layer | Command | Covers |
 |---|---|---|
-| Daemon API | `scripts/test.sh -race ./internal/client` | Sign-up, sign-in and sign-out, success and failure paths; certificate confirmation and pinning; MFA; token revocation; disabled users; switching accounts; concurrent sign-ins; request guards; no secrets in the log |
+| Daemon API | `scripts/test.sh -race ./internal/client` | Sign-in by code (new and existing accounts) and sign-out, success and failure paths; certificate confirmation and pinning; MFA; token revocation; disabled users; switching accounts; concurrent sign-ins; request guards; no secrets in the log |
 | Account rules | `scripts/test.sh ./internal/accounts ./internal/portal` | Email validation and normalization; admin API URLs containing `@` and `+`. |
-| End-to-end API | `scripts/test.sh -race -run Daemon ./test/e2e` | On a real libp2p topology: sign-up, joining through a relay, buying from a model, accounting, recovery after a restart, sign-out, joining once the network comes back |
+| End-to-end API | `scripts/test.sh -race -run Daemon ./test/e2e` | On a real libp2p topology: sign-in, joining through a relay, buying from a model, accounting, recovery after a restart, sign-out, joining once the network comes back |
 | Window shell | `cd gui && go test -tags desktop,production .` (add `webkit2_41` on Linux) | Starting, connecting to and stopping the daemon; port conflicts; forwarding |
 | Page | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | Headless Chrome runs every flow of the page against real processes (relay, HTTPS portal, coordinator, seller, daemon). The Sharing view uses a `custom` provider pointed at a mock model server: add, pick a model, price, start, test, reprice, local models, turn off, remove. Account login is checked up to the sign-in address and a bad callback. Pairing: wrong and own codes, pairing with a seller that sells nothing (no models, requests refused) and with one that sells, creating and revoking a code, a buyer joining and being removed, private mode from the page and its effect on a buyer that is not paired |
 | Real WebView | `scripts/gui_shell_test.sh <dev\|prod> <program directory>` | Without showing a window, the system WebView loads the page and POSTs to a real daemon; checks that the daemon stops when the app quits |

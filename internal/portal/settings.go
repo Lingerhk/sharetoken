@@ -8,11 +8,13 @@ package portal
 // stays in its own mail.yaml, because the internet-facing mail server has its
 // own database account and reads nothing the portal writes except the outbox,
 // and whoever edits this page should not be able to reroute every outgoing mail,
-// password-reset links included.
+// sign-in codes included.
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -92,6 +94,7 @@ CREATE TABLE IF NOT EXISTS relay_samples (
 	PRIMARY KEY (relay, at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 `},
+	{Version: 3, Name: "no passwords", SQL: `DROP TABLE IF EXISTS password_resets;`},
 }
 
 // Settings is everything the settings page edits.
@@ -101,19 +104,17 @@ type Settings struct {
 	MailSupport string `json:"mail_support"`
 
 	// Registration.
-	OpenRegistration  bool     `json:"open_registration"`
-	EmailVerification bool     `json:"email_verification"`
-	EmailDomainAllow  []string `json:"email_domain_allow"` // example.com, *.edu.cn; empty allows any
-	EmailBlock        []string `json:"email_block"`        // exact addresses
-	InviteRequired    bool     `json:"invite_required"`
+	OpenRegistration bool     `json:"open_registration"`  // an address without an account gets one at its first sign-in
+	EmailDomainAllow []string `json:"email_domain_allow"` // example.com, *.edu.cn; empty allows any
+	EmailBlock       []string `json:"email_block"`        // exact addresses
+	InviteRequired   bool     `json:"invite_required"`
 
 	// New users.
 	SignupCreditMicros uint64 `json:"signup_credit_micros"`
 
 	// Security.
-	PasswordReset   bool `json:"password_reset"`
-	WebSessionHours int  `json:"web_session_hours"` // 0: the configuration's value
-	LoginTokenHours int  `json:"login_token_hours"` // 0: the configuration's value
+	WebSessionHours int `json:"web_session_hours"` // 0: the configuration's value
+	LoginTokenHours int `json:"login_token_hours"` // 0: the configuration's value
 
 	// Interface.
 	DefaultPageSize int `json:"default_page_size"`
@@ -149,10 +150,10 @@ func (s *Server) defaultSettings() Settings {
 	}
 	return Settings{
 		MailFrom: s.cfg.Mail.From, MailSupport: s.cfg.Mail.Support,
-		OpenRegistration: s.cfg.OpenRegistration, EmailVerification: s.cfg.EmailVerification,
+		OpenRegistration: s.cfg.OpenRegistration,
 		EmailDomainAllow: []string{}, EmailBlock: []string{},
-		SignupCreditMicros: s.cfg.SignupCreditMicros, PasswordReset: true,
-		WebSessionHours: hours(s.cfg.WebSessionTTL), LoginTokenHours: hours(s.cfg.LoginTTL),
+		SignupCreditMicros: s.cfg.SignupCreditMicros,
+		WebSessionHours:    hours(s.cfg.WebSessionTTL), LoginTokenHours: hours(s.cfg.LoginTTL),
 		DefaultPageSize: defaultPageSize, RateAdminExempt: true, AuditRetentionDays: 365,
 	}
 }
@@ -241,9 +242,6 @@ func (st *Settings) normalize() error {
 			return bad(field, "must be an address like ShareToken <team@example.com>")
 		}
 	}
-	if st.EmailVerification && st.MailFrom == "" {
-		return bad("email_verification", "needs a mail sender (mail_from)")
-	}
 	rules := make([]string, 0, len(st.EmailDomainAllow))
 	for _, d := range st.EmailDomainAllow {
 		d = strings.ToLower(strings.TrimSpace(d))
@@ -259,10 +257,6 @@ func (st *Settings) normalize() error {
 		return bad("email_domain_allow", "at most %d rules", maxDomainRules)
 	}
 	st.EmailDomainAllow = rules
-	if len(rules) > 0 && !st.EmailVerification {
-		// Without a code nobody proves the address is theirs, and the rule proves nothing.
-		return bad("email_domain_allow", "needs email verification to be on")
-	}
 	seen := make(map[string]bool, len(st.EmailBlock))
 	blocked := make([]string, 0, len(st.EmailBlock))
 	for _, e := range st.EmailBlock {
@@ -336,15 +330,12 @@ func (s *Server) checkSignupRules(w http.ResponseWriter, ip, name, invite string
 			writeErr(w, http.StatusForbidden, "email_not_allowed", "this email address may not sign up here")
 			return false
 		}
-	} else if len(st.EmailDomainAllow) > 0 {
-		writeErr(w, http.StatusBadRequest, "email_required", "sign-up needs an email address")
-		return false
 	}
 	if !st.InviteRequired {
 		return true
 	}
 	if strings.TrimSpace(invite) == "" {
-		writeErr(w, http.StatusForbidden, "invite_required", "sign-up needs an invite code; if this app has no field for it, sign up on the web portal")
+		writeErr(w, http.StatusForbidden, "invite_required", "a new account needs an invite code; if this app has no field for it, sign up on the web portal")
 		return false
 	}
 	if s.throttled("invite:" + ip) {
@@ -424,18 +415,15 @@ func (s *Server) settingsRoutes(mux *http.ServeMux) {
 // settingsView is the settings page's data: the settings, and what depends on
 // things it cannot change.
 type settingsView struct {
-	Settings Settings         `json:"settings"`
-	Mail     *mailer.Overview `json:"mail,omitempty"`
-	// PasswordResetActive says whether the "forgot password" link shows, which
-	// also needs a public address and a mail sender.
-	PasswordResetActive bool   `json:"password_reset_active"`
-	UpdatedAt           int64  `json:"updated_at,omitempty"`
-	UpdatedBy           string `json:"updated_by,omitempty"`
+	Settings  Settings         `json:"settings"`
+	Mail      *mailer.Overview `json:"mail,omitempty"`
+	UpdatedAt int64            `json:"updated_at,omitempty"`
+	UpdatedBy string           `json:"updated_by,omitempty"`
 }
 
 func (s *Server) settingsResponse() (*settingsView, error) {
 	st := s.settings()
-	v := &settingsView{Settings: st, PasswordResetActive: s.resetActive(st)}
+	v := &settingsView{Settings: st}
 	if st.EmailDomainAllow == nil {
 		v.Settings.EmailDomainAllow = []string{}
 	}
@@ -617,6 +605,15 @@ type Invite struct {
 	Disabled  bool   `json:"disabled"`
 	CreatedBy string `json:"created_by,omitempty"`
 	CreatedAt int64  `json:"created_at"`
+}
+
+// newOpaqueCode makes an invite code: n bytes of randomness, base32.
+func newOpaqueCode(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b), nil
 }
 
 func normalizeInvite(code string) string { return strings.ToUpper(strings.TrimSpace(code)) }

@@ -34,9 +34,6 @@ http:
   read_timeout: 30s
   write_timeout: 60s
   shutdown_timeout: 5s
-  # The portal's public URL, for links in mail (password reset). Without it
-  # there is no "forgot password". The Host header is never used for this.
-  public_url: ""   # https://portal.example.com
 
 tls:
   # mode:
@@ -54,24 +51,26 @@ tls:
   self_signed_hosts: []          # names and IP addresses the self-signed certificate is issued for
 
 accounts:
-  open_registration: false       # let anyone sign up (otherwise administrators create users)
+  # People sign in with a code mailed to their address; there are no passwords.
+  # With open registration an address without an account gets one at its first
+  # sign-in; otherwise administrators create accounts (portal useradd <email>).
+  open_registration: false
   signup_credit_micros: 0        # micro-credits a new user starts with
-  # Sign-up needs a code sent by email, and sign-up by user name is closed.
-  # Needs mail.from and a running mailserver.
-  email_verification: false
 
-# The sender of the portal's mail (sign-up codes, notices, replies). The portal
-# only writes to the outbox; mailserver delivers it (docs/mail.md).
+# The sender of the portal's mail (sign-in codes, notices, replies). The portal
+# only writes to the outbox; mailserver delivers it (docs/mail.md). Sign-in
+# codes are mail: without a sender (here or on the settings page) and a running
+# mailserver, nobody can sign in.
 mail:
-  from: ""     # ShareToken <team@example.com>; empty: no mail is sent
+  from: ""     # ShareToken <team@example.com>; empty: no mail is sent, and no sign-in
   support: ""  # ShareToken Support <support@example.com>: where users write to, and where administrators reply from
 
 downloads:
   dir: ""      # directory of client packages, served at /downloads/; empty: none
 
 sessions:
-  login_ttl: 720h                # lifetime of a client's login token
-  web_session_ttl: 24h           # lifetime of a browser session
+  login_ttl: 1440h               # lifetime of the token a client gets at sign-in (60 days)
+  web_session_ttl: 360h          # lifetime of a browser session (15 days)
   pass_ttl: 1h                   # lifetime of a relay pass: a disabled user loses relay access within this time
 
 log:

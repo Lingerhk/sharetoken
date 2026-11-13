@@ -60,19 +60,13 @@ $env:Path += ";$dir"
 
 能看到版本号、门户地址和本地 API 地址就对了。想手动选择安装包或校验文件，见[安装命令行版](/docs/install)。
 
-## 2. 注册账户 {#register}
+## 2. 登录 {#register}
 
 ```bash
-{{exe}} register -email you@example.com
+{{exe}} login -email you@example.com
 ```
 
-按提示输入两次密码（至少 8 位），再输入邮箱收到的验证码。完成后这台机器就绑定到了你的账户。
-
-已有账户时改用登录：
-
-```bash
-{{exe}} login -user you@example.com
-```
+没有密码：输入邮箱收到的 6 位验证码即可。一个邮箱第一次登录时会自动创建账户。完成后这台机器就绑定到了你的账户。
 
 ## 3. 启动客户端 {#up}
 

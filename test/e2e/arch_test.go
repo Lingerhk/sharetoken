@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,6 +46,7 @@ type network struct {
 	coord   *coordinator.Service
 	coordH  peer.ID
 	portal  *portal.Server
+	db      *sql.DB
 	url     string // portal base URL
 	admin   string // admin token
 	passKey ed25519.PrivateKey
@@ -68,16 +70,18 @@ func newNetwork(t *testing.T, relays int, relayOpts ...func(*relay.Config)) *net
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = pdb.Close() })
+	n.db = pdb
 	passPub, passKey, _ := ed25519.GenerateKey(nil)
 	n.passKey = passKey
-	n.portal, err = portal.New(portal.Config{DB: pdb, OpenRegistration: true, SignupCreditMicros: 5_000_000, PassKey: passKey})
+	n.portal, err = portal.New(portal.Config{DB: pdb, OpenRegistration: true, SignupCreditMicros: 5_000_000, PassKey: passKey,
+		Mail: portal.MailConfig{From: "ShareToken <team@example.test>"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(n.portal.Handler())
 	t.Cleanup(srv.Close)
 	n.url = srv.URL
-	root, err := n.portal.CreateUser("root", "rootrootroot", true)
+	root, err := n.portal.Store().CreateUser("root", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,13 +164,21 @@ func (n *network) userOn(name string, share *client.ShareConfig, listen string) 
 func (n *network) userWith(name string, share *client.ShareConfig, listen string, gater connmgr.ConnectionGater, edit func(*client.Config)) *client.Agent {
 	n.t.Helper()
 	home := n.t.TempDir()
-	pc := client.NewPortalClient(n.url, "", "")
-	res, err := pc.Register(n.ctx, name, "password-"+name, "test")
+	// The account and its token straight from the store: these tests are about
+	// the network, and keep plain names; signing in is the daemon tests' part.
+	u, err := n.portal.Store().CreateUser(name, false)
+	if err != nil {
+		n.t.Fatal(err)
+	}
+	if err := n.portal.AdjustCredit(u.ID, 5_000_000, "sign-up credit"); err != nil {
+		n.t.Fatal(err)
+	}
+	token, _, err := n.portal.Store().IssueSessionToken(u.ID, "test", 0, false)
 	if err != nil {
 		n.t.Fatal(err)
 	}
 	cfg := client.DefaultConfig()
-	cfg.Portal, cfg.User, cfg.Token, cfg.DeviceName = n.url, res.User.Username, res.Token, name+"-laptop"
+	cfg.Portal, cfg.User, cfg.Token, cfg.DeviceName = n.url, u.Username, token, name+"-laptop"
 	cfg.HTTP = "127.0.0.1:0"
 	cfg.Listen = []string{listen}
 	cfg.NAT = false

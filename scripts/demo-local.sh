@@ -9,7 +9,7 @@
 #   carol              user: shares the same model cheaper, but bills 100x the completion tokens
 #   bob                user: buys only
 #
-# It shows: users register and bind their devices through the portal; each
+# It shows: users sign up with a mailed code and bind their devices through the portal; each
 # client measures the relays and reaches the coordinator through the best one;
 # the cheat is caught and refunded on evidence while the request fails over;
 # the auditor checks both sellers; a relay dies and the client switches;
@@ -60,9 +60,11 @@ waitlog relay-a.log "portal relay add"; waitlog relay-b.log "portal relay add"
 RA=$(sed -n "s/.*portal relay add '\([^']*\)'.*/\1/p" relay-a.log)
 RB=$(sed -n "s/.*portal relay add '\([^']*\)'.*/\1/p" relay-b.log)
 
-"$BIN/portal" -db "$DSN" serve -listen 127.0.0.1:8092 -open-registration -signup-credit 5000000 > portal.log 2>&1 & PIDS+=($!)
+# Sign-in codes are mail; nothing delivers it here, the users read their codes from the outbox.
+printf 'version: 1\nmail:\n  from: ShareToken <team@example.test>\n' > portal.yaml
+"$BIN/portal" -config portal.yaml -db "$DSN" serve -listen 127.0.0.1:8092 -open-registration -signup-credit 5000000 > portal.log 2>&1 & PIDS+=($!)
 waitlog portal.log "listening"
-SHARETOKEN_PASSWORD=adminadmin "$BIN/portal" -db "$DSN" useradd -admin root > /dev/null
+"$BIN/portal" -db "$DSN" useradd -admin root@example.test > /dev/null
 "$BIN/portal" -db "$DSN" relay add "$RA" relay-a local > /dev/null
 "$BIN/portal" -db "$DSN" relay add "$RB" relay-b local > /dev/null
 echo "   relays registered (IPv4 + IPv6): relay-a, relay-b"
@@ -74,10 +76,12 @@ grep -E "^coordinator|listening|via relay" coord.log | strip | sed 's/^/   /'
 for _ in $(seq 1 50); do curl -s $PORTAL/api/v1/network | grep -q '"ok":true.*"ok":true' && break; sleep 0.2; done
 echo "   portal /api/v1/network:"; curl -s $PORTAL/api/v1/network | strip | sed 's/^/   /'
 
-echo; echo "== 1. Users register (password from SHARETOKEN_PASSWORD) and configure sharing"
-user() { # name http-port
+echo; echo "== 1. Users sign up with a code mailed to them, and configure sharing"
+user() { # name
   export SHARETOKEN_HOME="$S/$1"
-  SHARETOKEN_PASSWORD="password-$1" SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" register -user "$1" -device "$1-box" | head -1 | strip | sed "s/^/   $1: /"
+  SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" login -email "$1@example.test" -send > /dev/null
+  code=$("$ROOT/scripts/local-mysql.sh" sql st_demo "SELECT subject FROM mail_outbox WHERE to_addr = '$1@example.test' ORDER BY id DESC LIMIT 1")
+  SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" login -email "$1@example.test" -code "${code##* }" -device "$1-box" | tail -2 | head -1 | strip | sed "s/^/   $1: /"
 }
 st() { SHARETOKEN_HOME="$S/$1" "$BIN/sharetoken" "${@:2}"; }
 stup() { SHARETOKEN_HOME="$S/$1" exec "$BIN/sharetoken" up "${@:2}"; } # exec: $! is then the client's PID

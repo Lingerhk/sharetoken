@@ -2,7 +2,7 @@
 
 [English](../mail.md) | **简体中文**
 
-邮件服务发送注册验证码、密码重置链接和通知，并接收 `support@` 等少数地址的邮件，管理员在管理后台里查看和回复。它是可选的：没有它门户照常工作，只是用用户名注册，也不发邮件。
+邮件服务发送登录验证码和通知，并接收 `support@` 等少数地址的邮件，管理员在管理后台里查看和回复。**门户离不开它**：没有密码，所有人（包括管理员）都用发到邮箱的验证码登录。没有发件人（`mail.from`）和运行中的邮件服务，谁都登录不了。
 
 代码：[`internal/mailer`](../../internal/mailer)（库）、[`cmd/mailserver`](../../cmd/mailserver)（服务）、[`internal/portal/mail.go`](../../internal/portal/mail.go)（门户接口）。配置样板：[`configs/mail.example.yaml`](../../configs/mail.example.yaml)。
 
@@ -14,7 +14,7 @@
  └── 管理后台 /admin/#/mail                                                └── 收件方 MX、smarthost 或 Resend API
 ```
 
-- 门户和邮件服务**只通过数据库交互**。邮件服务停机期间邮件排队，注册接口照常响应。
+- 门户和邮件服务**只通过数据库交互**。邮件服务停机期间邮件排队，登录接口照常响应，但验证码要等它恢复后才会送达。
 - 邮件服务是唯一直接面对陌生人的进程。让它以单独的系统用户运行，使用单独的 MySQL 账号，且该账号只能访问 `mail_outbox`、`mail_inbox` 和 `mail_status`。这样它碰不到账本、用户和验证码，也读不到门户和协调器的密钥。除了绑定 25 端口的权限，不要给它别的权限。
 - 它只接收 `smtp.mailboxes` 列出的地址，其余在 SMTP 对话中拒绝（550）。它从不转发，也不自动回复，所以不是开放中继，也不会产生反向散射。
 
@@ -67,37 +67,31 @@ mailserver -config mail.yaml send-test you@example.net   # 排入一封测试邮
 - 选择 `direct` 之前，先确认主机能连上外部邮件服务器的 25 端口。云服务商经常默认封掉它。
 - `resend` 方式下，每封邮件以自己的 Message-ID 作为幂等键，所以回复丢失后的重试不会发出第二份。HTTP 400 和 422 视为永久失败。401 和 403（key 或域名验证有问题）、429 以及 5xx 时，邮件留在队列里重试。读不到 key 时服务不会启动。
 - 暂时性失败会在 `delivery.retry_for`（默认 48 小时）内重试。已发送的邮件保留 `delivery.keep_for`。
-- 后台显示的「对方已接受」不代表用户在收件箱里看到了邮件：服务端看不到邮件被归到了哪里。注册页因此提示用户查看垃圾邮件。
+- 后台显示的「对方已接受」不代表用户在收件箱里看到了邮件：服务端看不到邮件被归到了哪里。登录页因此提示用户查看垃圾邮件。
 
 要从外部验证一套部署，向你在某个大型邮件服务商的邮箱发一封测试邮件，查看它的 `Authentication-Results` 头：SPF、DKIM 和 DMARC 都应该通过。
 
-## 注册验证码
+## 登录验证码
 
-1. `POST /api/v1/register/code {email}`。已有账户的邮箱直接返回 409 `exists`（页面提示「已注册，请直接登录」），不发邮件。这类查询按 IP 限流，5 分钟 8 次。
-2. `POST /api/v1/register {email, password, code}`。开启邮箱验证（`accounts.email_verification: true`，或系统设置页）后，`code` 必填，同时关闭用户名注册。
+新老账户走同一个流程：
+
+1. `POST /api/v1/auth/code {email, invite_code?}` 发送 6 位验证码，并说明这个邮箱是不是新的（`new_account`）。对新邮箱，发信之前先检查注册规则（开放注册、设置页里允许的域名和屏蔽的地址、需要时的邀请码），所以邮件只发给能完成登录的人。对新邮箱的拒绝按 IP 限流，5 分钟 8 次，这样无法拿这些回答快速查出谁有账户。
+2. `POST /api/v1/auth/verify {email, code}`（客户端，得到 60 天的 token）或 `POST /api/v1/web/auth/verify`（门户网页，得到 15 天的会话）使用验证码。新邮箱第一次登录时创建账户并发放注册赠送额度。开启了两步验证的账户还需要身份验证器里的动态码（[guide.md](guide.md) 第 4.2 节）。
 
 | 限制 | 值 |
 |---|---|
 | 有效期 | 10 分钟。验证码过期后，对应的邮件不再投递。 |
 | 重发间隔 | 同一邮箱 60 秒一次（`code_cooldown`）。 |
 | 每小时 | 同一邮箱 5 次，同一 IP 20 次，全站 500 次（`throttled`）。 |
-| 猜测 | 每个验证码 5 次；错误的验证码还按 IP 限流。 |
+| 猜测 | 每个验证码 5 次；错误的验证码还按 IP 和按邮箱限流（5 分钟 8 次）。 |
 
-验证码只保存加盐哈希。邮件发出后，主题和正文从数据库中清除；排队期间，管理员在后台也看不到内容。网页、桌面客户端（经 daemon 的 `POST /api/v1/register/code`）和命令行（`sharetoken register -email`）都使用这个流程。
-
-## 重置密码
-
-`POST /api/v1/password/forgot {email}` 的响应内容和耗时都与该邮箱是否有账户无关；实际工作在响应之后进行。只有已存在的账户才会收到邮件。链接是 `<门户公网地址>/app/#reset=<token>`：256 位随机数，只保存哈希，放在 URL 片段里所以不进任何服务器日志，30 分钟内有效，只能用一次。新链接使旧链接失效。限制：同一账户 60 秒一次、每小时 5 次，全站每小时 500 次，每个 IP 按登录失败的规则限流。
-
-`POST /api/v1/password/reset {token, new_password}` 会吊销该账户的全部 token 和会话，发送通知邮件，并写入操作日志。管理员的两步验证绑定保持不变，所以只拿到邮箱进不了后台。账户名不是邮箱的账户收不到链接，由管理员为其重置密码。
-
-重置邮件和验证码一样标记为敏感：发出后内容被清除，排队期间后台不可见。这个流程需要三样东西：系统设置里开启密码重置、有发件地址，以及 `portal.yaml` 的 `http.public_url` 里的门户公网地址。这个地址只从文件读取，所以能编辑设置页的人无法改变链接的指向。
+验证码只保存加盐哈希。邮件发出后，主题和正文从数据库中清除；排队期间，管理员在后台也看不到内容。网页、桌面客户端（经 daemon 的 `POST /api/v1/auth/code`）和命令行（`sharetoken login -email`）都使用这个流程。邮件主题是 `Your ShareToken verification code: 123456`。
 
 ## 后台里的邮件设置
 
-发件地址、客服地址和「发送测试邮件」在 `/admin/#/settings`，保存后立即生效。**投递方式及其凭据仍在 `mail.yaml` 里**，页面上只读：邮件服务的数据库账号读不到门户的表，而且能改设置的人不应该能把所有外发邮件（包括重置链接）改道。
+发件地址、客服地址和「发送测试邮件」在 `/admin/#/settings`，保存后立即生效。**投递方式及其凭据仍在 `mail.yaml` 里**，页面上只读：邮件服务的数据库账号读不到门户的表，而且能改设置的人不应该能把所有外发邮件（包括登录验证码）改道。
 
-其它通知：修改密码时会发一封邮件。发通知的代码调用 `mailer.Store.Enqueue`，不等待投递结果。
+其它通知：账户开启或关闭两步验证时会发一封邮件。发通知的代码调用 `mailer.Store.Enqueue`，不等待投递结果。
 
 ## 收信安全
 
@@ -114,7 +108,7 @@ mailserver -config mail.yaml send-test you@example.net   # 排入一封测试邮
 
 ```bash
 scripts/test.sh -race ./internal/mailer ./internal/portal ./internal/client   # 真实 SMTP 往返、DKIM、限流、验证码、管理接口
-node scripts/mail_ui_test.mjs                                                 # 无头 Chrome + 真实进程：注册、恶意邮件、后台全流程
+node scripts/mail_ui_test.mjs                                                 # 无头 Chrome + 真实进程：验证码登录、恶意邮件、后台全流程
 ```
 
 测试的前置条件见 [development.md](development.md)。

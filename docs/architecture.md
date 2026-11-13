@@ -17,10 +17,10 @@ Related documents: [guide.md](guide.md) for commands and APIs, [configuration.md
 
 The portal and the coordinator **share one database** and never talk to each other directly. The portal writes accounts and credit grants, the coordinator writes jobs and settlements, and both move money only through the double-entry ledger, inside database transactions.
 
-An optional fifth program, `mailserver`, delivers the mail the portal queues (verification codes, notices) and receives mail for a few mailboxes; see [mail.md](mail.md).
+A fifth program, `mailserver`, delivers the mail the portal queues (sign-in codes, notices; without it nobody can sign in, since there are no passwords) and receives mail for a few mailboxes; see [mail.md](mail.md).
 
 ```
-                         HTTPS (sign-up, login, balance, relay list)
+                         HTTPS (sign-in by code, balance, relay list) 
    ┌───────────────┐ ────────────────────────────────────────────► ┌──────────┐
    │ user sharetoken│                                                │  portal  │
    │  buy + sell    │                                                └────┬─────┘
@@ -110,9 +110,9 @@ What remains: a malicious buyer can still make a node wait up to 1.5 minutes per
 - Plain HTTP is used only on a loopback address (local demos), with `-behind-tls-proxy` (a reverse proxy terminates TLS), or with an explicit `-insecure-http`. The same choices are available as `tls.mode` in the configuration file.
 - On the client side:
   - A CA-issued certificate is verified the usual way; no pinning is needed.
-  - For a self-signed certificate, `login`/`register -portal-pin sha256:…` must match the server's certificate, or the user confirms the operator's published fingerprint interactively (like a first SSH connection). The fingerprint is stored in `config.json`, and from then on only that certificate is accepted.
+  - For a self-signed certificate, `login -portal-pin sha256:…` must match the server's certificate, or the user confirms the operator's published fingerprint interactively (like a first SSH connection). The fingerprint is stored in `config.json`, and from then on only that certificate is accepted.
   - If the fingerprint does not match, the client refuses and warns of a possible man-in-the-middle attack.
-  - The client refuses to send a password over plain HTTP to another machine (`-allow-http` is for test networks only).
+  - The client refuses to send sign-in codes over plain HTTP to another machine (`-allow-http` is for test networks only).
 - Keep the self-signed certificate: a new certificate means a new fingerprint, and every user has to confirm it again.
 
 ### 2.9 Relay admission: short-lived passes signed by the portal
@@ -146,7 +146,7 @@ Properties:
 
 ### 2.11 The local API
 
-The running client serves the OpenAI-compatible endpoint (`/v1`) and the management API (`/api/v1`, see [guide.md](guide.md)) on one loopback address, `127.0.0.1:9787` in release builds. The CLI commands `status`, `models`, `relays` and `share` use this API, and so does the desktop app ([desktop.md](desktop.md)), which runs `sharetoken daemon`: the same service, except that it also runs with nobody logged in and handles sign-up and login through its API.
+The running client serves the OpenAI-compatible endpoint (`/v1`) and the management API (`/api/v1`, see [guide.md](guide.md)) on one loopback address, `127.0.0.1:9787` in release builds. The CLI commands `status`, `models`, `relays` and `share` use this API, and so does the desktop app ([desktop.md](desktop.md)), which runs `sharetoken daemon`: the same service, except that it also runs with nobody logged in and handles sign-in through its API.
 
 Safeguards:
 
@@ -161,16 +161,16 @@ The portal serves its pages from the binary: the public site (`/`), the user pag
 | Threat | Defence |
 |---|---|
 | Session stolen by a script in the page (XSS) | The session token lives only in an **HttpOnly** cookie that scripts cannot read. The cookie is `SameSite=Strict`, and `Secure` over HTTPS |
-| Cross-site request forgery, including login CSRF | The cookie counts only when the request also carries the custom header `X-Sharetoken-Web: 1`. When the browser sends `Origin` or `Sec-Fetch-Site`, it must be the portal itself. The portal does not answer CORS preflights, so another site cannot send such a request. The login and sign-up endpoints are covered too. Bearer authentication does not use cookies, so the CLI is unaffected |
+| Cross-site request forgery, including login CSRF | The cookie counts only when the request also carries the custom header `X-Sharetoken-Web: 1`. When the browser sends `Origin` or `Sec-Fetch-Site`, it must be the portal itself. The portal does not answer CORS preflights, so another site cannot send such a request. The sign-in endpoints are covered too. Bearer authentication does not use cookies, so the CLI is unaffected |
 | Script injection | A strict CSP: `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`. The pages have no inline script or style and no third-party resources, and build the DOM with `textContent` rather than HTML strings. Also `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` |
-| Credential stuffing, mass sign-up | Failed logins are throttled (8 per 5 minutes for one username or one IP). Sign-ups are throttled per IP the same way. A wrong current password when changing the password counts too |
+| Guessing sign-in codes, mass sign-up | There are no passwords. A sign-in code lives 10 minutes and allows 5 tries; an address gets 5 codes an hour. Wrong codes are throttled per IP and per address (8 per 5 minutes), and so are sign-ups per IP and refusals of new addresses |
 | Administrator mistakes | An administrator cannot disable themselves or revoke their own admin rights. Destructive actions (disable, revoke, refund) ask for confirmation in the page. Every admin action is logged (who did what to whom) |
-| Long-lived sessions | A browser session lasts 24 hours by default (`-session-ttl`), is visible in the token list and can be revoked. Changing the password can revoke all other sessions; an administrator resetting a password can revoke all of that user's tokens |
+| Long-lived sessions | A browser session lasts 15 days by default (`-session-ttl`) and a client's token 60 days (`-login-ttl`); both are visible in the token list and can be revoked. An administrator can revoke all of a user's tokens |
 | Portal behind a reverse proxy | With `-behind-tls-proxy`, or when the proxy sends `X-Forwarded-Proto: https`, cookies are still marked Secure and the Origin check compares against https |
 
 **Dispute resolution** (`POST /api/v1/admin/disputes/{job}/resolve`) is settled by the portal process directly in the shared database (`coordinator.ResolveDispute`). It is the same code as the coordinator's own finalize and refund. The **serving** coordinator writes its fee rate to `meta.fee_bps` at start-up for the portal to read (`Engine.RecordFeeRate`; operator subcommands do not overwrite it). The row lock on `st_write_lock` keeps the two processes' write transactions serial.
 
-**Two-factor authentication for administrators.** An administrator's password yields only a challenge valid for 5 minutes, never a token. An enrolled administrator then submits a TOTP code (`POST /api/v1/web/mfa` or `/api/v1/mfa`; API clients can also send `totp` in the login request). An administrator who is not enrolled first enrolls in the web page: the server generates a 20-byte secret, shows it as a QR code and as base32 text, and stores it only after the first code is correct. So even at the first login there is no admin session without the second factor. Verification accepts one period either side of now and records the last accepted step, so a code cannot be replayed. Wrong codes count towards the login throttle, and a challenge is discarded after 5 wrong codes. `api_tokens.mfa` records whether a token came from a two-factor login, and the `admin` middleware requires it: a token issued before the user became an administrator has no admin rights, and the user must log in again. The secret is stored in `users.mfa_secret` encrypted with AES-GCM under a key derived from the portal's signing key (`portal-pass.key`), or under `keys.mfa_key_file` when that is set, so a copy of the database does not reveal the authenticator secrets. A portal process without that key (an operator command, for instance) cannot log an administrator in, but `portal mfa-reset` does not need it. Ordinary users are not required to use two-factor authentication.
+**Two-factor authentication.** It is mandatory for administrators and optional for everyone else, who turns it on in the account settings (`/api/v1/account/mfa/…`; turning it off needs a current code, and a notice is mailed either way). For an account that has it, the mailed sign-in code yields only a challenge valid for 5 minutes, never a token. The user then submits a TOTP code (`POST /api/v1/web/mfa` or `/api/v1/mfa`; API clients can also send `totp` in the sign-in request). An administrator who is not enrolled first enrolls in the web page: the server generates a 20-byte secret, shows it as a QR code and as base32 text, and stores it only after the first code is correct. So even at the first sign-in there is no admin session without the second factor. Verification accepts one period either side of now and records the last accepted step, so a code cannot be replayed. Wrong codes count towards the sign-in throttle, and a challenge is discarded after 5 wrong codes. `api_tokens.mfa` records whether a token came from a two-factor login, and the `admin` middleware requires it: a token issued before the user became an administrator has no admin rights, and the user must sign in again. The secret is stored in `users.mfa_secret` encrypted with AES-GCM under a key derived from the portal's signing key (`portal-pass.key`), or under `keys.mfa_key_file` when that is set, so a copy of the database does not reveal the authenticator secrets. A portal process without that key (an operator command, for instance) cannot sign anyone with two-factor authentication in, but `portal mfa-reset` does not need it.
 
 ### 2.13 Pairing: a buyer bound to its sellers
 
@@ -191,7 +191,7 @@ The portal, the coordinator and the mail server share one MySQL 8 (InnoDB) datab
 | `relays` | Portal (registry), coordinator (reachability) | Portal, coordinator |
 | `ledger_accounts`, `ledger_holds`, `ledger_entries` | Portal (grants and deductions), coordinator (holds, settlements, refunds) | Both |
 | `jobs`, `nodes`, `audits`, `peers`, `meta` | Coordinator | Portal (billing, usage, coordinator ID) |
-| `portal_settings`, `admin_audit_log`, `password_resets`, `invite_codes`, `relay_samples`, `feedback` | Portal | Portal |
+| `portal_settings`, `admin_audit_log`, `invite_codes`, `relay_samples`, `feedback` | Portal | Portal |
 | `mail_outbox`, `mail_inbox`, `mail_codes`, `mail_status` | Portal, mail server | Portal, mail server ([mail.md](mail.md)) |
 | `schema_migrations` | Whichever process applies a migration | All processes |
 
@@ -211,15 +211,15 @@ The full threat model and the guarantees the system makes are in [security.md](s
 | Someone connects to the coordinator directly, bypassing the relays | The coordinator listens on no address | `cmd/coordinator` (`DialOnly`) |
 | Binding someone else's node to your account | Binding needs the device's signature within a time window; a bound device cannot be taken over | `accounts.VerifyBind`, `accounts.Store.BindDevice` |
 | One user trading with themselves across devices | Matching excludes by account | `coordinator.Engine.IssueTicket` |
-| A stolen token | Tokens can be revoked at any time; login tokens expire after 30 days; only their SHA-256 is stored | `internal/accounts`, `internal/portal` |
-| Password brute force | argon2id; 8 failures within 5 minutes for one username or one IP give 429 | `portal.Server.throttled` |
+| A stolen token | Tokens can be revoked at any time; a client's token expires after 60 days, a browser session after 15; only their SHA-256 is stored | `internal/accounts`, `internal/portal` |
+| Guessing a sign-in code | There are no passwords. Six-digit codes live 10 minutes with 5 tries each and 5 codes an hour per address; wrong codes are throttled per IP and per address (8 in 5 minutes, then 429). The mailbox is the key to the account; two-factor authentication guards it further | `internal/mailer/codes.go`, `portal.Server.throttled` |
 | A malicious web page calls the local endpoint | Origin check | `client.guardOrigin` |
 | Taking tickets without connecting, to fill a node's slots | A job that never started is released 30 seconds after its ticket expires; an account with 5 stale tickets gets no more | `coordinator.Engine.MarkStarted`, `coordinator.Engine.Tick` |
 | Strangers occupying a relay's reservation slots | A reservation needs a short-lived pass signed by the portal; devices are limited per user | `internal/relaypass`, `internal/relay/admission.go` |
-| Eavesdropping on or tampering with portal traffic (passwords, tokens) | HTTPS by default; the client pins a self-signed certificate's fingerprint; refuses to send secrets in plaintext to a remote host | `internal/portal/tls.go`, `client.NewPortalClient` |
+| Eavesdropping on or tampering with portal traffic (sign-in codes, tokens) | HTTPS by default; the client pins a self-signed certificate's fingerprint; refuses to send secrets in plaintext to a remote host | `internal/portal/tls.go`, `client.NewPortalClient` |
 | A disabled user keeps trading | The coordinator checks the user's state on every request; tokens stop working at once | `accounts.DeviceAccount` |
 | Web session theft, cross-site request forgery, script injection | HttpOnly + SameSite cookie; custom header + Origin check; strict CSP, no inline code | `internal/portal/web.go` (§2.12) |
-| An administrator's password is leaked or guessed | TOTP is mandatory for administrators; a token without the second factor cannot reach `/admin/*`; wrong codes are throttled, challenges have a try limit, codes cannot be replayed; secrets are stored encrypted | `internal/portal/mfa.go`, `internal/totp` (§2.12) |
+| An administrator's mailbox is read by someone else | TOTP is mandatory for administrators; a token without the second factor cannot reach `/admin/*`; wrong codes are throttled, challenges have a try limit, codes cannot be replayed; secrets are stored encrypted | `internal/portal/mfa.go`, `internal/totp` (§2.12) |
 | A stranger exhausts a relay's or the coordinator's memory with huge frames or floods of streams | A frame's buffer grows with the data that actually arrives, not with the announced length. Stream handlers first reserve the frame size with the libp2p resource manager and refuse the frame when it exceeds the per-stream (16 MiB), per-peer or system (a quarter of RAM) limit. Frames that hold only a few fields (passes, acks) are capped at 64 KiB. Hub processes raise only the counts that grow with the number of users (system-wide connections, streams and descriptors; the circuit, ping and other bundled services) and keep libp2p's machine-scaled defaults for everything else. User hosts allow 8 concurrent pings per peer instead of 3, so that overlapping measurements and link monitoring do not make a relay look unreachable | `protocol.RecvStream`, `p2p.HubLimits`, `p2p.ClientLimits` |
 
 ## 5. Honest limits

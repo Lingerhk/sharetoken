@@ -8,7 +8,6 @@ import (
 	netmail "net/mail"
 	"strconv"
 	"strings"
-	"time"
 
 	"sharetoken/internal/accounts"
 	"sharetoken/internal/mailer"
@@ -41,91 +40,6 @@ func (s *Server) notify(m mailer.Message) {
 	if _, err := s.mail.Enqueue(m); err != nil {
 		s.log.Warn("queueing a notice", "err", err, "user", m.To)
 	}
-}
-
-// handleRegisterCode mails a sign-up code, or answers "exists" for an address
-// that already has an account.
-func (s *Server) handleRegisterCode(w http.ResponseWriter, r *http.Request) {
-	st := s.settings()
-	if !st.OpenRegistration {
-		writeErr(w, http.StatusForbidden, "registration_closed", "registration is closed; ask an administrator for an account")
-		return
-	}
-	if !st.EmailVerification {
-		writeErr(w, http.StatusNotFound, "not_supported", "this portal does not verify email addresses")
-		return
-	}
-	// Browsers may only call this from the portal's own pages, or any page could
-	// make visitors' browsers send mail. Other clients send no Origin.
-	if r.Header.Get("Origin") != "" && !sameOrigin(r) {
-		writeErr(w, http.StatusForbidden, "cross_site", "this endpoint is for the portal's own pages")
-		return
-	}
-	var req struct {
-		Email  string `json:"email"`
-		Invite string `json:"invite_code"`
-	}
-	if !readJSON(w, r, &req) {
-		return
-	}
-	email := accounts.NormalizeEmail(req.Email)
-	if err := accounts.CheckEmail(email); err != nil {
-		s.accountErr(w, err)
-		return
-	}
-	// Mail goes out only to those who could sign up.
-	if !s.checkSignupRules(w, s.clientIP(r), email, req.Invite, st) {
-		return
-	}
-	// An address that already has an account is told so on the page; the
-	// lookups are rate-limited per IP so the endpoint is no bulk directory.
-	ip := s.clientIP(r)
-	if s.throttled("taken:" + ip) {
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many requests from this address; try again in a few minutes")
-		return
-	}
-	switch _, err := s.store.UserByName(email); {
-	case err == nil:
-		s.recordFailure("taken:" + ip)
-		writeErr(w, http.StatusConflict, "exists", "this email address is already registered; log in instead")
-		return
-	case !errors.Is(err, accounts.ErrNotFound):
-		s.internal(w, err)
-		return
-	}
-	err := s.mail.RequestCode(mailer.CodeRequest{Purpose: mailer.PurposeRegister, Email: email, IP: ip,
-		From: st.MailFrom, ReplyTo: s.supportAddress()})
-	switch {
-	case errors.Is(err, mailer.ErrCodeCooldown):
-		writeErr(w, http.StatusTooManyRequests, "code_cooldown", "a code was just sent to this address; wait a minute before asking again")
-	case errors.Is(err, mailer.ErrCodeLimit):
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many codes requested; try again later")
-	case err != nil:
-		s.internal(w, err)
-	default:
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cooldown_seconds": int(mailer.CodeCooldown / time.Second), "expires_in_seconds": int(mailer.CodeTTL / time.Second)})
-	}
-}
-
-// checkRegisterCode redeems the code of a sign-up. Everything else about the
-// request has been checked by then, so that a code is not used up by a typo in
-// the password. On failure it has written the response.
-func (s *Server) checkRegisterCode(w http.ResponseWriter, ip, email, code string) bool {
-	if s.throttled("code:" + ip) {
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong codes from this address; try again in a few minutes")
-		return false
-	}
-	err := s.mail.VerifyCode(mailer.PurposeRegister, email, code)
-	switch {
-	case errors.Is(err, mailer.ErrBadCode):
-		s.recordFailure("code:" + ip)
-		writeErr(w, http.StatusBadRequest, "bad_code", "wrong or expired verification code")
-		return false
-	case err != nil:
-		s.internal(w, err)
-		return false
-	}
-	return true
 }
 
 // ---- admin ----
@@ -173,7 +87,7 @@ func (s *Server) handleMailStatus(w http.ResponseWriter, r *http.Request, _ ctxU
 	}
 	st := s.settings()
 	writeJSON(w, http.StatusOK, map[string]any{"overview": o, "from": st.MailFrom, "support": st.MailSupport,
-		"email_verification": st.EmailVerification, "registration_open": st.OpenRegistration})
+		"registration_open": st.OpenRegistration})
 }
 
 func (s *Server) handleMailMessage(w http.ResponseWriter, r *http.Request, _ ctxUser) {
@@ -376,8 +290,8 @@ func (s *Server) mailConfigured(w http.ResponseWriter) bool {
 	return true
 }
 
-// maskSensitive hides a code still waiting in the queue: it is as good as a
-// password, and administrators do not get to read it.
+// maskSensitive hides a code still waiting in the queue: it opens the account,
+// and administrators do not get to read it.
 func maskSensitive(m *mailer.OutMail) {
 	if m.Sensitive {
 		m.Text, m.Subject = "（内容含验证码，不显示）", "（含验证码，不显示）"

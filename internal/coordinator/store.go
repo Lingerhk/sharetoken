@@ -19,6 +19,8 @@ var Migrations = []mysqldb.Migration{
 	{Version: 2, Name: "date range listings", SQL: ledger.AtIndex + auditsAtIndex},
 	{Version: 3, Name: "device platform", SQL: `ALTER TABLE devices ADD COLUMN client_os VARCHAR(16) NOT NULL DEFAULT '';`},
 	{Version: 4, Name: "pairing", SQL: accounts.PairingSchema},
+	// Sign-in is by mailed code; older binaries still write pass_hash.
+	{Version: 5, Name: "no passwords", MinReader: 5, SQL: accounts.NoPasswords},
 }
 
 // Migrate brings the shared database up to date. The portal and the coordinator

@@ -16,7 +16,7 @@ To use another directory, for example to run two accounts on one machine:
 
 ::: macos linux
 ```bash
-{{exe}} -home ~/sharetoken-second login -user other@example.com
+{{exe}} -home ~/sharetoken-second login -email other@example.com
 {{exe}} -home ~/sharetoken-second up -http 127.0.0.1:9800
 {{exe}} -home ~/sharetoken-second status
 ```
@@ -24,7 +24,7 @@ To use another directory, for example to run two accounts on one machine:
 
 ::: windows
 ```powershell
-{{exe}} -home "$HOME\sharetoken-second" login -user other@example.com
+{{exe}} -home "$HOME\sharetoken-second" login -email other@example.com
 {{exe}} -home "$HOME\sharetoken-second" up -http 127.0.0.1:9800
 {{exe}} -home "$HOME\sharetoken-second" status
 ```

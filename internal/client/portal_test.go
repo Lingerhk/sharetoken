@@ -19,7 +19,7 @@ func TestPortalPinning(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	p, err := portal.New(portal.Config{DB: db, OpenRegistration: true})
+	p, err := portal.New(portal.Config{DB: db, OpenRegistration: true, Mail: portal.MailConfig{From: "ShareToken <team@example.test>"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,14 +38,14 @@ func TestPortalPinning(t *testing.T) {
 	if err != nil || pc.Fingerprint != fp || pc.Trusted {
 		t.Fatalf("probe: %+v %v", pc, err)
 	}
-	if _, err := NewPortalClient(srv.URL, "", fp).Register(ctx, "alice", "correct horse", "t"); err != nil {
+	if _, err := NewPortalClient(srv.URL, "", fp).RequestCode(ctx, "alice@example.test", ""); err != nil {
 		t.Fatalf("pinned client: %v", err)
 	}
-	if _, err := NewPortalClient(srv.URL, "", "").Login(ctx, "alice", "correct horse", "t"); err == nil {
+	if _, err := NewPortalClient(srv.URL, "", "").RequestCode(ctx, "bob@example.test", ""); err == nil {
 		t.Fatal("an unpinned client must not trust a self-signed certificate")
 	}
 	other, _ := portal.SelfSignedCert(t.TempDir(), nil)
-	if _, err := NewPortalClient(srv.URL, "", portal.CertFingerprint(other.Certificate[0])).Login(ctx, "alice", "correct horse", "t"); err == nil {
+	if _, err := NewPortalClient(srv.URL, "", portal.CertFingerprint(other.Certificate[0])).RequestCode(ctx, "carol@example.test", ""); err == nil {
 		t.Fatal("a client pinned to another certificate must refuse (man in the middle)")
 	}
 

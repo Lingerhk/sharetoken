@@ -1,6 +1,6 @@
 # Desktop app
 
-The desktop app gives you a graphical interface to register, sign in, check your account and network status, and set up the models you share.
+The desktop app gives you a graphical interface to sign in, check your account and network status, and set up the models you share.
 
 ## Install {#install}
 
@@ -94,7 +94,7 @@ The command-line edition includes the same interface. Run:
 {{exe}} daemon
 ```
 
-Then open `http://127.0.0.1:{{port}}/` in a browser to register and sign in on the page. The difference from `up` is that `daemon` can run while signed out, and it joins the network only after you sign in.
+Then open `http://127.0.0.1:{{port}}/` in a browser to sign in on the page. The difference from `up` is that `daemon` can run while signed out, and it joins the network only after you sign in.
 
 ## Use with the command line {#with-cli}
 

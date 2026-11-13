@@ -78,18 +78,20 @@ function totp(secret) {
 
 const DSN = readFileSync(dir + '/dsn', 'utf8').trim();
 const portalCmd = (args, extra = {}) => execFileSync(dir + '/bin/portal', ['-db', DSN, ...args], { cwd: dir, env: { ...process.env, SHARETOKEN_DB_PASSWORD: '', ...extra }, encoding: 'utf8' });
-const PASSWORD = 'version-ui-password';
+// Sign-in codes: nothing delivers mail, scripts/gui_stack.sh reads them from the outbox.
+const mailedCode = email => execFileSync(new URL('./gui_stack.sh', import.meta.url).pathname, ['code', dir, email], { encoding: 'utf8' }).trim();
 
 await connect();
 await cdp('Page.enable'); await cdp('Runtime.enable'); await cdp('Log.enable');
 await cdp('Page.addScriptToEvaluateOnNewDocument', { source: "try { localStorage.setItem('st_lang', 'zh-CN'); } catch (e) {}" }); // these checks read the Chinese source text
 
 console.log('admin console');
-portalCmd(['useradd', '-admin', 'verroot'], { SHARETOKEN_PASSWORD: PASSWORD });
+portalCmd(['useradd', '-admin', 'verroot@example.test']);
 await go(env.PORTAL + '/admin/');
 const web = `{ 'Content-Type': 'application/json', 'X-Sharetoken-Web': '1' }`;
 const post = (path, body) => ev(`fetch(${q(path)}, { method: 'POST', headers: ${web}, body: ${q(JSON.stringify(body))} }).then(async r => ({ status: r.status, data: await r.json() }))`);
-const ch = (await post('/api/v1/web/login', { username: 'verroot', password: PASSWORD })).data;
+ok((await post('/api/v1/auth/code', { email: 'verroot@example.test' })).status === 200, 'a sign-in code is mailed');
+const ch = (await post('/api/v1/web/auth/verify', { email: 'verroot@example.test', code: mailedCode('verroot@example.test') })).data;
 const setup = (await post('/api/v1/web/mfa/setup', { challenge: ch.challenge })).data;
 ok((await post('/api/v1/web/mfa/confirm', { challenge: ch.challenge, code: totp(setup.secret) })).status === 200, 'an admin session');
 await go(env.PORTAL + '/app/'); // a full load, so that the page sees the new session
@@ -124,8 +126,10 @@ const startDaemon = async () => {
   return c;
 };
 let d = await startDaemon();
-const login = await fetch(api + '/api/v1/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: env.PIN, email: 'version@example.com', password: PASSWORD, device: 'version-box' }) });
-ok(login.status === 201, 'signed up through the daemon');
+const daemonPost = (path, body) => fetch(api + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+ok((await daemonPost('/api/v1/auth/code', { pin: env.PIN, email: 'version@example.com' })).ok, 'a code through the daemon');
+const login = await daemonPost('/api/v1/auth/verify', { pin: env.PIN, email: 'version@example.com', code: mailedCode('version@example.com'), device: 'version-box' });
+ok(login.status === 200, 'signed up through the daemon');
 d.kill(); await sleep(800);
 d = await startDaemon();
 for (let i = 0; i < 40; i++) { const s = await (await fetch(api + '/api/v1/session')).json(); if (s.update.available) break; await sleep(250); }

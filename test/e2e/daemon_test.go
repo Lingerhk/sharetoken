@@ -104,8 +104,11 @@ func TestDaemonFullFlow(t *testing.T) {
 	if st := u.call("POST", "/api/v1/portal/probe", map[string]string{"portal": n.url}, &probe); st != 200 || !probe.RegistrationOpen || probe.SignupCredit != 5_000_000 {
 		t.Fatalf("probe: %d %+v", st, probe)
 	}
-	if st := u.call("POST", "/api/v1/register", map[string]string{"portal": n.url, "email": "Buyer@Example.com", "password": "correct horse", "device": "buyer-mac"}, &s); st != 201 {
-		t.Fatalf("register: %d", st)
+	if st := u.call("POST", "/api/v1/auth/code", map[string]string{"portal": n.url, "email": "Buyer@Example.com"}, nil); st != 200 {
+		t.Fatalf("code: %d", st)
+	}
+	if st := u.call("POST", "/api/v1/auth/verify", map[string]string{"portal": n.url, "email": "Buyer@Example.com", "code": n.code("buyer@example.com"), "device": "buyer-mac"}, &s); st != 200 {
+		t.Fatalf("sign-up: %d", st)
 	}
 	if s.User != "buyer@example.com" {
 		t.Fatalf("session: %+v", s)
@@ -205,8 +208,11 @@ func TestDaemonFullFlow(t *testing.T) {
 	}
 
 	// Logging in again brings it all back, on the same device.
-	if code := u.call("POST", "/api/v1/login", map[string]string{"portal": n.url, "account": "buyer@example.com", "password": "correct horse"}, &s); code != 200 {
-		t.Fatalf("login: %d", code)
+	if code := u.call("POST", "/api/v1/auth/code", map[string]string{"portal": n.url, "email": "buyer@example.com"}, nil); code != 200 {
+		t.Fatalf("code: %d", code)
+	}
+	if code := u.call("POST", "/api/v1/auth/verify", map[string]string{"portal": n.url, "email": "buyer@example.com", "code": n.code("buyer@example.com")}, &s); code != 200 {
+		t.Fatalf("sign-in: %d", code)
 	}
 	if s = u.waitRunning(); s.Peer != peer {
 		t.Fatalf("after login: %+v", s)
@@ -228,8 +234,11 @@ func TestDaemonJoinsWhenNetworkReturns(t *testing.T) {
 	u := n.startDaemon(t.TempDir())
 	front.networkDown.Store(true)
 	var s client.Session
-	if code := u.call("POST", "/api/v1/register", map[string]string{"portal": front.url, "email": "late@example.com", "password": "correct horse"}, &s); code != 201 {
-		t.Fatalf("register: %d", code)
+	if code := u.call("POST", "/api/v1/auth/code", map[string]string{"portal": front.url, "email": "late@example.com"}, nil); code != 200 {
+		t.Fatalf("code: %d", code)
+	}
+	if code := u.call("POST", "/api/v1/auth/verify", map[string]string{"portal": front.url, "email": "late@example.com", "code": n.code("late@example.com")}, &s); code != 200 {
+		t.Fatalf("sign-up: %d", code)
 	}
 	waitFor(t, 10*time.Second, "the first failed attempt", func() bool {
 		u.call("GET", "/api/v1/session", nil, &s)
@@ -267,4 +276,18 @@ func newSwitchablePortal(t *testing.T, n *network) *switchablePortal {
 	t.Cleanup(srv.Close)
 	p.url = srv.URL
 	return p
+}
+
+// code reads the last sign-in code mailed to email from the portal's outbox (as
+// its recipient would) and lifts the per-address cooldown for the next one.
+func (n *network) code(email string) string {
+	n.t.Helper()
+	var subject string
+	if err := n.db.QueryRow(`SELECT subject FROM mail_outbox WHERE to_addr = ? ORDER BY id DESC LIMIT 1`, email).Scan(&subject); err != nil {
+		n.t.Fatalf("no code mailed to %s: %v", email, err)
+	}
+	if _, err := n.db.Exec(`UPDATE mail_codes SET created_at = created_at - 7200`); err != nil {
+		n.t.Fatal(err)
+	}
+	return subject[strings.LastIndex(subject, " ")+1:]
 }

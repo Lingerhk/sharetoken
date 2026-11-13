@@ -71,20 +71,21 @@ type Info struct {
 	SignupCredit     uint64 `json:"signup_credit_micros"`
 	SessionHours     int64  `json:"session_hours"`
 	PassesEnabled    bool   `json:"passes_enabled"`
-	// EmailVerification: sign-ups first ask POST /api/v1/register/code.
-	EmailVerification bool   `json:"email_verification"`
-	SupportEmail      string `json:"support_email,omitempty"`
-	InviteRequired    bool   `json:"invite_required,omitempty"`
-	PasswordReset     bool   `json:"password_reset"`
-	DefaultPageSize   int    `json:"default_page_size"`
+	SupportEmail     string `json:"support_email,omitempty"`
+	InviteRequired   bool   `json:"invite_required,omitempty"`
+	DefaultPageSize  int    `json:"default_page_size"`
+	// CodeSignIn: people sign in with a code mailed to them (POST
+	// /api/v1/auth/code). Always true; clients check it to tell this portal
+	// from one that wanted passwords.
+	CodeSignIn bool `json:"code_sign_in"`
 }
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	st := s.settings()
 	writeJSON(w, http.StatusOK, Info{RegistrationOpen: st.OpenRegistration, SignupCredit: st.SignupCreditMicros,
 		SessionHours: int64(s.webSessionTTL() / time.Hour), PassesEnabled: s.cfg.PassKey != nil,
-		EmailVerification: st.EmailVerification, SupportEmail: s.supportAddress(), InviteRequired: st.InviteRequired,
-		PasswordReset: s.resetActive(st), DefaultPageSize: st.DefaultPageSize})
+		SupportEmail: s.supportAddress(), InviteRequired: st.InviteRequired,
+		DefaultPageSize: st.DefaultPageSize, CodeSignIn: true})
 }
 
 // webSessionTTL is the lifetime of a new browser session.
@@ -248,35 +249,11 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, u *account
 		s.accountErr(w, err)
 		return
 	}
-	if mfa {
+	if mfa && u.Admin {
 		s.auditEvent(r, u, actionAdminLogin, u.Username, nil)
 	}
 	s.setSession(w, r, plain, ttl)
-	writeJSON(w, status, map[string]any{"user": u})
-}
-
-func (s *Server) handleWebLogin(w http.ResponseWriter, r *http.Request) {
-	var c credentials
-	if !readJSON(w, r, &c) {
-		return
-	}
-	u, mfa, ok := s.authenticate(w, r, c)
-	if !ok {
-		return
-	}
-	s.startSession(w, r, u, http.StatusOK, mfa)
-}
-
-func (s *Server) handleWebRegister(w http.ResponseWriter, r *http.Request) {
-	var c credentials
-	if !readJSON(w, r, &c) {
-		return
-	}
-	u, ok := s.register(w, r, c)
-	if !ok {
-		return
-	}
-	s.startSession(w, r, u, http.StatusCreated, false)
+	writeJSON(w, status, map[string]any{"user": u, "created": status == http.StatusCreated})
 }
 
 func (s *Server) handleWebLogout(w http.ResponseWriter, r *http.Request, cu ctxUser) {
@@ -325,35 +302,6 @@ func (s *Server) handleSetAdmin(w http.ResponseWriter, r *http.Request, cu ctxUs
 	cu.note("is_admin", req.Admin)
 	s.log.Info("admin rights changed", "user", u.Username, "admin", req.Admin, "by", cu.user.Username)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-func (s *Server) handleAdminPassword(w http.ResponseWriter, r *http.Request, cu ctxUser) {
-	u := s.userByPath(w, r)
-	if u == nil {
-		return
-	}
-	var req struct {
-		New          string `json:"new_password"`
-		RevokeTokens bool   `json:"revoke_tokens"`
-	}
-	if !readJSON(w, r, &req) {
-		return
-	}
-	if err := s.store.SetPassword(u.ID, req.New); err != nil {
-		s.accountErr(w, err)
-		return
-	}
-	var revoked int64
-	if req.RevokeTokens {
-		var err error
-		if revoked, err = s.store.RevokeAllTokens(u.ID); err != nil {
-			s.internal(w, err)
-			return
-		}
-	}
-	cu.note("tokens_revoked", revoked)
-	s.log.Info("password reset by admin", "user", u.Username, "by", cu.user.Username, "tokens_revoked", revoked)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tokens_revoked": revoked})
 }
 
 func (s *Server) handleAdminTokens(w http.ResponseWriter, r *http.Request, _ ctxUser) {

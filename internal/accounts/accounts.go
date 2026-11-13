@@ -15,23 +15,22 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/argon2"
 
 	"sharetoken/internal/canon"
 	"sharetoken/internal/ledger"
 	"sharetoken/internal/protocol"
 )
+
+// NoPasswords is the migration that followed Schema: people sign in with a
+// mailed code, and nobody has a password.
+const NoPasswords = `ALTER TABLE users DROP COLUMN pass_hash;`
 
 // Schema creates the shared user-management tables.
 const Schema = `
@@ -105,7 +104,6 @@ CREATE TABLE IF NOT EXISTS feedback (
 var (
 	ErrUnknownDevice  = errors.New("accounts: device is not bound to any user")
 	ErrDisabled       = errors.New("accounts: user is disabled")
-	ErrBadCredentials = errors.New("accounts: wrong username or password")
 	ErrBadToken       = errors.New("accounts: invalid, expired or revoked token")
 	ErrExists         = errors.New("accounts: already exists")
 	ErrNotFound       = errors.New("accounts: not found")
@@ -138,13 +136,14 @@ func DeviceAccount(q Querier, peer string) (account string, userID int64, err er
 	return ledger.UserAccount(userID), userID, nil
 }
 
-// ---- passwords and tokens ----
+// ---- names and tokens ----
 
 var usernameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{2,31}$`)
 
-// CheckUsername validates an account name: an email address (what sign-ups
-// use), or a plain username of 3-32 of [a-z0-9_.-], starting alphanumeric
-// (accounts an administrator creates, and older ones).
+// CheckUsername validates an account name: an email address (what every
+// account the portal creates uses: people sign in with a code mailed there), or
+// a plain username of 3-32 of [a-z0-9_.-], starting alphanumeric (accounts made
+// directly in the store, such as tests').
 func CheckUsername(u string) error {
 	if strings.Contains(u, "@") {
 		return CheckEmail(u)
@@ -172,52 +171,6 @@ func CheckEmail(e string) error {
 		return fmt.Errorf("%w: not a valid email address", ErrInvalid)
 	}
 	return nil
-}
-
-// CheckPassword enforces a minimum length.
-func CheckPassword(p string) error {
-	if len(p) < 8 || len(p) > 256 {
-		return fmt.Errorf("%w: password must be 8-256 characters", ErrInvalid)
-	}
-	return nil
-}
-
-// argon2id parameters (OWASP minimum: 19 MiB, 2 passes, 1 lane), small enough
-// for a 2 GB server handling concurrent logins.
-const (
-	argonTime    = 2
-	argonMemory  = 19 * 1024
-	argonThreads = 1
-	argonKeyLen  = 32
-)
-
-// HashPassword returns an encoded argon2id hash.
-func HashPassword(pw string) (string, error) {
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return "", err
-	}
-	key := argon2.IDKey([]byte(pw), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
-	b64 := base64.RawStdEncoding
-	return fmt.Sprintf("argon2id$%d$%d$%d$%s$%s", argonTime, argonMemory, argonThreads, b64.EncodeToString(salt), b64.EncodeToString(key)), nil
-}
-
-// VerifyPassword checks pw against an encoded hash in constant time.
-func VerifyPassword(encoded, pw string) bool {
-	parts := strings.Split(encoded, "$")
-	if len(parts) != 6 || parts[0] != "argon2id" {
-		return false
-	}
-	t, err1 := strconv.ParseUint(parts[1], 10, 32)
-	m, err2 := strconv.ParseUint(parts[2], 10, 32)
-	p, err3 := strconv.ParseUint(parts[3], 10, 8)
-	salt, err4 := base64.RawStdEncoding.DecodeString(parts[4])
-	want, err5 := base64.RawStdEncoding.DecodeString(parts[5])
-	if err := errors.Join(err1, err2, err3, err4, err5); err != nil || len(want) == 0 || m > 1<<20 || t > 16 {
-		return false
-	}
-	got := argon2.IDKey([]byte(pw), salt, uint32(t), uint32(m), uint8(p), uint32(len(want)))
-	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
 // TokenPrefix marks sharetoken API tokens.

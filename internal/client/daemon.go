@@ -30,7 +30,7 @@ import (
 // with nobody logged in: it serves the app's pages and the API that signs a
 // user up or in, and runs an Agent for as long as a user is logged in. The
 // portal token stays inside the daemon and config.json; the API never returns
-// it, and passwords only pass through on their way to the portal.
+// it, and sign-in codes only pass through on their way to the portal.
 type Daemon struct {
 	// Settings; set before Start.
 	HTTP      string   // local API address (default: the configuration's); must be loopback
@@ -57,7 +57,7 @@ type Daemon struct {
 	lastErr  string
 	portal   *PortalClient // nil: logged out
 	peer     string
-	firstRun bool // no config.json when the daemon started, and no sign-in since
+	mfa      *pendingMFA // a sign-in waiting for its second factor
 	agent    *Agent
 	agentAPI http.Handler
 	cancel   context.CancelFunc // ends the current run
@@ -89,9 +89,6 @@ type Session struct {
 	Peer   string `json:"peer,omitempty"`
 	API    string `json:"api"`             // OpenAI base URL
 	Error  string `json:"error,omitempty"` // why the state is retrying or expired
-	// FirstRun: this installation has no settings file yet and nobody has
-	// signed in, so the app opens on sign-up rather than login.
-	FirstRun bool `json:"first_run,omitempty"`
 	// Version and APIVersion say what this daemon is: the desktop shell only
 	// uses a daemon of its own release.
 	Version    string `json:"version"`
@@ -123,8 +120,6 @@ func (d *Daemon) loadConfig() (Config, error) {
 // Start opens the local API and, if a login is saved, starts joining the
 // network; it does not wait for that.
 func (d *Daemon) Start() error {
-	_, statErr := os.Stat(filepath.Join(d.home, ConfigFile))
-	firstRun := errors.Is(statErr, fs.ErrNotExist)
 	cfg, err := d.loadConfig()
 	if err != nil {
 		return err
@@ -158,7 +153,6 @@ func (d *Daemon) Start() error {
 
 	d.mu.Lock()
 	d.cfg = cfg
-	d.firstRun = firstRun
 	d.mu.Unlock()
 	uctx, stopUpdates := context.WithCancel(context.Background())
 	d.stopUpdates = stopUpdates
@@ -206,7 +200,6 @@ func (d *Daemon) Session() Session {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	s := Session{Env: Env, State: d.state, LoggedIn: d.portal != nil, Portal: d.cfg.Portal, User: d.cfg.User, API: "http://" + d.addr + "/v1", Error: d.lastErr, Version: version.Version, APIVersion: version.API}
-	s.FirstRun = d.firstRun && d.portal == nil
 	s.Update = d.updates.Current()
 	if !s.LoggedIn || s.Portal == "" {
 		s.Portal = PortalAddr() // the sign-in page does not ask for it
@@ -370,7 +363,7 @@ func NormalizePortalURL(raw string) (string, error) {
 	return strings.TrimRight(u.Scheme+"://"+u.Host+u.EscapedPath(), "/"), nil
 }
 
-// PortalProbe is what the login page shows about a portal before any password
+// PortalProbe is what the sign-in page shows about a portal before any code
 // is sent to it.
 type PortalProbe struct {
 	Portal string `json:"portal"` // the normalized address
@@ -385,14 +378,13 @@ type PortalProbe struct {
 	// PinChanged: a different certificate was pinned for this portal.
 	PinChanged bool `json:"pin_changed"`
 	// PinRequired: the user must confirm Fingerprint before logging in.
-	PinRequired      bool   `json:"pin_required"`
+	PinRequired bool `json:"pin_required"`
+	// RegistrationOpen: an address without an account gets one at its first
+	// sign-in. InviteRequired: such a sign-in needs an invite code.
 	RegistrationOpen bool   `json:"registration_open"`
+	InviteRequired   bool   `json:"invite_required"`
 	SignupCredit     uint64 `json:"signup_credit_micros"`
-	// EmailVerification: registering needs a code from POST /api/v1/register/code.
-	EmailVerification bool   `json:"email_verification"`
-	SupportEmail      string `json:"support_email,omitempty"`
-	// PasswordReset: the portal can mail a reset link (on its sign-in page).
-	PasswordReset bool `json:"password_reset"`
+	SupportEmail     string `json:"support_email,omitempty"`
 }
 
 // apiError is a failure the API reports with a stable code the app can act on.
@@ -438,7 +430,7 @@ func (d *Daemon) probe(ctx context.Context, raw string) (*PortalProbe, error) {
 	pin := ""
 	if !p.HTTPS {
 		if InsecurePortalURL(base) && !d.AllowHTTP {
-			return nil, &apiError{http.StatusBadRequest, "insecure_portal", "refusing a plain-HTTP portal on another machine: your password would cross the network in clear"}
+			return nil, &apiError{http.StatusBadRequest, "insecure_portal", "refusing a plain-HTTP portal on another machine: your sign-in code would cross the network in clear"}
 		}
 	} else {
 		cert, err := ProbePortal(ctx, base)
@@ -462,19 +454,21 @@ func (d *Daemon) probe(ctx context.Context, raw string) (*PortalProbe, error) {
 		}
 		return nil, &apiError{http.StatusBadGateway, "portal_unreachable", "cannot reach the portal: " + err.Error()}
 	}
-	p.RegistrationOpen, p.SignupCredit = info.RegistrationOpen, info.SignupCredit
-	p.EmailVerification, p.SupportEmail, p.PasswordReset = info.EmailVerification, info.SupportEmail, info.PasswordReset
+	if !info.CodeSignIn {
+		return nil, &apiError{http.StatusBadGateway, "portal_outdated", "this portal still signs in with passwords; it needs an update"}
+	}
+	p.RegistrationOpen, p.InviteRequired, p.SignupCredit, p.SupportEmail = info.RegistrationOpen, info.InviteRequired, info.SignupCredit, info.SupportEmail
 	return p, nil
 }
 
-// trust decides how to reach the portal before a password is sent to it and
+// trust decides how to reach the portal before an address or code is sent to it and
 // returns the pin to keep ("" when none is needed). The pin is either one the
 // user confirmed after a probe or the one saved at an earlier login; a
 // self-signed certificate with neither is refused.
 func (d *Daemon) trust(ctx context.Context, base, pin string) (string, error) {
 	if strings.HasPrefix(base, "http://") {
 		if InsecurePortalURL(base) && !d.AllowHTTP {
-			return "", &apiError{http.StatusBadRequest, "insecure_portal", "refusing a plain-HTTP portal on another machine: your password would cross the network in clear"}
+			return "", &apiError{http.StatusBadRequest, "insecure_portal", "refusing a plain-HTTP portal on another machine: your sign-in code would cross the network in clear"}
 		}
 		return "", nil
 	}
@@ -504,85 +498,156 @@ func (d *Daemon) trust(ctx context.Context, base, pin string) (string, error) {
 // ---- signing in ----
 
 type signInRequest struct {
-	Portal   string `json:"portal"`
-	Pin      string `json:"pin"`
-	Email    string `json:"email"`   // register
-	Code     string `json:"code"`    // register: the emailed verification code
-	Account  string `json:"account"` // login: email address or username
-	Password string `json:"password"`
-	TOTP     string `json:"totp"`   // login of an administrator
-	Device   string `json:"device"` // name of this device (default: host name)
+	Portal string `json:"portal"`
+	Pin    string `json:"pin"`
+	Email  string `json:"email"`
+	Code   string `json:"code"`        // the mailed sign-in code
+	Invite string `json:"invite_code"` // a new account, on portals that require one
+	Device string `json:"device"`      // name of this device (default: host name)
 }
 
-// requestCode asks the portal to mail a sign-up code. Only an address crosses
-// to the portal, but it is checked like a sign-in: the user's email is not for
-// a portal they have not confirmed.
-func (d *Daemon) requestCode(ctx context.Context, req signInRequest) (*CodeSent, error) {
+// pendingMFA is a sign-in whose mailed code checked out and that waits for
+// the authenticator code (POST /api/v1/auth/mfa).
+type pendingMFA struct {
+	pc        *PortalClient
+	base, pin string
+	challenge string
+	device    string
+	expires   time.Time
+}
+
+// mfaWait is how long a sign-in waits for its second factor; the portal's
+// challenge lasts five minutes.
+const mfaWait = 5 * time.Minute
+
+// portalFor checks a request's portal and how to trust it. Only an address
+// crosses to the portal before the code, but it is checked like a sign-in:
+// the user's email is not for a portal they have not confirmed.
+func (d *Daemon) portalFor(ctx context.Context, req signInRequest) (pc *PortalClient, base, pin string, err error) {
 	if strings.TrimSpace(req.Portal) == "" {
 		req.Portal = PortalAddr()
 	}
-	base, err := NormalizePortalURL(req.Portal)
-	if err != nil {
-		return nil, &apiError{http.StatusBadRequest, "bad_portal", err.Error()}
+	if base, err = NormalizePortalURL(req.Portal); err != nil {
+		return nil, "", "", &apiError{http.StatusBadRequest, "bad_portal", err.Error()}
 	}
 	if strings.TrimSpace(req.Email) == "" {
-		return nil, &apiError{http.StatusBadRequest, "bad_request", "an email address is required"}
+		return nil, "", "", &apiError{http.StatusBadRequest, "bad_request", "an email address is required"}
 	}
-	pin, err := d.trust(ctx, base, req.Pin)
+	if pin, err = d.trust(ctx, base, req.Pin); err != nil {
+		return nil, "", "", err
+	}
+	return NewPortalClient(base, "", pin), base, pin, nil
+}
+
+// requestCode asks the portal to mail a sign-in code.
+func (d *Daemon) requestCode(ctx context.Context, req signInRequest) (*CodeSent, error) {
+	pc, _, _, err := d.portalFor(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return NewPortalClient(base, "", pin).RequestRegisterCode(ctx, req.Email)
+	return pc.RequestCode(ctx, strings.TrimSpace(req.Email), strings.TrimSpace(req.Invite))
 }
 
-// signIn registers or logs in, binds this device and starts the agent.
-func (d *Daemon) signIn(ctx context.Context, req signInRequest, register bool) error {
+// errLoggedIn refuses a second sign-in.
+var errLoggedIn = &apiError{http.StatusConflict, "already_logged_in", "log out first"}
+
+func (d *Daemon) loggedIn() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.portal != nil
+}
+
+// signIn redeems a mailed code (creating the account of a new address), binds
+// this device and starts the agent. An account with two-factor
+// authentication is left waiting for verifyMFA.
+func (d *Daemon) signIn(ctx context.Context, req signInRequest) error {
 	d.authMu.Lock()
 	defer d.authMu.Unlock()
-	d.mu.Lock()
-	loggedIn := d.portal != nil
-	d.mu.Unlock()
-	if loggedIn {
-		return &apiError{http.StatusConflict, "already_logged_in", "log out first"}
+	if d.loggedIn() {
+		return errLoggedIn
 	}
-	if strings.TrimSpace(req.Portal) == "" {
-		req.Portal = PortalAddr()
+	if strings.TrimSpace(req.Code) == "" {
+		return &apiError{http.StatusBadRequest, "bad_request", "the code from the email is required"}
 	}
-	base, err := NormalizePortalURL(req.Portal)
-	if err != nil {
-		return &apiError{http.StatusBadRequest, "bad_portal", err.Error()}
-	}
-	if req.Password == "" {
-		return &apiError{http.StatusBadRequest, "bad_request", "a password is required"}
-	}
-	pin, err := d.trust(ctx, base, req.Pin)
+	pc, base, pin, err := d.portalFor(ctx, req)
 	if err != nil {
 		return err
+	}
+	device, err := d.deviceName(req.Device)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	d.mfa = nil
+	d.mu.Unlock()
+	res, err := pc.SignIn(ctx, strings.TrimSpace(req.Email), strings.TrimSpace(req.Code), strings.TrimSpace(req.Invite), "", "desktop on "+device)
+	var pe *PortalError
+	switch {
+	case errors.As(err, &pe) && pe.Code == "mfa_required" && pe.Challenge != "":
+		d.mu.Lock()
+		d.mfa = &pendingMFA{pc: pc, base: base, pin: pin, challenge: pe.Challenge, device: device, expires: time.Now().Add(mfaWait)}
+		d.mu.Unlock()
+		return &apiError{http.StatusUnauthorized, "mfa_required", "enter the code from your authenticator app"}
+	case errors.As(err, &pe) && pe.Code == "mfa_setup_required":
+		return &apiError{http.StatusForbidden, "mfa_setup_required", "administrators must set up two-factor authentication: sign in on the web portal first"}
+	case err != nil:
+		return err
+	}
+	return d.finishSignIn(ctx, pc, base, pin, res, device)
+}
+
+// verifyMFA finishes the sign-in signIn left waiting for its second factor.
+func (d *Daemon) verifyMFA(ctx context.Context, code string) error {
+	d.authMu.Lock()
+	defer d.authMu.Unlock()
+	if d.loggedIn() {
+		return errLoggedIn
+	}
+	d.mu.Lock()
+	m := d.mfa
+	d.mu.Unlock()
+	if m == nil || time.Now().After(m.expires) {
+		return &apiError{http.StatusUnauthorized, "challenge_expired", "the sign-in took too long; request a new code"}
+	}
+	if strings.TrimSpace(code) == "" {
+		return &apiError{http.StatusBadRequest, "bad_request", "the code from your authenticator app is required"}
+	}
+	res, err := m.pc.CompleteMFA(ctx, m.challenge, strings.TrimSpace(code), "desktop on "+m.device)
+	if err != nil {
+		var pe *PortalError
+		if errors.As(err, &pe) && pe.Code == "challenge_expired" {
+			d.mu.Lock()
+			d.mfa = nil
+			d.mu.Unlock()
+		}
+		return err
+	}
+	d.mu.Lock()
+	d.mfa = nil
+	d.mu.Unlock()
+	return d.finishSignIn(ctx, m.pc, m.base, m.pin, res, m.device)
+}
+
+// deviceName is the name this device is bound under.
+func (d *Daemon) deviceName(asked string) (string, error) {
+	if device := strings.TrimSpace(asked); device != "" {
+		return device, nil
 	}
 	cfg, err := d.loadConfig()
 	if err != nil {
-		return err
+		return "", err
 	}
-	device := strings.TrimSpace(req.Device)
-	if device == "" {
-		device = cfg.DeviceName
+	if cfg.DeviceName != "" {
+		return cfg.DeviceName, nil
 	}
-	if device == "" {
-		device, _ = os.Hostname()
-	}
-	pc := NewPortalClient(base, "", pin)
-	var res *AuthResult
-	if register {
-		if strings.TrimSpace(req.Email) == "" {
-			return &apiError{http.StatusBadRequest, "bad_request", "an email address is required"}
-		}
-		res, err = pc.RegisterEmail(ctx, req.Email, req.Password, req.Code, "desktop on "+device)
-	} else {
-		if strings.TrimSpace(req.Account) == "" {
-			return &apiError{http.StatusBadRequest, "bad_request", "an email address or username is required"}
-		}
-		res, err = pc.LoginCode(ctx, req.Account, req.Password, strings.TrimSpace(req.TOTP), "desktop on "+device)
-	}
+	host, _ := os.Hostname()
+	return host, nil
+}
+
+// finishSignIn binds this device with a new token, saves the login and
+// starts the agent. Caller holds authMu.
+func (d *Daemon) finishSignIn(ctx context.Context, pc *PortalClient, base, pin string, res *AuthResult, device string) error {
+	cfg, err := d.loadConfig()
 	if err != nil {
 		return err
 	}
@@ -604,9 +669,9 @@ func (d *Daemon) signIn(ctx context.Context, req signInRequest, register bool) e
 		return err
 	}
 	d.mu.Lock()
-	d.peer, d.firstRun = peer, false
+	d.peer = peer
 	d.mu.Unlock()
-	d.log.Info("signed in", "user", res.User.Username, "device", peer)
+	d.log.Info("signed in", "user", res.User.Username, "device", peer, "new_account", res.Created)
 	d.startRun(cfg)
 	return nil
 }
@@ -703,22 +768,7 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, p)
 	}))
-	signIn := func(register bool) http.HandlerFunc {
-		return jsonBody(func(w http.ResponseWriter, r *http.Request, req signInRequest) {
-			ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-			defer cancel()
-			status := http.StatusOK
-			if register {
-				status = http.StatusCreated
-			}
-			if err := d.signIn(ctx, req, register); err != nil {
-				writeAPIError(w, err)
-				return
-			}
-			writeJSON(w, status, d.Session())
-		})
-	}
-	mux.HandleFunc("POST /api/v1/register/code", jsonBody(func(w http.ResponseWriter, r *http.Request, req signInRequest) {
+	mux.HandleFunc("POST /api/v1/auth/code", jsonBody(func(w http.ResponseWriter, r *http.Request, req signInRequest) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		sent, err := d.requestCode(ctx, req)
@@ -728,8 +778,26 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, sent)
 	}))
-	mux.HandleFunc("POST /api/v1/register", signIn(true))
-	mux.HandleFunc("POST /api/v1/login", signIn(false))
+	mux.HandleFunc("POST /api/v1/auth/verify", jsonBody(func(w http.ResponseWriter, r *http.Request, req signInRequest) {
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		if err := d.signIn(ctx, req); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, d.Session())
+	}))
+	mux.HandleFunc("POST /api/v1/auth/mfa", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
+		Code string `json:"code"`
+	}) {
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		if err := d.verifyMFA(ctx, req.Code); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, d.Session())
+	}))
 	mux.HandleFunc("POST /api/v1/logout", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()

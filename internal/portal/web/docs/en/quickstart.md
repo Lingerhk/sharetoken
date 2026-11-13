@@ -60,19 +60,13 @@ Check that the install worked:
 
 If you see the version, the portal address and the local API address, it worked. To pick a package or checksum file by hand, see [Install the command-line client](/docs/install).
 
-## 2. Register an account {#register}
+## 2. Sign in {#register}
 
 ```bash
-{{exe}} register -email you@example.com
+{{exe}} login -email you@example.com
 ```
 
-Enter a password twice when prompted (at least 8 characters), then the verification code sent to your email. When it finishes, this machine is bound to your account.
-
-If you already have an account, sign in instead:
-
-```bash
-{{exe}} login -user you@example.com
-```
+There is no password: enter the six-digit code sent to your email. The first sign-in with an address creates the account. When it finishes, this machine is bound to your account.
 
 ## 3. Start the client {#up}
 

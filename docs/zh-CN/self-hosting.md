@@ -10,7 +10,7 @@
 
 ```bash
 cp .env.example .env
-# 编辑 .env：DB_PASSWORD、DB_ROOT_PASSWORD、ADMIN_PASSWORD、PUBLIC_HOST
+# 编辑 .env：DB_PASSWORD、DB_ROOT_PASSWORD、ADMIN_EMAIL、MAIL_FROM、PUBLIC_HOST
 docker compose up -d --build
 docker compose ps
 ```
@@ -60,7 +60,7 @@ docker compose logs portal | grep sha256:
 ```bash
 go build -o bin/ ./cmd/sharetoken
 export SHARETOKEN_PORTAL=https://<PUBLIC_HOST>:8092
-bin/sharetoken register -user alice -portal-pin sha256:<指纹>
+bin/sharetoken login -email alice@example.com -portal-pin sha256:<指纹>
 bin/sharetoken up                       # 开发版的端点是 http://127.0.0.1:9887/v1
 bin/sharetoken status
 ```
@@ -73,7 +73,16 @@ bin/sharetoken share upstream http://127.0.0.1:18611/v1
 bin/sharetoken share add mock-model
 ```
 
-网页在 `https://<PUBLIC_HOST>:8092/`（官网）、`/app/`（用户页面）和 `/admin/`（管理控制台）。`.env` 里设置的管理员在那里登录，第一次登录时绑定两步验证。
+网页在 `https://<PUBLIC_HOST>:8092/`（官网）、`/app/`（用户页面）和 `/admin/`（管理控制台）。`.env` 里设置的管理员（`ADMIN_EMAIL`）在那里用邮件验证码登录，第一次登录时绑定两步验证。
+
+**登录验证码。** 没有密码：所有人都用发到邮箱的 6 位验证码登录，一个邮箱第一次登录时创建账户。门户只把邮件放进队列；这个 Compose 文件不启动邮件服务（配置见 [mail.md](mail.md)）。在它运行之前，可以从队列里读出验证码，在自己机器上试用时够用：
+
+```bash
+docker compose exec mysql sh -c 'mysql -usharetoken -p"$MYSQL_PASSWORD" sharetoken -N \
+  -e "SELECT to_addr, subject FROM mail_outbox ORDER BY id DESC LIMIT 5"'
+```
+
+必须设置 `MAIL_FROM`，否则验证码根本不会进入队列。
 
 ## 4. 设置
 
@@ -86,10 +95,10 @@ bin/sharetoken share add mock-model
 | `PORTAL_PORT`、`PORTAL_BIND` | `8092`、`0.0.0.0` | 门户发布在哪里 |
 | `RELAY_PORT` | `4001` | 中继的端口，容器内外相同 |
 | `PORTAL_TLS_MODE` | `auto` | `auto`：自签名证书。`proxy`：由反向代理终结 TLS |
-| `PORTAL_PUBLIC_URL` | 空 | 门户的公网地址，用于邮件里的链接 |
-| `OPEN_REGISTRATION` | `true` | 允许任何人注册 |
+| `MAIL_FROM`、`MAIL_SUPPORT` | 空 | 门户邮件的发件人和客服地址。登录验证码靠邮件发送：没有 `MAIL_FROM` 谁都登录不了 |
+| `OPEN_REGISTRATION` | `true` | 没有账户的邮箱第一次登录时创建账户 |
 | `SIGNUP_CREDIT_MICROS` | `.env.example` 里是 `5000000` | 新用户的初始额度（1 credit = 1,000,000 micro-credit） |
-| `ADMIN_USER`、`ADMIN_PASSWORD` | `admin`、空 | 第一个管理员，设置了密码才会创建 |
+| `ADMIN_EMAIL` | 空 | 第一个管理员的邮箱；设置了才会创建这个账户 |
 | `FEE_BPS` | `500` | 平台抽成，单位是基点 |
 | `ST_VERSION`、`ST_COMMIT` | 空 | 写进程序的版本（默认 `<VERSION>-dev.docker`） |
 
@@ -113,13 +122,13 @@ docker compose exec coordinator coordinator -config /var/lib/sharetoken/coordina
 
 ## 5. 试用之后
 
-**正式证书。** 在门户前面放一个带公共 CA 证书的反向代理（Caddy、nginx），在 `portal.yaml` 里设 `tls.mode: proxy`（或者在第一次启动前设 `PORTAL_TLS_MODE=proxy`），让门户只发布在回环地址上（`PORTAL_BIND=127.0.0.1`），并设置 `http.public_url`。这样客户端就不需要指纹了。
+**正式证书。** 在门户前面放一个带公共 CA 证书的反向代理（Caddy、nginx），在 `portal.yaml` 里设 `tls.mode: proxy`（或者在第一次启动前设 `PORTAL_TLS_MODE=proxy`），让门户只发布在回环地址上（`PORTAL_BIND=127.0.0.1`）。这样客户端就不需要指纹了。
 
 **抽检和精确的 token 计数。** 在 `coordinator.yaml` 的 `references` 里为每个要抽检的模型加一个参考副本，也就是协调器能访问到的 OpenAI 兼容服务。没有参考副本就没有抽检，争议时用估算的 token 数。
 
 **更多中继。** 在其他机器上运行 `relay`，它的 `relay.yaml` 里写同一个门户公钥和协调器 ID（`docker compose logs init` 会打印这两个值），然后用 `portal relay add '<地址>' <名字> <地区>` 逐个登记。中继启动时会打印完整的命令。客户端按往返延迟在中继之间选择，卖家会在不止一个中继上预约。
 
-**邮件。** 邮箱验证码注册和找回密码需要邮件服务，这个 Compose 文件不启动它。见 [mail.md](mail.md)。
+**邮件。** 每次登录都需要邮件服务，这个 Compose 文件不启动它。见 [mail.md](mail.md)。
 
 **以后修改 `PUBLIC_HOST`。** 中继的地址存在两个地方。修改 `relay.yaml` 里的 `network.announce`，删掉中继的登记（`portal relay ls`、`portal relay rm <id>`），再执行一次 `docker compose up -d`，`init` 会用新地址重新登记。
 
@@ -137,5 +146,5 @@ docker compose exec coordinator coordinator -config /var/lib/sharetoken/coordina
 
 - `init` 容器为了把网络连起来，挂载了全部三个密钥卷。分机部署时请手工完成这些步骤，这样任何一台主机都不会持有另一个程序的密钥（[guide.md](guide.md)）。
 - MySQL 只在 Compose 网络内部可达，请保持这样。
-- `OPEN_REGISTRATION=true` 加上注册赠送额度，意味着任何人都能创建持有 credit 的账户。面向公网时，请开启邮箱验证，或者改由管理员创建用户。
+- `OPEN_REGISTRATION=true` 加上注册赠送额度，意味着任何人都能创建持有 credit 的账户。每个账户只需要一个邮箱。面向公网时，请在设置页限制允许的邮箱域名或要求邀请码，或者关闭注册、改由管理员创建用户。
 - 网络保护什么、不保护什么，见 [security.md](security.md)。

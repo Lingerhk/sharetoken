@@ -1,15 +1,17 @@
 package portal
 
-// Two-factor authentication for administrators.
+// Two-factor authentication (TOTP).
 //
-// An admin's password alone never opens a session. After the password
-// checks out the portal hands the client a short-lived challenge id and asks
-// for a TOTP code (or, for an admin without a secret yet, for enrollment:
-// the portal generates a secret, shows it as a QR code and secret text, and
-// enrolls it once the client proves it with a first code). Tokens and
-// sessions remember whether they were issued after a second factor; admin
-// endpoints accept only those, so a promotion to admin or this feature's
-// roll-out forces a fresh two-factor login. Secrets are stored sealed with
+// Administrators must have it; anyone else may turn it on in their account
+// settings (POST /api/v1/account/mfa/setup, then /enable with a first code;
+// /disable with a current code turns it off). For an account that has it, the
+// mailed sign-in code alone never opens a session: once the code checks out the
+// portal hands the client a short-lived challenge id and asks for a TOTP code
+// (or, for an admin without a secret yet, for enrollment: the portal generates
+// a secret, shows it as a QR code and secret text, and enrolls it once the
+// client proves it with a first code). Tokens and sessions remember whether
+// they were issued after a second factor; admin endpoints accept only those, so
+// a promotion to admin forces a fresh two-factor login. Secrets are stored sealed with
 // AES-GCM under a key derived from the portal's own private key, so the
 // database file alone does not yield working authenticator secrets.
 
@@ -22,12 +24,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/skip2/go-qrcode"
 
 	"sharetoken/internal/accounts"
+	"sharetoken/internal/mailer"
 	"sharetoken/internal/totp"
 )
 
@@ -36,7 +38,8 @@ const (
 	challengeTTL     = 5 * time.Minute
 	challengeTries   = 5 // wrong codes before a challenge is discarded
 	mfaPurposeCode   = "code"
-	mfaPurposeEnroll = "enroll"
+	mfaPurposeEnroll = "enroll"      // an admin's first sign-in
+	mfaPurposeSelf   = "self-enroll" // a signed-in user turning it on
 )
 
 // A challenge is an authenticated-but-not-yet-complete login.
@@ -153,7 +156,7 @@ func (s *Server) dropChallenge(id string) {
 	s.mfaMu.Unlock()
 }
 
-// writeChallenge tells the client the password was right but a second step
+// writeChallenge tells the client the sign-in code was right but a second step
 // is needed. It is a 401 like any other incomplete login.
 func writeChallenge(w http.ResponseWriter, code, msg, challenge string) {
 	var b struct {
@@ -164,12 +167,12 @@ func writeChallenge(w http.ResponseWriter, code, msg, challenge string) {
 	writeJSON(w, http.StatusUnauthorized, b)
 }
 
-// secondFactor decides what happens after a correct password. It returns
+// secondFactor decides what happens after a correct sign-in code. It returns
 // (true, mfa) when the login may complete now, having written the response
-// (a challenge) otherwise. code is a TOTP code sent along with the password
+// (a challenge) otherwise. code is a TOTP code sent along with the sign-in code
 // (API clients); the web pages always use the challenge round-trip.
 func (s *Server) secondFactor(w http.ResponseWriter, r *http.Request, u *accounts.User, code string) (proceed, mfa bool) {
-	if !u.Admin {
+	if !u.Admin && !u.MFAEnrolled() {
 		return true, false
 	}
 	if len(s.mfaKey) == 0 {
@@ -192,6 +195,10 @@ func (s *Server) secondFactor(w http.ResponseWriter, r *http.Request, u *account
 			return false, false
 		}
 		writeChallenge(w, "mfa_required", "a two-factor code is required", id)
+		return false, false
+	}
+	if s.throttled("u:"+u.Username) || s.throttled("ip:"+s.clientIP(r)) {
+		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong codes; try again in a few minutes")
 		return false, false
 	}
 	ok, err := s.verifyCode(u, code)
@@ -250,7 +257,7 @@ func (s *Server) completeChallenge(w http.ResponseWriter, r *http.Request, req m
 		return nil
 	}
 	u, err := s.store.User(c.userID)
-	if err != nil || u.Disabled || !u.Admin {
+	if err != nil || u.Disabled || !u.MFAEnrolled() {
 		s.dropChallenge(req.Challenge)
 		writeErr(w, http.StatusUnauthorized, "challenge_expired", "start the login again")
 		return nil
@@ -283,7 +290,7 @@ func (s *Server) handleMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if u := s.completeChallenge(w, r, req); u != nil {
-		s.issueLoginToken(w, u, req.TokenName, http.StatusOK, true)
+		s.issueLoginToken(w, u, req.TokenName, http.StatusOK, true, false)
 	}
 }
 
@@ -334,13 +341,22 @@ func (s *Server) handleWebMFASetup(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	u2 := totp.URL(s.mfaIssuer(), u.Username, secret)
-	png, err := qrcode.Encode(u2, qrcode.Medium, 220)
+	setup, err := s.mfaSetup(u, secret)
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, MFASetup{Secret: totp.Encode(secret), URL: u2, QR: "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)})
+	writeJSON(w, http.StatusOK, setup)
+}
+
+// mfaSetup is what an authenticator app needs to add the account.
+func (s *Server) mfaSetup(u *accounts.User, secret []byte) (*MFASetup, error) {
+	link := totp.URL(s.mfaIssuer(), u.Username, secret)
+	png, err := qrcode.Encode(link, qrcode.Medium, 220)
+	if err != nil {
+		return nil, err
+	}
+	return &MFASetup{Secret: totp.Encode(secret), URL: link, QR: "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)}, nil
 }
 
 // handleWebMFAConfirm enrolls the pending secret once the client proves it:
@@ -414,13 +430,145 @@ func (s *Server) handleAdminResetMFA(w http.ResponseWriter, r *http.Request, cu 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tokens_revoked": revoked})
 }
 
-// mfaCodeField is the JSON field API clients may send with their password.
-func mfaCodeField(c credentials) string { return strings.TrimSpace(c.TOTP) }
-
 // mfaIssuer is the name authenticator apps show for the account.
 func (s *Server) mfaIssuer() string {
 	if s.cfg.MFAIssuer != "" {
 		return s.cfg.MFAIssuer
 	}
 	return defaultMFAIssuer
+}
+
+// ---- turning it on and off from the account settings ----
+
+// handleMFASelfSetup starts enrollment for the signed-in user:
+// POST /api/v1/account/mfa/setup → MFASetup and a challenge for /enable.
+func (s *Server) handleMFASelfSetup(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	if cu.user.MFAEnrolled() {
+		writeErr(w, http.StatusConflict, "mfa_enrolled", "two-factor authentication is already on")
+		return
+	}
+	if len(s.mfaKey) == 0 {
+		s.internal(w, errMFAUnavailable)
+		return
+	}
+	secret, err := totp.NewSecret()
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	id, err := s.newChallenge(cu.user.ID, mfaPurposeSelf)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	s.mfaMu.Lock()
+	s.challenges[id].secret = secret
+	s.mfaMu.Unlock()
+	setup, err := s.mfaSetup(cu.user, secret)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		*MFASetup
+		Challenge string `json:"challenge"`
+	}{setup, id})
+}
+
+// handleMFASelfEnable enrolls the secret of a setup once the user proves it:
+// POST /api/v1/account/mfa/enable {challenge, code}.
+func (s *Server) handleMFASelfEnable(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	var req mfaRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	c := s.challenge(req.Challenge, mfaPurposeSelf)
+	if c == nil || c.userID != cu.user.ID {
+		writeErr(w, http.StatusBadRequest, "challenge_expired", "start the setup again")
+		return
+	}
+	if cu.user.MFAEnrolled() {
+		s.dropChallenge(req.Challenge)
+		writeErr(w, http.StatusConflict, "mfa_enrolled", "two-factor authentication is already on")
+		return
+	}
+	ip := s.clientIP(r)
+	if s.throttled("u:"+cu.user.Username) || s.throttled("ip:"+ip) {
+		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong codes; try again in a few minutes")
+		return
+	}
+	step, ok := totp.Verify(c.secret, req.Code, s.cfg.Now(), 0)
+	if !ok {
+		s.failChallenge(req.Challenge)
+		s.recordFailure("u:"+cu.user.Username, "ip:"+ip)
+		writeErr(w, http.StatusBadRequest, "bad_code", "wrong code; check the time on your phone and enter the current one")
+		return
+	}
+	sealed, err := s.seal(c.secret)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	if err := s.store.SetMFASecret(cu.user.ID, sealed); err != nil {
+		s.accountErr(w, err)
+		return
+	}
+	if err := s.store.SetMFAStep(cu.user.ID, step); err != nil && !errors.Is(err, accounts.ErrNotFound) {
+		s.internal(w, err)
+		return
+	}
+	s.dropChallenge(req.Challenge)
+	s.log.Info("two-factor enrolled", "user", cu.user.Username, "ip", ip)
+	s.notify(mailer.MFAChangedMail(cu.user.Username, true, s.cfg.Now(), ip, s.supportAddress()))
+	u, err := s.store.User(cu.user.ID)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": u})
+}
+
+// handleMFASelfDisable turns two-factor authentication off for the signed-in
+// user, who proves it with a current code: POST /api/v1/account/mfa/disable
+// {code}. Administrators must keep it.
+func (s *Server) handleMFASelfDisable(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	var req mfaRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if cu.user.Admin {
+		writeErr(w, http.StatusForbidden, "mfa_required", "administrators must keep two-factor authentication")
+		return
+	}
+	if !cu.user.MFAEnrolled() {
+		writeErr(w, http.StatusConflict, "mfa_not_enrolled", "two-factor authentication is not on")
+		return
+	}
+	ip := s.clientIP(r)
+	if s.throttled("u:"+cu.user.Username) || s.throttled("ip:"+ip) {
+		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong codes; try again in a few minutes")
+		return
+	}
+	ok, err := s.verifyCode(cu.user, req.Code)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	if !ok {
+		s.recordFailure("u:"+cu.user.Username, "ip:"+ip)
+		writeErr(w, http.StatusBadRequest, "bad_code", "wrong two-factor code")
+		return
+	}
+	if err := s.store.ClearMFA(cu.user.ID); err != nil {
+		s.accountErr(w, err)
+		return
+	}
+	s.log.Info("two-factor turned off", "user", cu.user.Username, "ip", ip)
+	s.notify(mailer.MFAChangedMail(cu.user.Username, false, s.cfg.Now(), ip, s.supportAddress()))
+	u, err := s.store.User(cu.user.ID)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": u})
 }

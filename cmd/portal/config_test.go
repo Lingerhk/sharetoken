@@ -15,7 +15,7 @@ func TestExampleConfigLoads(t *testing.T) {
 	if err := f.validate(); err != nil {
 		t.Fatal(err)
 	}
-	if f.TLS.Mode != "auto" || f.Sessions.LoginTTL != config.D("720h") || f.HTTP.Listen != ":8092" {
+	if f.TLS.Mode != "auto" || f.Sessions.LoginTTL != config.D("1440h") || f.Sessions.WebSessionTTL != config.D("360h") || f.HTTP.Listen != ":8092" {
 		t.Fatalf("%+v", f)
 	}
 }

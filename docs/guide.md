@@ -16,9 +16,9 @@ Amounts: 1 credit = 1,000,000 micro-credits. Prices are micro-credits per millio
 ### 1.1 Getting started
 
 ```bash
-# First time: create an account (or log in). This device is bound to the account.
-sharetoken register -email you@example.com     # or: sharetoken register -user alice
-sharetoken login -user you@example.com
+# First time: sign in with a code mailed to you; a new address gets an account.
+# This device is bound to the account.
+sharetoken login -email you@example.com
 
 # Buy only: start the client.
 sharetoken up
@@ -38,7 +38,7 @@ sharetoken up                               # share commands take effect on a ru
 
 Point any OpenAI-compatible tool at `http://127.0.0.1:9787/v1`. The API key can be anything.
 
-On a portal that verifies email addresses, `register` mails a code and asks for it (or pass it with `-code`).
+There are no passwords. `login` mails a six-digit code and asks for it; the same step signs up an address that has no account yet (when the portal's registration is open). For scripts, `login -send` only mails the code and `login -code 123456` redeems it. With two-factor authentication on, `login` then asks for the authenticator code (or pass `-totp`).
 
 ### 1.2 Which portal the client uses
 
@@ -49,9 +49,9 @@ The portal address is built into the client; there is no `-portal` flag.
 | prod | `https://sharetoken.app`, the hosted service. `SHARETOKEN_PORTAL` is ignored. | `~/.sharetoken` | `127.0.0.1:9787` |
 | dev (the default when the build type is not set) | The address in `SHARETOKEN_PORTAL`. Always set it: the built-in default is the project's own test network. | `~/.sharetoken-dev` | `127.0.0.1:9887` |
 
-To use your own deployment, run a dev build with `SHARETOKEN_PORTAL=https://portal.example.com` set when you register or log in; the address is then kept in `config.json`. Build types are described in [desktop.md](desktop.md).
+To use your own deployment, run a dev build with `SHARETOKEN_PORTAL=https://portal.example.com` set when you sign in; the address is then kept in `config.json`. Build types are described in [desktop.md](desktop.md).
 
-Before sending a password, the client decides how to trust the portal:
+Before it sends anything, the client decides how to trust the portal:
 
 - `https://` with a certificate from a public CA: nothing more is needed.
 - `https://` with a self-signed certificate: pass the fingerprint the operator published, `-portal-pin sha256:…`. Without the flag, the client shows the fingerprint and asks you to confirm it. The pin is saved in the configuration.
@@ -61,7 +61,7 @@ Before sending a password, the client decides how to trust the portal:
 
 | Command | What it does |
 |---|---|
-| `register [-email ADDR \| -user NAME] [-code CODE]`, `login [-user NAME]` | Create an account or log in, and bind this device. Both take `-device NAME`, `-portal-pin sha256:…` and `-allow-http`. |
+| `login [-email ADDR] [-send] [-code CODE] [-invite CODE] [-totp CODE]` | Sign in with a mailed code (an address without an account gets one) and bind this device. `-send` only mails the code; `-code` redeems a code already received. Also takes `-device NAME`, `-portal-pin sha256:…` and `-allow-http`. |
 | `up [-http ADDR] [-listen MADDRS] [-nat=false]` | Run the client: buy, and share if sharing is on. The flags apply to this run only and are not saved. |
 | `daemon` | The service behind the desktop app: like `up`, but it also runs while logged out. See [desktop.md](desktop.md). |
 | `status` | Connection to the coordinator and the relay in use, the live latency, jitter and loss of that relay (the `link:` line), every relay's round-trip time and when it was measured, sharing, warnings. |
@@ -90,7 +90,7 @@ Before sending a password, the client decides how to trust the portal:
 Notes:
 
 - `-home DIR` before the command, or `$SHARETOKEN_HOME`, selects another state directory.
-- The password can come from `$SHARETOKEN_PASSWORD` (for scripts).
+- A client's sign-in lasts 60 days (the portal's `sessions.login_ttl`).
 - By default the client listens on IPv4 and IPv6, TCP and QUIC (`/ip4/0.0.0.0`, `/ip6/::`, port chosen by the system). A machine without IPv6 skips those listeners.
 - No port needs to be opened. A seller holds reservations on relays; buyers reach it through a relay or by hole punching.
 - Seller mode for hosted APIs is described in [providers.md](providers.md).
@@ -227,14 +227,15 @@ relay -config relay.yaml -key relay.key \
 
 ```bash
 portal -db $DSN serve -listen :8092 -open-registration -signup-credit 5000000
-SHARETOKEN_PASSWORD=… portal -db $DSN useradd -admin root
+portal -db $DSN useradd -admin ops@example.com
 portal -db $DSN relay add '/ip4/203.0.113.7/tcp/8091/p2p/12D3Koo…,/ip6/2001:db8::7/tcp/8091/p2p/12D3Koo…' relay-1 eu-west
 ```
 
 - TLS: with `-tls-cert fullchain.pem -tls-key privkey.pem` the portal uses that certificate. Without one it creates a self-signed certificate in `portal-tls/` and prints its fingerprint `sha256:…`; publish the fingerprint to your users and keep the directory, since clients pin it. Behind a TLS-terminating reverse proxy use `-behind-tls-proxy`. Plain HTTP is served only on a loopback listen address, or with `-insecure-http` (test networks only). The same choices are `tls.mode` in the configuration file.
 - One relay is one entry. Several addresses of the same peer ID are joined with commas. To change the addresses of a registered relay, `relay rm` it and add it again.
 - Registration and the sign-up credit given here are the starting values. Once an administrator saves the settings page in the admin console, the saved values apply.
-- Without `-open-registration` only administrators create users.
+- Without `-open-registration` only administrators create users (`portal useradd <email>`, or the admin console).
+- Everyone signs in with a code mailed to their address, so the portal needs a mail sender (`mail.from`) and a running mail server ([mail.md](mail.md)); without them nobody can sign in, administrators included.
 
 **Coordinator**. It listens on no port and reserves on every registered relay by itself:
 
@@ -249,10 +250,11 @@ coordinator -db $DSN -fee-bps 500 \
 
 | Command | What it does |
 |---|---|
-| `portal useradd [-admin] <user>`, `portal passwd <user>` | Create a user; set a password. The password comes from `$SHARETOKEN_PASSWORD` or a prompt. |
+| `portal useradd [-admin] <email>` | Create an account. The name is an email address: the user signs in with a code mailed there. There are no passwords. |
+| `portal rename <user> <email>` | Give an account a new name, which must be an email address nobody else has: for an older account named without one (such as `root`), which cannot sign in otherwise. Balance, devices, tokens and two-factor authentication stay. |
 | `portal grant <user> <micros> [memo]` | Grant credits. A negative amount deducts; a balance cannot go below zero. |
 | `portal users`, `portal user <user>`, `portal disable\|enable <user>` | List and inspect users. Disabling takes effect at once: tokens stop working and the coordinator refuses the user's devices. |
-| `portal mfa-reset <user>` | Clear an administrator's two-factor secret and revoke their tokens (see [section 4.2](#42-browser-sessions-and-administrator-two-factor-authentication)). |
+| `portal mfa-reset <user>` | Clear a user's two-factor secret and revoke their tokens (see [section 4.2](#42-browser-sessions-and-administrator-two-factor-authentication)). |
 | `portal relay add\|ls\|rm\|enable\|disable` | The relay registry. The coordinator follows changes within 15 seconds. |
 | `portal overview` | Users, credits in circulation, platform fees, open holds, the result of replaying the ledger, jobs by status, reachable relays. |
 | `portal version-policy [set -min V -recommended V -latest V -download-url URL -allow-dev]` | Which client versions are served ([versioning.md](versioning.md)). |
@@ -279,8 +281,8 @@ Operator commands work on the database directly and can run beside the live serv
 | `/` | Everyone | The landing page: what the project is, its security design, downloads. |
 | `/docs/`, `/changelog/` | Everyone | The user guide and the release notes. |
 | `/downloads/<file>` | Everyone | Client packages from the directory `downloads.dir`; `GET /api/v1/downloads` lists the newest of each kind, and the landing page shows what is there. Without the directory nothing is offered. |
-| `/app/` (`/login` redirects here) | Users | Sign-up and login; overview (balance, holds, totals bought and sold); ledger; jobs (filtered by buy or sell); API tokens (the secret is shown once) and their revocation; renaming and unbinding devices; pairing (redeem a code, leave a seller; create and revoke codes, remove a buyer, private mode); network (coordinator, relay reachability); account (change the password, optionally revoking other sessions); feedback. |
-| `/admin/` | Administrators | Dashboard and overview (ledger replay, circulation, fees, relays, job counts, account balances); users (search, create, grant or deduct credits, disable, make or unmake administrator, reset password, revoke tokens, unbind devices, ledger and jobs); relays (register, edit, enable, disable, remove); client versions; all jobs (by status and user); node records; inference audits; disputes and their manual resolution (pay the node or refund the buyer); pairings (who buys only from whom, private sellers); the global ledger; mail; feedback; the operation log; settings. |
+| `/app/` (`/login` redirects here) | Users | Sign-in by mailed code (which signs up a new address); overview (balance, holds, totals bought and sold); ledger; jobs (filtered by buy or sell); API tokens (the secret is shown once) and their revocation; renaming and unbinding devices; pairing (redeem a code, leave a seller; create and revoke codes, remove a buyer, private mode); network (coordinator, relay reachability); account (turn two-factor authentication on or off); feedback. |
+| `/admin/` | Administrators | Dashboard and overview (ledger replay, circulation, fees, relays, job counts, account balances); users (search, create, grant or deduct credits, disable, make or unmake administrator, reset two-factor authentication, revoke tokens, unbind devices, ledger and jobs); relays (register, edit, enable, disable, remove); client versions; all jobs (by status and user); node records; inference audits; disputes and their manual resolution (pay the node or refund the buyer); pairings (who buys only from whom, private sellers); the global ledger; mail; feedback; the operation log; settings. |
 
 - A browser session lasts 24 hours by default (`serve -session-ttl`, or the settings page). It lives in an HttpOnly cookie that page scripts cannot read. On the API tokens page it is listed as "web session", the current one is marked, and any can be revoked.
 - Administrators use the same account for `/admin/`. Anyone else who opens it is told they are not an administrator.
@@ -292,7 +294,7 @@ Operator commands work on the database directly and can run beside the live serv
 
 ## 3. Local management API
 
-`sharetoken up` listens on the address in `http` (`127.0.0.1:9787` for a prod build). Requests carrying an `Origin` that is not local get 403, so a web page in the user's browser cannot spend credits. `sharetoken daemon`, used by the desktop app, serves the same API plus sign-up and login endpoints that work while logged out; see [desktop.md](desktop.md).
+`sharetoken up` listens on the address in `http` (`127.0.0.1:9787` for a prod build). Requests carrying an `Origin` that is not local get 403, so a web page in the user's browser cannot spend credits. `sharetoken daemon`, used by the desktop app, serves the same API plus sign-in endpoints that work while logged out; see [desktop.md](desktop.md).
 
 | Method and path | Description |
 |---|---|
@@ -331,18 +333,17 @@ Lists take `limit` (default 50, at most 500), `page` or `offset`, `from` and `to
 | Method and path | Auth | Description |
 |---|---|---|
 | `GET /healthz` | none | `{"ok":true}`. |
-| `GET /api/v1/info` | none | `{registration_open, signup_credit_micros, session_hours, passes_enabled, email_verification, support_email, invite_required, password_reset, default_page_size}`: what the login page needs. |
+| `GET /api/v1/info` | none | `{registration_open, signup_credit_micros, session_hours, passes_enabled, support_email, invite_required, default_page_size, code_sign_in}`: what the sign-in page needs. `code_sign_in` is always true: people sign in with a mailed code. |
 | `GET /api/v1/network` | none | `{coordinator, relays:[{addr,name,region,ok,rtt_ms}], pass_key}`. Working relays come first, the faster of them at the top. `rtt_ms` is the coordinator's round trip to the relay, omitted until it has been measured. 503 `not_ready` before the coordinator has started for the first time. |
 | `GET /api/v1/version`, `GET /api/v1/update`, `GET /api/v1/downloads` | none | Server version and client version policy; whether a newer client exists for `kind`, `channel`, `os`, `arch`; the client packages offered. See [versioning.md](versioning.md). |
-| `POST /api/v1/register` | none | `{email, password, token_name?, code?, invite_code?}`, or `{username, password, …}` on a portal without email verification, → 201 `{user, token}`. The normalized email address is the account name. Needs open registration. |
-| `POST /api/v1/register/code` | none | `{email, invite_code?}`: mail a verification code ([mail.md](mail.md)). |
-| `POST /api/v1/login` | none | `{username, password, token_name?}` → `{user, token}`. After 8 failures in 5 minutes for a user name or an IP address: 429 `throttled`. |
-| `POST /api/v1/login` for an administrator | none | A correct password is not enough. Not enrolled in two-factor authentication: 401 `mfa_setup_required` (enrollment is done on the web pages). Enrolled: 401 `mfa_required` with a `challenge`; or send `totp` along with the password to finish in one step. |
-| `POST /api/v1/mfa` | none | `{challenge, code, token_name}` → `{user, token}`. A challenge lasts 5 minutes and is discarded after 5 wrong codes; wrong codes count as failed logins. |
-| `POST /api/v1/password/forgot`, `POST /api/v1/password/reset` | none | Password reset by mail ([mail.md](mail.md)). |
+| `POST /api/v1/auth/code` | none | `{email, invite_code?}`: mail a sign-in code ([mail.md](mail.md)) → `{ok, new_account, cooldown_seconds, expires_in_seconds}`. For an address without an account the registration rules are checked first: 403 `registration_closed`, `email_not_allowed`, `invite_required` (ask again with `invite_code`) or `bad_invite`; a disabled account gets 403 `account_disabled`. 429 `code_cooldown` within a minute of the last code, 429 `throttled` past the limits. 503 `mail_unavailable` when the portal has no mail sender. |
+| `POST /api/v1/auth/verify` | none | `{email, code, invite_code?, token_name?, totp?}` → `{user, token, created}`, 201 when the address got a new account (with the sign-up credit), else 200. The token lives `sessions.login_ttl` (60 days by default). 401 `bad_code` for a wrong or expired code; wrong codes count per IP and per address, then 429 `throttled`. An account with two-factor authentication gets 401 `mfa_required` with a `challenge` (finish with `/api/v1/mfa`), unless `totp` holds a valid code; an administrator not enrolled yet gets 401 `mfa_setup_required` (enrollment is done on the web pages). |
+| `POST /api/v1/mfa` | none | `{challenge, code, token_name}` → `{user, token}`. A challenge lasts 5 minutes and is discarded after 5 wrong codes; wrong codes count as failed sign-ins. |
 | `POST /api/v1/logout` | yes | Revoke the current token. |
 | `GET /api/v1/me` | yes | `{user, balance{account,available_micros,held_micros}, usage{bought,sold}, devices}`. |
-| `POST /api/v1/password` | yes | `{old_password, new_password, revoke_others?}`. A wrong current password counts as a failed login. |
+| `POST /api/v1/account/mfa/setup` | yes | Start turning on two-factor authentication: → `{challenge, secret, url, qr}` (base32 secret, `otpauth://` link, QR code as a data URI). 409 `mfa_enrolled` when it is already on. |
+| `POST /api/v1/account/mfa/enable` | yes | `{challenge, code}`: the first code from the app turns it on → `{user}`. 400 `bad_code`, 400 `challenge_expired`. A notice is mailed. |
+| `POST /api/v1/account/mfa/disable` | yes | `{code}`: a current code turns it off → `{user}`. Administrators get 403 `mfa_required`: they must keep it. A notice is mailed. |
 | `GET /api/v1/tokens`, `POST /api/v1/tokens`, `DELETE /api/v1/tokens/{id}` | yes | API tokens. `POST {name, ttl_hours}` (0: no expiry) returns the secret once. |
 | `GET /api/v1/devices`, `POST /api/v1/devices`, `DELETE /api/v1/devices/{peer}` | yes | Devices. `POST {peer, name, ts, sig}`, where `sig` is the device's signature over `accounts.BindMessage` ([`internal/accounts`](../internal/accounts)). |
 | `PATCH /api/v1/devices/{peer}` | yes | `{name}`: rename. |
@@ -358,12 +359,11 @@ Lists take `limit` (default 50, at most 500), `page` or `offset`, `from` and `to
 | `PUT /api/v1/pairing/private` | yes | `{enabled}`: turn the caller's private mode on or off. |
 | `GET /api/v1/admin/pairings?user=` | admin | Every pairing: buyer, seller (full names), code label, time, whether the seller is private. `user` matches part of either name. |
 | `GET /api/v1/admin/overview`, `GET /api/v1/admin/dashboard`, `GET /api/v1/admin/relay-history?range=` | admin | Platform totals and the ledger replay; the dashboard's figures; relay history. |
-| `GET /api/v1/admin/users`, `POST /api/v1/admin/users`, `GET /api/v1/admin/users/{name}` | admin | List users, create one, one user's details (balance, usage, devices, tokens). |
+| `GET /api/v1/admin/users`, `POST /api/v1/admin/users`, `GET /api/v1/admin/users/{name}` | admin | List users, create one (`{username, is_admin}`, the name an email address), one user's details (balance, usage, devices, tokens). |
 | `GET /api/v1/admin/users/search?q=&limit=&offset=` | admin | Search by user name (wildcards are matched literally). Each row has balance, holds, device and token counts; the total is returned. |
 | `POST /api/v1/admin/users/{name}/credit` | admin | `{micros, memo}`; negative deducts. |
 | `POST /api/v1/admin/users/{name}/disable`, `…/enable` | admin | Disable or enable (not oneself). |
 | `POST /api/v1/admin/users/{name}/admin` | admin | `{is_admin}` (one cannot revoke one's own rights). |
-| `POST /api/v1/admin/users/{name}/password` | admin | `{new_password, revoke_tokens?}`: reset the password. |
 | `POST /api/v1/admin/users/{name}/mfa/reset` | admin | Clear the user's two-factor secret and revoke all their tokens: the recovery for a lost authenticator. |
 | `GET /api/v1/admin/users/{name}/tokens`, `DELETE …/tokens/{id}`, `POST …/tokens/revoke` | admin | List tokens, revoke one, revoke all. |
 | `DELETE /api/v1/admin/users/{name}/devices/{peer}` | admin | Unbind a device. |
@@ -381,25 +381,25 @@ Lists take `limit` (default 50, at most 500), `page` or `offset`, `from` and `to
 | `GET /api/v1/admin/oplog` | admin | The operation log: changes made through the admin API and by the `portal` operator commands. |
 | `/api/v1/admin/mail/…`, `/api/v1/admin/feedback…` | admin | The mail section ([mail.md](mail.md)) and user feedback. |
 
-A client the version policy no longer serves gets 426 `upgrade_required` from `register`, `login`, `mfa` and device binding; what it already has keeps working.
+A client the version policy no longer serves gets 426 `upgrade_required` from `auth/verify`, `mfa` and device binding; what it already has keeps working.
 
-### 4.2 Browser sessions and administrator two-factor authentication
+### 4.2 Browser sessions and two-factor authentication
 
 | Method and path | Description |
 |---|---|
-| `POST /api/v1/web/login`, `POST /api/v1/web/register` | The same bodies as `login` and `register`. On success a token valid for the session lifetime is put in the cookie `st_session` (HttpOnly, SameSite=Strict, Secure over HTTPS); the response body holds no token. |
-| `POST /api/v1/web/mfa`, `POST /api/v1/web/mfa/setup`, `POST /api/v1/web/mfa/confirm` | The second step of a browser login for an administrator: check a code; start enrollment (returns the base32 secret, an `otpauth://` link and a QR code as a data URI); confirm enrollment with the first code and start the session. |
+| `POST /api/v1/web/auth/verify` | `{email, code, invite_code?}`, after `POST /api/v1/auth/code`: the same checks as `auth/verify`. On success a token valid for the session lifetime (`sessions.web_session_ttl`, 15 days by default) is put in the cookie `st_session` (HttpOnly, SameSite=Strict, Secure over HTTPS); the response body is `{user}` and holds no token. |
+| `POST /api/v1/web/mfa`, `POST /api/v1/web/mfa/setup`, `POST /api/v1/web/mfa/confirm` | The second step of a browser sign-in with two-factor authentication: check a code; for an administrator not enrolled yet, start enrollment (returns the base32 secret, an `otpauth://` link and a QR code as a data URI) and confirm it with the first code, which starts the session. |
 | `POST /api/v1/web/logout` | Revoke the session and clear the cookie. |
 
 A request authenticated by the cookie must also carry the header `X-Sharetoken-Web: 1`, and its `Origin`, when the browser sends one, must be the portal itself; otherwise it gets 403 `cross_site`. Bearer requests are not affected. The portal answers no CORS preflight, so another site cannot build such a request.
 
-**Two-factor authentication is mandatory for administrators.** A password alone never starts an administrator's session. At the first login the portal asks the administrator to scan a QR code, or type the secret, into an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password and the like) and to enter the first 6-digit code. Every later login needs a code: TOTP as in RFC 6238, a new code every 30 seconds, each code usable once, one period of clock difference tolerated either way.
+**Two-factor authentication is mandatory for administrators and optional for everyone else**, who turns it on in the account settings (`/api/v1/account/mfa/…` above). For an account that has it, the mailed code alone never starts a session. At an administrator's first sign-in the portal asks the administrator to scan a QR code, or type the secret, into an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password and the like) and to enter the first 6-digit code. Every later sign-in needs a code: TOTP as in RFC 6238, a new code every 30 seconds, each code usable once, one period of clock difference tolerated either way.
 
-Tokens and sessions record whether they passed the second step, and every `/api/v1/admin/*` endpoint accepts only those that did. After an ordinary user is made an administrator, their existing sessions are refused with 403 `mfa_required` until they log in again.
+Tokens and sessions record whether they passed the second step, and every `/api/v1/admin/*` endpoint accepts only those that did. After an ordinary user is made an administrator, their existing sessions are refused with 403 `mfa_required` until they sign in again.
 
 The secret is stored encrypted with AES-GCM under `keys.mfa_key_file`, or under a key derived from the portal's pass key when that is not set.
 
-If an administrator loses the authenticator, another administrator resets it on the user's page in the console, or an operator runs the following on the server. The next login enrolls again.
+If someone loses the authenticator, an administrator resets it on the user's page in the console, or an operator runs the following on the server. An administrator enrolls again at the next sign-in; anyone else signs in with the mailed code alone until they turn it on again.
 
 ```bash
 portal -db mysql://sharetoken@127.0.0.1:3306/sharetoken mfa-reset <user>
@@ -411,4 +411,4 @@ portal -db mysql://sharetoken@127.0.0.1:3306/sharetoken mfa-reset <user>
 scripts/demo-local.sh     # needs Docker (for MySQL), Ollama and the model gemma4:e4b; MODEL_UPSTREAM selects another model
 ```
 
-The script builds the programs and starts two relays, a portal, a coordinator and three users on 127.0.0.1: alice, an honest seller; carol, a seller who overstates her usage; and bob, a buyer. It shows sign-up and device binding, relay selection, the cheat being caught and refunded on evidence, the auditor checking both sellers, the client switching relays when one dies, credits moving between accounts with the books balancing, and logs that contain no prompt. Everything is stopped when the script exits.
+The script builds the programs and starts two relays, a portal, a coordinator and three users on 127.0.0.1: alice, an honest seller; carol, a seller who overstates her usage; and bob, a buyer. It shows sign-in by code and device binding, relay selection, the cheat being caught and refunded on evidence, the auditor checking both sellers, the client switching relays when one dies, credits moving between accounts with the books balancing, and logs that contain no prompt. Everything is stopped when the script exits.

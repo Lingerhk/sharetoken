@@ -2,7 +2,7 @@
 
 **English** | [简体中文](zh-CN/README.md)
 
-The end-user guide (installing the app, signing up, sharing a model) is published
+The end-user guide (installing the app, signing in, sharing a model) is published
 with the portal at <https://sharetoken.app/docs/>. The pages here are for people
 who run a network or work on the code.
 

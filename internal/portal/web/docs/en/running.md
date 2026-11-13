@@ -54,10 +54,10 @@ The client measures speed automatically, picks the fastest relay and switches wh
 
 ## Run in the background {#background}
 
-To share models or make calls over a long time, run the client in the background. First [sign in](/docs/account#login) in a terminal, because the background service does not ask for a password.
+To share models or make calls over a long time, run the client in the background. First [sign in](/docs/account#login) in a terminal, because the background service does not ask for a code.
 
 > [!NOTE]
-> A sign-in is valid for 30 days. When it expires, run `login` again and restart the service.
+> A sign-in is valid for 60 days. When it expires, run `login` again and restart the service.
 
 ::: macos
 Use launchd. It starts when you log in to macOS and restarts after an abnormal exit.

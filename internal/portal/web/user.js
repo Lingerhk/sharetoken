@@ -7,17 +7,7 @@
   const app = ST.$('app');
 
   await ST.loadInfo().catch(fail);
-  // A reset link pasted into a tab already on this page only changes the hash.
-  window.addEventListener('hashchange', () => { if (location.hash.startsWith('#reset=')) location.reload(); });
-  const resetting = ST.resetToken();
-  if (resetting) {
-    // Whoever is signed in here, a link from a mailbox is about that mailbox's account.
-    await ST.renderReset(app, resetting);
-    await api('POST', '/api/v1/web/logout').catch(() => {});
-  }
-  while (!(await ST.loadMe())) {
-    await ST.renderLogin(app, { title: 'ShareToken', allowRegister: state.info && state.info.registration_open });
-  }
+  while (!(await ST.loadMe())) await ST.renderLogin(app, { title: 'ShareToken' });
   const me = () => state.me;
 
   // ---- frame ----
@@ -165,28 +155,45 @@
 
   async function account(m) {
     const u = me().user;
-    const mfa = u.mfa_enrolled_at ? [badge(tr('已启用'), 'ok'), ' ' + tr('绑定于 {time}', { time: time(u.mfa_enrolled_at) })] : (u.is_admin ? badge(tr('未启用'), 'warn') : h('span', { class: 'muted' }, tr('未启用（仅管理员需要）')));
-    add(m, pageTitle(tr('账户')), h('div', { class: 'card' }, kv([[tr('用户名'), u.username], [tr('用户 ID'), String(u.id)], [tr('注册时间'), time(u.created_at)], [tr('角色'), u.is_admin ? tr('管理员') : tr('普通用户')], [tr('两步验证'), h('span', null, mfa)]]),
-      state.info && state.info.support_email ? h('p', { class: 'muted', id: 'support-email' }, parts('有问题或建议？发邮件到 {email}。', { email: h('a', { href: 'mailto:' + state.info.support_email }, state.info.support_email) })) : null,
-      u.is_admin ? h('p', { class: 'muted' }, tr('管理员登录必须通过验证器 App 的两步验证。更换手机时请让其他管理员在控制台重置，或在服务器上执行 portal mfa-reset。')) : null));
-    const oldP = input({ type: 'password', autocomplete: 'current-password', required: true });
-    const newP = input({ type: 'password', autocomplete: 'new-password', minlength: 8, maxlength: 256, required: true, placeholder: tr('8-256 位') });
-    const newP2 = input({ type: 'password', autocomplete: 'new-password', required: true });
-    const revoke = h('input', { type: 'checkbox' });
-    const err = h('div', { class: 'error' });
-    const form = h('form', {
-      class: 'form', onsubmit: async e => {
-        e.preventDefault(); err.textContent = '';
-        if (newP.value !== newP2.value) { err.textContent = tr('两次输入的新密码不一致'); return; }
-        try {
-          const r = await api('POST', '/api/v1/password', { old_password: oldP.value, new_password: newP.value, revoke_others: revoke.checked });
-          oldP.value = newP.value = newP2.value = '';
-          toast(r.tokens_revoked ? tr('密码已修改，已吊销其他会话：{n}', { n: r.tokens_revoked }) : tr('密码已修改'));
-        } catch (ex) { err.textContent = ex.code === 'bad_credentials' ? tr('当前密码错误') : ex.message; }
+    const mfa = u.mfa_enrolled_at ? [badge(tr('已启用'), 'ok'), ' ' + tr('绑定于 {time}', { time: time(u.mfa_enrolled_at) })] : badge(tr('未启用'), u.is_admin ? 'warn' : '');
+    add(m, pageTitle(tr('账户')), h('div', { class: 'card' }, kv([[tr('邮箱'), u.username], [tr('用户 ID'), String(u.id)], [tr('注册时间'), time(u.created_at)], [tr('角色'), u.is_admin ? tr('管理员') : tr('普通用户')], [tr('两步验证'), h('span', { id: 'mfa-state' }, mfa)]]),
+      h('p', { class: 'muted' }, tr('登录不需要密码：每次用发到这个邮箱的验证码登录。')),
+      state.info && state.info.support_email ? h('p', { class: 'muted', id: 'support-email' }, parts('有问题或建议？发邮件到 {email}。', { email: h('a', { href: 'mailto:' + state.info.support_email }, state.info.support_email) })) : null));
+    const box = h('div', { class: 'card', id: 'mfa-card' });
+    add(m, section('lock', tr('两步验证')), box);
+    const reload = async () => { await ST.loadMe(); clear(m); await account(m); };
+    if (u.mfa_enrolled_at) {
+      if (u.is_admin) {
+        add(box, h('p', { class: 'muted' }, tr('管理员必须保留两步验证。更换手机时请让其他管理员在控制台重置，或在服务器上执行 portal mfa-reset。')));
+        return;
       }
-    }, field(tr('当前密码'), oldP), field(tr('新密码'), newP), field(tr('重复新密码'), newP2),
-      h('label', { class: 'check' }, revoke, tr('同时吊销其他所有 token 和会话（本浏览器除外）')), err, h('div', null, h('button', { class: 'primary', type: 'submit' }, tr('修改密码'))));
-    add(m, section('lock', tr('修改密码')), h('div', { class: 'card' }, form));
+      const code = ST.codeInput('mfa-off-code'), err = h('div', { class: 'error', role: 'alert' });
+      add(box, h('form', {
+        class: 'form', id: 'mfa-off-form', onsubmit: async e => {
+          e.preventDefault(); err.textContent = '';
+          try { await api('POST', '/api/v1/account/mfa/disable', { code: code.value.trim() }); toast(tr('两步验证已关闭'), 'ok'); await reload(); }
+          catch (ex) { err.textContent = ST.authError(ex); }
+        }
+      }, h('p', { class: 'muted' }, tr('登录时除了邮箱验证码，还要输入验证器 App 的验证码。关闭时请输入验证器 App 当前显示的验证码。')),
+        field(tr('验证码'), code), err, h('div', null, h('button', { class: 'danger', type: 'submit' }, tr('关闭两步验证')))));
+      return;
+    }
+    const start = h('button', { class: 'primary', type: 'button', id: 'mfa-on', onclick: async () => {
+      let setup;
+      try { setup = await api('POST', '/api/v1/account/mfa/setup', {}); } catch (ex) { fail(ex); return; }
+      const code = ST.codeInput('mfa-on-code'), err = h('div', { class: 'error', role: 'alert' });
+      add(clear(box), h('form', {
+        class: 'form', id: 'mfa-on-form', onsubmit: async e => {
+          e.preventDefault(); err.textContent = '';
+          try { await api('POST', '/api/v1/account/mfa/enable', { challenge: setup.challenge, code: code.value.trim() }); toast(tr('两步验证已启用'), 'ok'); await reload(); }
+          catch (ex) { err.textContent = ex.code === 'challenge_expired' ? tr('设置已超时，请重新开始') : ST.authError(ex); }
+        }
+      }, h('p', { class: 'muted' }, tr('用 Google Authenticator、Microsoft Authenticator、1Password 等扫描二维码，或手动输入密钥，然后填写 App 显示的 6 位验证码完成绑定。')),
+        ST.mfaQR(setup), field(tr('验证码'), code), err,
+        h('div', { class: 'row' }, h('button', { class: 'primary', type: 'submit' }, tr('完成绑定')), h('button', { type: 'button', onclick: reload }, tr('取消')))));
+      code.focus();
+    } }, tr('开启两步验证'));
+    add(box, h('p', { class: 'muted' }, u.is_admin ? tr('管理员必须启用两步验证，下次登录时会要求绑定。') : tr('开启后，登录时除了邮箱验证码，还要输入验证器 App（如 Google Authenticator）的验证码。邮箱被盗时账户依然安全。')), h('div', null, start));
   }
 
   // Pairing: as a buyer, the sellers this account buys from; as a seller, its
@@ -302,7 +309,7 @@
         } catch (ex) { err.textContent = ex.code === 'throttled' ? tr('提交太频繁，请稍后再试') : ex.message; }
       }
     }, field(tr('类型'), kind), field(tr('内容'), text), err, h('div', null, h('button', { class: 'primary', type: 'submit', id: 'feedback-send' }, tr('提交反馈'))));
-    add(m, pageTitle(tr('反馈')), h('div', { class: 'card' }, h('p', { class: 'muted' }, tr('告诉我们你遇到的问题或建议。请不要填写密码、token 或 prompt 内容。我们可能会通过账户邮箱回复你。')), form),
+    add(m, pageTitle(tr('反馈')), h('div', { class: 'card' }, h('p', { class: 'muted' }, tr('告诉我们你遇到的问题或建议。请不要填写验证码、token 或 prompt 内容。我们可能会通过账户邮箱回复你。')), form),
       section('chat', tr('我的反馈')), list.el);
     await list.reload();
   }

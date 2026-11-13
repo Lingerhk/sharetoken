@@ -2,7 +2,7 @@
 # Entry point of the sharetoken image (see Dockerfile, docker-compose.yml).
 #
 #   st-entrypoint init          one-shot: write the configuration files, create the keys,
-#                               register the relay with the portal, create the admin user
+#                               register the relay with the portal, create the admin account
 #   st-entrypoint portal | coordinator | relay
 #   st-entrypoint <program> …   anything else is run as given, e.g. `portal users`
 #
@@ -37,7 +37,6 @@ keys:
   pass_key_file: portal-pass.key
 http:
   listen: ":8092"
-  public_url: "${PORTAL_PUBLIC_URL:-}"
 tls:
   mode: ${PORTAL_TLS_MODE:-auto}
   self_signed_dir: portal-tls
@@ -45,6 +44,11 @@ tls:
 accounts:
   open_registration: ${OPEN_REGISTRATION:-true}
   signup_credit_micros: ${SIGNUP_CREDIT_MICROS:-0}
+# People sign in with a code mailed to them: without a sender and a running
+# mailserver (docs/mail.md) nobody can sign in.
+mail:
+  from: "${MAIL_FROM:-}"
+  support: "${MAIL_SUPPORT:-}"
 YAML
     echo "init: wrote $PORTAL_YAML"
   fi
@@ -111,13 +115,12 @@ YAML
     echo "init: registered relay $addr"
   fi
 
-  if [ -n "${ADMIN_PASSWORD:-}" ]; then
-    admin=${ADMIN_USER:-admin}
-    if portal -config "$PORTAL_YAML" user "$admin" > /dev/null 2>&1; then
-      echo "init: admin user $admin exists"
+  if [ -n "${ADMIN_EMAIL:-}" ]; then
+    if portal -config "$PORTAL_YAML" user "$ADMIN_EMAIL" > /dev/null 2>&1; then
+      echo "init: admin $ADMIN_EMAIL exists"
     else
-      SHARETOKEN_PASSWORD=$ADMIN_PASSWORD portal -config "$PORTAL_YAML" useradd -admin "$admin" > /dev/null
-      echo "init: created admin user $admin"
+      portal -config "$PORTAL_YAML" useradd -admin "$ADMIN_EMAIL" > /dev/null
+      echo "init: created admin $ADMIN_EMAIL (signs in with a mailed code, then sets up two-factor authentication)"
     fi
   fi
   echo "init: portal pass key $pass_key"

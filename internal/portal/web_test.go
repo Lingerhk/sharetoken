@@ -84,14 +84,17 @@ func sessionCookie(t *testing.T, resp *http.Response) *http.Cookie {
 }
 
 func TestWebSessionsAndCSRF(t *testing.T) {
-	s, a := newPortal(t, Config{OpenRegistration: true, SignupCreditMicros: 1_000_000, WebSessionTTL: 2 * time.Hour})
+	clock := time.Now()
+	s, a := newPortal(t, Config{OpenRegistration: true, SignupCreditMicros: 1_000_000, WebSessionTTL: 2 * time.Hour, Now: func() time.Time { return clock }})
 	c := &web{t: t, url: a.url}
+	const alice = "alice@example.com"
 
 	// Login CSRF: the sign-in endpoints refuse requests without the page header.
-	(&web{t: t, url: a.url, noWeb: true}).call("POST", "/api/v1/web/register", map[string]string{"username": "alice", "password": "correct horse"}, 403, nil)
+	code := sendCode(t, s, c, alice)
+	(&web{t: t, url: a.url, noWeb: true}).call("POST", "/api/v1/web/auth/verify", map[string]string{"email": alice, "code": code}, 403, nil)
 
 	var reg struct{ User accounts.User }
-	resp := c.call("POST", "/api/v1/web/register", map[string]string{"username": "alice", "password": "correct horse"}, 201, &reg)
+	resp := c.call("POST", "/api/v1/web/auth/verify", map[string]string{"email": alice, "code": code}, 201, &reg)
 	ck := sessionCookie(t, resp)
 	if !ck.HttpOnly || ck.SameSite != http.SameSiteStrictMode || ck.Path != "/" || ck.MaxAge != 7200 || ck.Value == "" {
 		t.Fatalf("session cookie attributes: %+v", ck)
@@ -106,7 +109,7 @@ func TestWebSessionsAndCSRF(t *testing.T) {
 
 	var me Me
 	c.call("GET", "/api/v1/me", nil, 200, &me)
-	if me.User.Username != "alice" || me.Balance.AvailableMicros != 1_000_000 {
+	if me.User.Username != alice || me.Balance.AvailableMicros != 1_000_000 {
 		t.Fatalf("me: %+v", me)
 	}
 
@@ -145,33 +148,19 @@ func TestWebSessionsAndCSRF(t *testing.T) {
 	}
 	c.call("GET", "/api/v1/me", nil, 401, nil)
 
-	// Login again; wrong password counts against throttling like the CLI.
-	c.call("POST", "/api/v1/web/login", map[string]string{"username": "alice", "password": "wrong"}, 401, nil)
-	resp = c.call("POST", "/api/v1/web/login", map[string]string{"username": "alice", "password": "correct horse"}, 200, nil)
-	c.cookie = sessionCookie(t, resp).Value
-	c.call("GET", "/api/v1/me", nil, 200, nil)
-
-	// Password change with revoke_others keeps this session and drops the rest.
-	var nt struct{ Token string }
-	c.call("POST", "/api/v1/tokens", map[string]any{"name": "laptop"}, 201, &nt)
-	c.call("POST", "/api/v1/password", map[string]any{"old_password": "nope", "new_password": "new password 1"}, 401, nil)
-	var pw struct {
-		TokensRevoked int64 `json:"tokens_revoked"`
-	}
-	c.call("POST", "/api/v1/password", map[string]any{"old_password": "correct horse", "new_password": "new password 1", "revoke_others": true}, 200, &pw)
-	if pw.TokensRevoked != 1 {
-		t.Fatalf("revoked %d, want 1", pw.TokensRevoked)
+	// Sign in again: the same account.
+	clock = clock.Add(2 * time.Minute)
+	c.call("POST", "/api/v1/web/auth/verify", map[string]string{"email": alice, "code": otherCode(code)}, 401, nil)
+	resp = webSignIn(t, s, c, alice)
+	if resp.StatusCode != 200 {
+		t.Fatalf("second sign-in: %d", resp.StatusCode)
 	}
 	c.call("GET", "/api/v1/me", nil, 200, nil)
-	a.call("GET", "/api/v1/me", nt.Token, nil, 401, nil)
-	if _, err := s.store.Authenticate("alice", "new password 1"); err != nil {
-		t.Fatal(err)
-	}
 
 	// Device rename is the owner's.
 	k, _ := p2p.NewKeys()
 	ts := time.Now().UnixNano()
-	c.call("POST", "/api/v1/devices", BindRequest{Peer: k.ID(), Name: "old", UnixNano: ts, Sig: accounts.SignBind(k.Signer, "alice", k.ID(), ts)}, 200, nil)
+	c.call("POST", "/api/v1/devices", BindRequest{Peer: k.ID(), Name: "old", UnixNano: ts, Sig: accounts.SignBind(k.Signer, alice, k.ID(), ts)}, 200, nil)
 	c.call("PATCH", "/api/v1/devices/"+k.ID(), map[string]string{"name": "new"}, 200, nil)
 	c.call("PATCH", "/api/v1/devices/"+k.ID(), map[string]string{"name": ""}, 400, nil)
 	c.call("PATCH", "/api/v1/devices/12D3KooWunknown", map[string]string{"name": "x"}, 404, nil)
@@ -190,13 +179,17 @@ func TestSecureCookieOverTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	s, err := New(Config{DB: db, OpenRegistration: true})
+	s, err := New(Config{DB: db, OpenRegistration: true, Mail: testMail})
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewTLSServer(s.Handler())
 	t.Cleanup(srv.Close)
-	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/web/register", strings.NewReader(`{"username":"alice","password":"correct horse"}`))
+	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/auth/code", strings.NewReader(`{"email":"alice@example.com"}`))
+	if resp, err := srv.Client().Do(req); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("code: %v %v", resp, err)
+	}
+	req, _ = http.NewRequest("POST", srv.URL+"/api/v1/web/auth/verify", strings.NewReader(`{"email":"alice@example.com","code":"`+mailedCode(t, s, "alice@example.com")+`"}`))
 	req.Header.Set(WebHeader, "1")
 	req.Header.Set("Origin", srv.URL)
 	resp, err := srv.Client().Do(req)
@@ -315,32 +308,37 @@ func TestPagesAndSecurityHeaders(t *testing.T) {
 }
 
 func TestRegistrationIsRateLimited(t *testing.T) {
-	_, a := newPortal(t, Config{OpenRegistration: true})
+	clock := time.Now()
+	s, a := newPortal(t, Config{OpenRegistration: true, Now: func() time.Time { return clock }})
 	for i := 0; i < maxFails; i++ {
-		a.call("POST", "/api/v1/register", "", map[string]string{"username": fmt.Sprintf("user%d", i), "password": "correct horse"}, 201, nil)
+		clientSignIn(t, s, a.url, fmt.Sprintf("user%d@example.com", i))
 	}
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "onemore", "password": "correct horse"}, 429, nil)
-	// Logins are not affected by sign-up throttling.
-	a.call("POST", "/api/v1/login", "", map[string]string{"username": "user0", "password": "correct horse"}, 200, nil)
+	c := &web{t: t, url: a.url, noWeb: true}
+	code := sendCode(t, s, c, "onemore@example.com")
+	c.wantErr("POST", "/api/v1/auth/verify", map[string]string{"email": "onemore@example.com", "code": code}, 429, "throttled")
+	// Signing in to an account is not affected by sign-up throttling.
+	clock = clock.Add(2 * time.Minute)
+	if res := clientSignIn(t, s, a.url, "user0@example.com"); res.Created {
+		t.Fatalf("%+v", res)
+	}
 }
 
 func TestAdminConsoleEndpoints(t *testing.T) {
 	s, a := newPortal(t, Config{OpenRegistration: true, SignupCreditMicros: 2_000_000})
-	root, err := s.CreateUser("root", "rootrootroot", true)
+	root, err := s.store.CreateUser("root", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rootTok, _, _ := s.Store().IssueSessionToken(root.ID, "cli", 0, true)
 	admin := &web{t: t, url: a.url, noWeb: true, hdr: map[string]string{"Authorization": "Bearer " + rootTok}}
 
-	var alice, bob AuthResponse
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "alice", "password": "correct horse"}, 201, &alice)
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "bob_2", "password": "correct horse"}, 201, &bob)
-	user := &web{t: t, url: a.url, noWeb: true, hdr: map[string]string{"Authorization": "Bearer " + alice.Token}}
+	aliceU, aliceTok := testUser(t, s, "alice")
+	testUser(t, s, "bob_2")
+	user := &web{t: t, url: a.url, noWeb: true, hdr: map[string]string{"Authorization": "Bearer " + aliceTok}}
 
 	// Everything under /admin is admin-only.
 	for _, ep := range []struct{ m, p string }{
-		{"GET", "/api/v1/admin/users/search"}, {"POST", "/api/v1/admin/users/alice/admin"}, {"POST", "/api/v1/admin/users/alice/password"},
+		{"GET", "/api/v1/admin/users/search"}, {"POST", "/api/v1/admin/users/alice/admin"},
 		{"GET", "/api/v1/admin/users/alice/tokens"}, {"POST", "/api/v1/admin/users/alice/tokens/revoke"}, {"GET", "/api/v1/admin/jobs"},
 		{"GET", "/api/v1/admin/nodes"}, {"GET", "/api/v1/admin/audits"}, {"GET", "/api/v1/admin/disputes"}, {"GET", "/api/v1/admin/ledger"},
 		{"GET", "/api/v1/admin/accounts"}, {"PATCH", "/api/v1/admin/relays/1"}, {"POST", "/api/v1/admin/disputes/x/resolve"},
@@ -382,7 +380,7 @@ func TestAdminConsoleEndpoints(t *testing.T) {
 		t.Fatalf("demoted user: %+v", denied)
 	}
 
-	// Tokens of a user: list, revoke one, reset the password revoking all.
+	// Tokens of a user: list, revoke one, revoke all.
 	var tl struct{ Tokens []accounts.Token }
 	admin.call("GET", "/api/v1/admin/users/alice/tokens", nil, 200, &tl)
 	if len(tl.Tokens) != 1 {
@@ -391,18 +389,14 @@ func TestAdminConsoleEndpoints(t *testing.T) {
 	admin.call("DELETE", fmt.Sprintf("/api/v1/admin/users/bob_2/tokens/%d", tl.Tokens[0].ID), nil, 404, nil) // not bob's
 	admin.call("DELETE", fmt.Sprintf("/api/v1/admin/users/alice/tokens/%d", tl.Tokens[0].ID), nil, 200, nil)
 	user.call("GET", "/api/v1/me", nil, 401, nil)
-	var pw struct {
-		TokensRevoked int64 `json:"tokens_revoked"`
+	newTok := func() string {
+		tok, _, err := s.Store().IssueSessionToken(aliceU.ID, "login", 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
 	}
-	a.call("POST", "/api/v1/login", "", map[string]string{"username": "alice", "password": "correct horse"}, 200, &alice)
-	admin.call("POST", "/api/v1/admin/users/alice/password", map[string]any{"new_password": "short"}, 400, nil)
-	admin.call("POST", "/api/v1/admin/users/alice/password", map[string]any{"new_password": "reset password", "revoke_tokens": true}, 200, &pw)
-	if pw.TokensRevoked != 1 {
-		t.Fatalf("reset revoked %d", pw.TokensRevoked)
-	}
-	a.call("GET", "/api/v1/me", alice.Token, nil, 401, nil)
-	a.call("POST", "/api/v1/login", "", map[string]string{"username": "alice", "password": "reset password"}, 200, &alice)
-	user.hdr["Authorization"] = "Bearer " + alice.Token
+	user.hdr["Authorization"] = "Bearer " + newTok()
 	var ra struct {
 		TokensRevoked int64 `json:"tokens_revoked"`
 	}
@@ -411,8 +405,7 @@ func TestAdminConsoleEndpoints(t *testing.T) {
 		t.Fatalf("revoke all: %d", ra.TokensRevoked)
 	}
 	user.call("GET", "/api/v1/me", nil, 401, nil)
-	a.call("POST", "/api/v1/login", "", map[string]string{"username": "alice", "password": "reset password"}, 200, &alice)
-	user.hdr["Authorization"] = "Bearer " + alice.Token
+	user.hdr["Authorization"] = "Bearer " + newTok()
 
 	// Devices: admin unbinds; detail lists tokens too.
 	k, _ := p2p.NewKeys()
@@ -465,7 +458,7 @@ func TestAdminConsoleEndpoints(t *testing.T) {
 	}
 	var ar struct{ Accounts []AccountRow }
 	admin.call("GET", "/api/v1/admin/accounts", nil, 200, &ar)
-	if len(ar.Accounts) != 4 || ar.Accounts[0].Account != ledger.External || ar.Accounts[0].Balance != -6_000_000 || ar.Accounts[2].User != "alice" {
+	if len(ar.Accounts) != 3 || ar.Accounts[0].Account != ledger.External || ar.Accounts[0].Balance != -4_000_000 || ar.Accounts[1].User != "alice" {
 		t.Fatalf("accounts: %+v", ar.Accounts)
 	}
 
@@ -481,7 +474,7 @@ func TestAdminConsoleEndpoints(t *testing.T) {
 // charges the node; pay captures it minus the recorded fee.
 func TestResolveDisputeFromPortal(t *testing.T) {
 	s, a := newPortal(t, Config{})
-	root, _ := s.CreateUser("root", "rootrootroot", true)
+	root, _ := s.store.CreateUser("root", true)
 	rootTok, _, _ := s.Store().IssueSessionToken(root.ID, "cli", 0, true)
 	admin := &web{t: t, url: a.url, noWeb: true, hdr: map[string]string{"Authorization": "Bearer " + rootTok}}
 
@@ -565,15 +558,14 @@ func TestReadsDoNotNeedWriteLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	s, err := New(Config{DB: db, OpenRegistration: true, SignupCreditMicros: 5_000_000})
+	s, err := New(Config{DB: db, OpenRegistration: true, SignupCreditMicros: 5_000_000, Mail: testMail})
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	c := &web{t: t, url: srv.URL, hdr: map[string]string{"Origin": srv.URL}}
-	resp := c.call("POST", "/api/v1/web/register", map[string]string{"username": "alice", "password": "correct horse"}, 201, nil)
-	c.cookie = sessionCookie(t, resp).Value
+	webSignIn(t, s, c, "alice@example.com")
 	c.call("POST", "/api/v1/tokens", map[string]any{"name": "first"}, 201, nil)
 
 	// Another process (the coordinator) takes and keeps the write lock.
@@ -605,7 +597,7 @@ func TestReadsDoNotNeedWriteLock(t *testing.T) {
 	if d := time.Since(start); d > 1500*time.Millisecond {
 		t.Fatalf("reads waited for the write lock: %v", d)
 	}
-	resp = c.call("POST", "/api/v1/tokens", map[string]any{"name": "second"}, 503, nil)
+	resp := c.call("POST", "/api/v1/tokens", map[string]any{"name": "second"}, 503, nil)
 	if resp.Header.Get("Retry-After") == "" {
 		t.Fatal("503 without Retry-After")
 	}
@@ -684,54 +676,20 @@ func mustRelays(t *testing.T, s *Server) []accounts.Relay {
 	return rs
 }
 
-// Sign-ups by email: the address becomes the account name, on the API and on
-// the web pages; the email field never accepts a plain name, and accounts with
-// such names still work in the admin console's URLs.
-func TestRegisterWithEmail(t *testing.T) {
-	db, err := openSharedDB(t)
-	if err != nil {
-		t.Fatal(err)
+// Account names are email addresses; the admin console's URLs carry them,
+// '@' and '+' included, and admins create accounts by address only.
+func TestAdminURLsWithEmail(t *testing.T) {
+	s, a := newPortal(t, Config{OpenRegistration: true, SignupCreditMicros: 7})
+	res := clientSignIn(t, s, a.url, " Alice+x@Example.com ")
+	if res.User.Username != "alice+x@example.com" {
+		t.Fatalf("%+v", res)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	s, err := New(Config{DB: db, OpenRegistration: true, SignupCreditMicros: 7, MFAKey: []byte(strings.Repeat("k", 32))})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(srv.Close)
-	api := &web{t: t, url: srv.URL, noWeb: true}
-	var res AuthResponse
-	api.call("POST", "/api/v1/register", map[string]string{"email": " Alice+x@Example.com ", "password": "correct horse"}, 201, &res)
-	if res.User == nil || res.User.Username != "alice+x@example.com" || res.Token == "" {
-		t.Fatalf("register: %+v", res)
-	}
-	api.call("POST", "/api/v1/register", map[string]string{"email": "alice+x@example.com", "password": "correct horse"}, 409, nil)
-	api.call("POST", "/api/v1/register", map[string]string{"email": "plainname", "password": "correct horse"}, 400, nil)
-	api.call("POST", "/api/v1/register", map[string]string{"email": "a@example.com", "password": "short"}, 400, nil)
-	// The longest accepted address fits the column on MySQL too.
-	longest := strings.Repeat("l", accounts.MaxEmailLen-len("@example.com")) + "@example.com"
-	api.call("POST", "/api/v1/register", map[string]string{"email": longest, "password": "correct horse"}, 201, nil)
-	api.call("POST", "/api/v1/login", map[string]string{"username": longest, "password": "correct horse"}, 200, nil)
-	api.call("POST", "/api/v1/register", map[string]string{"email": "l" + longest, "password": "correct horse"}, 400, nil)
-	api.call("POST", "/api/v1/login", map[string]string{"username": "ALICE+x@example.com", "password": "correct horse"}, 200, &res)
-
-	// As a user of the API with the token.
-	me := &web{t: t, url: srv.URL, noWeb: true, hdr: map[string]string{"Authorization": "Bearer " + res.Token}}
 	var m Me
-	me.call("GET", "/api/v1/me", nil, 200, &m)
-	if m.User.Username != "alice+x@example.com" || m.Balance.AvailableMicros != 7 {
+	a.call("GET", "/api/v1/me", res.Token, nil, 200, &m)
+	if m.Balance.AvailableMicros != 7 {
 		t.Fatalf("me: %+v", m)
 	}
-
-	// The web form posts username; an email address works there too.
-	c := &web{t: t, url: srv.URL, hdr: map[string]string{"Origin": srv.URL}}
-	resp := c.call("POST", "/api/v1/web/register", map[string]string{"username": "Web@Example.com", "password": "correct horse"}, 201, nil)
-	if sessionCookie(t, resp) == nil {
-		t.Fatal("no session")
-	}
-
-	// Admin console URLs carry the address, '@' and '+' included.
-	root, err := s.CreateUser("root", "rootrootroot", true)
+	root, err := s.store.CreateUser("root", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -739,12 +697,18 @@ func TestRegisterWithEmail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin := &web{t: t, url: srv.URL, noWeb: true, hdr: map[string]string{"Authorization": "Bearer " + tok}}
+	admin := &web{t: t, url: a.url, noWeb: true, hdr: map[string]string{"Authorization": "Bearer " + tok}}
 	admin.call("GET", "/api/v1/admin/users/"+url.PathEscape("alice+x@example.com"), nil, 200, nil)
 	admin.call("POST", "/api/v1/admin/users/"+url.PathEscape("alice+x@example.com")+"/disable", nil, 200, nil)
-	api.call("POST", "/api/v1/login", map[string]string{"username": "alice+x@example.com", "password": "correct horse"}, 401, nil)
-	admin.call("POST", "/api/v1/admin/users", map[string]any{"username": "Made@Example.com", "password": "correct horse"}, 201, nil)
+	a.call("GET", "/api/v1/me", res.Token, nil, 401, nil)
+	admin.wantErr("POST", "/api/v1/admin/users", map[string]any{"username": "plainname"}, 400, "bad_request")
+	var made accounts.User
+	admin.call("POST", "/api/v1/admin/users", map[string]any{"username": "Made@Example.com"}, 201, &made)
 	admin.call("GET", "/api/v1/admin/users/"+url.PathEscape("made@example.com"), nil, 200, nil)
+	// The new account signs in with a mailed code.
+	if r := clientSignIn(t, s, a.url, "made@example.com"); r.Created || r.User.ID != made.ID {
+		t.Fatalf("%+v", r)
+	}
 }
 
 func TestClientIPTrustsRealIPOnlyFromLoopback(t *testing.T) {

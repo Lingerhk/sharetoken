@@ -390,7 +390,7 @@ func TestCodes(t *testing.T) {
 	now := time.Now()
 	st.Now = func() time.Time { return now }
 	const email = "user@example.test"
-	req := CodeRequest{Purpose: PurposeRegister, Email: email, IP: "1.2.3.4", From: "team@example.test"}
+	req := CodeRequest{Purpose: PurposeLogin, Email: email, IP: "1.2.3.4", From: "team@example.test"}
 	codeFromOutbox := func() string {
 		t.Helper()
 		ms, err := st.Outbox(OutFilter{Kind: KindVerify, Limit: 1})
@@ -413,16 +413,16 @@ func TestCodes(t *testing.T) {
 	if err := st.RequestCode(req); !errors.Is(err, ErrCodeCooldown) {
 		t.Fatalf("cooldown: %v", err)
 	}
-	if err := st.VerifyCode(PurposeRegister, "other@example.test", code); !errors.Is(err, ErrBadCode) {
+	if err := st.VerifyCode(PurposeLogin, "other@example.test", code); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("code of another address: %v", err)
 	}
 	if err := st.VerifyCode("reset", email, code); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("code for another purpose: %v", err)
 	}
-	if err := st.VerifyCode(PurposeRegister, email, " "+code+" "); err != nil {
+	if err := st.VerifyCode(PurposeLogin, email, " "+code+" "); err != nil {
 		t.Fatalf("right code: %v", err)
 	}
-	if err := st.VerifyCode(PurposeRegister, email, code); !errors.Is(err, ErrBadCode) {
+	if err := st.VerifyCode(PurposeLogin, email, code); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("second use: %v", err)
 	}
 
@@ -437,11 +437,11 @@ func TestCodes(t *testing.T) {
 		wrong = "000001"
 	}
 	for range maxCodeAttempts {
-		if err := st.VerifyCode(PurposeRegister, email, wrong); !errors.Is(err, ErrBadCode) {
+		if err := st.VerifyCode(PurposeLogin, email, wrong); !errors.Is(err, ErrBadCode) {
 			t.Fatal(err)
 		}
 	}
-	if err := st.VerifyCode(PurposeRegister, email, code); !errors.Is(err, ErrBadCode) {
+	if err := st.VerifyCode(PurposeLogin, email, code); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("code survived %d wrong guesses: %v", maxCodeAttempts, err)
 	}
 
@@ -452,23 +452,23 @@ func TestCodes(t *testing.T) {
 	}
 	code = codeFromOutbox()
 	now = now.Add(CodeTTL + time.Second)
-	if err := st.VerifyCode(PurposeRegister, email, code); !errors.Is(err, ErrBadCode) {
+	if err := st.VerifyCode(PurposeLogin, email, code); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("expired code: %v", err)
 	}
 
 	// A new code replaces the old one.
 	now = now.Add(2 * time.Minute)
-	_ = st.RequestCode(CodeRequest{Purpose: PurposeRegister, Email: "n@example.test", IP: "1.2.3.4", From: "team@example.test"})
+	_ = st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "n@example.test", IP: "1.2.3.4", From: "team@example.test"})
 	first := codeFromOutbox()
 	now = now.Add(2 * time.Minute)
-	_ = st.RequestCode(CodeRequest{Purpose: PurposeRegister, Email: "n@example.test", IP: "1.2.3.4", From: "team@example.test"})
+	_ = st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "n@example.test", IP: "1.2.3.4", From: "team@example.test"})
 	second := codeFromOutbox()
 	if first != second {
-		if err := st.VerifyCode(PurposeRegister, "n@example.test", first); !errors.Is(err, ErrBadCode) {
+		if err := st.VerifyCode(PurposeLogin, "n@example.test", first); !errors.Is(err, ErrBadCode) {
 			t.Fatalf("old code still works: %v", err)
 		}
 	}
-	if err := st.VerifyCode(PurposeRegister, "n@example.test", second); err != nil {
+	if err := st.VerifyCode(PurposeLogin, "n@example.test", second); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -478,20 +478,20 @@ func TestCodeLimits(t *testing.T) {
 	now := time.Now()
 	st.Now = func() time.Time { return now }
 	for i := range maxCodesPerEmail {
-		if err := st.RequestCode(CodeRequest{Purpose: PurposeRegister, Email: "a@example.test", IP: fmt.Sprintf("10.0.0.%d", i), From: "team@example.test"}); err != nil {
+		if err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "a@example.test", IP: fmt.Sprintf("10.0.0.%d", i), From: "team@example.test"}); err != nil {
 			t.Fatal(err)
 		}
 		now = now.Add(CodeCooldown + time.Second)
 	}
-	if err := st.RequestCode(CodeRequest{Purpose: PurposeRegister, Email: "a@example.test", IP: "10.0.1.1", From: "team@example.test"}); !errors.Is(err, ErrCodeLimit) {
+	if err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "a@example.test", IP: "10.0.1.1", From: "team@example.test"}); !errors.Is(err, ErrCodeLimit) {
 		t.Fatalf("per address: %v", err)
 	}
 	for i := range maxCodesPerIP {
-		if err := st.RequestCode(CodeRequest{Purpose: PurposeRegister, Email: fmt.Sprintf("u%d@example.test", i), IP: "9.9.9.9", From: "team@example.test"}); err != nil {
+		if err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: fmt.Sprintf("u%d@example.test", i), IP: "9.9.9.9", From: "team@example.test"}); err != nil {
 			t.Fatalf("%d: %v", i, err)
 		}
 	}
-	if err := st.RequestCode(CodeRequest{Purpose: PurposeRegister, Email: "z@example.test", IP: "9.9.9.9", From: "team@example.test"}); !errors.Is(err, ErrCodeLimit) {
+	if err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "z@example.test", IP: "9.9.9.9", From: "team@example.test"}); !errors.Is(err, ErrCodeLimit) {
 		t.Fatalf("per IP: %v", err)
 	}
 }
@@ -500,7 +500,7 @@ func TestSensitiveBodyIsWiped(t *testing.T) {
 	st := newStore(t)
 	port, _ := startInbound(t, st, nil)
 	w := worker(st, direct(port))
-	if err := st.RequestCode(CodeRequest{Purpose: PurposeRegister, Email: "support@localhost", IP: "1.1.1.1", From: "ShareToken <team@example.test>"}); err != nil {
+	if err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "support@localhost", IP: "1.1.1.1", From: "ShareToken <team@example.test>"}); err != nil {
 		t.Fatal(err)
 	}
 	deliverAll(t, st, w)
@@ -579,20 +579,20 @@ func TestInboundSurvivesMisbehavingClients(t *testing.T) {
 	t.Fatalf("mail not accepted after misbehaving clients: %+v", m)
 }
 
-func TestPasswordChangedMail(t *testing.T) {
+func TestMFAChangedMail(t *testing.T) {
 	when := time.Date(2026, 11, 10, 13, 5, 0, 0, time.FixedZone("x", 8*3600))
-	m := PasswordChangedMail("ann@example.test", true, when, "203.0.113.7", "support@example.test")
-	for _, want := range []string{"ann@example.test", "2026-11-10 05:05 UTC", "203.0.113.7", "support@example.test", "signed out"} {
+	m := MFAChangedMail("ann@example.test", true, when, "203.0.113.7", "support@example.test")
+	for _, want := range []string{"ann@example.test", "2026-11-10 05:05 UTC", "203.0.113.7", "support@example.test", "turned on"} {
 		if !strings.Contains(m.Text, want) || !strings.Contains(m.HTML, want) {
 			t.Fatalf("%q missing:\n%s\n%s", want, m.Text, m.HTML)
 		}
 	}
-	if m.Kind != KindNotice || m.Sensitive {
+	if m.Kind != KindNotice || m.Sensitive || !strings.Contains(m.Subject, "is on") {
 		t.Fatalf("%+v", m)
 	}
 	// The address is the user's own input: escaped in the HTML.
-	m = PasswordChangedMail("<b>@example.test", false, when, "", "")
-	if strings.Contains(m.HTML, "<b>@") || strings.Contains(m.Text, "IP address") || strings.Contains(m.Text, "signed out") {
+	m = MFAChangedMail("<b>@example.test", false, when, "", "")
+	if strings.Contains(m.HTML, "<b>@") || strings.Contains(m.Text, "IP address") || !strings.Contains(m.Text, "turned off") {
 		t.Fatalf("%s\n%s", m.Text, m.HTML)
 	}
 }

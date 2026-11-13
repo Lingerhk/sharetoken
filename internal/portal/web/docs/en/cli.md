@@ -10,31 +10,21 @@ The format of every command:
 
 ## Account {#account}
 
-### register {#register}
-
-Create an account and bind this device.
-
-```bash
-{{exe}} register -email you@example.com
-```
-
-| Option | Meaning |
-|---|---|
-| `-email ADDR` | The email address to register with |
-| `-code CODE` | A verification code you already received. If omitted, one is sent and you are asked for it |
-| `-device NAME` | Device name. Defaults to the host name |
-
 ### login {#login}
 
-Sign in and bind this device.
+Sign in with a code mailed to you, and bind this device. An address without an account gets one.
 
 ```bash
-{{exe}} login -user you@example.com
+{{exe}} login -email you@example.com
 ```
 
 | Option | Meaning |
 |---|---|
-| `-user NAME` | Email or user name. Asked for if omitted |
+| `-email ADDR` | Your email address. Asked for if omitted |
+| `-send` | Only mail the code and exit. Sign in later with `-code` |
+| `-code CODE` | A code you already received. If omitted, one is sent and you are asked for it |
+| `-invite CODE` | Invite code, when the portal needs one for a new account |
+| `-totp CODE` | The authenticator code, when two-factor authentication is on. Asked for if omitted |
 | `-device NAME` | Device name. Defaults to the host name |
 
 ### logout {#logout}
@@ -132,4 +122,3 @@ The ids are the ones `pair` lists. See [Pair with your buyers](/docs/share#pairi
 | Variable | What it does |
 |---|---|
 | `SHARETOKEN_HOME` | State directory. Same as `-home` |
-| `SHARETOKEN_PASSWORD` | Password used by login and register, for scripts. See [Sign in from a script](/docs/account#login-script) |

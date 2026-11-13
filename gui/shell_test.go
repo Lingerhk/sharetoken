@@ -296,7 +296,7 @@ func TestProxyForwards(t *testing.T) {
 	defer daemon.Close()
 	addr := strings.TrimPrefix(daemon.URL, "http://")
 	p := newProxy(&supervisor{addr: addr}, started, nil, nil)
-	req := httptest.NewRequest("POST", "wails://wails/api/v1/login?x=1", strings.NewReader(`{"a":1}`))
+	req := httptest.NewRequest("POST", "wails://wails/api/v1/auth/verify?x=1", strings.NewReader(`{"a":1}`))
 	req.Header.Set("Origin", "wails://wails")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

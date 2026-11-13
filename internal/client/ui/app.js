@@ -49,26 +49,30 @@ I18N.ready.then(() => {
   const MESSAGES = {
     upgrade_required: tr('这个版本已不再受支持，请升级到最新版本后继续使用'),
     bad_portal: tr('门户地址格式不对'),
-    insecure_portal: tr('拒绝使用其他机器上的明文 HTTP 门户：密码会以明文传输。请使用 https:// 地址'),
+    insecure_portal: tr('拒绝使用其他机器上的明文 HTTP 门户：验证码会以明文传输。请使用 https:// 地址'),
+    portal_outdated: tr('ShareToken 服务器版本过旧，暂时无法登录'),
     portal_unreachable: tr('连不上 ShareToken 服务器，请检查网络后重试'),
     not_a_portal: tr('这个地址不是 ShareToken 门户'),
     pin_required: tr('请先核对并确认门户证书指纹'),
-    pin_mismatch: tr('门户证书和确认的指纹不一致，连接可能被拦截。已停止，密码没有发送'),
-    bad_credentials: tr('账号或密码错误，或账号已被停用'),
+    pin_mismatch: tr('门户证书和确认的指纹不一致，连接可能被拦截。已停止，邮箱和验证码都没有发送'),
+    bad_email: tr('请填写正确的邮箱地址'),
+    account_disabled: tr('这个账号已被停用，请联系客服'),
     throttled: tr('尝试次数太多，请几分钟后再试'),
-    registration_closed: tr('该门户未开放注册，请联系管理员开通账号'),
-    exists: tr('这个邮箱已经注册过了，请直接登录'),
-    bad_code: tr('两步验证码不正确'),
-    email_required: tr('请用邮箱注册'),
+    registration_closed: tr('这个邮箱还没有账号，该门户也未开放注册，请联系管理员开通账号'),
+    bad_code: tr('验证码错误或已过期'),
+    invite_required: tr('新账号需要邀请码，填写后重新发送验证码'),
+    bad_invite: tr('邀请码无效、已用完或已过期'),
+    email_not_allowed: tr('这个邮箱不能在该门户注册'),
+    mail_unavailable: tr('服务器暂时无法发送邮件，请稍后再试或联系客服'),
     code_cooldown: tr('刚发送过验证码，请稍后再试'),
+    challenge_expired: tr('登录超时，请重新获取验证码'),
     mfa_setup_required: tr('管理员账号需要先在门户网页上完成两步验证设置'),
     already_logged_in: tr('已经登录，请先退出'),
     daemon_down: tr('后台服务没有响应，请重新打开应用'),
   };
   const message = e => MESSAGES[e.code] || (e.code === 'bad_request' ? badRequest(e.message) : e.message || String(e));
   function badRequest(m) {
-    if (/email/.test(m)) return tr('邮箱地址格式不正确');
-    if (/password/.test(m)) return tr('密码长度需要 8–256 个字符');
+    if (/email/.test(m)) return tr('请填写正确的邮箱地址');
     return m;
   }
 
@@ -161,48 +165,57 @@ I18N.ready.then(() => {
   async function showAuth(session, notice) {
     markEnv(session);
     stopPolling();
-    const auth = { probe: null, tab: session.first_run ? 'register' : 'login', totp: false, confirmed: false, busy: false, error: '' };
+    // sent: the portal's answer to the last code request; invite: the portal
+    // asked for an invite code; mfa: the code checked out and the account
+    // wants its authenticator code.
+    const auth = { probe: null, sent: null, invite: false, mfa: false, confirmed: false, busy: false, error: '' };
     // The brand on one side stays; the form beside it is redrawn.
     const root = h('div', { class: 'auth-main', id: 'auth' });
     app.replaceChildren(h('div', { class: 'auth' },
       h('div', { class: 'auth-side' }, h('img', { class: 'auth-logo', src: '/ui/favicon.svg', alt: '' }), h('h1', null, 'ShareToken'), h('p', { class: 'tagline' }, tr('共享和使用模型算力'))),
       root));
 
-    const account = h('input', { type: 'text', id: 'account', autocomplete: 'username', value: session.user || '', autocapitalize: 'off', spellcheck: 'false' });
-    const email = h('input', { type: 'email', id: 'email', autocomplete: 'email', autocapitalize: 'off', spellcheck: 'false' });
-    const password = h('input', { type: 'password', id: 'password', autocomplete: 'current-password' });
-    const password2 = h('input', { type: 'password', id: 'password2', autocomplete: 'new-password' });
+    const lastEmail = (session.user || '').includes('@') ? session.user : '';
+    const email = h('input', { type: 'email', id: 'email', autocomplete: 'email', value: lastEmail, autocapitalize: 'off', spellcheck: 'false' });
     const mailCode = h('input', { type: 'text', id: 'mail-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '7' });
+    const invite = h('input', { type: 'text', id: 'invite', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false' });
+    const totp = h('input', { type: 'text', id: 'totp', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '7' });
     const sendCode = h('button', { type: 'button', id: 'send-code', onclick: requestCode }, tr('发送验证码'));
+    const validEmail = () => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.value.trim());
+    const pinOf = p => p.pin_required || p.known ? p.fingerprint : '';
     let cooldown = null;
     async function requestCode() {
       const p = auth.probe;
       auth.error = '';
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.value.trim())) { auth.error = tr('请填写正确的邮箱地址'); render(); return; }
+      if (!validEmail()) { auth.error = tr('请填写正确的邮箱地址'); render(); email.focus(); return; }
+      if (auth.invite && !invite.value.trim()) { auth.error = tr('请填写邀请码'); render(); invite.focus(); return; }
       sendCode.disabled = true;
       try {
-        const r = await api('POST', '/api/v1/register/code', { pin: p.pin_required || p.known ? p.fingerprint : '', email: email.value.trim() });
-        let left = r.cooldown_seconds || 60;
+        auth.sent = await api('POST', '/api/v1/auth/code', { pin: pinOf(p), email: email.value.trim(), invite_code: invite.value.trim() });
+        let left = auth.sent.cooldown_seconds || 60;
         sendCode.textContent = tr('{n} 秒后可重发', { n: left });
         clearInterval(cooldown);
         cooldown = setInterval(() => {
           if (--left > 0) { sendCode.textContent = tr('{n} 秒后可重发', { n: left }); return; }
-          clearInterval(cooldown); sendCode.disabled = false; sendCode.textContent = tr('重新发送');
+          clearInterval(cooldown); cooldown = null; sendCode.disabled = false; sendCode.textContent = tr('重新发送');
         }, 1000);
+        render();
         mailCode.focus();
       } catch (e) {
         sendCode.disabled = false;
-        auth.error = e.code === 'code_cooldown' ? tr('刚发送过，请稍后再试') : message(e);
+        if (e.code === 'invite_required') auth.invite = true;
+        if (e.code === 'pin_mismatch' || e.code === 'pin_required') auth.probe = null;
+        auth.error = message(e);
         render();
+        if (auth.invite && !invite.value.trim()) invite.focus();
       }
     }
-    const totp = h('input', { type: 'text', id: 'totp', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '7' });
 
     function render() {
       root.replaceChildren(...[
         I18N.picker(),
         notice && h('div', { class: 'notice warn', id: 'notice' }, notice),
-        auth.probe ? signInPanel() : connectPanel(),
+        auth.probe ? (auth.mfa ? mfaPanel() : signInPanel()) : connectPanel(),
       ].filter(Boolean)); // replaceChildren would print a null as text
     }
 
@@ -227,8 +240,7 @@ I18N.ready.then(() => {
         auth.confirmed = false;
       } catch (e) { auth.error = message(e); }
       auth.busy = false; render();
-      const first = auth.tab === 'register' ? email : (account.value ? password : account);
-      if (auth.probe) first.focus();
+      if (auth.probe) (email.value ? mailCode : email).focus();
     }
 
     function certBlock() {
@@ -244,66 +256,72 @@ I18N.ready.then(() => {
           h('span', null, tr('指纹一致，信任这个门户'))));
     }
 
+    // One form for everyone: an address without an account gets one.
     function signInPanel() {
       const p = auth.probe;
-      const canRegister = p.registration_open;
-      if (!canRegister && auth.tab === 'register') auth.tab = 'login';
       const blocked = auth.busy || (p.pin_required && !auth.confirmed);
-      const isLogin = auth.tab === 'login';
-      const tab = (name, label, enabled) => h('button', { type: 'button', role: 'tab', id: 'tab-' + name, 'aria-selected': auth.tab === name ? 'true' : 'false', disabled: !enabled,
-        onclick: () => { auth.tab = name; auth.error = ''; auth.totp = false; render(); } }, label);
-      password.setAttribute('autocomplete', isLogin ? 'current-password' : 'new-password');
+      if (blocked && !sendCode.disabled) sendCode.disabled = true;
+      else if (!blocked && sendCode.disabled && !cooldown) sendCode.disabled = false;
+      const isNew = auth.sent && auth.sent.new_account;
       return h('form', { class: 'panel', id: 'signin-form', novalidate: true, onsubmit: e => { e.preventDefault(); submit(); } },
-        h('div', { class: 'tabs', role: 'tablist' }, tab('login', tr('登录'), true), tab('register', tr('注册'), canRegister)),
+        h('h2', { class: 'auth-title' }, tr('登录或注册')),
         certBlock(),
-        isLogin
-          ? [h('label', { class: 'field' }, h('span', null, tr('邮箱（或用户名）')), account),
-             h('label', { class: 'field' }, h('span', null, tr('密码')), password),
-             auth.totp ? h('label', { class: 'field' }, h('span', null, tr('两步验证码（6 位）')), totp) : null,
-             p.password_reset ? h('p', { class: 'small' }, h('a', { id: 'forgot-link', href: p.portal.replace(/\/+$/, '') + '/app/', target: '_blank', rel: 'noopener' }, tr('忘记密码？'))) : null]
-          : [h('label', { class: 'field' }, h('span', null, tr('邮箱')), email),
-             p.email_verification ? h('label', { class: 'field' }, h('span', null, tr('邮箱验证码（也看看垃圾邮件）')), h('div', { class: 'code-row' }, mailCode, sendCode)) : null,
-             h('label', { class: 'field' }, h('span', null, tr('密码（至少 8 位）')), password),
-             h('label', { class: 'field' }, h('span', null, tr('确认密码')), password2),
-             p.signup_credit_micros ? h('p', { class: 'small muted', id: 'signup-credit' }, tr('注册赠送 {n} credit', { n: credit(p.signup_credit_micros) })) : null],
-        !canRegister ? h('p', { class: 'small muted', id: 'reg-closed' }, tr('该门户未开放注册，账号由管理员开通。')) : null,
+        h('label', { class: 'field' }, h('span', null, tr('邮箱')), email),
+        auth.invite || isNew && p.invite_required ? h('label', { class: 'field', id: 'invite-field' }, h('span', null, tr('邀请码（新账号需要）')), invite) : null,
+        h('label', { class: 'field' }, h('span', null, tr('邮箱验证码（也看看垃圾邮件）')), h('div', { class: 'code-row' }, mailCode, sendCode)),
+        isNew ? h('p', { class: 'small muted', id: 'new-account' }, p.signup_credit_micros
+          ? tr('这个邮箱还没有账号，登录时会自动创建，并赠送 {n} credit', { n: credit(p.signup_credit_micros) })
+          : tr('这个邮箱还没有账号，登录时会自动创建')) : null,
+        !auth.sent ? h('p', { class: 'small muted', id: 'signin-hint' }, p.registration_open
+          ? tr('不需要密码：输入邮箱，获取验证码即可登录；没有账号会自动注册。')
+          : tr('不需要密码：输入邮箱，获取验证码即可登录。该门户未开放注册，账号由管理员开通。')) : null,
         errorLine(),
         h('button', { class: 'primary', type: 'submit', id: 'submit', disabled: blocked },
-          auth.busy ? tr('请稍候…') : (isLogin ? tr('登录') : tr('注册并登录'))));
+          auth.busy ? tr('请稍候…') : tr('登录')));
+    }
+
+    // The account has two-factor authentication: its authenticator code.
+    function mfaPanel() {
+      return h('form', { class: 'panel', id: 'mfa-form', novalidate: true, onsubmit: e => { e.preventDefault(); submit(); } },
+        h('h2', { class: 'auth-title' }, tr('两步验证')),
+        h('p', { class: 'small muted' }, tr('{email} 开启了两步验证，请输入身份验证器 App 里的 6 位验证码。', { email: email.value.trim() })),
+        h('label', { class: 'field' }, h('span', null, tr('两步验证码（6 位）')), totp),
+        errorLine(),
+        h('button', { class: 'primary', type: 'submit', id: 'submit', disabled: auth.busy }, auth.busy ? tr('请稍候…') : tr('验证并登录')),
+        h('button', { type: 'button', class: 'link', id: 'mfa-back', onclick: () => { auth.mfa = false; auth.error = ''; totp.value = ''; mailCode.value = ''; render(); mailCode.focus(); } }, tr('返回')));
     }
 
     async function submit() {
       const p = auth.probe;
       auth.error = '';
-      const isLogin = auth.tab === 'login';
-      if (!isLogin && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.value.trim())) auth.error = tr('请填写正确的邮箱地址');
-      else if (isLogin && !account.value.trim()) auth.error = tr('请填写邮箱或用户名');
-      else if (!isLogin && p.email_verification && !mailCode.value.trim()) auth.error = tr('请填写邮箱收到的验证码');
-      else if (!password.value) auth.error = tr('请填写密码');
-      else if (!isLogin && password.value.length < 8) auth.error = tr('密码至少 8 位');
-      else if (!isLogin && password.value !== password2.value) auth.error = tr('两次输入的密码不一致');
-      else if (isLogin && auth.totp && !totp.value.trim()) auth.error = tr('请填写两步验证码');
+      if (auth.mfa) {
+        if (!totp.value.trim()) auth.error = tr('请填写两步验证码');
+      } else if (!validEmail()) auth.error = tr('请填写正确的邮箱地址');
+      else if (!mailCode.value.trim()) auth.error = auth.sent ? tr('请填写邮箱收到的验证码') : tr('请先发送验证码');
       if (auth.error) { render(); return; }
       auth.busy = true; render();
-      const body = { pin: p.pin_required || p.known ? p.fingerprint : '', password: password.value };
-      if (isLogin) { body.account = account.value.trim(); if (auth.totp) body.totp = totp.value.trim(); }
-      else { body.email = email.value.trim(); if (p.email_verification) body.code = mailCode.value.trim(); }
       try {
-        const s = await api('POST', isLogin ? '/api/v1/login' : '/api/v1/register', body);
-        password.value = password2.value = totp.value = '';
+        const s = auth.mfa
+          ? await api('POST', '/api/v1/auth/mfa', { code: totp.value.trim() })
+          : await api('POST', '/api/v1/auth/verify', { pin: pinOf(p), email: email.value.trim(), code: mailCode.value.trim(), invite_code: invite.value.trim() });
+        mailCode.value = totp.value = '';
+        clearInterval(cooldown); cooldown = null;
         showDashboard(s);
         return;
       } catch (e) {
-        if (e.code === 'mfa_required') { auth.totp = true; auth.error = ''; }
-        else if (e.code === 'already_logged_in') { boot(); return; }
+        if (e.code === 'already_logged_in') { boot(); return; }
+        if (e.code === 'mfa_required') { auth.mfa = true; auth.error = ''; }
         else {
-          auth.error = !isLogin && e.code === 'bad_code' ? tr('验证码错误或已过期') : message(e);
-          if (e.code === 'pin_mismatch' || e.code === 'pin_required') { auth.probe = null; }
-          if (e.code === 'bad_code') totp.value = '';
+          auth.error = auth.mfa && e.code === 'bad_code' ? tr('两步验证码不正确') : message(e);
+          if (e.code === 'challenge_expired') { auth.mfa = false; mailCode.value = ''; }
+          if (e.code === 'invite_required') auth.invite = true;
+          if (e.code === 'pin_mismatch' || e.code === 'pin_required') auth.probe = null;
+          if (e.code === 'bad_code') (auth.mfa ? totp : mailCode).value = '';
         }
       }
       auth.busy = false; render();
-      if (auth.totp && !totp.value) totp.focus();
+      if (auth.mfa) totp.focus();
+      else if (auth.probe && !mailCode.value) mailCode.focus();
     }
 
     render();

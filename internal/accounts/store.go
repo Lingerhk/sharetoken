@@ -107,21 +107,16 @@ func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	return &u, nil
 }
 
-// CreateUser registers a user.
-func (s *Store) CreateUser(username, password string, admin bool) (*User, error) {
+// CreateUser registers a user. Nobody has a password: people sign in with a
+// code mailed to their address (the portal), so the portal only creates
+// accounts named by an email address.
+func (s *Store) CreateUser(username string, admin bool) (*User, error) {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if err := CheckUsername(username); err != nil {
 		return nil, err
 	}
-	if err := CheckPassword(password); err != nil {
-		return nil, err
-	}
-	hash, err := HashPassword(password)
-	if err != nil {
-		return nil, err
-	}
 	var u *User
-	err = s.tx(func(tx *sql.Tx) error {
+	err := s.tx(func(tx *sql.Tx) error {
 		var n int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM users WHERE username = ?`, username).Scan(&n); err != nil {
 			return err
@@ -129,8 +124,8 @@ func (s *Store) CreateUser(username, password string, admin bool) (*User, error)
 		if n > 0 {
 			return fmt.Errorf("%w: username %q is taken", ErrExists, username)
 		}
-		res, err := tx.Exec(`INSERT INTO users (username, pass_hash, is_admin, created_at) VALUES (?, ?, ?, ?)`,
-			username, hash, boolInt(admin), s.now().UnixNano())
+		res, err := tx.Exec(`INSERT INTO users (username, is_admin, created_at) VALUES (?, ?, ?)`,
+			username, boolInt(admin), s.now().UnixNano())
 		if err != nil {
 			return err
 		}
@@ -144,48 +139,30 @@ func (s *Store) CreateUser(username, password string, admin bool) (*User, error)
 	return u, err
 }
 
-// Authenticate checks a username and password.
-func (s *Store) Authenticate(username, password string) (*User, error) {
-	username = strings.ToLower(strings.TrimSpace(username))
-	var hash string
-	var id int64
-	err := s.DB.QueryRow(`SELECT id, pass_hash FROM users WHERE username = ?`, username).Scan(&id, &hash)
-	if errors.Is(err, sql.ErrNoRows) {
-		// Spend the same time as a real check, so timing does not reveal
-		// which usernames exist.
-		VerifyPassword(dummyHash, password)
-		return nil, ErrBadCredentials
-	}
-	if err != nil {
+// RenameUser gives an account a new name, which must be an email address
+// nobody else has. Balances, devices and tokens hang on the id and stay.
+func (s *Store) RenameUser(userID int64, name string) (*User, error) {
+	name = NormalizeEmail(name)
+	if err := CheckEmail(name); err != nil {
 		return nil, err
 	}
-	if !VerifyPassword(hash, password) {
-		return nil, ErrBadCredentials
-	}
-	u, err := s.User(id)
-	if err != nil {
-		return nil, err
-	}
-	if u.Disabled {
-		return nil, ErrDisabled
-	}
-	return u, nil
-}
-
-var dummyHash, _ = HashPassword("sharetoken-dummy-password")
-
-// SetPassword replaces a user's password.
-func (s *Store) SetPassword(userID int64, password string) error {
-	if err := CheckPassword(password); err != nil {
+	var u *User
+	err := s.tx(func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM users WHERE username = ? AND id <> ?`, name, userID).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return fmt.Errorf("%w: username %q is taken", ErrExists, name)
+		}
+		if _, err := tx.Exec(`UPDATE users SET username = ? WHERE id = ?`, name, userID); err != nil {
+			return err
+		}
+		var err error
+		u, err = scanUser(tx.QueryRow(`SELECT `+userColumns+` FROM users WHERE id = ?`, userID))
 		return err
-	}
-	hash, err := HashPassword(password)
-	if err != nil {
-		return err
-	}
-	return s.tx(func(tx *sql.Tx) error {
-		return mustAffect(tx.Exec(`UPDATE users SET pass_hash = ? WHERE id = ?`, hash, userID))
 	})
+	return u, err
 }
 
 // User loads a user by ID.

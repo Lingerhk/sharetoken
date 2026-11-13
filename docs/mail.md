@@ -2,7 +2,7 @@
 
 **English** | [简体中文](zh-CN/mail.md)
 
-The mail server sends sign-up verification codes, password-reset links and notices, and receives mail for a few addresses such as `support@`, which administrators read and answer in the admin console. It is optional: a portal without it works, with sign-up by user name and no mail.
+The mail server sends sign-in codes and notices, and receives mail for a few addresses such as `support@`, which administrators read and answer in the admin console. **A portal needs it**: there are no passwords, and everyone, administrators included, signs in with a code mailed to their address. Without a sender (`mail.from`) and a running mail server nobody can sign in.
 
 Code: [`internal/mailer`](../internal/mailer) (the library), [`cmd/mailserver`](../cmd/mailserver) (the server), [`internal/portal/mail.go`](../internal/portal/mail.go) (the portal's endpoints). Example configuration: [`configs/mail.example.yaml`](../configs/mail.example.yaml).
 
@@ -14,7 +14,7 @@ portal ── writes mail_outbox / mail_codes ──▶ MySQL ◀── delivers
   └── admin console /admin/#/mail                                                          └── recipient's MX, a smarthost, or the Resend API
 ```
 
-- The portal and the mail server talk **only through the database**. While the mail server is down, mail queues up and the sign-up endpoints keep answering.
+- The portal and the mail server talk **only through the database**. While the mail server is down, mail queues up and the sign-in endpoints keep answering, but no code arrives until it is back.
 - The mail server is the one process strangers talk to directly. Run it as its own system user, with a MySQL account of its own that may only use `mail_outbox`, `mail_inbox` and `mail_status`. It then cannot reach the ledger, the users or the verification codes, and it cannot read the keys of the portal or the coordinator. Give it nothing beyond the right to bind port 25.
 - It accepts mail only for the addresses listed in `smtp.mailboxes` and refuses everything else during the SMTP dialogue (550). It never forwards and never answers automatically, so it is not an open relay and produces no backscatter.
 
@@ -67,37 +67,31 @@ Notes:
 - Before choosing `direct`, test that the host can open a connection to port 25 of an outside mail server. Cloud providers often block it by default.
 - In `resend` mode each message carries its Message-ID as the idempotency key, so a retry after a lost answer does not produce a second copy. HTTP 400 and 422 are permanent failures. 401 and 403 (a problem with the key or the domain verification), 429 and 5xx leave the message queued for retry. Without a readable key the server does not start.
 - A temporary failure is retried for `delivery.retry_for` (48 hours by default). Sent mail is kept for `delivery.keep_for`.
-- "Accepted by the recipient's server" in the console does not mean the user saw the message in the inbox: the server cannot see where it was filed. The sign-up page therefore tells users to look in the spam folder.
+- "Accepted by the recipient's server" in the console does not mean the user saw the message in the inbox: the server cannot see where it was filed. The sign-in page therefore tells users to look in the spam folder.
 
 To verify a deployment from outside, send a test message to a mailbox you control at a large provider and read its `Authentication-Results` header: SPF, DKIM and DMARC should all pass.
 
-## Sign-up verification codes
+## Sign-in codes
 
-1. `POST /api/v1/register/code {email}`. An address that already has an account gets 409 `exists` at once (the page says "already registered, log in instead") and no mail. These lookups are limited to 8 per IP address in 5 minutes.
-2. `POST /api/v1/register {email, password, code}`. With email verification on (`accounts.email_verification: true`, or the settings page), `code` is required and sign-up by plain user name is closed.
+One flow for new and existing accounts:
+
+1. `POST /api/v1/auth/code {email, invite_code?}` mails a six-digit code and says whether the address is new (`new_account`). For a new address the registration rules are checked before any mail goes out (open registration, the allowed domains and the blocked addresses on the settings page, an invite code when one is required), so mail only reaches people who can finish. Refusals of a new address are limited to 8 per IP address in 5 minutes, so the answers are no fast directory of who has an account.
+2. `POST /api/v1/auth/verify {email, code}` (clients, a token for 60 days) or `POST /api/v1/web/auth/verify` (the portal's pages, a session for 15 days) redeems it. The first sign-in of a new address creates its account and grants the sign-up credit. An account with two-factor authentication then needs its authenticator code as well ([guide.md](guide.md), section 4.2).
 
 | Limit | Value |
 |---|---|
 | Lifetime | 10 minutes. An expired code's message is no longer delivered. |
 | Asking again | Once per 60 seconds for one address (`code_cooldown`). |
 | Per hour | 5 for one address, 20 for one IP address, 500 in total (`throttled`). |
-| Guessing | 5 attempts per code; wrong codes are also limited per IP address. |
+| Guessing | 5 attempts per code; wrong codes are also limited per IP address and per address (8 in 5 minutes). |
 
-Only a salted hash of a code is stored. Once the message has been sent, its subject and body are erased from the database, and while it is queued administrators cannot read it in the console. The web pages, the desktop client (through its daemon's `POST /api/v1/register/code`) and the command line (`sharetoken register -email`) all use this flow.
-
-## Password reset
-
-`POST /api/v1/password/forgot {email}` answers the same way and in the same time whether or not the address has an account; the real work happens after the answer. Only an existing account gets mail. The link is `<public address of the portal>/app/#reset=<token>`: 256 random bits, stored only as a hash, placed in the URL fragment so that it reaches no server log, valid for 30 minutes, usable once. A new link invalidates the older ones. Limits: one per 60 seconds and 5 per hour for an account, 500 per hour in total, and per IP address as for failed logins.
-
-`POST /api/v1/password/reset {token, new_password}` revokes every token and session of the account, mails a notice and writes the operation log. An administrator's two-factor enrollment stays as it is, so a mailbox alone does not open the console. An account whose name is not an email address gets no link; an administrator resets its password.
-
-Reset messages are marked sensitive like verification codes: erased once sent, unreadable in the console while queued. The flow needs three things: password reset switched on in the settings, a sender address, and the portal's public address in `http.public_url` of `portal.yaml`. That address is read only from the file, so that nobody who can edit the settings page can redirect the links.
+Only a salted hash of a code is stored. Once the message has been sent, its subject and body are erased from the database, and while it is queued administrators cannot read it in the console. The web pages, the desktop client (through its daemon's `POST /api/v1/auth/code`) and the command line (`sharetoken login -email`) all use this flow. The message's subject is `Your ShareToken verification code: 123456`.
 
 ## Mail settings in the console
 
-The sender address, the support address and "send a test message" are at `/admin/#/settings` and apply as soon as they are saved. **The delivery mode and its credentials stay in `mail.yaml`** and are read-only on the page: the mail server's database account cannot read the portal's tables, and someone who can change settings should not be able to reroute all outgoing mail, reset links included.
+The sender address, the support address and "send a test message" are at `/admin/#/settings` and apply as soon as they are saved. **The delivery mode and its credentials stay in `mail.yaml`** and are read-only on the page: the mail server's database account cannot read the portal's tables, and someone who can change settings should not be able to reroute all outgoing mail, sign-in codes included.
 
-Other notices: a message is sent when a password is changed. Code that sends a notice calls `mailer.Store.Enqueue` and does not wait for delivery.
+Other notices: a message is sent when two-factor authentication is turned on or off for an account. Code that sends a notice calls `mailer.Store.Enqueue` and does not wait for delivery.
 
 ## Receiving safely
 
@@ -114,7 +108,7 @@ Other notices: a message is sent when a password is changed. Code that sends a n
 
 ```bash
 scripts/test.sh -race ./internal/mailer ./internal/portal ./internal/client   # real SMTP round trips, DKIM, rate limits, codes, the admin endpoints
-node scripts/mail_ui_test.mjs                                                 # headless Chrome against real processes: sign-up, hostile mail, the whole console
+node scripts/mail_ui_test.mjs                                                 # headless Chrome against real processes: sign-in by code, hostile mail, the whole console
 ```
 
 See [development.md](development.md) for what the tests need.

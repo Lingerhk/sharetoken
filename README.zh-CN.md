@@ -75,7 +75,7 @@ flowchart LR
 | 模型就是声称的那个 | 协调器以普通买家的身份随机抽检卖家，并在自己的参考模型上重放同一个请求。连续不符的卖家被暂停接单。 |
 | 连卖家也读不到 prompt（可选） | 运行在 AMD SEV-SNP 或 Intel TDX 机密虚拟机里的卖家会公布硬件 quote，把它的两把密钥绑定到一个可度量的镜像上。买家可以要求只用这类卖家。 |
 | 账是平的 | MySQL 里的复式账本：每笔资金变动都是一次平衡的、写入日志的转账，启动时回放日志与余额对账。 |
-| 密码泄露不足以控制平台 | 管理员强制 TOTP 两步验证；密码用 argon2id 哈希；API token 只存 SHA-256；登录失败有限流。 |
+| 只拿到邮箱不足以控制平台 | 没有密码：用发到邮箱的短时验证码登录。管理员还必须开启 TOTP 两步验证，其他人也可以开启；API token 只存 SHA-256；验证码输错有限流。 |
 
 ### 它不能防什么
 
@@ -91,11 +91,11 @@ flowchart LR
 
 ## 使用托管网络
 
-1. 在 <https://sharetoken.app> 注册账户，下载对应系统的桌面应用或命令行客户端。
+1. 在 <https://sharetoken.app> 下载对应系统的桌面应用或命令行客户端。邮箱就是账户，第一次登录时自动创建。
 2. 登录并启动客户端：
 
    ```bash
-   sharetoken login            # 或者 sharetoken register
+   sharetoken login            # 验证码发到你的邮箱；新邮箱会自动创建账户
    sharetoken up               # OpenAI 兼容端点 http://127.0.0.1:9787/v1
    ```
 
@@ -123,7 +123,7 @@ flowchart LR
 Docker Compose 可以在一台机器上启动完整的网络：MySQL、门户、协调器和一个中继。
 
 ```bash
-cp .env.example .env          # 填写 DB_PASSWORD、DB_ROOT_PASSWORD、ADMIN_PASSWORD 和 PUBLIC_HOST
+cp .env.example .env          # 填写 DB_PASSWORD、DB_ROOT_PASSWORD、ADMIN_EMAIL、MAIL_FROM 和 PUBLIC_HOST
 docker compose up -d --build
 docker compose logs portal | grep sha256:    # 门户证书的指纹
 ```
@@ -133,7 +133,7 @@ docker compose logs portal | grep sha256:    # 门户证书的指纹
 ```bash
 go build -o bin/ ./cmd/sharetoken
 export SHARETOKEN_PORTAL=https://<PUBLIC_HOST>:8092
-bin/sharetoken register -user alice -portal-pin sha256:<指纹>
+bin/sharetoken login -email alice@example.com -portal-pin sha256:<指纹>
 bin/sharetoken up
 ```
 

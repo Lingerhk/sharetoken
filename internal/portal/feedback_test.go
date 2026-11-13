@@ -16,8 +16,8 @@ type feedbackList struct {
 func TestFeedback(t *testing.T) {
 	s, a := newPortal(t, Config{OpenRegistration: true})
 	var alice, bob AuthResponse
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "alice", "password": "hunter2hunter2"}, 201, &alice)
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "bob", "password": "hunter2hunter2"}, 201, &bob)
+	_, alice.Token = testUser(t, s, "alice")
+	_, bob.Token = testUser(t, s, "bob")
 
 	msg := func(text string) FeedbackRequest {
 		return FeedbackRequest{Category: "bug", Message: text, Source: "portal"}
@@ -58,7 +58,7 @@ func TestFeedback(t *testing.T) {
 	// Only admins reach the admin endpoints.
 	a.call("GET", "/api/v1/admin/feedback", alice.Token, nil, 403, nil)
 	a.call("POST", "/api/v1/admin/feedback/1/status", alice.Token, map[string]string{"status": "done"}, 403, nil)
-	root, err := s.store.CreateUser("root", "hunter2hunter2", true)
+	root, err := s.store.CreateUser("root", true)
 	if err != nil {
 		t.Fatal(err)
 	}

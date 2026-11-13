@@ -10,31 +10,21 @@
 
 ## 账户 {#account}
 
-### register {#register}
-
-创建账户并绑定这台设备。
-
-```bash
-{{exe}} register -email you@example.com
-```
-
-| 参数 | 含义 |
-|---|---|
-| `-email ADDR` | 注册用的邮箱 |
-| `-code CODE` | 已经收到的邮箱验证码。不给时会发送一封并询问 |
-| `-device NAME` | 设备名称，默认是主机名 |
-
 ### login {#login}
 
-登录并绑定这台设备。
+用发到邮箱的验证码登录，并绑定这台设备。没有账户的邮箱会自动创建账户。
 
 ```bash
-{{exe}} login -user you@example.com
+{{exe}} login -email you@example.com
 ```
 
 | 参数 | 含义 |
 |---|---|
-| `-user NAME` | 邮箱或用户名，不给时询问 |
+| `-email ADDR` | 你的邮箱，不给时询问 |
+| `-send` | 只发送验证码就退出，之后用 `-code` 登录 |
+| `-code CODE` | 已经收到的验证码。不给时会发送一封并询问 |
+| `-invite CODE` | 门户要求邀请码时，新账户的邀请码 |
+| `-totp CODE` | 开启了两步验证时，身份验证器里的动态码。不给时询问 |
 | `-device NAME` | 设备名称，默认是主机名 |
 
 ### logout {#logout}
@@ -132,4 +122,3 @@
 | 变量 | 作用 |
 |---|---|
 | `SHARETOKEN_HOME` | 数据目录，和 `-home` 相同 |
-| `SHARETOKEN_PASSWORD` | 登录和注册时使用的密码，脚本用，见[在脚本里登录](/docs/account#login-script) |

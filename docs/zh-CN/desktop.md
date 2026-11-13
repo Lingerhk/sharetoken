@@ -2,7 +2,7 @@
 
 [English](../desktop.md) | **简体中文**
 
-桌面客户端的范围：用邮箱注册、登录、退出，查看账户和网络的基本信息，以及卖家模式的设置（“共享”页，见下）。
+桌面客户端的范围：用邮件验证码登录（新邮箱同时注册）、退出，查看账户和网络的基本信息，以及卖家模式的设置（“共享”页，见下）。
 
 ## 构建类型
 
@@ -113,11 +113,11 @@ macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘：关
 
 | 接口 | 说明 |
 |---|---|
-| `GET /api/v1/session` | `{env, state, logged_in, first_run, portal, user, device, peer, api, error, version, api_version, update}`。`state` 是 `logged_out`、`expired`（门户拒绝了 token，daemon 已退出登录）、`starting`、`retrying`（`error` 是原因）或 `running`。未登录时 `portal` 是内置地址（见下），`user` 是上次用的值，用于预填表单。`first_run` 为 true 表示 daemon 启动时没有 `config.json`，且之后还没有人登录过：这时应用先显示注册页，而不是登录页 |
-| `POST /api/v1/portal/probe` | `{}`（`portal` 可省略，默认是内置地址）→ `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, signup_credit_micros, email_verification, support_email}`。发送密码之前调用 |
-| `POST /api/v1/register/code` | `{pin, email}`：门户要求验证码时，发送验证码 |
-| `POST /api/v1/register` | `{pin, email, password, code, device}` → 201 和会话 |
-| `POST /api/v1/login` | `{pin, account, password, totp, device}` → 200 和会话。`account` 是邮箱或用户名。管理员先得到 401 `mfa_required`，带上 `totp` 重发 |
+| `GET /api/v1/session` | `{env, state, logged_in, portal, user, device, peer, api, error, version, api_version, update}`。`state` 是 `logged_out`、`expired`（门户拒绝了 token，daemon 已退出登录）、`starting`、`retrying`（`error` 是原因）或 `running`。未登录时 `portal` 是内置地址（见下），`user` 是上次用的值，用于预填表单 |
+| `POST /api/v1/portal/probe` | `{}`（`portal` 可省略，默认是内置地址）→ `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, invite_required, signup_credit_micros, support_email}`。向门户发送任何内容之前调用 |
+| `POST /api/v1/auth/code` | `{pin, email, invite_code}`：门户发送登录验证码。回答里说明这个邮箱是不是新的；`invite_required` 表示要先填邀请码 |
+| `POST /api/v1/auth/verify` | `{pin, email, code, invite_code, device}` → 会话。开启了两步验证的账户得到 401 `mfa_required`：daemon 保存门户给的 challenge，页面接着询问动态码 |
+| `POST /api/v1/auth/mfa` | `{code}`：完成等待两步验证的登录 → 会话。5 分钟后或错 5 次得到 401 `challenge_expired`，要重新获取邮件验证码 |
 | `POST /api/v1/logout` | 停止 Agent、吊销 token（门户不可达时跳过），并从 `config.json` 删除 token；其他设置保留 |
 | `GET /api/v1/account`、`/api/v1/jobs`、`/api/v1/ledger` | 透传到门户，不依赖 Agent。门户返回 401 时会话转为 `expired` |
 | `POST /api/v1/update/check`、`/skip`、`/notified` | 升级提醒，见 [versioning.md](versioning.md) |
@@ -127,26 +127,24 @@ macOS 在菜单栏、Windows 在通知区显示图标。Linux 没有托盘：关
 
 **登录失效。** Agent 每分钟向门户确认一次 token 是否仍然有效（门户不可达不算被拒绝）。设备密钥在 token 吊销后仍能和协调器交易，所以客户端必须停下：daemon 转为 `expired`，`sharetoken up` 退出并提示重新登录。
 
-**门户地址是内置的。** 它就是构建类型对应的门户（`client.BuiltInPortal`）。登录页不要求输入地址，打开后自动连接；连不上时显示原因和“重试”按钮。请求里省略 `portal`（或为空）就用内置地址。dev 构建可以用环境变量 `SHARETOKEN_PORTAL=https://…` 指向测试网络（daemon 和命令行都认；命令行没有 `-portal` 参数）。prod 构建忽略它，这样环境变量无法把密码引到别处。已登录的账户继续用登录时保存的门户。这个包的 Go 测试在 `TestMain` 里把该变量指到不可达的 `127.0.0.1:1`，所以测试不会碰到真实门户。
+**门户地址是内置的。** 它就是构建类型对应的门户（`client.BuiltInPortal`）。登录页不要求输入地址，打开后自动连接；连不上时显示原因和“重试”按钮。请求里省略 `portal`（或为空）就用内置地址。dev 构建可以用环境变量 `SHARETOKEN_PORTAL=https://…` 指向测试网络（daemon 和命令行都认；命令行没有 `-portal` 参数）。prod 构建忽略它，这样环境变量无法把登录验证码引到别处。已登录的账户继续用登录时保存的门户。这个包的 Go 测试在 `TestMain` 里把该变量指到不可达的 `127.0.0.1:1`，所以测试不会碰到真实门户。
 
-常见错误码：`bad_portal`、`insecure_portal`、`portal_unreachable`、`not_a_portal`、`pin_required`、`pin_mismatch`、`bad_request`、`exists`、`registration_closed`、`email_required`、`code_cooldown`、`bad_credentials`、`throttled`、`mfa_required`、`bad_code`、`mfa_setup_required`、`already_logged_in`、`bind_failed`、`bad_origin`、`bad_host`。
+常见错误码：`bad_portal`、`insecure_portal`、`portal_unreachable`、`not_a_portal`、`pin_required`、`pin_mismatch`、`bad_request`、`bad_email`、`registration_closed`、`email_not_allowed`、`invite_required`、`bad_invite`、`account_disabled`、`mail_unavailable`、`code_cooldown`、`throttled`、`bad_code`、`mfa_required`、`challenge_expired`、`mfa_setup_required`、`already_logged_in`、`bind_failed`、`bad_origin`、`bad_host`。
 
 ## 账号就是邮箱
 
-- 自助注册使用邮箱。邮箱规范化（去空格、转小写）后存为账户名，长度上限 191 个字符。
-- 管理员用普通用户名创建的账号同样可用；登录框两者都接受。
-- 门户默认不验证邮箱是否真实存在，开启验证码后才验证。
-
-### 邮箱验证码
-
-门户设置 `accounts.email_verification` 后，注册需要邮件验证码，用户名注册同时关闭，详见 [mail.md](mail.md)。`/api/v1/portal/probe` 返回 `email_verification`，页面据此显示验证码输入框。`POST /api/v1/register/code {pin, email}` 发送验证码，`POST /api/v1/register` 用 `code` 字段带上它。
+- 没有密码。登录页对新老账户只有一个表单：邮箱、“发送验证码”、6 位验证码（门户要求时还有邀请码）。一个邮箱第一次登录时创建账户；验证码见 [mail.md](mail.md)。
+- 邮箱规范化（去空格、转小写）后存为账户名，长度上限 191 个字符。
+- 没有邮箱的账户名（老账户）在运维改名（`portal rename <user> <email>`）之前无法登录。
+- 开启了两步验证时（用户在门户的账户页面开启；管理员必须开启），页面在邮件验证码之后再询问动态码。
+- 客户端登录有效 60 天（门户的 `sessions.login_ttl`）。
 
 ## 安全
 
 | 问题 | 客户端的做法 |
 |---|---|
-| 门户证书 | 发送密码前先探测门户。自签名证书必须由用户核对指纹并确认；确认后固定（pin），之后发生变化时拒绝并显示警告。发往其他机器的明文 HTTP 直接拒绝（`-allow-http` 仅供测试网络） |
-| token | 只在 daemon 和 `config.json`（权限 0600）里。API 不返回它，页面读不到它。密码只转发给门户，不落盘、不进日志 |
+| 门户证书 | 向门户发送任何内容之前先探测它。自签名证书必须由用户核对指纹并确认；确认后固定（pin），之后发生变化时拒绝并显示警告。发往其他机器的明文 HTTP 直接拒绝（`-allow-http` 仅供测试网络） |
+| token | 只在 daemon 和 `config.json`（权限 0600）里。API 不返回它，页面读不到它。登录验证码只转发给门户，不落盘、不进日志 |
 | 恶意网页 | 校验 `Host` 头（防 DNS rebinding）。`/api/v1/` 只接受没有 `Origin` 或同源的请求；`/v1/` 和 `sharetoken up` 一样只放行本地来源。JSON 接口要求 `Content-Type: application/json` |
 | 页面 XSS | CSP 禁止内联脚本和外部资源；DOM 只用 `textContent` 构建 |
 | 换账号 | 设备密钥属于一个账户。换账号登录时旧密钥改名为 `device.key.retired-<时间>` 并生成新密钥。credit 记在账户上，不受影响 |
@@ -190,7 +188,7 @@ scripts/build-cli.sh prod all          # 全部六个包
 
 产物是 `dist/sharetoken-cli-<版本>-<系统>-<架构>.tar.gz`（Windows 是 `.zip`；dev 构建名为 `sharetoken-cli-dev-…`），列入 `dist/SHA256SUMS-<版本>`。包里有程序和 `README.txt`。macOS 程序只有链接器的 ad-hoc 签名，Windows 程序没有代码签名，所以下载后系统给出的提示和桌面应用相同。
 
-全流程测试（注册、运行、查询、经网络购买一次推理、停止、登录、退出）对接 `scripts/gui_stack.sh` 的本机网络。它需要 dev 构建，因为 prod 构建忽略 `SHARETOKEN_PORTAL`：
+全流程测试（验证码登录、运行、查询、经网络购买一次推理、停止、登录、退出）对接 `scripts/gui_stack.sh` 的本机网络。它需要 dev 构建，因为 prod 构建忽略 `SHARETOKEN_PORTAL`：
 
 ```bash
 scripts/gui_stack.sh start DIR && . DIR/env
@@ -206,9 +204,9 @@ scripts/gui_stack.sh stop DIR
 
 | 层 | 命令 | 覆盖 |
 |---|---|---|
-| Daemon API | `scripts/test.sh -race ./internal/client` | 注册、登录、退出的正常和失败路径；证书确认和固定；MFA；token 吊销；用户停用；换账号；并发登录；请求防护；日志不含密钥 |
+| Daemon API | `scripts/test.sh -race ./internal/client` | 验证码登录（新老账户）和退出的正常和失败路径；证书确认和固定；MFA；token 吊销；用户停用；换账号；并发登录；请求防护；日志不含密钥 |
 | 账号规则 | `scripts/test.sh ./internal/accounts ./internal/portal` | 邮箱校验和规范化；管理接口 URL 含 `@` 和 `+` |
-| 全链路 API | `scripts/test.sh -race -run Daemon ./test/e2e` | 在真实的 libp2p 拓扑上：注册、经中继接入、购买模型、记账、重启后恢复、退出、网络恢复后自动接入 |
+| 全链路 API | `scripts/test.sh -race -run Daemon ./test/e2e` | 在真实的 libp2p 拓扑上：登录、经中继接入、购买模型、记账、重启后恢复、退出、网络恢复后自动接入 |
 | 窗口壳 | `cd gui && go test -tags desktop,production .`（Linux 再加 `webkit2_41`） | 启动、连接、停止 daemon；端口冲突；转发 |
 | 页面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调。配对：错误的码和自己的码，和不卖任何模型的卖家配对（没有模型、请求被拒）以及和有模型的卖家配对，生成和撤销配对码，买家加入和被移除，在页面上开关私有模式及其对未配对买家的效果 |
 | 真实 WebView | `scripts/gui_shell_test.sh <dev\|prod> <程序目录>` | 不显示窗口，用系统 WebView 加载页面并向真实 daemon 发 POST；检查应用退出时 daemon 一起停止 |

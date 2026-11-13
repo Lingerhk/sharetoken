@@ -21,7 +21,7 @@ ShareToken 是开源权重模型的 P2P 共享网络。这份指南说明如何�
 ## 从哪里开始 {#start}
 
 ::: cards
-[桌面应用](/docs/desktop) 下载安装包，在图形界面里注册和登录。
+[桌面应用](/docs/desktop) 下载安装包，在图形界面里用邮箱登录。
 [快速开始](/docs/quickstart) 从下载到第一次调用模型，每个系统都有完整步骤。
 [安装命令行版](/docs/install) 选择架构、校验安装包、配置 PATH。
 [调用模型](/docs/use-models) curl、PowerShell、Python 和 Node.js 示例。
@@ -37,7 +37,7 @@ ShareToken 是开源权重模型的 P2P 共享网络。这份指南说明如何�
 | 名称 | 含义 |
 |---|---|
 | credit | 网络内的记账单位。1 credit = 1,000,000 micro-credit。价格的单位是 micro-credit / 百万 token |
-| 门户 | [这个网站](/app/)。注册登录、账单、设备、配对和 API token 都在这里 |
+| 门户 | [这个网站](/app/)。登录、账单、设备、配对和 API token 都在这里 |
 | 设备 | 一台机器上的一把设备密钥，绑定到你的账户。它花你的 credit，收入也记到你名下 |
 | 中继 | 转发加密流量的公共节点。它读不到内容，也不记账 |
 | 协调器 | 负责撮合、结算和争议，账本由它记录 |

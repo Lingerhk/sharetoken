@@ -7,6 +7,7 @@
 //   node scripts/gui_ui_test.mjs /tmp/guitest /tmp/guitest/shots
 //   scripts/gui_stack.sh stop /tmp/guitest
 import { execFileSync, spawn } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -69,7 +70,40 @@ let passed = 0;
 function ok(cond, what) { if (!cond) throw new Error('FAILED: ' + what); passed++; console.log('  ok  ' + what); }
 async function errorIs(needle, what) { await waitFor(`${el('#error')}?.textContent.includes(${q(needle)})`); ok(true, what); }
 
-const EMAIL = 'Desk.User+gui@Example.com', NORMAL = EMAIL.toLowerCase(), PASSWORD = 'correct horse battery';
+const EMAIL = 'Desk.User+gui@Example.com', NORMAL = EMAIL.toLowerCase();
+
+// Mail: nothing delivers it, the portal's outbox keeps it (scripts/gui_stack.sh).
+// nextCode waits for a code newer than the last one read and lifts the
+// per-address cooldown, as a minute passing would.
+const db = readFileSync(dir + '/dsn', 'utf8').trim().replace(/.*\//, '');
+const sql = query => execFileSync(new URL('./local-mysql.sh', import.meta.url).pathname, ['sql', db, query], { encoding: 'utf8' }).trim();
+let lastMail = 0;
+async function nextCode(email) {
+  for (let i = 0; i < 100; i++) {
+    const [id, subject] = (sql(`SELECT id, subject FROM mail_outbox WHERE to_addr = '${email}' ORDER BY id DESC LIMIT 1`) || '0\t').split('\t');
+    if (Number(id) > lastMail) {
+      lastMail = Number(id);
+      sql('UPDATE mail_codes SET created_at = created_at - 7200');
+      return subject.slice(subject.lastIndexOf(' ') + 1);
+    }
+    await sleep(100);
+  }
+  throw new Error('no new code mailed to ' + email);
+}
+const wrongCode = c => c === '000000' ? '000001' : '000000';
+// TOTP (RFC 6238) for the authenticator a user sets up.
+function base32(s) {
+  let bits = '', out = [];
+  for (const ch of s.replace(/=+$/, '')) bits += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(ch).toString(2).padStart(5, '0');
+  for (let i = 0; i + 8 <= bits.length; i += 8) out.push(parseInt(bits.slice(i, i + 8), 2));
+  return Buffer.from(out);
+}
+function totp(secret, t = Date.now()) {
+  const msg = Buffer.alloc(8); msg.writeBigUInt64BE(BigInt(Math.floor(t / 30000)));
+  const h = createHmac('sha1', secret).update(msg).digest(), o = h[19] & 15;
+  return String((h.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, '0');
+}
+const nextStep = () => sleep(30000 - Date.now() % 30000 + 100); // a TOTP code works once
 
 process.env.NODE_NO_WARNINGS = '1';
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // the test calls the self-signed portal directly
@@ -90,7 +124,8 @@ ok((await ev('document.title')).includes('DEV'), 'and in the title');
 ok(!(await has('#portal')), 'there is no portal address field');
 ok(!(await has('#portal-change')), 'there is no way to change the portal');
 ok(await text('.tagline') !== '', 'the logged-out app opens straight on sign-in');
-ok(await ev(`${el('#tab-register')}.getAttribute('aria-selected')`) === 'true' && await has('#email'), 'a fresh installation (no config.json) opens on sign-up');
+ok(await has('#email') && await has('#mail-code') && !(await has('#password')) && !(await has('[role=tablist]')), 'one form to sign in or up: an email and a code, no password, no tabs');
+ok((await text('#signin-hint')).includes('不需要密码'), 'the page says no password is needed');
 await shot('01-signin');
 
 console.log('certificate confirmation');
@@ -102,22 +137,25 @@ await click('#cert-ok');
 await waitFor(`!${el('#submit')}.disabled`);
 ok(true, 'confirming enables the form');
 
-console.log('registration');
-await click('#tab-register');
-await waitFor(el('#email'));
-ok((await text('#signup-credit')).includes('5'), 'the sign-up credit is shown');
-ok(await ev(`${el('#cert-ok')}.checked`), 'the confirmation survives switching tabs');
-await fill('#email', 'not-an-email'); await fill('#password', PASSWORD); await fill('#password2', PASSWORD); await click('#submit');
+console.log('sign-up');
+await fill('#email', 'not-an-email'); await click('#send-code');
 await errorIs('正确的邮箱', 'an invalid email is refused in the page');
-await fill('#email', 'a@b.c'); await fill('#password', 'short'); await fill('#password2', 'short'); await click('#submit');
-await errorIs('至少 8 位', 'a short password is refused');
-await fill('#password', PASSWORD); await fill('#password2', PASSWORD + 'x'); await click('#submit');
-await errorIs('不一致', 'mismatched passwords are refused');
-await fill('#email', 'x@y..z'); await fill('#password2', PASSWORD); await click('#submit');
-await errorIs('邮箱地址格式不正确', 'an invalid email the server catches is explained');
-await shot('04-register-error');
-await fill('#email', EMAIL); await fill('#password', PASSWORD); await fill('#password2', PASSWORD);
-await shot('05-register');
+await ev(`${el('#error')}.remove()`); // the portal's answer reads the same
+await fill('#email', 'x@y..z'); await click('#send-code');
+await errorIs('正确的邮箱', 'an invalid email the portal catches is explained');
+await fill('#email', EMAIL); await click('#submit');
+await errorIs('请先发送验证码', 'signing in without a code asks to send one first');
+await click('#send-code');
+await waitFor(el('#new-account'));
+ok((await text('#new-account')).includes('自动创建') && (await text('#new-account')).includes('5'), 'a new address is told an account will be created, with the sign-up credit');
+ok((await text('#send-code')).includes('秒后可重发') && await ev(`${el('#send-code')}.disabled`), 'the button counts down to a resend');
+ok(await ev(`${el('#cert-ok')}.checked`), 'the certificate confirmation stays');
+const code1 = await nextCode(NORMAL);
+await fill('#mail-code', wrongCode(code1)); await click('#submit');
+await errorIs('验证码错误或已过期', 'a wrong code is refused');
+await shot('04-signup-error');
+await fill('#mail-code', code1);
+await shot('05-signup');
 await click('#submit');
 
 console.log('dashboard');
@@ -141,7 +179,7 @@ ok(!(await ev(`${el('#endpoint-hint')}.hidden`)) && (await text('#endpoint-hint'
 await click('#endpoint-hint-btn');
 ok((await text('#devices-body')).includes('（本机）'), 'this device is marked in the list');
 ok(await has('#jobs-empty'), 'no jobs yet');
-ok(!(await ev('document.documentElement.outerHTML')).includes(PASSWORD), 'the password is gone from the page');
+ok(!(await ev('document.documentElement.outerHTML')).includes(code1), 'the code is gone from the page');
 await shot('06-dashboard');
 
 console.log('buying shows up');
@@ -495,27 +533,26 @@ await cdp('Page.reload'); await waitFor(el('#tiles .tile'));
 ok(await text('#who') === NORMAL, 'a reload stays logged in');
 await click('#logout');
 await waitFor(el('#signin-form'));
-ok(await ev(`${el('#account')}.value`) === NORMAL, 'after logout the email is pre-filled');
-ok(await ev(`${el('#tab-login')}.getAttribute('aria-selected')`) === 'true', 'and the page is on login, not sign-up');
+ok(await ev(`${el('#email')}.value`) === NORMAL, 'after logout the email is pre-filled');
+ok(!(await has('#new-account')), 'nothing announces a new account before a code is asked for');
 ok(!(await has('#cert')) , 'the confirmed certificate is not asked about again');
 const oldToken = config.token;
 ok((await portalApi('GET', '/api/v1/me', null, oldToken)).status === 401, 'the token is revoked at the portal');
 ok(JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8')).token === undefined, 'and gone from config.json');
 
-console.log('login errors');
-await fill('#password', 'wrong-password'); await click('#submit');
-await errorIs('账号或密码错误', 'a wrong password is reported');
+console.log('signing in again');
+await fill('#email', EMAIL.toUpperCase()); await click('#send-code');
+await waitFor(`${el('#send-code')}.disabled`);
+const code2 = await nextCode(NORMAL);
+await sleep(200);
+ok(!(await has('#new-account')), 'an existing account is not announced as new');
+await fill('#mail-code', wrongCode(code2)); await click('#submit');
+await errorIs('验证码错误或已过期', 'a wrong code is reported');
 ok(await has('#signin-form'), 'and stays on the form');
-await click('#tab-register');
-await waitFor(el('#email'));
-await fill('#email', EMAIL); await fill('#password', PASSWORD); await fill('#password2', PASSWORD); await click('#submit');
-await errorIs('已经注册', 'registering a taken address says so');
-await shot('10-email-taken');
-await click('#tab-login');
-await waitFor(el('#account'));
-await fill('#account', EMAIL.toUpperCase()); await fill('#password', PASSWORD); await click('#submit');
+await shot('10-wrong-code');
+await fill('#mail-code', code2); await click('#submit');
 await waitFor(el('#tiles .tile'));
-ok(await text('#who') === NORMAL, 'logging in works, any capitalization');
+ok(await text('#who') === NORMAL, 'signing in works, any capitalization');
 await waitFor(`${el('#conn-state')}.textContent === '已连接'`, 30000);
 ok(true, 'and rejoins the network');
 await shot('11-logged-in-again');
@@ -526,9 +563,29 @@ ok((await portalApi('POST', '/api/v1/logout', null, token2)).ok, 'the token is r
 await waitFor(el('#notice'), 25000);
 ok((await text('#notice')).includes('登录已失效'), 'the app returns to sign-in and says why');
 await shot('12-expired');
-await fill('#password', PASSWORD); await click('#submit');
+await click('#send-code'); await fill('#mail-code', await nextCode(NORMAL)); await click('#submit');
 await waitFor(el('#tiles .tile'));
 ok(true, 'signing in again works');
+
+console.log('two-factor authentication');
+{
+  const token3 = JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8')).token;
+  const setup = await (await portalApi('POST', '/api/v1/account/mfa/setup', {}, token3)).json();
+  const secret = base32(setup.secret);
+  ok((await portalApi('POST', '/api/v1/account/mfa/enable', { challenge: setup.challenge, code: totp(secret) }, token3)).ok, 'the user turns two-factor authentication on (the web portal does this)');
+  await click('#logout'); await waitFor(el('#signin-form'));
+  await click('#send-code'); await fill('#mail-code', await nextCode(NORMAL)); await click('#submit');
+  await waitFor(el('#mfa-form'));
+  ok((await text('#mfa-form')).includes(NORMAL) && await has('#totp'), 'after the mailed code the app asks for the authenticator code');
+  ok(JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8')).token === undefined, 'and is not signed in yet');
+  await shot('12b-two-factor');
+  await fill('#totp', wrongCode(totp(secret))); await click('#submit');
+  await errorIs('两步验证码不正确', 'a wrong authenticator code is refused');
+  await nextStep();
+  await fill('#totp', totp(secret)); await click('#submit');
+  await waitFor(el('#tiles .tile'));
+  ok(await text('#who') === NORMAL, 'the right one signs in');
+}
 
 console.log('a newer build is published');
 ok(!(await has('#update-notice')), 'no update notice before a release');

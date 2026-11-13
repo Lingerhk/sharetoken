@@ -15,18 +15,19 @@ import (
 // A newer client may send fields this portal does not know yet: they are
 // ignored, and in particular grant nothing. Malformed JSON is still refused.
 func TestRequestsIgnoreUnknownFields(t *testing.T) {
-	_, a := newPortal(t, Config{OpenRegistration: true})
+	s, a := newPortal(t, Config{OpenRegistration: true})
 
+	a.call("POST", "/api/v1/auth/code", "", map[string]any{"email": "alice@example.com", "client_feature": "from a newer client"}, 200, nil)
 	var reg AuthResponse
-	a.call("POST", "/api/v1/register", "", map[string]any{
-		"username": "alice", "password": "correct horse",
+	a.call("POST", "/api/v1/auth/verify", "", map[string]any{
+		"email": "alice@example.com", "code": mailedCode(t, s, "alice@example.com"),
 		"client_feature": "from a newer client", "is_admin": true,
 	}, 201, &reg)
-	if reg.User.Username != "alice" || reg.User.Admin {
-		t.Fatalf("register: %+v", reg.User)
+	if reg.User.Username != "alice@example.com" || reg.User.Admin {
+		t.Fatalf("sign-in: %+v", reg.User)
 	}
 
-	resp, err := http.Post(a.url+"/api/v1/login", "application/json", strings.NewReader(`{"username":`))
+	resp, err := http.Post(a.url+"/api/v1/auth/verify", "application/json", strings.NewReader(`{"email":`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,12 +82,13 @@ func clientPost(t *testing.T, a *api, path, ver string, body string) (int, strin
 // The policy stops clients from starting new business, and nothing else.
 func TestVersionPolicyGate(t *testing.T) {
 	s, a := newPortal(t, Config{OpenRegistration: true})
-	const user = `{"username":"alice","password":"correct horse"}`
-	if code, _ := clientPost(t, a, "/api/v1/register", "0.9.0", user); code != 201 {
+	// A wrong code: whether the gate let the request through shows as 401.
+	const signIn = `{"email":"alice@example.com","code":"x"}`
+	if code, _ := clientPost(t, a, "/api/v1/auth/verify", "0.9.0", signIn); code != 401 {
 		t.Fatalf("without a policy every client is served: %d", code)
 	}
 	var login AuthResponse
-	a.call("POST", "/api/v1/login", "", map[string]string{"username": "alice", "password": "correct horse"}, 200, &login)
+	_, login.Token = testUser(t, s, "alice@example.com")
 	if err := accounts.SaveVersionPolicy(s.db, accounts.VersionPolicy{MinClient: "1.0.0"}); err != nil {
 		t.Fatal(err)
 	}
@@ -94,11 +96,11 @@ func TestVersionPolicyGate(t *testing.T) {
 		ver  string
 		want int
 	}{
-		{"0.9.0", 426}, {"", 426}, {"1.0.0-dev.abc", 426}, {"dev", 426}, {"1.0.0", 200}, {"1.1.0", 200},
+		{"0.9.0", 426}, {"", 426}, {"1.0.0-dev.abc", 426}, {"dev", 426}, {"1.0.0", 401}, {"1.1.0", 401},
 	} {
-		code, ecode := clientPost(t, a, "/api/v1/login", c.ver, `{"username":"alice","password":"correct horse"}`)
+		code, ecode := clientPost(t, a, "/api/v1/auth/verify", c.ver, signIn)
 		if code != c.want || (code == 426 && ecode != "upgrade_required") {
-			t.Errorf("login as %q: %d %s, want %d", c.ver, code, ecode, c.want)
+			t.Errorf("sign-in as %q: %d %s, want %d", c.ver, code, ecode, c.want)
 		}
 	}
 	// What the client already has keeps working: it must still settle and dispute.
@@ -109,10 +111,10 @@ func TestVersionPolicyGate(t *testing.T) {
 	if err := accounts.SaveVersionPolicy(s.db, accounts.VersionPolicy{MinClient: "1.0.0", AllowDev: true}); err != nil {
 		t.Fatal(err)
 	}
-	if code, _ := clientPost(t, a, "/api/v1/login", "1.0.0-dev.abc", `{"username":"alice","password":"correct horse"}`); code != 200 {
+	if code, _ := clientPost(t, a, "/api/v1/auth/verify", "1.0.0-dev.abc", signIn); code != 401 {
 		t.Errorf("dev build on a dev network: %d", code)
 	}
-	if code, _ := clientPost(t, a, "/api/v1/login", "0.9.0-dev.abc", `{"username":"alice","password":"correct horse"}`); code != 426 {
+	if code, _ := clientPost(t, a, "/api/v1/auth/verify", "0.9.0-dev.abc", signIn); code != 426 {
 		t.Errorf("old dev build: %d", code)
 	}
 	if err := accounts.SaveVersionPolicy(s.db, accounts.VersionPolicy{MinClient: "bad"}); err == nil {
@@ -127,7 +129,7 @@ func TestVersionPolicyGate(t *testing.T) {
 func TestDeviceVersions(t *testing.T) {
 	s, a := newPortal(t, Config{OpenRegistration: true})
 	var reg AuthResponse
-	a.call("POST", "/api/v1/register", "", map[string]string{"username": "alice", "password": "correct horse"}, 201, &reg)
+	_, reg.Token = testUser(t, s, "alice")
 	k, _ := p2p.NewKeys()
 	ts := time.Now().UnixNano()
 	body, _ := json.Marshal(BindRequest{Peer: k.ID(), Name: "laptop", UnixNano: ts, Sig: accounts.SignBind(k.Signer, "alice", k.ID(), ts)})

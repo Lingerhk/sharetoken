@@ -89,7 +89,7 @@ const (
 
 // PortalAddr is the portal a new login goes to: the build type's. Other builds
 // than prod can be pointed at a test network with $SHARETOKEN_PORTAL; a prod
-// build ignores it, so that the environment cannot send passwords elsewhere.
+// build ignores it, so that the environment cannot send sign-ins elsewhere.
 func PortalAddr() string {
 	if v := strings.TrimSpace(os.Getenv("SHARETOKEN_PORTAL")); v != "" && Env != EnvProd {
 		return v

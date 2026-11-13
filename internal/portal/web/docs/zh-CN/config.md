@@ -16,7 +16,7 @@
 
 ::: macos linux
 ```bash
-{{exe}} -home ~/sharetoken-second login -user other@example.com
+{{exe}} -home ~/sharetoken-second login -email other@example.com
 {{exe}} -home ~/sharetoken-second up -http 127.0.0.1:9800
 {{exe}} -home ~/sharetoken-second status
 ```
@@ -24,7 +24,7 @@
 
 ::: windows
 ```powershell
-{{exe}} -home "$HOME\sharetoken-second" login -user other@example.com
+{{exe}} -home "$HOME\sharetoken-second" login -email other@example.com
 {{exe}} -home "$HOME\sharetoken-second" up -http 127.0.0.1:9800
 {{exe}} -home "$HOME\sharetoken-second" status
 ```

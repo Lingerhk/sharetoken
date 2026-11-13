@@ -115,7 +115,6 @@
 | `keys.pass_key_file` | `-pass-key` | `portal-pass.key` | 签发中继凭证的密钥，不存在时以 0600 权限创建。中继在 `portal_keys` 里写它的公钥 |
 | `keys.mfa_key_file` | — | 空 | 加密管理员 TOTP 密钥的 32 字节密钥（64 个十六进制字符）。为空：从凭证密钥派生。单独配置后，轮换凭证密钥不会让管理员的两步验证失效 |
 | `http.listen` | `serve -listen` | `:8092` | 监听地址 |
-| `http.public_url` | — | 空 | 门户的公网地址，用于邮件里的链接。见下文 |
 | `http.trusted_proxies` | — | 空 | 其他机器上的反向代理的 IP 地址，门户采信它们传来的 `X-Real-IP`（用于登录限流）。回环上的代理始终采信 |
 | `http.read_header_timeout` | — | 10s | 服务端超时 |
 | `http.read_timeout` | — | 30s | 服务端超时 |
@@ -125,16 +124,15 @@
 | `tls.cert_file`、`tls.key_file` | `serve -tls-cert`、`-tls-key` | 空 | 证书和私钥，比如来自 Let's Encrypt。两者必须同时给出 |
 | `tls.self_signed_dir` | `serve -tls-dir` | `portal-tls` | 自签名证书保存的位置。要保留它：客户端 pin 了它的指纹 |
 | `tls.self_signed_hosts` | `serve -tls-hosts` | 空 | 自签名证书里的域名和 IP |
-| `accounts.open_registration` | `serve -open-registration` | false | 允许任何人注册；否则由管理员创建用户 |
+| `accounts.open_registration` | `serve -open-registration` | false | 没有账户的邮箱第一次登录时创建账户；否则由管理员创建用户（`portal useradd <邮箱>`） |
 | `accounts.signup_credit_micros` | `serve -signup-credit` | 0 | 每个新用户获赠的额度 |
-| `accounts.email_verification` | — | false | 注册需要邮件验证码。需要 `mail.from` 和运行中的 `mailserver` |
 | `accounts.mfa_issuer` | — | 空（显示为 ShareToken） | 在验证器应用里显示的名称 |
-| `mail.from` | — | 空 | 门户所发邮件的发件人，例如 `ShareToken <team@example.com>`。为空：不发邮件 |
+| `mail.from` | — | 空 | 门户所发邮件的发件人，例如 `ShareToken <team@example.com>`。所有人都用从这里发出的验证码登录，没有它（以及运行中的 `mailserver`）谁都登录不了。为空：不发邮件 |
 | `mail.support` | — | 空 | 用户反馈的地址；管理员的回复也从这里发出 |
 | `downloads.dir` | — | 空 | 客户端安装包所在的目录，在 `/downloads/` 提供下载。为空：不提供下载 |
 | `relay_metrics.*` | — | 关闭 | 经 SSH 读取每个中继的 `/metrics`，供管理控制台的仪表盘使用：`key_file`、`known_hosts_file`、`interval`（1m）、`timeout`（20s），以及 `targets[]`，每项有 `relay`（中继登记里的名称）、`ssh`（`user@host[:port]`）和 `command` |
-| `sessions.login_ttl` | `serve -login-ttl` | 720h | 登录时签发的 token 的有效期 |
-| `sessions.web_session_ttl` | `serve -session-ttl` | 24h | 浏览器会话的有效期 |
+| `sessions.login_ttl` | `serve -login-ttl` | 1440h | 客户端登录时得到的 token 的有效期（60 天） |
+| `sessions.web_session_ttl` | `serve -session-ttl` | 360h | 浏览器会话的有效期（15 天） |
 | `sessions.pass_ttl` | `serve -pass-ttl` | 1h | 中继凭证的有效期；至少 5m。禁用用户最迟在这段时间内在中继上生效 |
 | `log.*` | — | info / text / stderr | 见第 1 节 |
 
@@ -150,9 +148,7 @@
 
 ### 存在数据库里的系统设置
 
-管理控制台设置页（`/admin/#/settings`）上编辑的值存在数据库里（`portal_settings` 表），保存后立即生效，不用重启。对 `accounts.open_registration`、`accounts.signup_credit_micros`、`accounts.email_verification`、`mail.from`、`mail.support`、`sessions.login_ttl` 和 `sessions.web_session_ttl` 来说，`portal.yaml` 里的值只是**还没有保存过设置时**的默认值。第一次保存之后以数据库为准，再改文件不起作用。其余配置（数据库、密钥、监听地址、公网地址、TLS、下载目录）只在文件里设置。
-
-`http.public_url` 用于邮件里的链接，只能在配置文件里设置，设置页上改不了：能改设置的人不应该能把重置密码的链接指向别处。没有它就没有「忘记密码」。门户不用请求的 Host 头拼链接，否则伪造 Host 头就能把重置链接指向别的网站。
+管理控制台设置页（`/admin/#/settings`）上编辑的值存在数据库里（`portal_settings` 表），保存后立即生效，不用重启。对 `accounts.open_registration`、`accounts.signup_credit_micros`、`mail.from`、`mail.support`、`sessions.login_ttl` 和 `sessions.web_session_ttl` 来说，`portal.yaml` 里的值只是**还没有保存过设置时**的默认值。第一次保存之后以数据库为准，再改文件不起作用。其余配置（数据库、密钥、监听地址、TLS、下载目录）只在文件里设置。
 
 ## 5. mailserver
 
@@ -177,7 +173,7 @@
 | `update.json` | 0600 | 上次检查新版本的结果 |
 | `daemon.log` | 0600 | 桌面应用启动的服务的日志（[desktop.md](desktop.md)） |
 
-`config.json` 由客户端自己写（`login`、`register`、`share …`，以及桌面应用使用的本地 API）；`sharetoken config` 打印它。写入时先写临时文件再改名，崩溃不会留下半个文件。它的字段：
+`config.json` 由客户端自己写（`login`、`share …`，以及桌面应用使用的本地 API）；`sharetoken config` 打印它。写入时先写临时文件再改名，崩溃不会留下半个文件。它的字段：
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
@@ -211,6 +207,5 @@
 | 变量 | 含义 |
 |---|---|
 | `SHARETOKEN_HOME` | 状态目录 |
-| `SHARETOKEN_PORTAL` | 新登录使用的门户。正式版本忽略它，这样环境变量无法把密码引到别处 |
-| `SHARETOKEN_PASSWORD` | 密码，代替交互输入 |
+| `SHARETOKEN_PORTAL` | 新登录使用的门户。正式版本忽略它，这样环境变量无法把登录验证码引到别处 |
 | `SHARETOKEN_PROVIDER_KEY` | `provider add` 用的 API key，代替交互输入 |

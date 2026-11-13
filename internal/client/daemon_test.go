@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -27,8 +28,6 @@ import (
 	"sharetoken/internal/version"
 )
 
-const testPassword = "correct horse battery"
-
 // No test may reach the production portal: the built-in address is somewhere
 // nothing listens unless a test points it at its own portal.
 func TestMain(m *testing.M) {
@@ -41,9 +40,10 @@ func TestMain(m *testing.M) {
 type daemonEnv struct {
 	t      *testing.T
 	portal *portal.Server
+	db     *sql.DB
 	srv    *httptest.Server
 	url    string
-	logins atomic.Int64 // requests the portal saw on its sign-in endpoints
+	logins atomic.Int64 // requests the portal saw on its sign-in endpoints (an address or a code)
 }
 
 func newDaemonEnv(t *testing.T, cfg portal.Config, useTLS bool) *daemonEnv {
@@ -54,13 +54,16 @@ func newDaemonEnv(t *testing.T, cfg portal.Config, useTLS bool) *daemonEnv {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	cfg.DB = db
+	if cfg.Mail.From == "" {
+		cfg.Mail.From = "ShareToken <team@example.test>" // sign-in codes are mail
+	}
 	p, err := portal.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &daemonEnv{t: t, portal: p}
+	e := &daemonEnv{t: t, portal: p, db: db}
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/login" || r.URL.Path == "/api/v1/register" {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/auth/") || r.URL.Path == "/api/v1/mfa" {
 			e.logins.Add(1)
 		}
 		p.Handler().ServeHTTP(w, r)
@@ -191,10 +194,37 @@ func (d *testDaemon) waitState(want ...string) Session {
 	}
 }
 
-func (d *testDaemon) register(portalURL, email string) Session {
+// code reads the last sign-in code mailed to email, as its recipient would
+// (nothing delivers mail here: the outbox keeps it), and moves the request out
+// of the per-address cooldown and hourly limits, so a test can sign in again.
+func (e *daemonEnv) code(email string) string {
+	e.t.Helper()
+	var subject string
+	if err := e.db.QueryRow(`SELECT subject FROM mail_outbox WHERE to_addr = ? ORDER BY id DESC LIMIT 1`, accounts.NormalizeEmail(email)).Scan(&subject); err != nil {
+		e.t.Fatalf("no code mailed to %s: %v", email, err)
+	}
+	if _, err := e.db.Exec(`UPDATE mail_codes SET created_at = created_at - 7200`); err != nil {
+		e.t.Fatal(err)
+	}
+	return subject[strings.LastIndex(subject, " ")+1:]
+}
+
+// requestCode has the daemon ask for a code and returns the portal's answer.
+func (d *testDaemon) requestCode(portalURL, email string) CodeSent {
 	d.t.Helper()
+	var sent CodeSent
+	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/auth/code", map[string]string{"portal": portalURL, "email": email}), &sent); err != nil {
+		d.t.Fatal(err)
+	}
+	return sent
+}
+
+// signIn runs the whole sign-in through the daemon: a code by mail, redeemed.
+func (d *testDaemon) signIn(e *daemonEnv, email string) Session {
+	d.t.Helper()
+	d.requestCode(e.url, email)
 	var s Session
-	data := d.want(201, "", "POST", "/api/v1/register", map[string]string{"portal": portalURL, "email": email, "password": testPassword, "device": "test-box"})
+	data := d.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": email, "code": e.code(email), "device": "test-box"})
 	if err := json.Unmarshal(data, &s); err != nil {
 		d.t.Fatal(err)
 	}
@@ -208,6 +238,44 @@ func (d *testDaemon) savedConfig() Config {
 		d.t.Fatal(err)
 	}
 	return c
+}
+
+// portalAPI calls the portal directly with a bearer token (the account's own
+// settings, which the desktop app leaves to the web portal).
+func (e *daemonEnv) portalAPI(method, path, token string, in, out any) int {
+	e.t.Helper()
+	data, _ := json.Marshal(in)
+	req, _ := http.NewRequest(method, e.url+path, bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := e.srv.Client().Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if out != nil {
+		if err := json.Unmarshal(body, out); err != nil {
+			e.t.Fatalf("%s: %s", path, body)
+		}
+	}
+	return resp.StatusCode
+}
+
+// adminToken makes an administrator and a token that admin endpoints accept.
+func (e *daemonEnv) adminToken() string {
+	e.t.Helper()
+	u, err := e.portal.CreateUser("ops@example.test", true)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	tok, _, err := e.portal.Store().IssueSessionToken(u.ID, "test", 0, true)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return tok
 }
 
 // Logged out, the daemon runs and says so; nothing needing a login works.
@@ -228,12 +296,20 @@ func TestDaemonLoggedOut(t *testing.T) {
 	d.want(200, "", "POST", "/api/v1/logout", nil) // nothing to do, not an error
 }
 
-// The whole sign-up: email and password in, a bound device and a usable
-// session out, with the account readable although no network can be joined.
-func TestDaemonRegisterWithEmail(t *testing.T) {
+// The whole sign-up: an address and the code mailed to it in, a bound device
+// and a usable session out, with the account readable although no network can
+// be joined.
+func TestDaemonSignUp(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	s := d.register(e.url, "  Alice.Smith+st@Example.COM ")
+	if sent := d.requestCode(e.url, "  Alice.Smith+st@Example.COM "); !sent.NewAccount || sent.CooldownSeconds <= 0 {
+		t.Fatalf("code: %+v", sent)
+	}
+	var s Session
+	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "  Alice.Smith+st@Example.COM ",
+		"code": e.code("alice.smith+st@example.com"), "device": "test-box"}), &s); err != nil {
+		t.Fatal(err)
+	}
 	if !s.LoggedIn || s.User != "alice.smith+st@example.com" || s.Device != "test-box" || s.Peer == "" {
 		t.Fatalf("session: %+v", s)
 	}
@@ -266,67 +342,52 @@ func TestDaemonRegisterWithEmail(t *testing.T) {
 			t.Fatalf("%s leaks the token: %s", path, data)
 		}
 	}
-	// A second login without logging out is refused.
-	d.want(409, "already_logged_in", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": s.User, "password": testPassword})
+	// A second sign-in without logging out is refused.
+	d.want(409, "already_logged_in", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": s.User, "code": "123456"})
 }
 
-// A fresh installation (no config.json) opens on sign-up; once anyone has
-// signed in, or a settings file exists, it opens on login.
-func TestDaemonFirstRun(t *testing.T) {
-	e := newDaemonEnv(t, openPortal(), false)
-	home := t.TempDir()
-	d := e.daemonIn(home)
-	if s := d.session(); !s.FirstRun {
-		t.Fatalf("a fresh home is not a first run: %+v", s)
-	}
-	if s := d.register(e.url, "first@example.com"); s.FirstRun {
-		t.Fatalf("still a first run after signing up: %+v", s)
-	}
-	d.want(200, "", "POST", "/api/v1/logout", nil)
-	if s := d.session(); s.FirstRun || s.LoggedIn {
-		t.Fatalf("logged out after signing up: %+v", s)
-	}
-	d.Close()
-	if s := e.daemonIn(home).session(); s.FirstRun {
-		t.Fatalf("a home with config.json is a first run: %+v", s)
-	}
-}
-
-// Every way a sign-up can be refused comes back with a code the app handles.
-func TestDaemonRegisterErrors(t *testing.T) {
+// Every way a sign-in can be refused comes back with a code the app handles,
+// and none leaves a login behind.
+func TestDaemonSignInErrors(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	reg := func(status int, code, portalURL, email, password string) {
+	try := func(status int, code, path, portalURL, email, mailCode string) {
 		t.Helper()
-		d.want(status, code, "POST", "/api/v1/register", map[string]string{"portal": portalURL, "email": email, "password": password})
+		d.want(status, code, "POST", path, map[string]string{"portal": portalURL, "email": email, "code": mailCode})
 		if s := d.session(); s.LoggedIn {
-			t.Fatalf("logged in after a failed sign-up: %+v", s)
+			t.Fatalf("logged in after a failed sign-in: %+v", s)
 		}
 		if c := d.savedConfig(); c.Token != "" {
-			t.Fatal("token saved after a failed sign-up")
+			t.Fatal("token saved after a failed sign-in")
 		}
 	}
 	for _, bad := range []string{"plainname", "a@b", "a b@example.com", "@example.com", "a@", "a@@example.com", "a..b@example.com", ".a@example.com", "a@-x.com", strings.Repeat("a", 200) + "@example.com", "<a@example.com>", "Alice <a@example.com>", "a@example.com\nbcc:x@y.z"} {
-		reg(400, "bad_request", e.url, bad, testPassword)
+		try(400, "bad_email", "/api/v1/auth/code", e.url, bad, "")
 	}
-	reg(400, "bad_request", e.url, "", testPassword)
-	reg(400, "bad_request", e.url, "short@example.com", "1234567")
-	reg(400, "bad_request", e.url, "nopass@example.com", "")
+	try(400, "bad_request", "/api/v1/auth/code", e.url, "", "")
+	try(400, "bad_request", "/api/v1/auth/verify", e.url, "nocode@example.com", "")
 	t.Setenv("SHARETOKEN_PORTAL", "ftp://not-a-portal.example.com")
-	reg(400, "bad_portal", "", "a@example.com", testPassword) // empty: the built-in address, here a bad one
+	try(400, "bad_portal", "/api/v1/auth/code", "", "a@example.com", "") // empty: the built-in address, here a bad one
 	t.Setenv("SHARETOKEN_PORTAL", "https://127.0.0.1:1")
-	reg(400, "bad_portal", "ftp://x.example.com", "a@example.com", testPassword)
-	reg(400, "bad_portal", "https://user:pw@x.example.com", "a@example.com", testPassword)
-	reg(400, "insecure_portal", "http://203.0.113.7:8092", "a@example.com", testPassword)
-	reg(502, "portal_unreachable", "https://127.0.0.1:1", "a@example.com", testPassword)
+	try(400, "bad_portal", "/api/v1/auth/code", "ftp://x.example.com", "a@example.com", "")
+	try(400, "bad_portal", "/api/v1/auth/code", "https://user:pw@x.example.com", "a@example.com", "")
+	try(400, "insecure_portal", "/api/v1/auth/code", "http://203.0.113.7:8092", "a@example.com", "")
+	try(502, "portal_unreachable", "/api/v1/auth/code", "https://127.0.0.1:1", "a@example.com", "")
+	try(502, "portal_unreachable", "/api/v1/auth/verify", "https://127.0.0.1:1", "a@example.com", "123456")
 
-	// The address is taken, in any capitalization.
-	other := e.daemon()
-	other.register(e.url, "taken@example.com")
-	reg(409, "exists", e.url, "Taken@Example.com", testPassword)
-	d.want(400, "bad_request", "POST", "/api/v1/register", json.RawMessage(`{"portal":`+"3"+`}`))
+	// A wrong code, and one for another address.
+	d.requestCode(e.url, "w@example.com")
+	right := e.code("w@example.com")
+	try(401, "bad_code", "/api/v1/auth/verify", e.url, "w@example.com", wrongCode(right))
+	try(401, "bad_code", "/api/v1/auth/verify", e.url, "other@example.com", right)
+	// Asking again within a minute is refused (the test helper skips this wait).
+	d.requestCode(e.url, "cool@example.com")
+	try(429, "code_cooldown", "/api/v1/auth/code", e.url, "cool@example.com", "")
+	d.want(400, "bad_request", "POST", "/api/v1/auth/code", json.RawMessage(`{"portal":`+"3"+`}`))
 }
 
+// With registration closed, a new address is refused before any mail goes
+// out, and an account an administrator made signs in as usual.
 func TestDaemonRegistrationClosed(t *testing.T) {
 	e := newDaemonEnv(t, portal.Config{}, false)
 	d := e.daemon()
@@ -337,74 +398,137 @@ func TestDaemonRegistrationClosed(t *testing.T) {
 	if p.RegistrationOpen {
 		t.Fatal("probe says registration is open")
 	}
-	if p.PasswordReset {
-		t.Fatal("probe offers a password reset that the portal cannot send")
-	}
-	d.want(403, "registration_closed", "POST", "/api/v1/register", map[string]string{"portal": e.url, "email": "a@example.com", "password": testPassword})
-	// An account an administrator made still logs in, by username.
-	if _, err := e.portal.CreateUser("bob", testPassword, false); err != nil {
+	d.want(403, "registration_closed", "POST", "/api/v1/auth/code", map[string]string{"portal": e.url, "email": "a@example.com"})
+	if _, err := e.portal.CreateUser("bob@example.com", false); err != nil {
 		t.Fatal(err)
 	}
-	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "bob", "password": testPassword})
-	if s := d.session(); s.User != "bob" || !s.LoggedIn {
+	if sent := d.requestCode(e.url, "bob@example.com"); sent.NewAccount {
+		t.Fatalf("an existing account is new: %+v", sent)
+	}
+	d.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "bob@example.com", "code": e.code("bob@example.com")})
+	if s := d.session(); s.User != "bob@example.com" || !s.LoggedIn {
 		t.Fatalf("session: %+v", s)
 	}
 }
 
-func TestDaemonLogin(t *testing.T) {
+// Signing in again: the same account (any case), the same device.
+func TestDaemonSignInExisting(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	d.register(e.url, "alice@example.com")
+	d.signIn(e, "alice@example.com")
 	d.want(200, "", "POST", "/api/v1/logout", nil)
-	d.want(401, "bad_credentials", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "alice@example.com", "password": "wrong password"})
-	d.want(401, "bad_credentials", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "nobody@example.com", "password": testPassword})
-	d.want(400, "bad_request", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "  ", "password": testPassword})
-	// Case does not matter, and the same device stays bound.
-	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "ALICE@example.com", "password": testPassword})
+	if sent := d.requestCode(e.url, "ALICE@example.com"); sent.NewAccount {
+		t.Fatalf("an existing account is new: %+v", sent)
+	}
+	d.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "ALICE@example.com", "code": e.code("alice@example.com")})
 	var me portal.Me
 	if err := json.Unmarshal(d.want(200, "", "GET", "/api/v1/account", nil), &me); err != nil {
 		t.Fatal(err)
 	}
-	if me.User.Username != "alice@example.com" || len(me.Devices) != 1 {
+	if me.User.Username != "alice@example.com" || len(me.Devices) != 1 || me.Balance.AvailableMicros != 5_000_000 {
 		t.Fatalf("me: %+v", me)
 	}
 }
 
-func TestDaemonLoginThrottled(t *testing.T) {
+func TestDaemonCodeGuessesThrottled(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
 	var last int
 	for range 12 {
-		last, _ = d.call("POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "victim@example.com", "password": "wrong password"})
+		last, _ = d.call("POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "victim@example.com", "code": "000000"})
 	}
 	if last != 429 {
 		t.Fatalf("last status %d, want 429", last)
 	}
-	d.want(429, "throttled", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "victim@example.com", "password": "wrong password"})
+	d.want(429, "throttled", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "victim@example.com", "code": "000000"})
 }
 
-// An administrator's login asks for the second factor without logging in.
+// On a portal that asks new accounts for an invite code, the code request says
+// so before any mail goes out, and the invite is used up by the sign-up.
+func TestDaemonInviteRequired(t *testing.T) {
+	e := newDaemonEnv(t, openPortal(), false)
+	admin := e.adminToken()
+	if st := e.portalAPI("PUT", "/api/v1/admin/settings", admin, map[string]bool{"invite_required": true}, nil); st != 200 {
+		t.Fatalf("settings: %d", st)
+	}
+	var inv portal.Invite
+	if st := e.portalAPI("POST", "/api/v1/admin/invites", admin, map[string]int{"max_uses": 1}, &inv); st != 201 {
+		t.Fatalf("invite: %d", st)
+	}
+	d := e.daemon()
+	var p PortalProbe
+	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/portal/probe", map[string]string{"portal": e.url}), &p); err != nil || !p.InviteRequired {
+		t.Fatalf("probe: %+v %v", p, err)
+	}
+	d.want(403, "invite_required", "POST", "/api/v1/auth/code", map[string]string{"portal": e.url, "email": "new@example.com"})
+	d.want(403, "bad_invite", "POST", "/api/v1/auth/code", map[string]string{"portal": e.url, "email": "new@example.com", "invite_code": "NOPE"})
+	d.want(200, "", "POST", "/api/v1/auth/code", map[string]string{"portal": e.url, "email": "new@example.com", "invite_code": inv.Code})
+	d.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "new@example.com", "code": e.code("new@example.com"), "invite_code": inv.Code})
+	if s := d.session(); !s.LoggedIn || s.User != "new@example.com" {
+		t.Fatalf("session: %+v", s)
+	}
+	// Used up: the next new address is refused.
+	other := e.daemon()
+	other.want(403, "bad_invite", "POST", "/api/v1/auth/code", map[string]string{"portal": e.url, "email": "late@example.com", "invite_code": inv.Code})
+}
+
+// An administrator's sign-in asks for the second factor without logging in,
+// and the daemon keeps the challenge for POST /api/v1/auth/mfa.
 func TestDaemonAdminTwoFactor(t *testing.T) {
 	now := time.Now()
 	e := newDaemonEnv(t, portal.Config{MFAKey: []byte(strings.Repeat("k", 32))}, false)
-	if _, err := e.portal.CreateUser("root", testPassword, true); err != nil {
+	if _, err := e.portal.CreateUser("root@example.com", true); err != nil {
 		t.Fatal(err)
 	}
 	d := e.daemon()
-	login := map[string]string{"portal": e.url, "account": "root", "password": testPassword}
-	d.want(401, "mfa_setup_required", "POST", "/api/v1/login", login)
+	d.want(401, "challenge_expired", "POST", "/api/v1/auth/mfa", map[string]string{"code": "123456"})
+	d.requestCode(e.url, "root@example.com")
+	d.want(403, "mfa_setup_required", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "root@example.com", "code": e.code("root@example.com")})
 
-	secret := enrollAdmin(t, e, "root")
-	d.want(401, "mfa_required", "POST", "/api/v1/login", login)
+	secret := enrollMFA(t, e, "root@example.com")
+	d.requestCode(e.url, "root@example.com")
+	d.want(401, "mfa_required", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "root@example.com", "code": e.code("root@example.com")})
 	if d.session().LoggedIn {
-		t.Fatal("logged in without the code")
+		t.Fatal("logged in without the second factor")
 	}
-	login["totp"] = wrongCode(totp.Code(secret, now))
-	d.want(401, "bad_code", "POST", "/api/v1/login", login)
-	login["totp"] = totp.Code(secret, time.Now())
-	d.want(200, "", "POST", "/api/v1/login", login)
-	if !d.session().LoggedIn {
-		t.Fatal("not logged in with the right code")
+	d.want(401, "bad_code", "POST", "/api/v1/auth/mfa", map[string]string{"code": wrongCode(totp.Code(secret, now))})
+	d.want(200, "", "POST", "/api/v1/auth/mfa", map[string]string{"code": totp.Code(secret, time.Now())})
+	if s := d.session(); !s.LoggedIn || s.User != "root@example.com" {
+		t.Fatalf("not logged in with the right code: %+v", s)
+	}
+	d.want(200, "", "GET", "/api/v1/account", nil)
+	// The challenge is used up.
+	d.want(409, "already_logged_in", "POST", "/api/v1/auth/mfa", map[string]string{"code": "123456"})
+}
+
+// A user who turned two-factor authentication on in the account settings is
+// asked for it at the next sign-in.
+func TestDaemonUserTwoFactor(t *testing.T) {
+	e := newDaemonEnv(t, portal.Config{OpenRegistration: true, MFAKey: []byte(strings.Repeat("k", 32))}, false)
+	d := e.daemon()
+	d.signIn(e, "alice@example.com")
+	tok := d.savedConfig().Token
+	var setup struct {
+		portal.MFASetup
+		Challenge string `json:"challenge"`
+	}
+	if st := e.portalAPI("POST", "/api/v1/account/mfa/setup", tok, struct{}{}, &setup); st != 200 {
+		t.Fatalf("setup: %d", st)
+	}
+	secret, err := totp.Decode(setup.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := e.portalAPI("POST", "/api/v1/account/mfa/enable", tok, map[string]string{"challenge": setup.Challenge, "code": totp.Code(secret, time.Now())}, nil); st != 200 {
+		t.Fatalf("enable: %d", st)
+	}
+	nextStep()
+	d.want(200, "", "POST", "/api/v1/logout", nil)
+	d.requestCode(e.url, "alice@example.com")
+	d.want(401, "mfa_required", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "alice@example.com", "code": e.code("alice@example.com")})
+	d.want(200, "", "POST", "/api/v1/auth/mfa", map[string]string{"code": totp.Code(secret, time.Now())})
+	if s := d.session(); !s.LoggedIn || s.User != "alice@example.com" {
+		t.Fatalf("session: %+v", s)
 	}
 }
 
@@ -415,9 +539,15 @@ func wrongCode(right string) string {
 	return "000000"
 }
 
-// enrollAdmin runs the web enrollment (a challenge, a secret, a code), which
-// logging in on the desktop leaves to the portal's web page.
-func enrollAdmin(t *testing.T, e *daemonEnv, user string) []byte {
+// nextStep waits for the next TOTP step: a code once used is burnt.
+func nextStep() {
+	time.Sleep(time.Until(time.Unix((time.Now().Unix()/30+1)*30, 0)) + 50*time.Millisecond)
+}
+
+// enrollMFA runs an administrator's first sign-in on the web pages (a code by
+// mail, then a challenge, a secret and a first TOTP code), which the desktop
+// app leaves to the portal's web page.
+func enrollMFA(t *testing.T, e *daemonEnv, user string) []byte {
 	t.Helper()
 	post := func(path string, in, out any) {
 		t.Helper()
@@ -438,10 +568,11 @@ func enrollAdmin(t *testing.T, e *daemonEnv, user string) []byte {
 			}
 		}
 	}
+	post("/api/v1/auth/code", map[string]string{"email": user}, nil)
 	var ch struct {
 		Challenge string `json:"challenge"`
 	}
-	post("/api/v1/web/login", map[string]string{"username": user, "password": testPassword}, &ch)
+	post("/api/v1/web/auth/verify", map[string]string{"email": user, "code": e.code(user)}, &ch)
 	var setup portal.MFASetup
 	post("/api/v1/web/mfa/setup", map[string]string{"challenge": ch.Challenge}, &setup)
 	secret, err := totp.Decode(setup.Secret)
@@ -449,13 +580,12 @@ func enrollAdmin(t *testing.T, e *daemonEnv, user string) []byte {
 		t.Fatalf("setup %+v: %v", setup, err)
 	}
 	post("/api/v1/web/mfa/confirm", map[string]string{"challenge": ch.Challenge, "code": totp.Code(secret, time.Now())}, nil)
-	// The code just used is burnt: wait for the next step so the login can use one.
-	time.Sleep(time.Until(time.Unix((time.Now().Unix()/30+1)*30, 0)) + 50*time.Millisecond)
+	nextStep()
 	return secret
 }
 
-// A self-signed portal: no password goes out until the user confirmed its
-// fingerprint, the confirmation is kept, and a replaced certificate is caught.
+// A self-signed portal: no address or code goes out until the user confirmed
+// its fingerprint, the confirmation is kept, and a replaced certificate is caught.
 func TestDaemonSelfSignedPortal(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), true)
 	home := t.TempDir()
@@ -468,15 +598,19 @@ func TestDaemonSelfSignedPortal(t *testing.T) {
 		t.Fatalf("probe: %+v", p)
 	}
 	before := e.logins.Load()
-	reg := map[string]string{"portal": e.url, "email": "a@example.com", "password": testPassword}
-	d.want(400, "pin_required", "POST", "/api/v1/register", reg)
-	reg["pin"] = "sha256:" + strings.Repeat("0", 64)
-	d.want(502, "pin_mismatch", "POST", "/api/v1/register", reg)
+	req := map[string]string{"portal": e.url, "email": "a@example.com"}
+	d.want(400, "pin_required", "POST", "/api/v1/auth/code", req)
+	req["pin"] = "sha256:" + strings.Repeat("0", 64)
+	d.want(502, "pin_mismatch", "POST", "/api/v1/auth/code", req)
+	req["code"] = "123456"
+	d.want(502, "pin_mismatch", "POST", "/api/v1/auth/verify", req)
 	if n := e.logins.Load(); n != before {
-		t.Fatalf("the password was sent to an unconfirmed portal (%d requests)", n-before)
+		t.Fatalf("the address was sent to an unconfirmed portal (%d requests)", n-before)
 	}
-	reg["pin"] = strings.ToUpper(p.Fingerprint[:6]) + p.Fingerprint[6:] // any case
-	d.want(201, "", "POST", "/api/v1/register", reg)
+	req["pin"] = strings.ToUpper(p.Fingerprint[:6]) + p.Fingerprint[6:] // any case
+	d.want(200, "", "POST", "/api/v1/auth/code", req)
+	req["code"] = e.code("a@example.com")
+	d.want(200, "", "POST", "/api/v1/auth/verify", req)
 	if c := d.savedConfig(); !strings.EqualFold(c.PortalPin, p.Fingerprint) {
 		t.Fatalf("pin not saved: %+v", c)
 	}
@@ -490,7 +624,7 @@ func TestDaemonSelfSignedPortal(t *testing.T) {
 	if !p.Known || p.PinRequired || p.PinChanged {
 		t.Fatalf("second probe: %+v", p)
 	}
-	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "a@example.com", "password": testPassword})
+	d.signIn(e, "a@example.com")
 	d.Close()
 
 	// The pin survives a restart of the daemon, and the session with it.
@@ -516,9 +650,9 @@ func TestDaemonSelfSignedPortal(t *testing.T) {
 		t.Fatalf("probe after a certificate change: %+v", p)
 	}
 	before = e.logins.Load()
-	d3.want(502, "pin_mismatch", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "a@example.com", "password": testPassword})
+	d3.want(502, "pin_mismatch", "POST", "/api/v1/auth/code", map[string]string{"portal": e.url, "email": "a@example.com"})
 	if e.logins.Load() != before {
-		t.Fatal("the password was sent despite the changed certificate")
+		t.Fatal("the address was sent despite the changed certificate")
 	}
 }
 
@@ -565,7 +699,7 @@ func TestNormalizePortalURL(t *testing.T) {
 func TestDaemonLogout(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	s := d.register(e.url, "alice@example.com")
+	s := d.signIn(e, "alice@example.com")
 	token := d.savedConfig().Token
 	if err := func() error { c := d.savedConfig(); c.Buy.BudgetMicros = 123; return SaveConfig(d.home, c) }(); err != nil {
 		t.Fatal(err)
@@ -590,7 +724,7 @@ func TestDaemonLogout(t *testing.T) {
 func TestDaemonLogoutPortalDown(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	d.register(e.url, "alice@example.com")
+	d.signIn(e, "alice@example.com")
 	e.srv.Close()
 	d.want(502, "portal_unreachable", "GET", "/api/v1/account", nil)
 	if s := d.session(); !s.LoggedIn {
@@ -608,7 +742,7 @@ func TestDaemonTokenRevoked(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	home := t.TempDir()
 	d := e.daemonIn(home)
-	s := d.register(e.url, "alice@example.com")
+	s := d.signIn(e, "alice@example.com")
 	revokeAll := func() {
 		t.Helper()
 		u, err := e.portal.Store().UserByName(s.User)
@@ -628,7 +762,7 @@ func TestDaemonTokenRevoked(t *testing.T) {
 	if d.savedConfig().Token != "" {
 		t.Fatal("rejected token kept")
 	}
-	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": s.User, "password": testPassword})
+	d.signIn(e, s.User)
 	if st := d.session(); !st.LoggedIn || st.Error != "" {
 		t.Fatalf("session after new login: %+v", st)
 	}
@@ -654,23 +788,23 @@ func TestDaemonTokenRevoked(t *testing.T) {
 func TestDaemonUserDisabled(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	s := d.register(e.url, "alice@example.com")
+	s := d.signIn(e, "alice@example.com")
 	u, _ := e.portal.Store().UserByName(s.User)
 	if err := e.portal.Store().SetDisabled(u.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	d.call("GET", "/api/v1/account", nil)
 	d.waitState(StateExpired)
-	d.want(401, "bad_credentials", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": s.User, "password": testPassword})
+	d.want(403, "account_disabled", "POST", "/api/v1/auth/code", map[string]string{"portal": e.url, "email": s.User})
 }
 
 // Someone else signs in on this machine: their account gets its own device key.
 func TestDaemonSwitchAccounts(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	alice := d.register(e.url, "alice@example.com")
+	alice := d.signIn(e, "alice@example.com")
 	d.want(200, "", "POST", "/api/v1/logout", nil)
-	bob := d.register(e.url, "bob@example.com")
+	bob := d.signIn(e, "bob@example.com")
 	if bob.Peer == "" || bob.Peer == alice.Peer {
 		t.Fatalf("peers: %s %s", alice.Peer, bob.Peer)
 	}
@@ -697,7 +831,7 @@ func TestDaemonSwitchAccounts(t *testing.T) {
 	}
 	// And back: alice can sign in here again.
 	d.want(200, "", "POST", "/api/v1/logout", nil)
-	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "alice@example.com", "password": testPassword})
+	d.signIn(e, "alice@example.com")
 	d.want(200, "", "GET", "/api/v1/account", nil)
 }
 
@@ -715,7 +849,8 @@ func TestDaemonBindFailureRevokesToken(t *testing.T) {
 	}))
 	defer front.Close()
 	d := e.daemon()
-	d.want(500, "bind_failed", "POST", "/api/v1/register", map[string]string{"portal": front.URL, "email": "a@example.com", "password": testPassword})
+	d.want(200, "", "POST", "/api/v1/auth/code", map[string]string{"portal": front.URL, "email": "a@example.com"})
+	d.want(500, "bind_failed", "POST", "/api/v1/auth/verify", map[string]string{"portal": front.URL, "email": "a@example.com", "code": e.code("a@example.com")})
 	if s := d.session(); s.LoggedIn {
 		t.Fatalf("session: %+v", s)
 	}
@@ -733,9 +868,10 @@ func TestDaemonBindFailureRevokesToken(t *testing.T) {
 	if len(ts) != 0 {
 		t.Fatalf("tokens left active: %+v", ts)
 	}
-	// The account exists; logging in finishes the job.
+	// The account exists; signing in again finishes the job.
 	bindFails.Store(false)
-	d.want(200, "", "POST", "/api/v1/login", map[string]string{"portal": front.URL, "account": "a@example.com", "password": testPassword})
+	d.want(200, "", "POST", "/api/v1/auth/code", map[string]string{"portal": front.URL, "email": "a@example.com"})
+	d.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"portal": front.URL, "email": "a@example.com", "code": e.code("a@example.com")})
 }
 
 // Web pages get nothing from this API; the desktop shell and CLI tools do.
@@ -748,15 +884,15 @@ func TestDaemonRequestGuards(t *testing.T) {
 			t.Errorf("%s %s %v: %d, want %d: %s", method, path, hdr, got, want, data)
 		}
 	}
-	login := map[string]string{"portal": e.url, "account": "x@example.com", "password": "wrong password"}
-	check(403, "POST", "/api/v1/login", login, "Origin", "https://evil.example.com")
+	login := map[string]string{"portal": e.url, "email": "x@example.com", "code": "000000"}
+	check(403, "POST", "/api/v1/auth/verify", login, "Origin", "https://evil.example.com")
 	check(403, "POST", "/api/v1/logout", nil, "Origin", "https://evil.example.com")
-	check(403, "POST", "/api/v1/login", login, "Origin", "null")
+	check(403, "POST", "/api/v1/auth/verify", login, "Origin", "null")
 	check(403, "GET", "/api/v1/session", nil, "Origin", "http://evil.localhost.example.com")
-	check(401, "POST", "/api/v1/login", login, "Origin", d.base)
-	check(401, "POST", "/api/v1/login", login) // CLI tools and the desktop shell send no Origin
+	check(401, "POST", "/api/v1/auth/verify", login, "Origin", d.base)
+	check(401, "POST", "/api/v1/auth/verify", login) // CLI tools and the desktop shell send no Origin
 	for _, o := range []string{"http://localhost:3000", "http://127.0.0.1:3000", "chrome-extension://abc", "wails://wails"} {
-		check(403, "POST", "/api/v1/login", login, "Origin", o)
+		check(403, "POST", "/api/v1/auth/verify", login, "Origin", o)
 		check(403, "POST", "/api/v1/logout", nil, "Origin", o)
 		check(403, "GET", "/api/v1/account", nil, "Origin", o)
 		// The OpenAI endpoint stays open to local tools, as on `sharetoken up`.
@@ -771,7 +907,7 @@ func TestDaemonRequestGuards(t *testing.T) {
 	check(200, "GET", "/api/v1/session", nil, "Host", "[::1]:9787")
 
 	// What a cross-site form could send.
-	req, _ := http.NewRequest("POST", d.base+"/api/v1/login", strings.NewReader(`{"portal":"x"}`))
+	req, _ := http.NewRequest("POST", d.base+"/api/v1/auth/verify", strings.NewReader(`{"portal":"x"}`))
 	req.Header.Set("Content-Type", "text/plain")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -783,7 +919,7 @@ func TestDaemonRequestGuards(t *testing.T) {
 	}
 	// Oversized and malformed bodies.
 	big := strings.NewReader(`{"portal":"` + strings.Repeat("x", 1<<20) + `"}`)
-	resp, err = http.Post(d.base+"/api/v1/login", "application/json", big)
+	resp, err = http.Post(d.base+"/api/v1/auth/verify", "application/json", big)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +929,7 @@ func TestDaemonRequestGuards(t *testing.T) {
 	}
 	// The wrong method on a sign-in route does nothing (it falls through to the
 	// agent's routes, and there is no agent).
-	check(401, "GET", "/api/v1/login", nil)
+	check(401, "GET", "/api/v1/auth/verify", nil)
 	check(401, "PUT", "/api/v1/session", map[string]string{})
 }
 
@@ -852,7 +988,7 @@ func TestDaemonServesApp(t *testing.T) {
 	d.want(400, "", "GET", "/ui/i18n/client/..%2f..%2fapp.js", nil) // no way out of the dictionaries
 }
 
-// Passwords and tokens stay out of the logs.
+// Sign-in codes and tokens stay out of the logs.
 func TestDaemonLogsNoSecrets(t *testing.T) {
 	var buf safeBuffer
 	old := slog.Default()
@@ -860,17 +996,20 @@ func TestDaemonLogsNoSecrets(t *testing.T) {
 	defer slog.SetDefault(old)
 	e := newDaemonEnv(t, openPortal(), false)
 	d := e.daemon()
-	d.register(e.url, "alice@example.com")
+	d.signIn(e, "alice@example.com")
 	token := d.savedConfig().Token
 	d.waitState(StateRetrying)
 	d.want(200, "", "POST", "/api/v1/logout", nil)
-	d.want(401, "bad_credentials", "POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "alice@example.com", "password": "another-secret-pw"})
+	d.requestCode(e.url, "alice@example.com")
+	code := e.code("alice@example.com")
+	d.want(401, "bad_code", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "alice@example.com", "code": "x" + code})
+	d.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "alice@example.com", "code": code})
 	d.Close()
 	logs := buf.String()
 	if !strings.Contains(logs, "signed in") {
 		t.Fatalf("no logs captured: %s", logs)
 	}
-	for _, secret := range []string{testPassword, "another-secret-pw", token} {
+	for _, secret := range []string{code, token} {
 		if strings.Contains(logs, secret) {
 			t.Errorf("log contains %q:\n%s", secret, logs)
 		}
@@ -901,11 +1040,13 @@ func TestDaemonConcurrentSignIn(t *testing.T) {
 	d := e.daemon()
 	var wg sync.WaitGroup
 	var ok, conflict atomic.Int64
+	d.requestCode(e.url, "race@example.com")
+	code := e.code("race@example.com")
 	for range 6 {
 		wg.Go(func() {
-			status, data := d.call("POST", "/api/v1/register", map[string]string{"portal": e.url, "email": "race@example.com", "password": testPassword})
+			status, data := d.call("POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "race@example.com", "code": code})
 			switch status {
-			case 201:
+			case 200:
 				ok.Add(1)
 			case 409:
 				conflict.Add(1)
@@ -926,7 +1067,8 @@ func TestDaemonConcurrentSignIn(t *testing.T) {
 				d.call("GET", "/api/v1/status", nil)
 				if i == 0 {
 					d.call("POST", "/api/v1/logout", nil)
-					d.call("POST", "/api/v1/login", map[string]string{"portal": e.url, "account": "race@example.com", "password": testPassword})
+					d.call("POST", "/api/v1/auth/code", map[string]string{"portal": e.url, "email": "race@example.com"})
+					d.call("POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": "race@example.com", "code": e.code("race@example.com")})
 				}
 			}
 		})
@@ -956,17 +1098,17 @@ func TestDaemonBuiltInPortal(t *testing.T) {
 	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/portal/probe", map[string]string{}), &p); err != nil || p.Portal != e.url {
 		t.Fatalf("probe without an address: %+v %v", p, err)
 	}
-	d.want(201, "", "POST", "/api/v1/register", map[string]string{"email": "builtin@example.com", "password": testPassword, "device": "test-box"})
+	d.want(200, "", "POST", "/api/v1/auth/code", map[string]string{"email": "builtin@example.com"})
+	d.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"email": "builtin@example.com", "code": e.code("builtin@example.com"), "device": "test-box"})
 	if c := d.savedConfig(); c.Portal != e.url {
 		t.Fatalf("saved portal = %q, want the built-in %q", c.Portal, e.url)
 	}
 }
 
-// A portal that verifies addresses: the code comes from the outbox here, from
-// the user's mailbox in real life.
-func TestDaemonRegisterWithMailedCode(t *testing.T) {
+// The probe tells the app what the sign-in page needs: where to write for
+// help, and that this portal signs in with mailed codes.
+func TestDaemonProbeSupport(t *testing.T) {
 	cfg := openPortal()
-	cfg.EmailVerification = true
 	cfg.Mail = portal.MailConfig{From: "ShareToken <team@sharetoken.test>", Support: "Support <support@sharetoken.test>"}
 	e := newDaemonEnv(t, cfg, false)
 	d := e.daemon()
@@ -974,40 +1116,8 @@ func TestDaemonRegisterWithMailedCode(t *testing.T) {
 	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/portal/probe", map[string]string{"portal": e.url}), &p); err != nil {
 		t.Fatal(err)
 	}
-	if !p.EmailVerification || p.SupportEmail != "support@sharetoken.test" {
+	if p.SupportEmail != "support@sharetoken.test" || !p.RegistrationOpen || p.InviteRequired {
 		t.Fatalf("probe: %+v", p)
-	}
-	const email = "code@example.com"
-	reg := func(status int, code, mailCode string) {
-		t.Helper()
-		d.want(status, code, "POST", "/api/v1/register", map[string]string{"portal": e.url, "email": email, "password": testPassword, "code": mailCode})
-	}
-	reg(400, "bad_code", "")
-	d.want(400, "bad_request", "POST", "/api/v1/register/code", map[string]string{"portal": e.url, "email": ""})
-	var sent CodeSent
-	if err := json.Unmarshal(d.want(200, "", "POST", "/api/v1/register/code", map[string]string{"portal": e.url, "email": email}), &sent); err != nil {
-		t.Fatal(err)
-	}
-	if sent.CooldownSeconds <= 0 {
-		t.Fatalf("%+v", sent)
-	}
-	d.want(429, "code_cooldown", "POST", "/api/v1/register/code", map[string]string{"portal": e.url, "email": email})
-	var subject string
-	if err := e.portal.Store().DB.QueryRow(`SELECT subject FROM mail_outbox WHERE to_addr = ?`, email).Scan(&subject); err != nil {
-		t.Fatal(err)
-	}
-	code := subject[strings.LastIndex(subject, ": ")+len(": "):]
-	wrong := "000000"
-	if code == wrong {
-		wrong = "000001"
-	}
-	reg(400, "bad_code", wrong)
-	if d.session().LoggedIn {
-		t.Fatal("logged in with a wrong code")
-	}
-	reg(201, "", code)
-	if s := d.session(); !s.LoggedIn || s.User != email {
-		t.Fatalf("session: %+v", s)
 	}
 }
 
@@ -1018,7 +1128,7 @@ func TestDaemonFeedback(t *testing.T) {
 	d := e.daemon()
 	body := map[string]string{"category": "bug", "message": "it broke", "lang": "de", "source": "portal", "app_version": "forged"}
 	d.want(401, "not_logged_in", "POST", "/api/v1/feedback", body)
-	d.register(e.url, "fb@example.com")
+	d.signIn(e, "fb@example.com")
 	d.want(201, "", "POST", "/api/v1/feedback", body)
 	d.want(400, "bad_request", "POST", "/api/v1/feedback", map[string]string{"category": "bug", "message": "  "})
 

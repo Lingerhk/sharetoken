@@ -5,7 +5,7 @@
   const app = ST.$('app');
 
   await ST.loadInfo().catch(fail);
-  while (!(await ST.loadMe())) await ST.renderLogin(app, { title: '管理控制台', allowRegister: false });
+  while (!(await ST.loadMe())) await ST.renderLogin(app, { title: '管理控制台' });
   const me = () => state.me;
   if (!me().user.is_admin) {
     add(clear(app), ST.authFrame(h('div', { class: 'card login' }, h('h1', null, '管理控制台'), h('p', null, '账户 ', h('b', null, me().user.username), ' 不是管理员。'),
@@ -245,11 +245,11 @@
     add(m, pageTitle('用户', h('small', null, '日期筛选按注册时间')), list.el);
     let timer; q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => list.reload(), 250); });
     async function createUser() {
-      const name = input({ type: 'text', placeholder: '3-32 位小写字母、数字、_ . -', autocomplete: 'off' });
-      const pass = input({ type: 'password', placeholder: '8-256 位', autocomplete: 'new-password' });
-      const admin = h('input', { type: 'checkbox' });
-      if (!await modal({ title: '新建用户', okText: '创建', body: h('div', { class: 'form' }, field('用户名', name), field('初始密码', pass), h('label', { class: 'check' }, admin, '管理员')) })) return;
-      try { const u = await api('POST', '/api/v1/admin/users', { username: name.value.trim(), password: pass.value, is_admin: admin.checked }); toast('已创建 ' + u.username); location.hash = '#/users/' + encodeURIComponent(u.username); }
+      const name = input({ type: 'email', id: 'new-user-email', placeholder: 'name@example.com', autocomplete: 'off' });
+      const admin = h('input', { type: 'checkbox', id: 'new-user-admin' });
+      if (!await modal({ title: '新建用户', okText: '创建', body: h('div', { class: 'form' }, field('邮箱', name), h('label', { class: 'check' }, admin, '管理员'),
+        h('p', { class: 'muted' }, '没有密码：用户用发到这个邮箱的验证码登录。管理员第一次登录时要绑定两步验证。')) })) return;
+      try { const u = await api('POST', '/api/v1/admin/users', { username: name.value.trim(), is_admin: admin.checked }); toast('已创建 ' + u.username); location.hash = '#/users/' + encodeURIComponent(u.username); }
       catch (ex) { fail(ex); }
     }
     await list.reload();
@@ -264,9 +264,8 @@
         u.mfa_enrolled_at ? badge('两步验证', 'ok') : (u.is_admin ? badge('未绑定两步验证', 'warn') : null)));
       const actions = h('div', { class: 'row' },
         h('button', { class: 'primary', onclick: creditDialog }, '发放 / 扣减 credit'),
-        h('button', { onclick: passwordDialog }, '重置密码'),
         h('button', { disabled: !u.mfa_enrolled_at, onclick: async () => {
-          if (!await confirm('重置两步验证', '清除 ' + u.username + ' 的验证器绑定并吊销其全部 token 和会话；下次登录时重新绑定。' + (isMe ? '这会立即登出你自己。' : ''), '重置')) return;
+          if (!await confirm('重置两步验证', '清除 ' + u.username + ' 的验证器绑定并吊销其全部 token 和会话。' + (u.is_admin ? '管理员下次登录时重新绑定。' : '之后只用邮箱验证码登录。') + (isMe ? '这会立即登出你自己。' : ''), '重置')) return;
           await act('/api/v1/admin/users/' + encodeURIComponent(name) + '/mfa/reset', undefined, '已重置两步验证', isMe ? () => location.reload() : load)();
         } }, '重置两步验证'),
         h('button', { disabled: isMe, onclick: act('/api/v1/admin/users/' + encodeURIComponent(name) + '/admin', { is_admin: !u.is_admin }, u.is_admin ? '已撤销管理员' : '已设为管理员', load) }, u.is_admin ? '撤销管理员' : '设为管理员'),
@@ -311,13 +310,6 @@
         const micros = Math.round(Number(amount.value) * 1e6);
         if (!micros) { toast('金额无效', 'bad'); return; }
         try { const r = await api('POST', '/api/v1/admin/users/' + encodeURIComponent(name) + '/credit', { micros, memo: memo.value.trim() }); toast('已调整，可用余额 ' + credit(r.available_micros)); await load(); }
-        catch (ex) { fail(ex); }
-      }
-      async function passwordDialog() {
-        const pass = input({ type: 'password', placeholder: '8-256 位', autocomplete: 'new-password' });
-        const revoke = h('input', { type: 'checkbox', checked: true });
-        if (!await modal({ title: '重置 ' + u.username + ' 的密码', okText: '重置', body: h('div', { class: 'form' }, field('新密码', pass), h('label', { class: 'check' }, revoke, '同时吊销该用户的全部 token 和会话')) })) return;
-        try { const r = await api('POST', '/api/v1/admin/users/' + encodeURIComponent(name) + '/password', { new_password: pass.value, revoke_tokens: revoke.checked }); toast('密码已重置' + (r.tokens_revoked ? '，吊销 ' + r.tokens_revoked + ' 个 token' : '')); await load(); }
         catch (ex) { fail(ex); }
       }
     }
@@ -760,7 +752,7 @@
       tile('邮件占用', size(o.inbox_bytes), null, 'database')),
       h('div', { class: 'card' }, kv([
         ['发件地址', d.from || h('span', { class: 'bad' }, '门户未配置 mail.from')], ['客服地址', d.support || h('span', { class: 'warn' }, '未配置')],
-        ['注册', !d.registration_open ? '关闭，仅管理员创建用户' : d.email_verification ? '开放，需要邮箱验证码' : h('span', { class: 'warn' }, '开放，不验证邮箱')],
+        ['注册', d.registration_open ? '开放：没有账户的邮箱第一次登录时自动注册' : '关闭，仅管理员创建用户'],
         ['发信方式', srv ? srv.delivery : '—'], ['主机名', srv ? srv.hostname : '—'], ['DKIM 选择器', srv ? srv.dkim_selector : '—'],
         ['收信', srv && srv.smtp_listen ? srv.smtp_listen + '：' + (srv.mailboxes || []).join('、') : '未启用'],
         ['SMTP 计数', srv ? '连接 ' + srv.counters.connections + '，接收 ' + srv.counters.accepted + '，拒绝 ' + srv.counters.rejected : '—'],
@@ -817,7 +809,7 @@
   // ---- audit log ----
   const AUDIT_ACTIONS = {
     'auth.admin_login': '管理员登录', 'user.create': '创建用户', 'user.credit': '调整 credit', 'user.disable': '禁用用户', 'user.enable': '启用用户', 'user.set_admin': '变更管理员权限',
-    'user.set_password': '重置用户密码', 'user.password_reset_by_mail': '用户邮件重置密码', 'user.mfa_reset': '重置两步验证', 'user.token_revoke': '吊销 token', 'user.tokens_revoke_all': '吊销全部 token', 'user.device_unbind': '解绑设备',
+    'user.rename': '修改用户邮箱', 'user.mfa_reset': '重置两步验证', 'user.token_revoke': '吊销 token', 'user.tokens_revoke_all': '吊销全部 token', 'user.device_unbind': '解绑设备',
     'relay.add': '登记中继', 'relay.update': '编辑中继', 'relay.enable': '启用中继', 'relay.disable': '停用中继', 'relay.remove': '删除中继', 'dispute.resolve': '裁决争议', 'version_policy.set': '修改版本策略',
     'mail.send': '写邮件', 'mail.reply': '回复邮件', 'mail.mark_read': '批量标记已读 / 未读', 'mail.delete': '删除邮件', 'mail.move': '归档 / 移回邮件', 'mail.retry': '重发邮件', 'mail.cancel': '取消发送', 'mail.test': '发送测试邮件',
     'feedback.status': '处理反馈', 'settings.update': '修改系统设置', 'settings.apply_blocklist': '禁用黑名单用户', 'invite.create': '创建邀请码', 'invite.disable': '停用邀请码',
@@ -894,10 +886,10 @@
 
     const f = {
       mail_from: text('mail_from', st.mail_from, { placeholder: 'ShareToken <team@example.com>' }), mail_support: text('mail_support', st.mail_support, { placeholder: 'ShareToken Support <support@example.com>' }),
-      open_registration: check('open_registration', st.open_registration), email_verification: check('email_verification', st.email_verification), invite_required: check('invite_required', st.invite_required),
+      open_registration: check('open_registration', st.open_registration), invite_required: check('invite_required', st.invite_required),
       email_domain_allow: h('textarea', { id: 'set-email_domain_allow', class: 'bulk', rows: 4, placeholder: 'example.com\n*.edu.cn' }), email_block: h('textarea', { id: 'set-email_block', class: 'bulk', rows: 6, placeholder: 'spam@example.com' }),
       signup_credit: input({ type: 'number', id: 'set-signup_credit', min: 0, step: 'any', value: String(st.signup_credit_micros / 1e6) }),
-      password_reset: check('password_reset', st.password_reset), web_session_hours: number('web_session_hours', st.web_session_hours, { max: 2160 }), login_token_hours: number('login_token_hours', st.login_token_hours, { max: 87600 }),
+      web_session_hours: number('web_session_hours', st.web_session_hours, { max: 2160 }), login_token_hours: number('login_token_hours', st.login_token_hours, { max: 87600 }),
       default_page_size: h('select', { id: 'set-default_page_size' }, [10, 20, 50, 100].map(n => h('option', { value: n, selected: n === st.default_page_size }, n + ' 条'))),
       rate_user_rpm: number('rate_user_rpm', st.rate_user_rpm), rate_heavy_rpm: number('rate_heavy_rpm', st.rate_heavy_rpm), rate_public_rpm: number('rate_public_rpm', st.rate_public_rpm), rate_admin_exempt: check('rate_admin_exempt', st.rate_admin_exempt),
       audit_retention_days: number('audit_retention_days', st.audit_retention_days),
@@ -908,12 +900,6 @@
     const updated = h('span', { class: 'muted', id: 'set-updated' });
     const showUpdated = v => { updated.textContent = v.updated_at ? '上次由 ' + v.updated_by + ' 修改于 ' + time(v.updated_at) : '还没有保存过：当前值来自配置文件'; };
     showUpdated(view);
-    const resetState = h('p', { class: 'hint', id: 'set-reset-state' });
-    const showReset = v => {
-      resetState.textContent = v.password_reset_active ? '“忘记密码”已生效。' : '“忘记密码”未生效：需要开启此项、填写发件地址，并在 portal.yaml 里配置门户公网地址 http.public_url。';
-      resetState.className = 'hint ' + (v.password_reset_active ? '' : 'warn');
-    };
-    showReset(view);
     const err = h('span', { class: 'bad', id: 'set-error' });
     const saveBtn = h('button', { class: 'primary', id: 'set-save', onclick: save }, '保存设置');
     async function save() {
@@ -922,17 +908,17 @@
       try {
         const v = await api('PUT', '/api/v1/admin/settings', {
           mail_from: f.mail_from.value, mail_support: f.mail_support.value,
-          open_registration: f.open_registration.checked, email_verification: f.email_verification.checked, invite_required: f.invite_required.checked,
+          open_registration: f.open_registration.checked, invite_required: f.invite_required.checked,
           email_domain_allow: parseLines(f.email_domain_allow), email_block: parseLines(f.email_block),
           signup_credit_micros: Math.round((Number(f.signup_credit.value) || 0) * 1e6),
-          password_reset: f.password_reset.checked, web_session_hours: int(f.web_session_hours), login_token_hours: int(f.login_token_hours),
+          web_session_hours: int(f.web_session_hours), login_token_hours: int(f.login_token_hours),
           default_page_size: int(f.default_page_size), rate_user_rpm: int(f.rate_user_rpm), rate_heavy_rpm: int(f.rate_heavy_rpm), rate_public_rpm: int(f.rate_public_rpm), rate_admin_exempt: f.rate_admin_exempt.checked,
           audit_retention_days: int(f.audit_retention_days),
         });
         st = v.settings;
         f.email_domain_allow.value = lines(st.email_domain_allow);
         f.email_block.value = lines(st.email_block);
-        showUpdated(v); showReset(v);
+        showUpdated(v);
         const shown = state.info; state.info = null; await ST.loadInfo().catch(() => { state.info = shown; });
         toast('设置已保存，立即生效');
       } catch (ex) {
@@ -1007,25 +993,24 @@
 
     add(m, pageTitle('系统设置', h('small', null, '保存后立即生效，不用重启；配置文件里的同名项只在第一次保存之前有效')),
       section('users', '注册管控'), h('div', { class: 'card' }, h('div', { class: 'settings-grid' },
-        checkHint(f.open_registration, '开放注册', '关闭后只有管理员能创建用户。'), checkHint(f.email_verification, '注册需要邮箱验证码', '开启后只能用邮箱注册。需要发件地址和运行中的邮件服务。'),
-        checkHint(f.invite_required, '注册需要邀请码', '桌面客户端和 CLI 没有邀请码输入项，用户需要到网页注册。'),
+        checkHint(f.open_registration, '开放注册', '开启后，没有账户的邮箱第一次登录时自动注册；关闭后只有管理员能创建用户。登录需要发件地址和运行中的邮件服务。'),
+        checkHint(f.invite_required, '注册需要邀请码', '新邮箱第一次登录时要填写邀请码；已有账户不受影响。'),
         fieldHint('新用户赠送 credit', f.signup_credit)),
         h('div', { class: 'settings-grid' },
-          fieldHint('邮箱域名白名单', f.email_domain_allow, '一行一个，如 example.com、*.edu.cn（后者匹配所有子域名，不含 edu.cn 本身）。留空不限制。需要开启邮箱验证码。'),
+          fieldHint('邮箱域名白名单', f.email_domain_allow, '一行一个，如 example.com、*.edu.cn（后者匹配所有子域名，不含 edu.cn 本身）。留空不限制。只管新注册。'),
           h('div', { class: 'field' }, h('label', null, '邮箱黑名单（精确匹配）'), f.email_block, h('p', { class: 'hint' }, '一行一个。只阻止新注册；已注册的用户用下面的按钮处理。'),
             h('button', { type: 'button', class: 'small', id: 'set-block-apply', onclick: applyBlocklist }, '禁用已注册的命中用户'))),
         h('h3', null, '邀请码'), h('div', { class: 'row' }, h('button', { type: 'button', id: 'invite-new', onclick: newInvite }, '新建邀请码')), inviteList),
       section('mail', '邮件'), h('div', { class: 'card' }, h('div', { class: 'settings-grid' }, fieldHint('发件地址', f.mail_from, '验证码和通知从这里发出，域名要和 DKIM 一致。'), fieldHint('客服地址', f.mail_support, '用户看到的联系邮箱，回复邮件也从这里发出。')),
         kv([['邮件服务', o ? badge(o.online ? '运行中' : '离线', o.online ? 'ok' : 'bad') : '—'], ['发信方式', srv ? srv.delivery : '—'], ['主机名', srv ? srv.hostname : '—'], ['DKIM 选择器', srv ? srv.dkim_selector : '—']]),
-        h('p', { class: 'hint' }, 'SMTP 投递方式（直投或 smarthost）和它的密码在邮件服务自己的 mail.yaml 里，这里只读：邮件服务只对外收信，不读门户的设置；控制台也不应该能把所有外发邮件（包括重置链接）改道。详见 docs/mail.md。'),
+        h('p', { class: 'hint' }, 'SMTP 投递方式（直投或 smarthost）和它的密码在邮件服务自己的 mail.yaml 里，这里只读：邮件服务只对外收信，不读门户的设置；控制台也不应该能把所有外发邮件（包括登录验证码）改道。详见 docs/mail.md。'),
         h('div', { class: 'row' }, testTo, testBtn), testResult),
       section('lock', '安全'), h('div', { class: 'card' }, h('div', { class: 'settings-grid' },
-        h('div', { class: 'field' }, h('label', { class: 'check' }, f.password_reset, '允许邮件找回密码'), resetState),
-        fieldHint('浏览器会话有效期（小时）', f.web_session_hours, '只影响之后的登录。0 用配置文件的值。'), fieldHint('API 登录 token 有效期（小时）', f.login_token_hours, '客户端和 CLI 登录时签发。0 用配置文件的值。'),
+        fieldHint('浏览器会话有效期（小时）', f.web_session_hours, '用户门户和控制台。只影响之后的登录。0 用配置文件的值（默认 360，即 15 天）。'), fieldHint('客户端登录 token 有效期（小时）', f.login_token_hours, '桌面客户端和 CLI 登录时签发。0 用配置文件的值（默认 1440，即 60 天）。'),
         fieldHint('操作日志保留天数', f.audit_retention_days, '0 永久保留；否则至少 7 天。'))),
       section('bolt', 'API 限流'), h('div', { class: 'card' }, h('p', { class: 'hint' }, '每分钟请求数，0 为不限。门户重启后计数清零。'), h('div', { class: 'settings-grid' },
         fieldHint('每账号', f.rate_user_rpm, '所有登录后的接口。不为 0 时至少 60，打开一个页面就有好几个请求。'), fieldHint('每账号重查询', f.rate_heavy_rpm, 'CSV 导出和总览页的账本回放。'),
-        fieldHint('每 IP 公开接口', f.rate_public_rpm, '登录、注册、找回密码、站点信息。不为 0 时至少 30。公司出口共用一个 IP 时要放宽。'), checkHint(f.rate_admin_exempt, '管理员不限流'))),
+        fieldHint('每 IP 公开接口', f.rate_public_rpm, '发送和核对登录验证码、站点信息。不为 0 时至少 30。公司出口共用一个 IP 时要放宽。'), checkHint(f.rate_admin_exempt, '管理员不限流'))),
       section('grid', '界面'), h('div', { class: 'card' }, h('div', { class: 'settings-grid' }, fieldHint('默认每页条数', f.default_page_size, '用户自己选过的不受影响。'))),
       h('div', { class: 'settings-actions' }, saveBtn, updated, err));
   }

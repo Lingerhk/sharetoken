@@ -41,14 +41,14 @@ import (
 // Config configures the portal. Zero values get defaults.
 type Config struct {
 	DB                 *sql.DB
-	OpenRegistration   bool          // anyone may sign up (else only admins create users)
+	OpenRegistration   bool          // an address without an account gets one at its first sign-in (else only admins create users)
 	SignupCreditMicros uint64        // credit granted to each new user
-	LoginTTL           time.Duration // lifetime of tokens issued at login (default 30 days)
+	LoginTTL           time.Duration // lifetime of tokens a client's sign-in issues (default 60 days)
 	// PassKey signs relay passes (package relaypass); relays are configured
 	// with its public key. nil: the portal issues no passes (open relays).
 	PassKey ed25519.PrivateKey
 	PassTTL time.Duration // lifetime of a relay pass (default 1h)
-	// WebSessionTTL is the lifetime of a browser session (default 24h).
+	// WebSessionTTL is the lifetime of a browser session (default 15 days).
 	WebSessionTTL time.Duration
 	// SecureCookies marks session cookies Secure even on plain-HTTP
 	// requests (the portal sits behind a TLS-terminating proxy).
@@ -56,19 +56,15 @@ type Config struct {
 	// TrustedProxies are reverse proxies on other machines whose X-Real-IP is
 	// believed, as a proxy on loopback's always is.
 	TrustedProxies []net.IP
-	// MFAKey (32 bytes) seals administrators' TOTP secrets in the database.
+	// MFAKey (32 bytes) seals TOTP secrets in the database.
 	// nil: derived from PassKey. Without either, admins cannot log in, since
 	// two-factor authentication is mandatory for them.
 	MFAKey []byte
 	// MFAIssuer is the name authenticator apps show (default "ShareToken").
 	MFAIssuer string
-	// EmailVerification requires sign-ups to prove their email address with a
-	// mailed code, and closes sign-up by plain username. It needs Mail.From.
-	EmailVerification bool
-	Mail              MailConfig
-	// PublicURL is this portal's address on the web, for links in mail. Empty: no
-	// password reset by mail.
-	PublicURL string
+	// Mail is where sign-in codes come from: without Mail.From (or a
+	// sender saved on the settings page) nobody can sign in.
+	Mail MailConfig
 	// DownloadsDir holds the client packages offered at /downloads/ (downloads.go).
 	// Empty: none.
 	DownloadsDir string
@@ -111,13 +107,13 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("portal: a database is required")
 	}
 	if cfg.LoginTTL == 0 {
-		cfg.LoginTTL = 30 * 24 * time.Hour
+		cfg.LoginTTL = 60 * 24 * time.Hour
 	}
 	if cfg.PassTTL == 0 {
 		cfg.PassTTL = time.Hour
 	}
 	if cfg.WebSessionTTL == 0 {
-		cfg.WebSessionTTL = 24 * time.Hour
+		cfg.WebSessionTTL = 15 * 24 * time.Hour
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -145,9 +141,6 @@ func New(cfg Config) (*Server, error) {
 		}
 		cfg.Log.Warn("database busy, retrying migration", "err", err)
 		time.Sleep(migrateRetryEvery)
-	}
-	if cfg.EmailVerification && cfg.Mail.From == "" {
-		return nil, errors.New("portal: email verification needs a mail sender (mail.from)")
 	}
 	key := cfg.MFAKey
 	if key == nil && cfg.PassKey != nil {
@@ -187,9 +180,14 @@ func (s *Server) Store() *accounts.Store { return s.store }
 
 // ---- operations shared by the HTTP API and the admin CLI ----
 
-// CreateUser registers a user and grants the sign-up credit.
-func (s *Server) CreateUser(username, password string, admin bool) (*accounts.User, error) {
-	u, err := s.store.CreateUser(username, password, admin)
+// CreateUser registers the account of an email address (people sign in with a
+// code mailed there) and grants the sign-up credit.
+func (s *Server) CreateUser(email string, admin bool) (*accounts.User, error) {
+	email = accounts.NormalizeEmail(email)
+	if err := accounts.CheckEmail(email); err != nil {
+		return nil, err
+	}
+	u, err := s.store.CreateUser(email, admin)
 	if err != nil {
 		return nil, err
 	}
@@ -388,14 +386,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/downloads", s.public(s.handleDownloads))
 	mux.HandleFunc("GET /api/v1/update", s.public(s.handleUpdate))
 	mux.HandleFunc("GET /downloads/{file}", s.handleDownloadFile)
-	mux.Handle("POST /api/v1/register", s.clientOnly(s.public(s.handleRegister)))
-	mux.HandleFunc("POST /api/v1/register/code", s.public(s.handleRegisterCode)) // the web sign-up uses it too; the sign-up itself is what is guarded
-	mux.Handle("POST /api/v1/login", s.clientOnly(s.public(s.handleLogin)))
-	s.resetRoutes(mux)
+	// Signing in (auth.go): a mailed code; the pages use it too, the sign-in itself is what is guarded.
+	mux.HandleFunc("POST /api/v1/auth/code", s.public(s.handleAuthCode))
+	mux.Handle("POST /api/v1/auth/verify", s.clientOnly(s.public(s.handleAuthVerify)))
 
 	// Browser sessions (cookie): only for the portal's own pages.
-	mux.HandleFunc("POST /api/v1/web/login", s.public(webOnly(s.handleWebLogin)))
-	mux.HandleFunc("POST /api/v1/web/register", s.public(webOnly(s.handleWebRegister)))
+	mux.HandleFunc("POST /api/v1/web/auth/verify", s.public(webOnly(s.handleWebAuthVerify)))
 	mux.HandleFunc("POST /api/v1/web/mfa", s.public(webOnly(s.handleWebMFA)))
 	mux.HandleFunc("POST /api/v1/web/mfa/setup", s.public(webOnly(s.handleWebMFASetup)))
 	mux.HandleFunc("POST /api/v1/web/mfa/confirm", s.public(webOnly(s.handleWebMFAConfirm)))
@@ -404,7 +400,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("POST /api/v1/logout", s.auth(s.handleLogout))
 	mux.Handle("GET /api/v1/me", s.auth(s.handleMe))
-	mux.Handle("POST /api/v1/password", s.auth(s.handlePassword))
+	mux.Handle("POST /api/v1/account/mfa/setup", s.auth(s.handleMFASelfSetup))
+	mux.Handle("POST /api/v1/account/mfa/enable", s.auth(s.handleMFASelfEnable))
+	mux.Handle("POST /api/v1/account/mfa/disable", s.auth(s.handleMFASelfDisable))
 	mux.Handle("GET /api/v1/tokens", s.auth(s.handleTokens))
 	mux.Handle("POST /api/v1/tokens", s.auth(s.handleNewToken))
 	mux.Handle("DELETE /api/v1/tokens/{id}", s.auth(s.handleRevokeToken))
@@ -430,7 +428,6 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/users/{name}/disable", s.admin(s.handleDisable(true)))
 	mux.Handle("POST /api/v1/admin/users/{name}/enable", s.admin(s.handleDisable(false)))
 	mux.Handle("POST /api/v1/admin/users/{name}/admin", s.admin(s.handleSetAdmin))
-	mux.Handle("POST /api/v1/admin/users/{name}/password", s.admin(s.handleAdminPassword))
 	mux.Handle("POST /api/v1/admin/users/{name}/mfa/reset", s.admin(s.handleAdminResetMFA))
 	mux.Handle("GET /api/v1/admin/users/{name}/tokens", s.admin(s.handleAdminTokens))
 	mux.Handle("DELETE /api/v1/admin/users/{name}/tokens/{id}", s.admin(s.handleAdminRevokeToken))
@@ -546,148 +543,6 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, n)
 }
 
-type credentials struct {
-	Email     string `json:"email"` // sign-up with an email address: it becomes the account name
-	Username  string `json:"username"`
-	Password  string `json:"password"`
-	TokenName string `json:"token_name"`
-	TOTP      string `json:"totp"`        // admins: the current two-factor code (API login in one step)
-	Code      string `json:"code"`        // sign-up: the emailed verification code
-	Invite    string `json:"invite_code"` // sign-up, when the settings require one
-}
-
-type AuthResponse struct {
-	User  *accounts.User `json:"user"`
-	Token string         `json:"token"`
-}
-
-func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	var c credentials
-	if !readJSON(w, r, &c) {
-		return
-	}
-	u, ok := s.register(w, r, c)
-	if !ok {
-		return
-	}
-	s.issueLoginToken(w, u, c.TokenName, http.StatusCreated, false)
-}
-
-// register creates the account of a sign-up, writing the error response
-// itself. Sign-ups are rate-limited per IP.
-func (s *Server) register(w http.ResponseWriter, r *http.Request, c credentials) (*accounts.User, bool) {
-	st := s.settings()
-	if !st.OpenRegistration {
-		writeErr(w, http.StatusForbidden, "registration_closed", "registration is closed; ask an administrator for an account")
-		return nil, false
-	}
-	ip := s.clientIP(r)
-	if s.throttled("reg:" + ip) {
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many sign-ups from this address; try again in a few minutes")
-		return nil, false
-	}
-	name := c.Username
-	if c.Email != "" {
-		// Unlike username, this field never falls back to a plain name.
-		name = accounts.NormalizeEmail(c.Email)
-		if err := accounts.CheckEmail(name); err != nil {
-			s.accountErr(w, err)
-			return nil, false
-		}
-	}
-	if st.EmailVerification {
-		// With verification on, a plain username would be a way around it.
-		name = accounts.NormalizeEmail(name)
-		if err := accounts.CheckEmail(name); err != nil {
-			writeErr(w, http.StatusBadRequest, "email_required", "sign-up needs an email address")
-			return nil, false
-		}
-		if err := accounts.CheckPassword(c.Password); err != nil {
-			s.accountErr(w, err) // before the code: a short password must not use it up
-			return nil, false
-		}
-	}
-	if !s.checkSignupRules(w, ip, name, c.Invite, st) {
-		return nil, false
-	}
-	if st.EmailVerification && !s.checkRegisterCode(w, ip, name, c.Code) {
-		return nil, false
-	}
-	if st.InviteRequired {
-		ok, err := s.useInvite(c.Invite)
-		if err != nil {
-			s.internal(w, err)
-			return nil, false
-		}
-		if !ok {
-			writeErr(w, http.StatusForbidden, "bad_invite", "this invite code is wrong, used up or expired")
-			return nil, false
-		}
-	}
-	u, err := s.CreateUser(name, c.Password, false)
-	if err != nil {
-		if st.InviteRequired && u == nil {
-			s.returnInvite(c.Invite) // the name was taken, or the password too short
-		}
-		s.accountErr(w, err)
-		return nil, false
-	}
-	s.recordFailure("reg:" + ip)
-	s.log.Info("user registered", "user", u.Username, "id", u.ID, "ip", ip)
-	return u, true
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	var c credentials
-	if !readJSON(w, r, &c) {
-		return
-	}
-	u, mfa, ok := s.authenticate(w, r, c)
-	if !ok {
-		return
-	}
-	s.issueLoginToken(w, u, c.TokenName, http.StatusOK, mfa)
-}
-
-// authenticate checks a login, writing the error response itself. For an
-// administrator it also runs the second factor (see mfa.go); mfa reports
-// whether one was verified, which the issued token remembers.
-func (s *Server) authenticate(w http.ResponseWriter, r *http.Request, c credentials) (u *accounts.User, mfa, ok bool) {
-	ip := s.clientIP(r)
-	name := strings.ToLower(strings.TrimSpace(c.Username))
-	if s.throttled("u:"+name) || s.throttled("ip:"+ip) {
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many failed logins; try again in a few minutes")
-		return nil, false, false
-	}
-	u, err := s.store.Authenticate(name, c.Password)
-	if err != nil {
-		if errors.Is(err, accounts.ErrBadCredentials) || errors.Is(err, accounts.ErrDisabled) {
-			s.recordFailure("u:"+name, "ip:"+ip)
-			writeErr(w, http.StatusUnauthorized, "bad_credentials", err.Error())
-			return nil, false, false
-		}
-		s.internal(w, err)
-		return nil, false, false
-	}
-	proceed, mfa := s.secondFactor(w, r, u, mfaCodeField(c))
-	if !proceed {
-		return nil, false, false
-	}
-	return u, mfa, true
-}
-
-func (s *Server) issueLoginToken(w http.ResponseWriter, u *accounts.User, name string, status int, mfa bool) {
-	if name = strings.TrimSpace(name); name == "" {
-		name = "login"
-	}
-	plain, _, err := s.store.IssueSessionToken(u.ID, name, s.loginTTL(), mfa)
-	if err != nil {
-		s.accountErr(w, err)
-		return
-	}
-	writeJSON(w, status, AuthResponse{User: u, Token: plain})
-}
-
 const (
 	failWindow = 5 * time.Minute
 	maxFails   = 8
@@ -778,50 +633,6 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 		return
 	}
 	writeJSON(w, http.StatusOK, m)
-}
-
-func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, cu ctxUser) {
-	var req struct {
-		Old          string `json:"old_password"`
-		New          string `json:"new_password"`
-		RevokeOthers bool   `json:"revoke_others"` // sign every other token / session out
-	}
-	if !readJSON(w, r, &req) {
-		return
-	}
-	// A wrong current password counts like a failed login, so a stolen
-	// session cannot brute-force it.
-	if s.throttled("u:" + cu.user.Username) {
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many failed attempts; try again in a few minutes")
-		return
-	}
-	if _, err := s.store.Authenticate(cu.user.Username, req.Old); err != nil {
-		s.recordFailure("u:" + cu.user.Username)
-		writeErr(w, http.StatusUnauthorized, "bad_credentials", "the current password is wrong")
-		return
-	}
-	if err := s.store.SetPassword(cu.user.ID, req.New); err != nil {
-		s.accountErr(w, err)
-		return
-	}
-	s.notify(mailer.PasswordChangedMail(cu.user.Username, false, s.cfg.Now(), s.clientIP(r), s.supportAddress()))
-	var revoked int64
-	if req.RevokeOthers {
-		ts, err := s.store.Tokens(cu.user.ID)
-		if err != nil {
-			s.internal(w, err)
-			return
-		}
-		for _, t := range ts {
-			if t.ID != cu.tokenID {
-				if err := s.store.RevokeToken(cu.user.ID, t.ID); err == nil {
-					revoked++
-				}
-			}
-		}
-	}
-	s.log.Info("password changed", "user", cu.user.Username, "tokens_revoked", revoked)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tokens_revoked": revoked})
 }
 
 func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request, cu ctxUser) {
@@ -1009,14 +820,13 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request, _ ctxUser) 
 
 func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username string `json:"username"` // an email address
 		Admin    bool   `json:"is_admin"`
 	}
 	if !readJSON(w, r, &req) {
 		return
 	}
-	u, err := s.CreateUser(req.Username, req.Password, req.Admin)
+	u, err := s.CreateUser(req.Username, req.Admin)
 	if err != nil {
 		s.accountErr(w, err)
 		return

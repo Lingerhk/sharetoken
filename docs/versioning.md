@@ -48,10 +48,10 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
 
 | Operation | Client below the minimum, a development build while `allow_dev` is off, or no version given |
 |---|---|
-| `POST /api/v1/register`, `/login`, `/mfa`, `/devices` | The portal answers 426 with the error code `upgrade_required` |
+| `POST /api/v1/auth/verify`, `/mfa`, `/devices` | The portal answers 426 with the error code `upgrade_required` |
 | `announce`, `ticket_request` | The coordinator answers `upgrade_required`; the local OpenAI endpoint answers 426 |
 | `settle`, `started`, `abandon`, `dispute`, `evidence`, `relay-pass`, account queries | **Never blocked:** settlement and disputes involve money |
-| Web sign-in and sign-up (`/api/v1/web/*`), `/api/v1/register/code` | Not affected |
+| Web sign-in (`/api/v1/web/*`), `/api/v1/auth/code` | Not affected |
 
 The version is reported by the client itself, so this check is for compatibility and is not a security measure. A database with no policy serves every client.
 

@@ -426,35 +426,53 @@ const ST = (() => {
   }
   const withIcon = (name, el) => h('span', { class: 'input-icon' }, icon(name, 18), el);
 
-  // renderLogin(root, {title, allowRegister}) → resolves when signed in
+  // authError says why a sign-in step was refused.
+  function authError(ex) {
+    const m = {
+      bad_email: tr('邮箱地址格式不正确'), registration_closed: tr('这个邮箱还没有账户，本站目前不开放注册，请联系管理员'),
+      email_not_allowed: tr('这个邮箱不能在此注册'), invite_required: tr('新账户需要邀请码，请填写后重新发送验证码'),
+      bad_invite: tr('邀请码错误、已用完或已过期'), account_disabled: tr('这个账户已被停用，请联系客服'),
+      bad_code: tr('验证码错误或已过期'), code_cooldown: tr('刚发送过，请稍后再试'), throttled: tr('尝试次数过多，请几分钟后再试'),
+      rate_limited: tr('请求太频繁，请稍后再试'), mail_unavailable: tr('本站暂时无法发送邮件，请联系管理员'), cross_site: tr('请求被拒绝（跨站）'),
+    };
+    return m[ex.code] || ex.message;
+  }
+  const codeInput = (id = 'mfa-code') => input({ type: 'text', id, inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9 ]*', maxlength: 7, placeholder: tr('6 位验证码'), required: true });
+
+  // renderLogin(root, {title, email}) → resolves when signed in. One form for new
+  // and existing accounts: an address and a code mailed to it (an address without
+  // an account gets one), then, for an account with two-factor authentication, a
+  // code from the authenticator app.
   function renderLogin(root, opts) {
     return new Promise(resolve => {
-      let mode = 'login';
-      const err = h('div', { class: 'error' });
-      const user = input({ type: 'text', id: 'login-user', autocomplete: 'username', placeholder: tr('请输入你的邮箱'), required: true });
-      const pass = input({ type: 'password', id: 'login-pass', autocomplete: 'current-password', placeholder: tr('至少 8 位'), required: true });
-      const submit = h('button', { class: 'primary', type: 'submit' }, tr('登录'));
-      const verify = () => state.info && state.info.email_verification;
+      const err = h('div', { class: 'error', id: 'login-error', role: 'alert' });
+      const email = input({ type: 'email', id: 'login-email', autocomplete: 'email', autocapitalize: 'off', spellcheck: 'false', placeholder: tr('请输入你的邮箱'), required: true, value: opts.email || '' });
       const mailCode = input({ type: 'text', id: 'login-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 7, placeholder: tr('6 位验证码') });
       const sendCode = h('button', { type: 'button', id: 'send-code', class: 'small', onclick: requestCode }, tr('发送验证码'));
-      const codeField = h('div', { class: 'field code-field', hidden: true }, h('label', null, tr('邮箱验证码')), h('div', { class: 'row' }, mailCode, sendCode));
       const invite = input({ type: 'text', id: 'login-invite', autocomplete: 'off', maxlength: 64, placeholder: tr('管理员发给你的邀请码') });
-      const inviteField = h('div', { class: 'field', hidden: true }, h('label', null, tr('邀请码')), invite);
-      const inviting = () => state.info && state.info.invite_required;
+      const inviteField = h('div', { class: 'field', id: 'invite-field', hidden: true }, h('label', null, tr('邀请码')), invite);
+      const newNote = h('p', { class: 'muted', id: 'login-new', hidden: true });
+      const submit = h('button', { class: 'primary', type: 'submit', id: 'login-submit' }, tr('登录'));
+      const restart = () => renderLogin(root, { ...opts, email: email.value.trim() }).then(resolve);
+      const needInvite = () => { inviteField.hidden = false; invite.focus(); };
       let cooldown = null;
       async function requestCode() {
         err.textContent = '';
-        const email = user.value.trim();
-        if (!email.includes('@')) { err.textContent = tr('请先填写邮箱'); user.focus(); return; }
+        const addr = email.value.trim();
+        if (!addr.includes('@')) { err.textContent = tr('请先填写邮箱'); email.focus(); return; }
         sendCode.disabled = true;
         try {
-          const r = await api('POST', '/api/v1/register/code', { email, invite_code: invite.value.trim() });
+          const r = await api('POST', '/api/v1/auth/code', { email: addr, invite_code: invite.value.trim() });
           toast(tr('验证码已发送，请查收邮件（也看看垃圾邮件）'));
+          const bonus = state.info && state.info.signup_credit_micros > 0 ? [h('br'), tr('新账户赠送 {n} credit。', { n: credit(state.info.signup_credit_micros) })] : null;
+          add(clear(newNote), r.new_account ? [tr('这个邮箱还没有账户，验证后会自动创建。'), bonus] : null);
+          newNote.hidden = !r.new_account;
           startCooldown(r.cooldown_seconds || 60);
           mailCode.focus();
         } catch (ex) {
           sendCode.disabled = false;
-          err.textContent = ex.code === 'code_cooldown' ? tr('刚发送过，请稍后再试') : ex.code === 'throttled' ? tr('请求太频繁，请稍后再试') : ex.code === 'bad_request' ? tr('邮箱地址格式不正确') : signupError(ex) || ex.message;
+          err.textContent = authError(ex);
+          if (ex.code === 'invite_required' || ex.code === 'bad_invite') needInvite();
         }
       }
       function startCooldown(seconds) {
@@ -467,153 +485,76 @@ const ST = (() => {
           clearInterval(cooldown); sendCode.disabled = false; sendCode.textContent = tr('重新发送');
         }, 1000);
       }
-      const signupError = ex => ex.code === 'exists' ? tr('这个邮箱已经注册过了，请直接登录') : ex.code === 'email_not_allowed' ? tr('这个邮箱不能在此注册') : ex.code === 'invite_required' ? tr('注册需要邀请码') : ex.code === 'bad_invite' ? tr('邀请码错误、已用完或已过期') : '';
-      const forgot = h('p', { class: 'muted', hidden: true }, h('a', { href: '#', id: 'forgot-link', onclick: e => { e.preventDefault(); showForgot(); } }, tr('忘记密码？')));
-      const tabLogin = h('button', { type: 'button', class: 'active', onclick: () => setMode('login') }, tr('登录'));
-      const tabReg = h('button', { type: 'button', onclick: () => setMode('register') }, tr('注册'));
-      const tabs = h('div', { class: 'tabs' }, tabLogin, opts.allowRegister ? tabReg : null);
-      const hint = h('p', { class: 'muted' });
-      const userLabel = h('label', null, tr('用户名'));
-      function setMode(m) {
-        mode = m; err.textContent = '';
-        tabLogin.classList.toggle('active', m === 'login'); tabReg.classList.toggle('active', m === 'register');
-        submit.textContent = m === 'login' ? tr('登录') : tr('注册');
-        codeField.hidden = !(m === 'register' && verify());
-        inviteField.hidden = !(m === 'register' && inviting());
-        forgot.hidden = !(m === 'login' && state.info && state.info.password_reset);
-        userLabel.textContent = m === 'register' && verify() ? tr('邮箱') : tr('用户名');
-        pass.autocomplete = m === 'login' ? 'current-password' : 'new-password';
-        hint.textContent = m === 'register' && state.info && state.info.signup_credit_micros > 0
-          ? tr('注册即赠送 {n} credit', { n: credit(state.info.signup_credit_micros) }) : '';
-      }
-      const codeError = ex => ex.code === 'bad_code' ? tr('验证码错误') : ex.code === 'throttled' ? tr('尝试次数过多，请几分钟后再试') : ex.message;
-      const restart = () => renderLogin(root, opts).then(resolve);
-      const codeInput = () => input({ type: 'text', id: 'mfa-code', inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9 ]*', maxlength: 7, placeholder: tr('6 位验证码'), required: true });
-      // A forgotten password: the answer is the same whether the address has an account.
-      function showForgot() {
-        const email = input({ type: 'email', id: 'forgot-email', autocomplete: 'email', required: true, value: user.value.includes('@') ? user.value.trim() : '' });
-        const e2 = h('div', { class: 'error' });
-        const send = h('button', { class: 'primary', type: 'submit', id: 'forgot-send' }, tr('发送重置链接'));
-        const form2 = h('form', {
-          class: 'form', onsubmit: async e => {
-            e.preventDefault(); e2.textContent = ''; send.disabled = true;
-            try {
-              await api('POST', '/api/v1/password/forgot', { email: email.value.trim() });
-              clear(card2); add(card2, h('h1', null, tr('查看你的邮箱')), h('p', { id: 'forgot-sent' }, tr('如果 {email} 有账户，重置链接已经发出，30 分钟内有效。也看看垃圾邮件。', { email: email.value.trim() })),
-                h('p', { class: 'muted' }, tr('用户名不是邮箱的账户收不到链接，请联系管理员重置。')), h('div', { class: 'row' }, h('button', { type: 'button', onclick: restart }, tr('返回登录'))));
-            } catch (ex) { send.disabled = false; e2.textContent = ex.code === 'throttled' ? tr('请求太频繁，请稍后再试') : ex.message; }
-          }
-        }, h('p', { class: 'muted' }, tr('填写注册时用的邮箱，我们把重置链接发给你。')), field(tr('邮箱'), email), e2,
-          h('div', { class: 'row' }, send, h('button', { type: 'button', onclick: restart }, tr('返回'))));
-        const card2 = h('div', { class: 'card login' }, h('h1', null, tr('找回密码')), form2);
-        clear(root).appendChild(authFrame(card2));
-        email.focus();
-      }
-      // Second step of an admin login: a code from the authenticator app.
+      // Second step for an account with two-factor authentication.
       function showCode(challenge) {
-        const code = codeInput(), e2 = h('div', { class: 'error' });
+        const code = codeInput(), e2 = h('div', { class: 'error', role: 'alert' });
         const form2 = h('form', {
-          class: 'form', onsubmit: async e => {
+          class: 'form', id: 'mfa-form', onsubmit: async e => {
             e.preventDefault(); e2.textContent = '';
             try { await api('POST', '/api/v1/web/mfa', { challenge, code: code.value }); resolve(); }
-            catch (ex) { if (ex.code === 'challenge_expired') { toast(tr('验证已超时，请重新登录'), 'bad'); restart(); return; } e2.textContent = codeError(ex); }
+            catch (ex) { if (ex.code === 'challenge_expired') { toast(tr('验证已超时，请重新登录'), 'bad'); restart(); return; } e2.textContent = authError(ex); }
           }
-        }, h('p', { class: 'muted' }, tr('管理员账号需要两步验证，请输入验证器 App 显示的 6 位验证码。')), field(tr('验证码'), code), e2,
+        }, h('p', { class: 'muted' }, tr('这个账户开启了两步验证，请输入验证器 App 显示的 6 位验证码。')), field(tr('验证码'), code), e2,
           h('div', { class: 'row' }, h('button', { class: 'primary', type: 'submit' }, tr('验证')), h('button', { type: 'button', onclick: restart }, tr('返回'))));
         clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, tr('两步验证')), form2)));
         code.focus();
       }
-      // First admin login: enroll an authenticator before any session exists.
+      // First admin sign-in: enroll an authenticator before any session exists.
       async function showSetup(challenge) {
         let setup;
         try { setup = await api('POST', '/api/v1/web/mfa/setup', { challenge }); }
         catch (ex) { fail(ex); restart(); return; }
-        const code = codeInput(), e2 = h('div', { class: 'error' });
+        const code = codeInput(), e2 = h('div', { class: 'error', role: 'alert' });
         const form2 = h('form', {
-          class: 'form', onsubmit: async e => {
+          class: 'form', id: 'mfa-setup-form', onsubmit: async e => {
             e.preventDefault(); e2.textContent = '';
             try { await api('POST', '/api/v1/web/mfa/confirm', { challenge, code: code.value }); toast(tr('两步验证已启用'), 'ok'); resolve(); }
-            catch (ex) { if (ex.code === 'challenge_expired') { toast(tr('设置已超时，请重新登录'), 'bad'); restart(); return; } e2.textContent = codeError(ex); }
+            catch (ex) { if (ex.code === 'challenge_expired') { toast(tr('设置已超时，请重新登录'), 'bad'); restart(); return; } e2.textContent = authError(ex); }
           }
         }, h('p', { class: 'muted' }, tr('管理员必须启用两步验证。用 Google Authenticator、Microsoft Authenticator、1Password 等扫描二维码，或手动输入密钥，然后填写 App 显示的 6 位验证码完成绑定。')),
-          h('div', { class: 'qr' }, h('img', { src: setup.qr, alt: tr('两步验证二维码'), width: 220, height: 220 })),
-          h('label', null, tr('密钥（手动输入时使用）')),
-          h('div', { class: 'secret' }, h('code', { id: 'mfa-secret' }, setup.secret), h('button', { class: 'small', type: 'button', onclick: () => copy(setup.secret) }, tr('复制'))),
-          field(tr('验证码'), code), e2,
+          mfaQR(setup), field(tr('验证码'), code), e2,
           h('div', { class: 'row' }, h('button', { class: 'primary', type: 'submit' }, tr('完成绑定')), h('button', { type: 'button', onclick: restart }, tr('取消'))));
         clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, tr('启用两步验证')), form2)));
         code.focus();
       }
       const form = h('form', {
-        class: 'form', onsubmit: async e => {
-          e.preventDefault(); err.textContent = ''; submit.disabled = true;
+        class: 'form', id: 'login-form', novalidate: true, onsubmit: async e => {
+          e.preventDefault(); err.textContent = '';
+          const addr = email.value.trim();
+          if (!addr.includes('@')) { err.textContent = tr('请先填写邮箱'); email.focus(); return; }
+          if (!mailCode.value.trim()) { err.textContent = tr('请填写邮箱收到的验证码'); mailCode.focus(); return; }
+          submit.disabled = true;
           try {
-            const body = { username: user.value.trim(), password: pass.value };
-            if (mode === 'register' && inviting()) {
-              if (!invite.value.trim()) { err.textContent = tr('注册需要邀请码'); invite.focus(); return; }
-              body.invite_code = invite.value.trim();
-            }
-            if (mode === 'register' && verify()) {
-              if (!mailCode.value.trim()) { err.textContent = tr('请填写邮箱收到的验证码'); mailCode.focus(); return; }
-              body.code = mailCode.value.trim();
-            }
-            await api('POST', mode === 'login' ? '/api/v1/web/login' : '/api/v1/web/register', body);
-            pass.value = '';
+            await api('POST', '/api/v1/web/auth/verify', { email: addr, code: mailCode.value.trim(), invite_code: invite.value.trim() });
             resolve();
           } catch (ex) {
-            if (ex.code === 'mfa_required' && ex.data.challenge) { pass.value = ''; showCode(ex.data.challenge); return; }
-            if (ex.code === 'mfa_setup_required' && ex.data.challenge) { pass.value = ''; showSetup(ex.data.challenge); return; }
-            err.textContent = ex.code === 'bad_credentials' ? tr('用户名或密码错误') : ex.code === 'throttled' ? tr('尝试次数过多，请几分钟后再试')
-              : ex.code === 'bad_code' ? tr('验证码错误或已过期') : ex.code === 'email_required' ? tr('请用邮箱注册')
-              : ex.code === 'exists' && !verify() ? tr('用户名已被使用') : ex.code === 'cross_site' ? tr('请求被拒绝（跨站）') : signupError(ex) || ex.message;
+            if (ex.code === 'mfa_required' && ex.data.challenge) { showCode(ex.data.challenge); return; }
+            if (ex.code === 'mfa_setup_required' && ex.data.challenge) { showSetup(ex.data.challenge); return; }
+            err.textContent = authError(ex);
+            if (ex.code === 'invite_required' || ex.code === 'bad_invite') needInvite();
           } finally { submit.disabled = false; }
         }
-      }, h('div', { class: 'field' }, userLabel, withIcon('user', user)), inviteField, codeField, field(tr('密码'), withIcon('lock', pass)), err, submit);
-      clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, opts.title || 'ShareToken'), tabs, form, forgot, hint,
+      }, field(tr('邮箱'), withIcon('mail', email)), inviteField,
+        h('div', { class: 'field code-field' }, h('label', null, tr('邮箱验证码')), h('div', { class: 'row' }, mailCode, sendCode)), newNote, err, submit);
+      clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, opts.title || 'ShareToken'), form,
+        h('p', { class: 'muted' }, tr('没有账户的邮箱会在验证后自动注册。')),
         h('p', { class: 'muted' }, h('a', { href: '/' }, tr('← 返回官网'))))));
-      setMode('login');
-      if (opts.allowRegister && location.hash === '#register') setMode('register');
-      user.focus();
+      (opts.email ? mailCode : email).focus();
     });
   }
 
-  // resetToken takes the token of a password-reset link out of the address, so
-  // that it stays neither in the address bar nor in the browser's history.
-  function resetToken() {
-    const m = /^#reset=([A-Za-z0-9_-]+)$/.exec(location.hash);
-    if (!m) return '';
-    history.replaceState(null, '', location.pathname + location.search);
-    return m[1];
-  }
-  // renderReset asks for the new password of a reset link; it resolves when it is
-  // done or given up on, and the sign-in page comes next.
-  function renderReset(root, token) {
-    return new Promise(resolve => {
-      const p1 = input({ type: 'password', id: 'reset-pass', autocomplete: 'new-password', minlength: 8, maxlength: 256, required: true, placeholder: tr('8-256 位') });
-      const p2 = input({ type: 'password', id: 'reset-pass2', autocomplete: 'new-password', required: true });
-      const err = h('div', { class: 'error', id: 'reset-error' });
-      const form = h('form', {
-        class: 'form', id: 'reset-form', onsubmit: async e => {
-          e.preventDefault(); err.textContent = '';
-          if (p1.value !== p2.value) { err.textContent = tr('两次输入的新密码不一致'); return; }
-          try {
-            await api('POST', '/api/v1/password/reset', { token, new_password: p1.value });
-            toast(tr('密码已重置，请用新密码登录'), 'ok');
-            resolve();
-          } catch (ex) { err.textContent = ex.code === 'bad_reset_link' ? tr('这个链接无效、已使用或已过期，请重新获取') : ex.code === 'throttled' ? tr('尝试次数过多，请几分钟后再试') : ex.message; }
-        }
-      }, h('p', { class: 'muted' }, tr('设置新密码后，这个账户所有设备和浏览器都会退出登录。')), field(tr('新密码'), p1), field(tr('重复新密码'), p2), err,
-        h('div', { class: 'row' }, h('button', { class: 'primary', type: 'submit' }, tr('重置密码')), h('button', { type: 'button', onclick: () => resolve() }, tr('返回登录'))));
-      clear(root).appendChild(authFrame(h('div', { class: 'card login' }, h('h1', null, tr('设置新密码')), form)));
-      p1.focus();
-    });
+  // mfaQR shows what an authenticator app needs: the QR code and the secret to type.
+  function mfaQR(setup) {
+    return h('div', null, h('div', { class: 'qr' }, h('img', { src: setup.qr, alt: tr('两步验证二维码'), width: 220, height: 220 })),
+      h('label', null, tr('密钥（手动输入时使用）')),
+      h('div', { class: 'secret' }, h('code', { id: 'mfa-secret' }, setup.secret), h('button', { class: 'small', type: 'button', onclick: () => copy(setup.secret) }, tr('复制'))));
   }
 
   // Hash router: routes = {name: async (main) => void}
   function router(routes, nav, main, fallback) {
     async function go() {
       const asked = location.hash.replace(/^#\/?/, '').split('/')[0];
-      const name = Object.hasOwn(routes, asked) ? asked : fallback; // #register, left over from signing up, shows the first page
+      const name = Object.hasOwn(routes, asked) ? asked : fallback; // #register, from the landing page's sign-up link, shows the first page
       const fn = routes[name];
       for (const a of nav.querySelectorAll('a')) a.classList.toggle('active', a.getAttribute('href') === '#/' + name);
       if (onRoute) onRoute(nav.querySelector('a.active'), name);
@@ -631,5 +572,5 @@ const ST = (() => {
   function param(hash) { return hash; }
 
   return { icon, setStyle, chip, pageChip, pageTitle, section, tile, shell, authFrame, api, ApiError, h, clear, add, $, credit, signed, num, time, ago, short, peer, status, badge, rtt, toast, fail, modal, confirm, copy, secret,
-    table, kv, field, input, state, listView, dateRange, download, resetToken, renderReset, loadInfo, loadMe, logout, renderLogin, router, param, STATUS };
+    table, kv, field, input, state, listView, dateRange, download, loadInfo, loadMe, logout, renderLogin, mfaQR, codeInput, authError, router, param, STATUS };
 })();

@@ -14,7 +14,7 @@ programs from this tree.
 
 ```bash
 cp .env.example .env
-# edit .env: DB_PASSWORD, DB_ROOT_PASSWORD, ADMIN_PASSWORD, PUBLIC_HOST
+# edit .env: DB_PASSWORD, DB_ROOT_PASSWORD, ADMIN_EMAIL, MAIL_FROM, PUBLIC_HOST
 docker compose up -d --build
 docker compose ps
 ```
@@ -72,7 +72,7 @@ keeps its state in `~/.sharetoken-dev` and takes the portal's address from
 ```bash
 go build -o bin/ ./cmd/sharetoken
 export SHARETOKEN_PORTAL=https://<PUBLIC_HOST>:8092
-bin/sharetoken register -user alice -portal-pin sha256:<fingerprint>
+bin/sharetoken login -email alice@example.com -portal-pin sha256:<fingerprint>
 bin/sharetoken up                       # http://127.0.0.1:9887/v1 for a development build
 bin/sharetoken status
 ```
@@ -89,8 +89,21 @@ bin/sharetoken share add mock-model
 ```
 
 The web pages are at `https://<PUBLIC_HOST>:8092/` (site), `/app/` (user app) and
-`/admin/` (admin console). The administrator set in `.env` signs in there and
-sets up two-step verification on first login.
+`/admin/` (admin console). The administrator set in `.env` (`ADMIN_EMAIL`) signs
+in there with a mailed code and sets up two-step verification on first sign-in.
+
+**Sign-in codes.** There are no passwords: everyone signs in with a six-digit
+code mailed to their address, and the first sign-in of an address creates its
+account. The portal only queues the mail; this Compose file starts no mail
+server ([mail.md](mail.md) sets one up). Until it runs, a code can be read from
+the queue, which is fine for a trial on your own machine:
+
+```bash
+docker compose exec mysql sh -c 'mysql -usharetoken -p"$MYSQL_PASSWORD" sharetoken -N \
+  -e "SELECT to_addr, subject FROM mail_outbox ORDER BY id DESC LIMIT 5"'
+```
+
+`MAIL_FROM` must be set for any code to be queued at all.
 
 ## 4. Settings
 
@@ -105,10 +118,10 @@ these variables do not rewrite a file. Change the file instead.
 | `PORTAL_PORT`, `PORTAL_BIND` | `8092`, `0.0.0.0` | where the portal is published |
 | `RELAY_PORT` | `4001` | the relay's port, inside and outside the container |
 | `PORTAL_TLS_MODE` | `auto` | `auto`: self-signed certificate. `proxy`: a reverse proxy terminates TLS |
-| `PORTAL_PUBLIC_URL` | empty | the portal's public URL, used for links in mail |
-| `OPEN_REGISTRATION` | `true` | let anyone sign up |
+| `MAIL_FROM`, `MAIL_SUPPORT` | empty | sender of the portal's mail and the support address. Sign-in codes are mail: without `MAIL_FROM` nobody can sign in |
+| `OPEN_REGISTRATION` | `true` | an address without an account gets one at its first sign-in |
 | `SIGNUP_CREDIT_MICROS` | `5000000` in `.env.example` | credit of a new user (1 credit = 1,000,000 micro-credits) |
-| `ADMIN_USER`, `ADMIN_PASSWORD` | `admin`, empty | the first administrator, created when a password is set |
+| `ADMIN_EMAIL` | empty | the first administrator's email address; the account is created when it is set |
 | `FEE_BPS` | `500` | the platform's cut in basis points |
 | `ST_VERSION`, `ST_COMMIT` | empty | version stamped into the programs (default `<VERSION>-dev.docker`) |
 
@@ -136,8 +149,7 @@ docker compose exec coordinator coordinator -config /var/lib/sharetoken/coordina
 **A real certificate.** Put a reverse proxy (Caddy, nginx) with a certificate from
 a public CA in front of the portal, set `tls.mode: proxy` in `portal.yaml` (or
 `PORTAL_TLS_MODE=proxy` before the first start), publish the portal on loopback
-only (`PORTAL_BIND=127.0.0.1`) and set `http.public_url`. Clients then need no
-fingerprint.
+only (`PORTAL_BIND=127.0.0.1`). Clients then need no fingerprint.
 
 **Audits and exact token counts.** Add a reference copy of each model you want
 audited to `references` in `coordinator.yaml`: an OpenAI-compatible server the
@@ -150,8 +162,8 @@ register each with `portal relay add '<address>' <name> <region>`. The relay
 prints the exact command when it starts. Clients choose among relays by
 round-trip time, and sellers reserve on more than one.
 
-**Mail.** Sign-up by email code and password reset need the mail server, which
-this Compose file does not start. See [mail.md](mail.md).
+**Mail.** Every sign-in needs the mail server, which this Compose file does not
+start. See [mail.md](mail.md).
 
 **Changing `PUBLIC_HOST` later.** The relay's address is stored in two places.
 Edit `network.announce` in `relay.yaml`, remove the relay's registration
@@ -177,6 +189,7 @@ and with them every account and balance.
   no host holds another program's key ([guide.md](guide.md)).
 - MySQL is reachable only inside the Compose network. Keep it that way.
 - `OPEN_REGISTRATION=true` with a sign-up credit lets anyone create accounts that
-  hold credit. For anything public, turn on email verification or create users
-  as an administrator.
+  hold credit; each needs only a mailbox. For anything public, restrict the
+  allowed email domains or require invite codes on the settings page, or close
+  registration and create users as an administrator.
 - [security.md](security.md) lists what the network protects and what it does not.

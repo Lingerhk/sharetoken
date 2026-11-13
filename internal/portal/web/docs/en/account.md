@@ -2,58 +2,49 @@
 
 The account holds your credit. A device is the machine that spends and earns. One account can have several devices.
 
-## Register {#register}
+## Sign in {#login}
+
+There are no passwords. You sign in with a code sent to your email, and the same step creates the account the first time you use an address.
 
 ```bash
-{{exe}} register -email you@example.com
+{{exe}} login -email you@example.com
 ```
 
-1. Enter a password of 8 to 256 characters, twice.
-2. A verification code is sent to your email. Paste it at the prompt. You can also pass it directly with `-code 123456`.
+1. A six-digit code is sent to your email. It is valid for 10 minutes.
+2. Paste it at the prompt.
 3. When you see `logged in as you@example.com`, you are done and this machine is bound to the account.
 
-Registration grants some credit. See the [home page](/) for the amount. You can also register on the [website](/app/#register) and then run `login` on each machine.
+A new account gets some credit. See the [home page](/) for the amount. If the portal asks for an invite code, add `-invite <code>`. You can also sign in on the [website](/app/) first and then run `login` on each machine.
 
 If the code does not arrive, check your spam folder first. See [Troubleshooting](/docs/troubleshooting#no-code).
 
-## Sign in {#login}
-
-```bash
-{{exe}} login -user you@example.com
-```
-
-Signing in binds this machine to the account. The sign-in lasts 30 days. When it expires, run `login` again.
+Signing in binds this machine to the account. The sign-in lasts 60 days. When it expires, run `login` again.
 
 Use `-device` to give the device a recognizable name. It appears in the device list on the portal:
 
 ```bash
-{{exe}} login -user you@example.com -device office-mac
+{{exe}} login -email you@example.com -device office-mac
 ```
 
 ### Sign in from a script {#login-script}
 
-The password can be read from an environment variable, so there is no prompt:
+Sending the code and redeeming it can be two separate commands, so a script never waits at a prompt:
 
-::: macos linux
 ```bash
-read -rs SHARETOKEN_PASSWORD && export SHARETOKEN_PASSWORD
-{{exe}} login -user you@example.com
-unset SHARETOKEN_PASSWORD
-```
-:::
-
-::: windows
-```powershell
-$env:SHARETOKEN_PASSWORD = Read-Host 'Password' -MaskInput
-{{exe}} login -user you@example.com
-Remove-Item Env:SHARETOKEN_PASSWORD
+{{exe}} login -email you@example.com -send
+{{exe}} login -email you@example.com -code 123456
 ```
 
-`-MaskInput` needs PowerShell 7. On Windows PowerShell 5.1, remove it. The password is then shown in plain text as you type.
-:::
+The first command only mails the code. The second signs in with it. Run both on the machine that is being bound.
+
+### Two-factor authentication {#mfa}
+
+You can add a code from an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password and the like) to every sign-in. Turn it on under **Two-factor authentication** on the portal's [account page](/app/#/account): scan the QR code and enter the first code from the app. Turning it off needs a current code from the app.
+
+With it on, `login` asks for the authenticator code after the emailed code. In a script, pass it as `-totp 123456`. Administrators always have it.
 
 > [!WARNING]
-> Do not write the password directly in a command line or script file. It would stay in the shell history and on disk.
+> Anyone who can read your mailbox can sign in to the account. Keep your email account safe, or turn on two-factor authentication.
 
 ## Sign out {#logout}
 
@@ -97,14 +88,10 @@ A more detailed bill is on the portal's [ledger page](/app/#/ledger).
 
 - **Add a device:** Install the client on that machine and run `login`. Binding needs a signature from the device's private key, so you must do it on that machine.
 - **View and unbind:** Open the portal's [devices page](/app/#/devices). After you unbind a device, the coordinator rejects it immediately.
-- **Switch accounts:** A device key belongs to one account. Unbind it from the old account first, then run `login` with the new one. Or use a separate state directory. See [State directory](/docs/config#home).
+- **Switch accounts:** A device key belongs to one account. Unbind it from the old account first, then run `login` with the new address. Or use a separate state directory. See [State directory](/docs/config#home).
 
 ## API token {#tokens}
 
 The client gets a token automatically when it signs in, so you usually do not handle it by hand. The portal's [API tokens page](/app/#/tokens) lets you view and revoke all tokens, including browser sessions.
 
 The local OpenAI endpoint does **not** use a token. It only listens on your machine. See [Call models](/docs/use-models#endpoint).
-
-## Change password {#password}
-
-Change it on the portal's [account page](/app/#/account). You can revoke your other sessions at the same time.

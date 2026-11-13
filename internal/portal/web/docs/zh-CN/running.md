@@ -54,10 +54,10 @@ sharetoken client for you@example.com (device 12D3Koo...)
 
 ## 在后台运行 {#background}
 
-共享模型或长期调用时，让客户端在后台运行。先在终端里[登录](/docs/account#login)，后台服务不会询问密码。
+共享模型或长期调用时，让客户端在后台运行。先在终端里[登录](/docs/account#login)，后台服务不会询问验证码。
 
 > [!NOTE]
-> 登录有效期是 30 天。到期后需要重新运行 `login`，再重启服务。
+> 登录有效期是 60 天。到期后需要重新运行 `login`，再重启服务。
 
 ::: macos
 用 launchd，登录 macOS 时自动启动，异常退出时自动重启。

@@ -6,7 +6,7 @@ package portal
 // Recording lives in Server.admin, not in the handlers, so a new admin endpoint
 // cannot forget it: every request that is not a read is logged, refused ones
 // too, under the action auditActions gives its route. Handlers only add what the
-// route does not say (cu.note), and never a password or a mail body. There is no
+// route does not say (cu.note), and never a code or a mail body. There is no
 // endpoint that edits or deletes entries; only the retention setting removes them.
 
 import (
@@ -29,7 +29,6 @@ var auditActions = map[string]string{
 	"POST /api/v1/admin/users/{name}/disable":          "user.disable",
 	"POST /api/v1/admin/users/{name}/enable":           "user.enable",
 	"POST /api/v1/admin/users/{name}/admin":            "user.set_admin",
-	"POST /api/v1/admin/users/{name}/password":         "user.set_password",
 	"POST /api/v1/admin/users/{name}/mfa/reset":        "user.mfa_reset",
 	"DELETE /api/v1/admin/users/{name}/tokens/{id}":    "user.token_revoke",
 	"POST /api/v1/admin/users/{name}/tokens/revoke":    "user.tokens_revoke_all",
@@ -58,11 +57,10 @@ var auditActions = map[string]string{
 
 // Actions recorded outside Server.admin.
 const (
-	actionAdminLogin    = "auth.admin_login"
-	actionPasswordReset = "user.password_reset_by_mail"
-	actionExport        = "export."
-	auditPurgeEvery     = time.Hour
-	auditPurgeBatch     = 5000
+	actionAdminLogin = "auth.admin_login"
+	actionExport     = "export."
+	auditPurgeEvery  = time.Hour
+	auditPurgeBatch  = 5000
 )
 
 // auditNote is what a handler adds to its route's audit entry.

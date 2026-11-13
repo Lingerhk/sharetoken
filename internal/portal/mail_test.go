@@ -13,9 +13,9 @@ import (
 
 func newMailPortal(t *testing.T) (*Server, *api, string) {
 	t.Helper()
-	s, a := newPortal(t, Config{OpenRegistration: true, EmailVerification: true, SignupCreditMicros: 1000,
+	s, a := newPortal(t, Config{OpenRegistration: true, SignupCreditMicros: 1000,
 		Mail: MailConfig{From: "ShareToken <team@sharetoken.test>", Support: "ShareToken Support <support@sharetoken.test>"}})
-	root, err := s.CreateUser("root", "correct horse", true)
+	root, err := s.store.CreateUser("root", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,100 +36,6 @@ func mailedCode(t *testing.T, s *Server, to string) string {
 	return strings.TrimPrefix(ms[0].Subject, "Your ShareToken verification code: ")
 }
 
-func TestRegisterNeedsMailedCode(t *testing.T) {
-	s, a, _ := newMailPortal(t)
-	var info Info
-	a.call("GET", "/api/v1/info", "", nil, 200, &info)
-	if !info.EmailVerification || info.SupportEmail != "support@sharetoken.test" {
-		t.Fatalf("%+v", info)
-	}
-	const email = "alice@example.com"
-	reg := func(body map[string]string, want int) {
-		t.Helper()
-		a.call("POST", "/api/v1/register", "", body, want, nil)
-	}
-
-	// There is no way around the code.
-	reg(map[string]string{"username": "alice", "password": "correct horse"}, 400)
-	reg(map[string]string{"email": email, "password": "correct horse"}, 400)
-	reg(map[string]string{"username": email, "password": "correct horse", "code": "123456"}, 400)
-
-	var sent map[string]any
-	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": " Alice@Example.com "}, 200, &sent)
-	if sent["cooldown_seconds"] == nil {
-		t.Fatalf("%+v", sent)
-	}
-	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": email}, 429, nil)
-	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "not-an-email"}, 400, nil)
-
-	code := mailedCode(t, s, email)
-	if len(code) != 6 {
-		t.Fatalf("code %q", code)
-	}
-	// A code is for one address; a short password does not use it up.
-	reg(map[string]string{"email": "bob@example.com", "password": "correct horse", "code": code}, 400)
-	reg(map[string]string{"email": email, "password": "short", "code": code}, 400)
-
-	var res AuthResponse
-	a.call("POST", "/api/v1/register", "", map[string]string{"email": "ALICE@example.com", "password": "correct horse", "code": code, "token_name": "t"}, 201, &res)
-	if res.User == nil || res.User.Username != email || res.Token == "" {
-		t.Fatalf("%+v", res)
-	}
-	var bal Balance
-	if bal, _ = s.Balance(res.User.ID); bal.AvailableMicros != 1000 {
-		t.Fatalf("sign-up credit: %+v", bal)
-	}
-	reg(map[string]string{"email": email, "password": "correct horse", "code": code}, 400) // used
-}
-
-// An address that already has an account is told so, and no mail goes out.
-func TestRegisterCodeForTakenAddress(t *testing.T) {
-	s, a, _ := newMailPortal(t)
-	if _, err := s.CreateUser("taken@example.com", "correct horse", false); err != nil {
-		t.Fatal(err)
-	}
-	var e ErrorBody
-	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "Taken@Example.com"}, 409, &e)
-	if e.Error.Code != "exists" {
-		t.Fatalf("%+v", e)
-	}
-	if ms, _ := s.mail.Outbox(mailer.OutFilter{Q: "taken@example.com"}); len(ms) != 0 {
-		t.Fatalf("mail went out: %+v", ms)
-	}
-	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "free@example.com"}, 200, nil)
-	// Checking many addresses from one IP is throttled.
-	for i := 1; i < maxFails; i++ {
-		a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "taken@example.com"}, 409, nil)
-	}
-	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "taken@example.com"}, 429, nil)
-}
-
-func TestRegisterCodeWrongGuessesThrottled(t *testing.T) {
-	s, a, _ := newMailPortal(t)
-	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "a@example.com"}, 200, nil)
-	code := mailedCode(t, s, "a@example.com")
-	wrong := "000000"
-	if code == wrong {
-		wrong = "000001"
-	}
-	for i := 0; i < maxFails; i++ {
-		a.call("POST", "/api/v1/register", "", map[string]string{"email": "a@example.com", "password": "correct horse", "code": wrong}, 400, nil)
-	}
-	a.call("POST", "/api/v1/register", "", map[string]string{"email": "a@example.com", "password": "correct horse", "code": code}, 429, nil)
-}
-
-func TestRegisterCodeClosedAndUnconfigured(t *testing.T) {
-	_, closed := newPortal(t, Config{EmailVerification: true, Mail: MailConfig{From: "team@sharetoken.test"}})
-	closed.call("POST", "/api/v1/register/code", "", map[string]string{"email": "a@example.com"}, 403, nil)
-	_, plain := newPortal(t, Config{OpenRegistration: true})
-	plain.call("POST", "/api/v1/register/code", "", map[string]string{"email": "a@example.com"}, 404, nil)
-	// Without verification sign-up works as before.
-	plain.call("POST", "/api/v1/register", "", map[string]string{"username": "alice", "password": "correct horse"}, 201, nil)
-	if _, err := New(Config{DB: mustDB(t), EmailVerification: true}); err == nil {
-		t.Fatal("verification without a sender was accepted")
-	}
-}
-
 func mustDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := openSharedDB(t)
@@ -138,20 +44,6 @@ func mustDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
-}
-
-func TestRegisterCodeRefusesOtherSites(t *testing.T) {
-	_, a, _ := newMailPortal(t)
-	req, _ := http.NewRequest("POST", a.url+"/api/v1/register/code", strings.NewReader(`{"email":"a@example.com"}`))
-	req.Header.Set("Origin", "https://evil.example")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 403 {
-		t.Fatalf("status %d", resp.StatusCode)
-	}
 }
 
 func seedInbound(t *testing.T, s *Server, raw string) int64 {
@@ -177,7 +69,7 @@ func TestAdminMail(t *testing.T) {
 	base := "/api/v1/admin/mail/inbox/" + strconv.FormatInt(id, 10)
 
 	// Users and anonymous callers see nothing.
-	u, _ := s.CreateUser("user1", "correct horse", false)
+	u, _ := s.store.CreateUser("user1", false)
 	userTok, _, _ := s.Store().IssueSessionToken(u.ID, "t", 0, false)
 	a.call("GET", "/api/v1/admin/mail/inbox", userTok, nil, 403, nil)
 	a.call("GET", base, "", nil, 401, nil)
@@ -298,7 +190,7 @@ func TestAdminMail(t *testing.T) {
 // Administrators do not get to read verification codes.
 func TestAdminCannotReadCodes(t *testing.T) {
 	s, a, root := newMailPortal(t)
-	a.call("POST", "/api/v1/register/code", "", map[string]string{"email": "a@example.com"}, 200, nil)
+	a.call("POST", "/api/v1/auth/code", "", map[string]string{"email": "a@example.com"}, 200, nil)
 	code := mailedCode(t, s, "a@example.com")
 	var ol struct {
 		Messages []mailer.OutMail `json:"messages"`
@@ -325,16 +217,5 @@ func TestAdminCannotReadCodes(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 || strings.Contains(string(raw), code) {
 		t.Fatalf("%d the message shows the code: %s", resp.StatusCode, raw)
-	}
-}
-
-func TestPasswordChangeNotifies(t *testing.T) {
-	s, a, _ := newMailPortal(t)
-	u, _ := s.CreateUser("n@example.com", "correct horse", false)
-	tok, _, _ := s.Store().IssueSessionToken(u.ID, "t", 0, false)
-	a.call("POST", "/api/v1/password", tok, map[string]any{"old_password": "correct horse", "new_password": "battery staple"}, 200, nil)
-	ms, _ := s.mail.Outbox(mailer.OutFilter{Kind: mailer.KindNotice, Q: "n@example.com"})
-	if len(ms) != 1 {
-		t.Fatalf("%+v", ms)
 	}
 }

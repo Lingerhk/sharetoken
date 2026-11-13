@@ -16,7 +16,7 @@ func testStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := mysqldb.Migrate(db, "accounts", []mysqldb.Migration{{Version: 1, Name: "accounts", SQL: ledger.Schema + Schema + PairingSchema}}); err != nil {
+	if err := mysqldb.Migrate(db, "accounts", []mysqldb.Migration{{Version: 1, Name: "accounts", SQL: ledger.Schema + Schema + PairingSchema + NoPasswords}}); err != nil {
 		t.Fatal(err)
 	}
 	return &Store{DB: db}
@@ -55,20 +55,45 @@ func TestCheckEmail(t *testing.T) {
 
 func TestEmailAccounts(t *testing.T) {
 	s := testStore(t)
-	u, err := s.CreateUser(" Alice@Example.COM ", "correct horse", false)
+	u, err := s.CreateUser(" Alice@Example.COM ", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if u.Username != "alice@example.com" {
 		t.Fatalf("stored as %q", u.Username)
 	}
-	if _, err := s.CreateUser("ALICE@example.com", "correct horse", false); !errors.Is(err, ErrExists) {
+	if _, err := s.CreateUser("ALICE@example.com", false); !errors.Is(err, ErrExists) {
 		t.Fatalf("duplicate: %v", err)
 	}
-	if got, err := s.Authenticate("Alice@example.com ", "correct horse"); err != nil || got.ID != u.ID {
-		t.Fatalf("authenticate: %+v %v", got, err)
+	if got, err := s.UserByName("Alice@example.com "); err != nil || got.ID != u.ID {
+		t.Fatalf("lookup: %+v %v", got, err)
 	}
-	if _, err := s.Authenticate("alice@example.com", "wrong"); !errors.Is(err, ErrBadCredentials) {
-		t.Fatalf("wrong password: %v", err)
+}
+
+// A rename keeps the account (its id) and takes only a free email address.
+func TestRenameUser(t *testing.T) {
+	s := testStore(t)
+	root, err := s.CreateUser("root", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateUser("bob@example.com", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RenameUser(root.ID, "not-an-email"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("plain name: %v", err)
+	}
+	if _, err := s.RenameUser(root.ID, "BOB@example.com"); !errors.Is(err, ErrExists) {
+		t.Fatalf("taken: %v", err)
+	}
+	if _, err := s.RenameUser(9999, "x@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing user: %v", err)
+	}
+	u, err := s.RenameUser(root.ID, " Ops@Example.com ")
+	if err != nil || u.ID != root.ID || u.Username != "ops@example.com" || !u.Admin {
+		t.Fatalf("rename: %+v %v", u, err)
+	}
+	if u, err := s.RenameUser(root.ID, "ops@example.com"); err != nil || u.Username != "ops@example.com" {
+		t.Fatalf("same name again: %+v %v", u, err)
 	}
 }

@@ -97,7 +97,7 @@ threat model, including the seller's and the operator's side.
 | The model is the one advertised | The coordinator audits sellers at random as an ordinary buyer and replays the same request on its own reference copy of the model. Repeated mismatches suspend the seller. |
 | Even the seller cannot read the prompt (optional) | Sellers running in an AMD SEV-SNP or Intel TDX confidential VM publish a hardware quote that binds both of their keys to a measured image. A buyer can require this. |
 | The books balance | A double-entry ledger in MySQL. Every movement is a balanced, journaled transfer, and the journal is replayed against the balances on startup. |
-| A stolen password is not enough to run the platform | Administrators must use TOTP two-step verification. Passwords are hashed with argon2id, API tokens are stored as SHA-256 only, and login attempts are throttled. |
+| A mailbox alone is not enough to run the platform | There are no passwords: people sign in with a short-lived code mailed to them. Administrators must also use TOTP two-step verification, which anyone else can turn on. API tokens are stored as SHA-256 only, and wrong codes are throttled. |
 
 ### What it does not protect against
 
@@ -125,12 +125,13 @@ Please do not open a public issue for it.
 
 ## Use the hosted network
 
-1. Create an account at <https://sharetoken.app> and download the desktop app or
-   the command-line client for your system.
+1. Download the desktop app or the command-line client for your system from
+   <https://sharetoken.app>. Your email address is the account; the first
+   sign-in creates it.
 2. Sign in and start the client:
 
    ```bash
-   sharetoken login            # or: sharetoken register
+   sharetoken login            # a code is mailed to you; a new address gets an account
    sharetoken up               # OpenAI-compatible endpoint at http://127.0.0.1:9787/v1
    ```
 
@@ -162,7 +163,7 @@ Docker Compose starts a complete network on one machine: MySQL, portal,
 coordinator and one relay.
 
 ```bash
-cp .env.example .env          # set DB_PASSWORD, DB_ROOT_PASSWORD, ADMIN_PASSWORD and PUBLIC_HOST
+cp .env.example .env          # set DB_PASSWORD, DB_ROOT_PASSWORD, ADMIN_EMAIL, MAIL_FROM and PUBLIC_HOST
 docker compose up -d --build
 docker compose logs portal | grep sha256:    # the portal's certificate fingerprint
 ```
@@ -172,7 +173,7 @@ Then connect a client built from this tree to it:
 ```bash
 go build -o bin/ ./cmd/sharetoken
 export SHARETOKEN_PORTAL=https://<PUBLIC_HOST>:8092
-bin/sharetoken register -user alice -portal-pin sha256:<fingerprint>
+bin/sharetoken login -email alice@example.com -portal-pin sha256:<fingerprint>
 bin/sharetoken up
 ```
 

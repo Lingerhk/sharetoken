@@ -16,7 +16,7 @@ func (f *fixture) bind(store *accounts.Store, user string, k *p2p.Keys) *account
 	f.t.Helper()
 	u, err := store.UserByName(user)
 	if err != nil {
-		if u, err = store.CreateUser(user, "correct horse battery", false); err != nil {
+		if u, err = store.CreateUser(user, false); err != nil {
 			f.t.Fatal(err)
 		}
 	}

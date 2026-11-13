@@ -17,10 +17,10 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 
 门户与协调器**共用一个数据库**，彼此不直接通信。门户写账户与 credit 发放，协调器写作业与结算，两边都只通过复式账本、在数据库事务里动钱。
 
-还有一个可选的第五个程序 `mailserver`：投递门户排队的邮件（验证码、通知），并为少数几个邮箱收信，见 [mail.md](mail.md)。
+还有第五个程序 `mailserver`：投递门户排队的邮件（登录验证码、通知；没有密码，所以没有它谁都登录不了），并为少数几个邮箱收信，见 [mail.md](mail.md)。
 
 ```
-                         HTTPS（注册、登录、余额、中继列表）
+                         HTTPS（验证码登录、余额、中继列表）
    ┌───────────────┐ ────────────────────────────────────────────► ┌──────────┐
    │ 用户 sharetoken │                                                │  portal  │
    │  买 + 卖        │                                                └────┬─────┘
@@ -110,9 +110,9 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 - 明文 HTTP 只在三种情况下使用：监听回环地址（本机演示）、`-behind-tls-proxy`（前面的反向代理终止 TLS）、显式的 `-insecure-http`。配置文件里的 `tls.mode` 提供同样的选择。
 - 客户端一侧：
   - CA 签发的证书按常规校验，不需要 pin。
-  - 自签名证书：`login`/`register -portal-pin sha256:…` 必须与服务器证书一致，或者由用户交互确认运维公布的指纹（类似 SSH 首次连接）。指纹存进 `config.json`，以后只认这张证书。
+  - 自签名证书：`login -portal-pin sha256:…` 必须与服务器证书一致，或者由用户交互确认运维公布的指纹（类似 SSH 首次连接）。指纹存进 `config.json`，以后只认这张证书。
   - 指纹不符时客户端拒绝连接，并提示可能有中间人攻击。
-  - 客户端拒绝把密码以明文 HTTP 发往别的机器（`-allow-http` 仅用于测试网）。
+  - 客户端拒绝把登录验证码以明文 HTTP 发往别的机器（`-allow-http` 仅用于测试网）。
 - 自签名证书要保留：换证书就换指纹，所有用户都得重新确认。
 
 ### 2.9 中继准入：门户签发的短期凭证
@@ -146,7 +146,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 
 ### 2.11 本地 API
 
-运行中的客户端在同一个回环地址上提供 OpenAI 兼容端点（`/v1`）和管理 API（`/api/v1`，见 [guide.md](guide.md)），正式版本是 `127.0.0.1:9787`。CLI 的 `status`、`models`、`relays`、`share` 命令都走这套 API，桌面应用（[desktop.md](desktop.md)）也一样。桌面应用运行的是 `sharetoken daemon`：同一个服务，只是没有人登录时它也在运行，并通过自己的 API 处理注册和登录。
+运行中的客户端在同一个回环地址上提供 OpenAI 兼容端点（`/v1`）和管理 API（`/api/v1`，见 [guide.md](guide.md)），正式版本是 `127.0.0.1:9787`。CLI 的 `status`、`models`、`relays`、`share` 命令都走这套 API，桌面应用（[desktop.md](desktop.md)）也一样。桌面应用运行的是 `sharetoken daemon`：同一个服务，只是没有人登录时它也在运行，并通过自己的 API 处理登录。
 
 安全措施：
 
@@ -163,14 +163,14 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 | 会话被页面里的脚本窃取（XSS） | 会话 token 只放在 **HttpOnly** cookie 里，脚本读不到。cookie 是 `SameSite=Strict`，HTTPS 下带 `Secure` |
 | 跨站请求伪造（含登录 CSRF） | cookie 只在请求同时带自定义头 `X-Sharetoken-Web: 1` 时才生效。浏览器带了 `Origin` 或 `Sec-Fetch-Site` 时，来源必须是门户本身。门户不答复 CORS 预检，所以别的站点发不出这种请求。登录和注册端点同样受保护。Bearer 认证不走 cookie，CLI 不受影响 |
 | 注入脚本 | 严格的 CSP：`default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`。页面没有内联脚本和样式，没有第三方资源，用 `textContent` 构建 DOM，不拼 HTML。另有 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY` |
-| 撞库、批量注册 | 登录失败限流（同一用户名或同一 IP，5 分钟 8 次）。注册按 IP 同样限流。改密码时答错当前密码也计入 |
+| 猜登录验证码、批量注册 | 没有密码。登录验证码 10 分钟有效，可试 5 次；一个邮箱每小时 5 个验证码。错误的验证码按 IP 和按邮箱限流（5 分钟 8 次），注册和对新邮箱的拒绝按 IP 同样限流 |
 | 管理员误操作 | 管理员不能禁用自己，也不能撤销自己的管理员权限。破坏性操作（禁用、吊销、退款）在页面上二次确认。所有管理操作都写日志（谁对谁做了什么） |
-| 会话长期有效 | 浏览器会话默认 24 小时（`-session-ttl`），在 token 列表里可见，可以吊销。改密码时可以吊销其他全部会话；管理员重置密码时可以吊销该用户的全部 token |
+| 会话长期有效 | 浏览器会话默认 15 天（`-session-ttl`），客户端 token 默认 60 天（`-login-ttl`），都在 token 列表里可见，可以吊销。管理员可以吊销某个用户的全部 token |
 | 门户在反向代理后面 | 使用 `-behind-tls-proxy`，或代理发来 `X-Forwarded-Proto: https` 时，cookie 仍标 Secure，Origin 校验按 https 比较 |
 
 **争议裁决**（`POST /api/v1/admin/disputes/{job}/resolve`）由门户进程直接在共用数据库里结算（`coordinator.ResolveDispute`）。它和协调器自己的 finalize、refund 是同一段代码。**服务中的**协调器启动时把手续费率写进 `meta.fee_bps` 供门户读取（`Engine.RecordFeeRate`；运维子命令不会覆盖它）。`st_write_lock` 上的行锁保证两个进程的写事务串行。
 
-**管理员两步验证。** 管理员的密码只换来一个 5 分钟有效的 challenge，不发任何 token。已绑定的管理员再提交一个 TOTP 码（`POST /api/v1/web/mfa` 或 `/api/v1/mfa`；API 客户端也可以在登录请求里直接带 `totp`）。未绑定的管理员先在网页上完成绑定：服务器生成 20 字节的密钥，以二维码和 base32 文本展示，首个验证码正确之后才写库。所以即使是第一次登录，也不存在没有第二因素的管理员会话。校验接受前后各一个周期，并记录最后接受的步数，同一个码不能重放。错码计入登录限流，一个 challenge 错 5 次即作废。`api_tokens.mfa` 记录 token 是否来自两步登录，`admin` 中间件要求它为真：用户成为管理员之前签发的 token 没有管理权限，必须重新登录。密钥存在 `users.mfa_secret` 里，用 AES-GCM 加密，加密密钥由门户签名私钥（`portal-pass.key`）派生，设置了 `keys.mfa_key_file` 时则用它；所以拿到数据库副本不等于拿到验证器密钥。没有这把密钥的门户进程（比如运维命令）无法让管理员登录，但 `portal mfa-reset` 不需要它。普通用户不要求两步验证。
+**两步验证。** 管理员必须开启，其他人自选，在账户设置里开启（`/api/v1/account/mfa/…`；关闭需要当前动态码，开启和关闭都会发邮件通知）。开启了的账户，邮件验证码只换来一个 5 分钟有效的 challenge，不发任何 token。用户再提交一个 TOTP 码（`POST /api/v1/web/mfa` 或 `/api/v1/mfa`；API 客户端也可以在登录请求里直接带 `totp`）。未绑定的管理员先在网页上完成绑定：服务器生成 20 字节的密钥，以二维码和 base32 文本展示，首个验证码正确之后才写库。所以即使是第一次登录，也不存在没有第二因素的管理员会话。校验接受前后各一个周期，并记录最后接受的步数，同一个码不能重放。错码计入登录限流，一个 challenge 错 5 次即作废。`api_tokens.mfa` 记录 token 是否来自两步登录，`admin` 中间件要求它为真：用户成为管理员之前签发的 token 没有管理权限，必须重新登录。密钥存在 `users.mfa_secret` 里，用 AES-GCM 加密，加密密钥由门户签名私钥（`portal-pass.key`）派生，设置了 `keys.mfa_key_file` 时则用它；所以拿到数据库副本不等于拿到验证器密钥。没有这把密钥的门户进程（比如运维命令）无法让开启了两步验证的人登录，但 `portal mfa-reset` 不需要它。
 
 ### 2.13 配对：把买家绑定到它的卖家
 
@@ -191,7 +191,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 | `relays` | 门户（登记）、协调器（可达状态） | 门户、协调器 |
 | `ledger_accounts`、`ledger_holds`、`ledger_entries` | 门户（发放与扣减）、协调器（冻结、结算、退款） | 两边 |
 | `jobs`、`nodes`、`audits`、`peers`、`meta` | 协调器 | 门户（账单、用量、协调器 ID） |
-| `portal_settings`、`admin_audit_log`、`password_resets`、`invite_codes`、`relay_samples`、`feedback` | 门户 | 门户 |
+| `portal_settings`、`admin_audit_log`、`invite_codes`、`relay_samples`、`feedback` | 门户 | 门户 |
 | `mail_outbox`、`mail_inbox`、`mail_codes`、`mail_status` | 门户、邮件服务 | 门户、邮件服务（[mail.md](mail.md)） |
 | `schema_migrations` | 执行迁移的那个进程 | 所有进程 |
 
@@ -211,15 +211,15 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 | 有人绕过中继直连协调器 | 协调器不监听任何地址 | `cmd/coordinator`（`DialOnly`） |
 | 把别人的节点绑到自己账户 | 绑定需要设备签名，并在时间窗内；已绑定的设备不能被抢 | `accounts.VerifyBind`、`accounts.Store.BindDevice` |
 | 同一用户多设备自买自卖 | 撮合按账户排除 | `coordinator.Engine.IssueTicket` |
-| token 被盗 | token 可以随时吊销；登录 token 30 天过期；只存它的 SHA-256 | `internal/accounts`、`internal/portal` |
-| 密码暴力破解 | argon2id；同一用户名或同一 IP 5 分钟内失败 8 次即返回 429 | `portal.Server.throttled` |
+| token 被盗 | token 可以随时吊销；客户端 token 60 天、浏览器会话 15 天过期；只存它的 SHA-256 | `internal/accounts`、`internal/portal` |
+| 猜登录验证码 | 没有密码。6 位验证码 10 分钟有效、每个可试 5 次，一个邮箱每小时 5 个；错误的验证码按 IP 和按邮箱限流（5 分钟 8 次，之后 429）。邮箱就是账户的钥匙，两步验证再加一道保护 | `internal/mailer/codes.go`、`portal.Server.throttled` |
 | 恶意网页调用本地端点 | Origin 检查 | `client.guardOrigin` |
 | 拿了 Ticket 不来连，占满节点名额 | 未开始的单在 Ticket 过期 30 秒后释放；账户有 5 张闲置票时不再发新票 | `coordinator.Engine.MarkStarted`、`coordinator.Engine.Tick` |
 | 陌生人占用中继的预约名额 | 预约需要门户签发的短期凭证；按用户限制设备数 | `internal/relaypass`、`internal/relay/admission.go` |
-| 窃听或篡改门户通信（密码、token） | 默认 HTTPS；客户端 pin 自签名证书的指纹；拒绝把机密明文发往远端 | `internal/portal/tls.go`、`client.NewPortalClient` |
+| 窃听或篡改门户通信（登录验证码、token） | 默认 HTTPS；客户端 pin 自签名证书的指纹；拒绝把机密明文发往远端 | `internal/portal/tls.go`、`client.NewPortalClient` |
 | 被禁用的用户继续交易 | 协调器每次请求都查用户状态；token 立即失效 | `accounts.DeviceAccount` |
 | 网页会话被窃取、跨站请求伪造、注入脚本 | HttpOnly + SameSite cookie；自定义头 + Origin 校验；严格 CSP、无内联代码 | `internal/portal/web.go`（§2.12） |
-| 管理员密码泄露或被猜中 | 管理员强制 TOTP；没有第二因素的 token 进不了 `/admin/*`；错码限流、challenge 限次、验证码不能重放；密钥加密存放 | `internal/portal/mfa.go`、`internal/totp`（§2.12） |
+| 管理员邮箱被别人读到 | 管理员强制 TOTP；没有第二因素的 token 进不了 `/admin/*`；错码限流、challenge 限次、验证码不能重放；密钥加密存放 | `internal/portal/mfa.go`、`internal/totp`（§2.12） |
 | 陌生人用超大帧或海量流耗尽中继或协调器的内存 | 帧的缓冲区随实际到达的数据增长，不按声明的长度预分配。流处理器先向 libp2p 资源管理器预留帧大小，超出每流（16 MiB）、每 peer 或全局（RAM 的四分之一）限额就拒绝这一帧。只含几个字段的帧（凭证、ack）上限 64 KiB。枢纽进程只放宽随用户数增长的计数（全局连接、流、文件描述符；circuit、ping 等内建服务），其余沿用 libp2p 按机器规模缩放的默认值。用户端每个 peer 允许 8 个并发 ping（默认 3 个），免得测速与链路监控重叠时把中继误判为不可达 | `protocol.RecvStream`、`p2p.HubLimits`、`p2p.ClientLimits` |
 
 ## 5. 诚实的边界
