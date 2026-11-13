@@ -85,6 +85,7 @@ sharetoken balance                     # available and held credits, tokens boug
 sharetoken jobs [-role buy|sell] [-n 20]
 sharetoken relays [-measure]           # relay round-trip times; the link quality of the current relay
 sharetoken version --check             # is a newer client released?
+sharetoken upgrade                      # install it (asks first; checks the release signature). Only when the user asks
 ```
 
 ## Sell: share a model

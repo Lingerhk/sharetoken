@@ -836,6 +836,9 @@ func (d *Daemon) Handler() http.Handler {
 			if err := do(req.Key); errors.Is(err, errNotOffered) {
 				writeErrorCode(w, http.StatusConflict, "not_offered", err.Error())
 				return
+			} else if errors.Is(err, errNoInstall) {
+				writeErrorCode(w, http.StatusConflict, "no_install", err.Error())
+				return
 			} else if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
@@ -845,6 +848,9 @@ func (d *Daemon) Handler() http.Handler {
 	}
 	mux.HandleFunc("POST /api/v1/update/skip", updateAction(func(k string) error { return d.updates.Skip(k) }))
 	mux.HandleFunc("POST /api/v1/update/notified", updateAction(func(k string) error { return d.updates.MarkNotified(k) }))
+	// Fetches and checks the offered build's package (one-click update); the
+	// desktop app's shell installs it. The session's update.download says how it goes.
+	mux.HandleFunc("POST /api/v1/update/download", updateAction(func(k string) error { return d.updates.StartDownload(k) }))
 	// The account pages work without the agent: the portal may be up while
 	// the relays or the coordinator are not.
 	mux.HandleFunc("POST /api/v1/feedback", jsonBody(func(w http.ResponseWriter, r *http.Request, req portal.FeedbackRequest) {

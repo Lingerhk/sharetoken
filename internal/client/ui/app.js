@@ -1305,6 +1305,7 @@ I18N.ready.then(() => {
       updateBox.replaceChildren(h('div', { class: 'notice strip ' + (u.required ? 'bad' : 'warn'), id: 'update-notice' },
         h('span', { class: 'strip-text' }, h('strong', { id: 'update-text' }, updateTitle(u)),
           n && n.summary ? [' · ', h('span', { id: 'update-summary', title: n.summary, dir: 'auto' }, n.summary)] : null),
+        canInstall(u) ? h('button', { type: 'button', class: 'mini accent', id: 'update-install', onclick: () => updateDialog(u, true) }, tr('立即更新')) : null,
         h('button', { type: 'button', class: 'mini', id: 'update-open', onclick: () => updateDialog(u) }, tr('查看详情')),
         !u.required && u.key ? h('button', { type: 'button', class: 'link small', id: 'update-skip', onclick: async () => {
           try {
@@ -1314,17 +1315,59 @@ I18N.ready.then(() => {
         } }, tr('跳过此版本')) : null));
     }
 
-    function updateDialog(u) {
+    // The desktop window installs a signed package by itself (gui/update.go):
+    // its shell says so on the page, and the release offers the file.
+    const canInstall = u => document.documentElement.dataset.shellUpdate === '1' && !!(u && u.install && u.key);
+
+    function updateDialog(u, start) {
       const n = notesOf(u);
       const dl = (u.package && web(u.package.url)) || web(u.download_url), notes = web(u.notes_url);
+      const progress = h('div', { class: 'small', id: 'update-progress', role: 'status' });
+      const installBtn = canInstall(u) ? h('button', { type: 'button', class: 'accent', id: 'update-now', onclick: () => installUpdate(u, installBtn, progress) }, tr('立即更新并重启')) : null;
       modal('dlg-update', u.required ? tr('需要升级') : tr('新版本 {version}', { version: u.latest || '' }),
         u.required ? h('div', { class: 'notice bad', id: 'update-required' }, tr('升级前不能调用模型或接单，已有作业照常结算。')) : null,
         n && n.body ? richText(n.body, 'update-body') : h('p', { class: 'muted', id: 'update-no-notes' }, updateTitle(u)),
         dl ? h('div', { class: 'update-link' }, h('span', { class: 'muted' }, tr('下载')), h('a', { id: 'update-link', href: dl, target: '_blank', rel: 'noopener' }, dl), copyButton(() => dl, 'update-copy')) : null,
+        progress,
         h('div', { class: 'modal-actions' },
           notes ? h('a', { id: 'update-notes', href: notes, target: '_blank', rel: 'noopener' }, tr('更新内容')) : null,
           h('span', { class: 'spacer' }),
-          h('button', { type: 'button', id: 'update-close', onclick: () => closeModal() }, tr('关闭'))));
+          h('button', { type: 'button', id: 'update-close', onclick: () => closeModal() }, tr('关闭')),
+          installBtn));
+      if (start && installBtn) installUpdate(u, installBtn, progress);
+    }
+
+    // installUpdate asks the window's shell to fetch, check and install the
+    // offered build, and follows it until the app restarts or it fails.
+    async function installUpdate(u, btn, progress) {
+      btn.disabled = true;
+      progress.className = 'small';
+      progress.textContent = tr('正在准备更新…');
+      try {
+        await api('POST', '/__shell/update', { key: u.key });
+      } catch (e) {
+        progress.className = 'small bad';
+        progress.textContent = tr('更新失败：{error}', { error: message(e) });
+        btn.disabled = false;
+        return;
+      }
+      for (;;) {
+        await new Promise(r => setTimeout(r, 400));
+        let st;
+        try { st = await api('GET', '/__shell/update'); } catch (e) { continue; } // the service stops before the restart
+        if (st.state === 'downloading') {
+          progress.textContent = st.total > 0 ? tr('正在下载 {pct}%', { pct: Math.floor(st.written * 100 / st.total) }) : tr('正在下载…');
+        } else if (st.state === 'installing') {
+          progress.textContent = tr('已校验签名，正在安装…');
+        } else if (st.state === 'restarting') {
+          progress.textContent = tr('正在重启…');
+        } else if (st.state === 'failed') {
+          progress.className = 'small bad';
+          progress.textContent = tr('更新失败：{error}', { error: st.error || '' });
+          btn.disabled = false;
+          return;
+        }
+      }
     }
 
     async function checkUpdate() {

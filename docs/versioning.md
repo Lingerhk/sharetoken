@@ -76,7 +76,20 @@ The notice appears in these places:
 
 Local API: `update` in `GET /api/v1/session`, and in `GET /api/v1/status` when there is a newer version; `POST /api/v1/update/check`, `POST /api/v1/update/skip` and `POST /api/v1/update/notified` (body `{"key"}`; a key that is not the build currently offered gets 409 `not_offered`).
 
-**Not implemented:** downloading and installing are done by the user. The update information is not signed; the client only shows the link and the sha256 and never runs a downloaded file. Automatic upgrades would first need the release information to be signed with an offline key.
+### One-click update
+
+A client can download and install a new build by itself, provided the package carries the **release key's** signature.
+
+- **Signature:** the release key is an Ed25519 key whose private half is kept offline (by default `local/keys/release-signing.pem`, or `$ST_RELEASE_KEY`); its public half is built into the clients (`ReleaseKey` in [`internal/client/upgrade.go`](../internal/client/upgrade.go), and the same in [`gui/update.go`](../gui/update.go); a test keeps them equal). It signs the file's SHA-256 (Ed25519 over the 32-byte digest), which is what Wails' updater checks with its `ed25519` algorithm. [`scripts/sign-packages.go`](../scripts/sign-packages.go) makes the key and the signatures; `publish-packages.sh` checks the key against the clients' and signs every package into `SIGNATURES-<version>` (the layout of `SHA256SUMS`: `<base64 signature>  <file>`).
+- **Portal:** `GET /api/v1/update` also returns `install`, the file this client installs by itself, only when it is signed: for the macOS app `sharetoken-<version>-macos-<arch>.app.zip` (the .app zipped; not listed on the download page), the installer on Windows, the `.deb` on Linux, the archive for the command line. `package` and `install` carry `signature`.
+- **Download:** the daemon's `POST /api/v1/update/download` (`{"key"}`) fetches `install` into `update/` in the state directory, hashing as it goes, and keeps the file only if checksum and signature match; `session.update.download` reports it (`downloading`, `ready`, `failed`).
+- **Install, desktop app:** "Update now" appears only in the desktop window: its shell marks the page with `data-shell-update="1"`, and the page calls the shell's `/__shell/update` (POST `{key}` to start, GET to follow). The shell has the daemon fetch the file, checks the signature itself, stops the daemon (jobs in flight finish), then:
+  - macOS: Wails' updater (`pkg/updater`) checks digest and signature again, unzips, swaps the whole .app once the app has quit, verifies its code signature and opens it again; on failure it restores the old bundle. The app must be in a directory the user can write, not run from the disk image or from App Translocation.
+  - Windows: the installer runs silently (`/S /RELAUNCH`) through `cmd /c start`, so that it is not a child of the app (it ends the app with `taskkill /T`) and leaves the app's job; `/RELAUNCH` makes it open the app again.
+  - Linux: `pkexec dpkg -i` (the desktop asks for an administrator password; cancelling installs nothing); a small script starts the new window once this one has left. Only a copy installed from the `.deb` qualifies.
+- **Install, command line:** `sharetoken upgrade [-y]` picks the package by how this copy was installed (`client.DetectInstallation`): the archive's program file is replaced (on Windows the running program is renamed `.old` and deleted at the next start); inside the macOS app the bundle is swapped (the app must not be running); a Windows desktop install runs the installer silently; a `.deb` goes through `sudo dpkg -i` (`pkexec` outside a terminal). `dpkg -i` and not `apt-get install`, so that a newer build of the same version installs.
+
+**Not yet:** automatic installs and staged rollouts; downgrade protection (the signature covers the file, not its version: whoever can alter the portal's answer can offer an older signed package); how the release key is held.
 
 ### Release notes
 
@@ -116,10 +129,12 @@ dist/sharetoken-1.0.0-linux-arm64.deb             scripts/build-gui-linux.sh pro
 dist/sharetoken-cli-1.0.0-linux-amd64.tar.gz      scripts/build-cli.sh prod linux amd64 ("all" builds three systems, two architectures)
 dist/sharetoken-cli-1.0.0-windows-amd64.zip       scripts/build-cli.sh prod windows amd64
 dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 scripts/build.sh relay
+dist/sharetoken-1.0.0-macos-arm64.app.zip         the same: the .app zipped, for one-click updates
 dist/SHA256SUMS-1.0.0
+dist/SIGNATURES-1.0.0                             publish-packages.sh, with the release key
 ```
 
-**Publishing packages:** `scripts/publish-packages.sh <version> <user@host> <directory> [--with-dev-cli] [--owner <user>]` runs on a Mac and builds 12 packages (desktop installers and command-line archives, for three systems and two architectures). It uploads them, verifies them on the server, and then replaces the portal's downloads directory (`downloads.dir` in the portal's configuration) as a whole; the portal serves them under `/downloads/`. `--owner` installs the files through sudo as the user the portal runs as. `--with-dev-cli` adds six `sharetoken-cli-dev-*` packages for testing: `GET /api/v1/downloads` does not list them, and they can only be fetched by file name.
+**Publishing packages:** `scripts/publish-packages.sh <version> <user@host> <directory> [--with-dev-cli] [--owner <user>]` runs on a Mac and builds 14 packages (desktop installers, the two macOS .app.zip files and command-line archives, for three systems and two architectures), and signs them with the release key. It uploads them, verifies them on the server, and then replaces the portal's downloads directory (`downloads.dir` in the portal's configuration) as a whole; the portal serves them under `/downloads/`. `--owner` installs the files through sudo as the user the portal runs as. `--with-dev-cli` adds six `sharetoken-cli-dev-*` packages for testing: `GET /api/v1/downloads` does not list them, and they can only be fetched by file name.
 
 Program names carry no version (`sharetoken`, `sharetoken-gui`; dev builds are `sharetoken-dev`, `sharetoken-gui-dev`): the window finds the daemon by a fixed name, and a user's PATH keeps working across upgrades. Server programs built with `scripts/build.sh` do carry the version in their file name.
 
@@ -131,4 +146,5 @@ See [desktop.md](desktop.md) for the client packages, [development.md](developme
 - [`internal/protocol/golden_test.go`](../internal/protocol/golden_test.go): fixed vectors for the signed messages.
 - [`internal/mysqldb`](../internal/mysqldb): migration order, resuming after an interruption, concurrent start-up, older programs meeting a breaking migration.
 - [`scripts/version_ui_test.mjs`](../scripts/version_ui_test.mjs): the version pages and the update notice, in headless Chrome.
+- [`scripts/gui_update_test.sh`](../scripts/gui_update_test.sh): the macOS one-click update end to end. On a private network it builds an old copy A and a new copy B, publishes B signed, lets A install it (`SHARETOKEN_GUI_SELFTEST=update`, window hidden) and checks that B is in place and starts; a package signed with another key is refused. Windows and Linux follow the same steps by hand on the test VMs (install A, publish B, run `sharetoken-gui-dev` with the same variables; on the Linux VM a temporary polkit rule lets `pkexec` run without a password).
 - **Not implemented:** an end-to-end test against the previous release (building the previous tag's client and trading through the current coordinator and portal).

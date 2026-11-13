@@ -659,6 +659,27 @@ ok(!(await has('#update-notice')), 'no update notice before a release');
   await click('#nav-settings'); await click('#update-check'); await waitFor(el('#dlg-update'));
   ok(await has('#update-body') && !(await has('#update-notice')), 'checking by hand shows a skipped release again, without bringing the notice back');
   await click('#update-close'); await click('#nav-overview');
+
+  // One-click update: offered only for a file the release signed, and only in
+  // the desktop window, whose shell marks the page. No shell answers here, so
+  // the attempt fails and says so.
+  // macOS installs the app from a zip of its own; elsewhere the package is the installer.
+  const inst = sys === 'macos' ? pkg.replace(/\.dmg$/, '.app.zip') : pkg;
+  if (inst !== pkg) writeFileSync(`${env.DOWNLOADS}/${inst}`, 'app');
+  writeFileSync(`${env.DOWNLOADS}/SHA256SUMS-1.0.0`, `abcd  ${pkg}\nabcd  ${inst}\n`);
+  writeFileSync(`${env.DOWNLOADS}/SIGNATURES-1.0.0`, `c2ln  ${inst}\n`);
+  writeFileSync(`${env.DOWNLOADS}/RELEASE-1.0.0.json`, JSON.stringify({ version: '1.0.0', commit: 'newbuild2', build_time: new Date().toISOString().replace(/\.\d+Z$/, 'Z') }));
+  const u2 = await ev(`kfetch('/api/v1/update/check', { method: 'POST' }).then(r => r.json())`);
+  ok(u2.install?.signature === 'c2ln' && u2.install.url === env.PORTAL + '/downloads/' + inst, 'a signed package is offered for installing');
+  await cdp('Page.reload', {}); await waitFor(el('#update-notice'), 10000);
+  ok(!(await has('#update-install')), 'in a browser the notice has no install button');
+  await ev(`document.documentElement.dataset.shellUpdate = '1'`);
+  await click('#nav-settings'); await click('#update-check'); await waitFor(el('#update-now'));
+  await shot('13d-update-now');
+  await click('#update-now');
+  await waitFor(`${el('#update-progress')}?.textContent.includes('更新失败')`, 10000);
+  ok(!(await ev(`${el('#update-now')}.disabled`)), 'without a shell the update fails, says so, and can be tried again');
+  await click('#update-close'); await click('#nav-overview');
 }
 
 console.log('local API key');

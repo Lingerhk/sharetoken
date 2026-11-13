@@ -145,6 +145,7 @@ A file of the same name that the client did not write is left alone unless you a
 |---|---|
 | `config` | Show the configuration file path and contents. Only the start of the token is shown |
 | `version` | Show the version, network, portal, state directory and local API address. Writes no files |
+| `upgrade [-y]` | Install the newest release: fetch its package, check the release signature, install it the way this copy was installed. See [One-click update](/docs/update#one-click) |
 
 ## Environment variables {#env}
 

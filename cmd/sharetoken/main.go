@@ -114,7 +114,9 @@ Coding agents (Claude Code, Codex):
   skill show                            print the skill
 
   config                                show the configuration file
-  version [--check]                     show what this client was built for; --check asks the portal for a newer release`
+  version [--check]                     show what this client was built for; --check asks the portal for a newer release
+  upgrade [-y]                          install the newest release: fetches its package, checks the release signature,
+                                        and installs it the way this copy was installed (archive, app, installer, .deb)`
 
 func main() {
 	home := flag.String("home", client.Home(), "client state directory")
@@ -125,6 +127,7 @@ func main() {
 		os.Exit(2)
 	}
 	cmd, args := flag.Arg(0), flag.Args()[1:]
+	removeReplacedProgram()
 	if cmd == "version" { // before LoadConfig: it must not touch the state directory
 		fmt.Printf("%s\napi v%d\nenv %s\nportal %s\nhome %s\nlocal api %s\n", version.String("client"), version.API, client.Env, client.PortalAddr(), *home, client.DefaultHTTP())
 		if len(args) > 0 && (args[0] == "--check" || args[0] == "-check") {
@@ -172,6 +175,8 @@ func main() {
 		run = c.skill
 	case "config":
 		run = c.showConfig
+	case "upgrade":
+		run = c.upgrade
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		flag.Usage()

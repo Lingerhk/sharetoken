@@ -6,6 +6,7 @@ Unicode true
 SetCompressor /SOLID lzma
 RequestExecutionLevel user
 !include "MUI2.nsh"
+!include "FileFunc.nsh"
 
 Name "${NAME}"
 OutFile "${OUTFILE}"
@@ -73,6 +74,13 @@ Section
   WriteRegStr HKCU "${UNINSTKEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair" 1
+  ; /RELAUNCH: the app's one-click update runs this silently (/S) and wants the
+  ; app back afterwards (gui/update_windows.go).
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/RELAUNCH" $R1
+  IfErrors +2
+  Exec '"$INSTDIR\${GUI}.exe"'
 SectionEnd
 
 Section "Uninstall"

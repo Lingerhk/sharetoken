@@ -124,6 +124,7 @@ Errors have the form `{"error":{"code","message"}}`; the page chooses its text b
 | `POST /api/v1/logout` | Stops the Agent, revokes the token (skipped if the portal is unreachable) and removes the token from `config.json`; other settings stay |
 | `GET /api/v1/account`, `/api/v1/jobs`, `/api/v1/ledger` | Passed through to the portal; they do not need the Agent. If the portal answers 401, the session becomes `expired` |
 | `POST /api/v1/update/check`, `/skip`, `/notified` | Update notices, see [versioning.md](versioning.md) |
+| `POST /api/v1/update/download` | Fetch the offered build's signed package into `update/` and check it (one-click update); progress in `session.update.download`. The window's shell installs it: `POST`/`GET /__shell/update`, see [versioning.md](versioning.md) "One-click update" |
 | `POST /api/v1/feedback`, `GET /api/v1/feedback/mine` | Send feedback to the portal, and list what this account sent |
 | `/api/v1/pairing…` | Pairing codes and pairings, passed on to the portal ([guide.md](guide.md), section 3) |
 | Other `/api/*` and `/v1/*` | Same as `sharetoken up` (see [guide.md](guide.md)). 401 `not_logged_in` when signed out, 503 `not_connected` before the network is joined |

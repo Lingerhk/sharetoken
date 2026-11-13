@@ -73,9 +73,16 @@ const shellClassJS = `document.documentElement.classList.add('os-` + goruntime.G
 // page's own origin and its CSP allows it.
 const runtimeJS = `import('/wails/runtime.js').catch(e => console.error('wails runtime', e));`
 
+// shellUpdateJS tells the page that this window installs updates by itself
+// (update.go): it then offers to, instead of only linking the download.
+const shellUpdateJS = `document.documentElement.dataset.shellUpdate = '1';`
+
 // shellBootJS is the shell's script for each page the window loads (proxy.go).
-func shellBootJS(selftest bool) string {
+func shellBootJS(selftest, canUpdate bool) string {
 	js := shellClassJS + runtimeJS
+	if canUpdate {
+		js += shellUpdateJS
+	}
 	if selftest {
 		return js + selftestJS
 	}
@@ -105,10 +112,13 @@ func main() {
 	// $SHARETOKEN_GUI_SELFTEST=1: run a request through the window's whole path
 	// without showing it, report, and quit (scripts/gui_shell_test.sh).
 	// =tray: run through the tray and the window, which shows (scripts/gui_tray_test.sh).
+	// =update: install the offered update with the window hidden, as its button
+	// would (scripts/gui_update_test.sh).
 	mode := os.Getenv("SHARETOKEN_GUI_SELFTEST")
 	trayCheck := mode == "tray"
-	selftest := mode != "" && !trayCheck
-	useTray := !selftest && trayAvailable()
+	updateCheck := mode == "update"
+	selftest := mode != "" && !trayCheck && !updateCheck
+	useTray := !selftest && !updateCheck && trayAvailable()
 	var trayCheckErr atomic.Pointer[error]
 
 	result := make(chan string, 1)
@@ -134,7 +144,11 @@ func main() {
 		}
 	})
 	handler := newProxy(sup, start, result, tray.setLang)
-	handler.boot = shellBootJS(selftest)
+	updates := newShellUpdater(sup, func() *application.App { return app }, func() { app.Quit() })
+	canUpdate, whyNot := updates.supported()
+	handler.update = updates
+	handler.boot = shellBootJS(selftest, canUpdate)
+	var updateCheckErr atomic.Pointer[error]
 
 	// Run does not return on every platform: macOS ends the process when the app
 	// terminates. So the daemon is stopped, and the self-tests report, from Wails'
@@ -144,8 +158,22 @@ func main() {
 		sup.stop()
 	})
 	finish := sync.OnceFunc(func() {
-		if selftest && !strings.HasPrefix(handler.lastResult(), "ok") {
-			os.Exit(1)
+		if selftest {
+			// $SHARETOKEN_GUI_SELFTEST_REPORT: also into a file, for a copy started
+			// by an update, whose output goes nowhere.
+			if f := os.Getenv("SHARETOKEN_GUI_SELFTEST_REPORT"); f != "" {
+				_ = os.WriteFile(f, []byte(version+" "+handler.lastResult()+"\n"), 0o600)
+			}
+			if !strings.HasPrefix(handler.lastResult(), "ok") {
+				os.Exit(1)
+			}
+		}
+		if updateCheck {
+			if e := updateCheckErr.Load(); (e == nil || *e != nil) && updates.status().State != "restarting" {
+				fmt.Println("selftest: failed:", errText(e))
+				os.Exit(1)
+			}
+			fmt.Println("selftest: ok (the update is installing)")
 		}
 		if trayCheck {
 			if e := trayCheckErr.Load(); e == nil || *e != nil {
@@ -204,7 +232,7 @@ func main() {
 		MinWidth:  minWindowWidth,
 		MinHeight: minWindowHeight,
 		URL:       "/",
-		Hidden:    selftest,
+		Hidden:    selftest || updateCheck,
 		Mac:       application.MacWindow{TitleBar: application.MacTitleBarHiddenInset},
 	})
 	if useTray {
@@ -215,13 +243,14 @@ func main() {
 	}
 
 	go start()
+	go cleanStaging()
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		fitToScreen(window)
 		ctx := app.Context()
 		if useTray {
 			nt.Store(startTray(app, windowTitle(), showWindow, app.Quit))
 		}
-		if !selftest {
+		if !selftest && !updateCheck {
 			if !trayCheck {
 				tray.notify = (&desktopNotifier{ns: notifier, show: showWindow}).send
 			}
@@ -243,6 +272,15 @@ func main() {
 				e := fmt.Errorf("the menu's Quit did not end the app")
 				trayCheckErr.Store(&e)
 				app.Quit()
+			}()
+		}
+		if updateCheck {
+			go func() {
+				err := runUpdateCheck(start, sup, updates, canUpdate, whyNot)
+				updateCheckErr.Store(&err)
+				if err != nil {
+					app.Quit()
+				}
 			}()
 		}
 		if selftest {

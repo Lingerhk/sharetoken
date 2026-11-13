@@ -6,7 +6,8 @@
 #   scripts/build-gui.sh <dev|prod> windows [amd64|arm64]  from any system, no cgo
 #   scripts/build-gui-linux.sh <dev|prod> [amd64|arm64]    Linux, from any system with Docker
 #
-#   macOS:   dist/ShareToken.app (not signed or notarized), and sharetoken-<version>-macos-<arch>.dmg
+#   macOS:   dist/ShareToken.app (not signed or notarized), sharetoken-<version>-macos-<arch>.dmg,
+#            and the app zipped for one-click updates, sharetoken-<version>-macos-<arch>.app.zip
 #   Linux:   dist/sharetoken-<version>-linux-<arch>/, and sharetoken-<version>-linux-<arch>.deb
 #   Windows: dist/sharetoken-<version>-windows-<arch>/ (not code-signed), and sharetoken-<version>-windows-<arch>.exe,
 #            made with makensis, or in the Docker image of scripts/build-gui-linux.sh if it is not installed
@@ -95,6 +96,20 @@ build_macos() { # architecture
   dmg=sharetoken$SUFFIX-$VERSION-macos-$arch.dmg
   stage=$(mktemp -d)
   ditto "$app" "$stage/$NAME.app"
+  local zip=sharetoken$SUFFIX-$VERSION-macos-$arch.app.zip
+  # The app alone, zipped: what the one-click update installs (gui/update_darwin.go
+  # swaps the bundle for it). The portal serves it but does not list it.
+  rm -f "$OUT/$zip"
+  # No resource forks or extended attributes: they would go in as ._* files, which
+  # the updater's unzip keeps as files, breaking the code signature.
+  ditto -c -k --norsrc --noextattr --noacl --keepParent "$stage/$NAME.app" "$OUT/$zip"
+  sums "$zip"
+  # $ST_NO_DMG=1 (tests) stops here: the disk image's layout goes through Finder.
+  if [ -n "${ST_NO_DMG:-}" ]; then
+    rm -rf "$stage"
+    echo "built $OUT/$zip"
+    return
+  fi
   ln -s /Applications "$stage/Applications"
   mkdir "$stage/.background"
   tiffutil -cathidpicheck gui/packaging/dmg-background.png gui/packaging/dmg-background@2x.png -out "$stage/.background/background.tiff" 2>/dev/null

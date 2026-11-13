@@ -221,6 +221,8 @@ pre.reply { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; o
 .update-link > span { flex: none; white-space: nowrap; }
 .modal-actions { align-items: center; }
 .update-link a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; -webkit-user-select: text; user-select: text; }
+#update-progress { margin-bottom: 8px; min-height: 1.2em; }
+#update-progress.bad { color: var(--bad); }
 
 /* Pairing: codes are read aloud and typed, so they are spaced and never wrap. */
 .sub-title { font-size: 12px; margin: 12px 0 6px; color: var(--muted); font-weight: 600; }

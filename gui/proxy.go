@@ -23,6 +23,8 @@ type proxy struct {
 	start  func() error // waits for the daemon; its error is shown instead of the pages
 	result chan<- string
 	onLang func(string)
+	// update answers shellUpdatePath (update.go); nil: not offered.
+	update http.Handler
 	// boot is the shell's script for the page (shellBootJS), served at bootPath
 	// and loaded by a tag the proxy adds to the page's head.
 	boot string
@@ -142,6 +144,18 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == shellLangPath {
 		p.onLang(r.URL.Query().Get("l"))
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.URL.Path == shellUpdatePath {
+		if p.update == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if err := p.start(); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		p.update.ServeHTTP(w, r)
 		return
 	}
 	if err := p.start(); err != nil {

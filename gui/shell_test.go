@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // TestMain turns this test binary into the fake daemon when $FAKE_DAEMON is set.
@@ -453,5 +458,57 @@ func TestDaemonAddrIgnoresOtherConfigs(t *testing.T) {
 		if got := daemonAddr(home); got != current().defaultHTTP {
 			t.Fatalf("%s: %q", c, got)
 		}
+	}
+}
+
+// The shell checks packages against the same release key as the daemon.
+func TestReleaseKeyMatches(t *testing.T) {
+	src, err := os.ReadFile("../internal/client/upgrade.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), `const ReleaseKey = "`+releaseKey+`"`) {
+		t.Fatal("gui/update.go and internal/client/upgrade.go name different release keys")
+	}
+	if len(releaseKeyBytes()) != 32 {
+		t.Fatal("release key")
+	}
+}
+
+func TestVerifyPackage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "p.exe")
+	if err := os.WriteFile(path, []byte("pkg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Not signed with the release key: refused, whatever the checksum says.
+	d := sha256.Sum256([]byte("pkg"))
+	if err := verifyPackage(path, hex.EncodeToString(d[:]), base64.StdEncoding.EncodeToString(make([]byte, 64))); err == nil || !strings.Contains(err.Error(), "release key") {
+		t.Fatalf("unsigned: %v", err)
+	}
+	if err := verifyPackage(path, strings.Repeat("00", 32), ""); err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("checksum: %v", err)
+	}
+}
+
+// The page learns that the window installs updates; the shell's update path
+// answers there, and never reaches the daemon.
+func TestShellUpdateRoute(t *testing.T) {
+	if !strings.Contains(shellBootJS(false, true), "shellUpdate") || strings.Contains(shellBootJS(false, false), "shellUpdate") {
+		t.Fatal("boot script")
+	}
+	u := newShellUpdater(&supervisor{}, func() *application.App { return nil }, func() {})
+	p := &proxy{start: func() error { return nil }, update: u}
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, shellUpdatePath, nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"state":"idle"`) {
+		t.Fatalf("GET: %d %s", rec.Code, rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, shellUpdatePath, strings.NewReader(`{}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST without key: %d", rec.Code)
+	}
+	if env := strings.Join(afterUpdateEnv(), "\n"); strings.Contains(env, "SHARETOKEN_GUI_SELFTEST=update") {
+		t.Fatal("the new copy would run the update test again")
 	}
 }

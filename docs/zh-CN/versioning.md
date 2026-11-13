@@ -76,7 +76,20 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
 
 本地 API：`GET /api/v1/session` 里的 `update`，以及有新版本时 `GET /api/v1/status` 里的 `update`；`POST /api/v1/update/check`、`POST /api/v1/update/skip` 和 `POST /api/v1/update/notified`（请求体 `{"key"}`；key 不是当前提供的构建时返回 409 `not_offered`）。
 
-**未实现：** 下载和安装由用户手动完成。更新信息没有签名；客户端只显示链接和 sha256，从不执行下载的文件。要做自动升级，先要用离线密钥给发布信息签名。
+### 一键升级
+
+客户端可以自己下载并安装新构建，前提是这个包带有**发布密钥**的签名。
+
+- **签名：** 发布密钥是一把 Ed25519 密钥，私钥离线保存（默认 `local/keys/release-signing.pem`，或 `$ST_RELEASE_KEY`），公钥编译进客户端（[`internal/client/upgrade.go`](../../internal/client/upgrade.go) 的 `ReleaseKey`，[`gui/update.go`](../../gui/update.go) 里有同一个，测试保证两处一致）。签名的对象是文件的 SHA-256（对 32 字节摘要做 Ed25519），这也是 Wails 更新器 `ed25519` 算法校验的内容。[`scripts/sign-packages.go`](../../scripts/sign-packages.go) 生成密钥和签名；`publish-packages.sh` 先确认密钥和客户端里的公钥一致，再给每个包签名，写成 `SIGNATURES-<版本>`（格式同 `SHA256SUMS`，每行 `<base64 签名>  <文件名>`）一起发布。
+- **门户：** `GET /api/v1/update` 多返回 `install`：这个客户端能自己安装的文件，只有带签名时才有。macOS 桌面应用是 `sharetoken-<版本>-macos-<架构>.app.zip`（整个 .app 打成 zip，下载页不列出），Windows 是安装程序，Linux 是 `.deb`，命令行是压缩包。`package` 和 `install` 都带 `signature`。
+- **下载：** daemon 的 `POST /api/v1/update/download`（请求体 `{"key"}`）在后台把 `install` 下载到数据目录的 `update/`，边下边算 SHA-256，校验和签名都对才保留文件；进度在 `session.update.download`（`downloading`、`ready`、`failed`）。没有签名、签名不对、校验和不对，一律不保留、不安装。
+- **安装（桌面应用）：** 页面上的“立即更新”只在桌面窗口里出现：窗口壳在页面上加 `data-shell-update="1"`，页面再调用壳的 `/__shell/update`（POST `{key}` 开始，GET 查进度）。壳让 daemon 下载，自己再校验一遍签名，然后先停掉 daemon（进行中的作业会结束），再按系统安装：
+  - macOS：用 Wails 的更新器（`pkg/updater`），它再校验一次摘要和签名，解压 zip，等应用退出后替换整个 .app、校验代码签名，然后重新打开；失败会恢复原来的 .app。应用要在用户可写的目录里，不能直接从磁盘映像或 App Translocation 的位置运行。
+  - Windows：用 `cmd /c start` 启动安装程序 `/S /RELAUNCH`，让它不是应用的子进程（安装程序会 `taskkill /T` 结束应用），并且脱离当前 job。安装程序装完后，`/RELAUNCH` 让它重新打开应用。
+  - Linux：`pkexec dpkg -i`（桌面会弹出管理员密码框，取消就不安装），装好后由一个小脚本等当前进程退出再启动新的窗口程序。只支持从 `.deb` 安装的副本（`/usr/bin`，dpkg 记录过的）。
+- **安装（命令行）：** `sharetoken upgrade [-y]` 按本程序的安装方式选择安装包（`client.DetectInstallation`）：命令行压缩包就替换程序文件（Windows 上先把正在运行的程序改名为 `.old`，下次启动时删除）；在 macOS 应用里就替换 .app（应用不能在运行）；Windows 桌面安装就静默运行安装程序；`.deb` 就用 `sudo dpkg -i`（不在终端时用 `pkexec`）。版本号不变时也能重装同版本的新构建，所以用 `dpkg -i` 而不是 `apt-get install`。
+
+**还没有：** 自动安装和分批推送；降级保护（签名只针对文件内容，不包含版本号：能篡改门户回复的人可以提供一个旧的、签过名的包）；发布密钥的托管方式还没定。
 
 ### 发布说明
 
@@ -116,10 +129,12 @@ dist/sharetoken-1.0.0-linux-arm64.deb             scripts/build-gui-linux.sh pro
 dist/sharetoken-cli-1.0.0-linux-amd64.tar.gz      scripts/build-cli.sh prod linux amd64（"all" 构建三个系统、两种架构）
 dist/sharetoken-cli-1.0.0-windows-amd64.zip       scripts/build-cli.sh prod windows amd64
 dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 scripts/build.sh relay
+dist/sharetoken-1.0.0-macos-arm64.app.zip         同上：.app 打成 zip，一键升级用
 dist/SHA256SUMS-1.0.0
+dist/SIGNATURES-1.0.0                             publish-packages.sh 用发布密钥签名
 ```
 
-**发布安装包：** `scripts/publish-packages.sh <版本> <user@host> <目录> [--with-dev-cli] [--owner <用户>]` 在 Mac 上运行，构建 12 个包（桌面安装包和命令行压缩包，三个系统、两种架构）。它上传这些包，在服务器上校验，然后整体替换门户的下载目录（门户配置里的 `downloads.dir`）；门户在 `/downloads/` 下提供下载。`--owner` 让脚本经 sudo 以门户的运行用户安装这些文件。`--with-dev-cli` 多加 6 个 `sharetoken-cli-dev-*` 包供测试：`GET /api/v1/downloads` 不列出它们，只能按文件名下载。
+**发布安装包：** `scripts/publish-packages.sh <版本> <user@host> <目录> [--with-dev-cli] [--owner <用户>]` 在 Mac 上运行，构建 14 个包（桌面安装包、两个 macOS 的 .app.zip 和命令行压缩包，三个系统、两种架构），并用发布密钥签名。它上传这些包，在服务器上校验，然后整体替换门户的下载目录（门户配置里的 `downloads.dir`）；门户在 `/downloads/` 下提供下载。`--owner` 让脚本经 sudo 以门户的运行用户安装这些文件。`--with-dev-cli` 多加 6 个 `sharetoken-cli-dev-*` 包供测试：`GET /api/v1/downloads` 不列出它们，只能按文件名下载。
 
 程序名不带版本（`sharetoken`、`sharetoken-gui`；dev 构建是 `sharetoken-dev`、`sharetoken-gui-dev`）：窗口按固定的名字查找 daemon，用户的 PATH 在升级后也不用改。用 `scripts/build.sh` 构建的服务端程序则在文件名里带版本。
 
@@ -131,4 +146,5 @@ dist/SHA256SUMS-1.0.0
 - [`internal/protocol/golden_test.go`](../../internal/protocol/golden_test.go)：签名消息的固定向量。
 - [`internal/mysqldb`](../../internal/mysqldb)：迁移顺序、中断后续跑、并发启动、旧程序遇到破坏性迁移。
 - [`scripts/version_ui_test.mjs`](../../scripts/version_ui_test.mjs)：版本页面和升级提醒，在无头 Chrome 里测试。
+- [`scripts/gui_update_test.sh`](../../scripts/gui_update_test.sh)：macOS 一键升级的端到端测试。在私有网络上构建旧版 A 和新版 B，发布签过名的 B，让 A 自己安装（`SHARETOKEN_GUI_SELFTEST=update`，窗口隐藏），确认换成了 B 并且 B 能启动；另一个密钥签的包会被拒绝。Windows 和 Linux 按同样的步骤在虚拟机里手工跑（安装 A，发布 B，运行 `sharetoken-gui-dev`，环境变量相同；Linux 测试机上临时加一条 polkit 规则让 `pkexec` 不用输密码）。
 - **未实现：** 针对上一个发布版本的端到端测试（构建上一个 tag 的客户端，接到当前的协调器和门户上交易）。

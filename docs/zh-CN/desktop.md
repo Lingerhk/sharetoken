@@ -124,6 +124,7 @@ macOS 在菜单栏、Windows 在通知区、Linux 以状态通知项（StatusNot
 | `POST /api/v1/logout` | 停止 Agent、吊销 token（门户不可达时跳过），并从 `config.json` 删除 token；其他设置保留 |
 | `GET /api/v1/account`、`/api/v1/jobs`、`/api/v1/ledger` | 透传到门户，不依赖 Agent。门户返回 401 时会话转为 `expired` |
 | `POST /api/v1/update/check`、`/skip`、`/notified` | 升级提醒，见 [versioning.md](versioning.md) |
+| `POST /api/v1/update/download` | 把当前提供的构建的签名安装包下载到 `update/` 并校验（一键升级）；进度在 `session.update.download`。由窗口壳安装：`POST`/`GET /__shell/update`，见 [versioning.md](versioning.md)“一键升级” |
 | `POST /api/v1/feedback`、`GET /api/v1/feedback/mine` | 向门户提交反馈，以及列出本账户提交过的反馈 |
 | `/api/v1/pairing…` | 配对码和配对，转给门户（[guide.md](guide.md) 第 3 节） |
 | 其余 `/api/*` 和 `/v1/*` | 同 `sharetoken up`（见 [guide.md](guide.md)）。未登录时 401 `not_logged_in`，还没接入网络时 503 `not_connected` |

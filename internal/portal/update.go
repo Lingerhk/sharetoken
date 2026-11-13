@@ -101,6 +101,10 @@ type UpdateInfo struct {
 	Release *Release `json:"release,omitempty"`
 	// Package is the release's package for the client that asked, if published.
 	Package *Package `json:"package,omitempty"`
+	// Install is the file a client of this kind installs by itself, if the
+	// release has one for it and it is signed: the installer on Windows and
+	// Linux, the .app in a zip on macOS, the archive for the command line.
+	Install *Package `json:"install,omitempty"`
 }
 
 // Query values of GET /api/v1/update.
@@ -149,16 +153,36 @@ func (s *Server) currentRelease() *Release {
 // releasePackage finds the package of release v for one client, dev packages
 // included: a dev client is offered the dev build of the release.
 func (s *Server) releasePackage(v, kind, channel, osName, arch string) *Package {
+	return s.releaseFile(v, kind, osName, arch, func(name string) bool {
+		m := packageRe.FindStringSubmatch(name)
+		return m != nil && m[3] == v && m[4] == osName && m[5] == arch && (m[1] != "") == (kind == "cli") && (m[2] != "") == (channel == "dev")
+	})
+}
+
+// releaseInstall finds the file a client installs by itself: the package, but
+// for the macOS app the bundle in a zip. Only a signed one counts.
+func (s *Server) releaseInstall(v, kind, channel, osName, arch string, pkg *Package) *Package {
+	p := pkg
+	if kind == "desktop" && osName == "macos" {
+		p = s.releaseFile(v, kind, osName, arch, func(name string) bool {
+			m := appZipRe.FindStringSubmatch(name)
+			return m != nil && m[2] == v && m[3] == arch && (m[1] != "") == (channel == "dev")
+		})
+	}
+	if p == nil || p.Signature == "" || p.SHA256 == "" {
+		return nil
+	}
+	return p
+}
+
+// releaseFile describes the first file of the downloads directory that match accepts.
+func (s *Server) releaseFile(v, kind, osName, arch string, match func(string) bool) *Package {
 	entries, err := os.ReadDir(s.cfg.DownloadsDir)
 	if err != nil {
 		return nil
 	}
 	for _, e := range entries {
-		m := packageRe.FindStringSubmatch(e.Name())
-		if m == nil || !e.Type().IsRegular() || m[3] != v || m[4] != osName || m[5] != arch {
-			continue
-		}
-		if (m[1] != "") != (kind == "cli") || (m[2] != "") != (channel == "dev") {
+		if !match(e.Name()) || !e.Type().IsRegular() {
 			continue
 		}
 		info, err := e.Info()
@@ -166,7 +190,8 @@ func (s *Server) releasePackage(v, kind, channel, osName, arch string) *Package 
 			return nil
 		}
 		return &Package{Kind: kind, OS: osName, Arch: arch, Version: v, File: e.Name(), URL: "/downloads/" + e.Name(), Size: info.Size(),
-			SHA256: readChecksums(filepath.Join(s.cfg.DownloadsDir, "SHA256SUMS-"+v))[e.Name()]}
+			SHA256:    readChecksums(filepath.Join(s.cfg.DownloadsDir, "SHA256SUMS-"+v))[e.Name()],
+			Signature: readChecksums(filepath.Join(s.cfg.DownloadsDir, "SIGNATURES-"+v))[e.Name()]}
 	}
 	return nil
 }
@@ -190,6 +215,7 @@ func (s *Server) updateInfo(kind, channel, osName, arch string) UpdateInfo {
 			}
 			if updateKinds[kind] && updateChannels[channel] && updateSystems[osName] && updateArchs[arch] {
 				out.Package = s.releasePackage(r.Version, kind, channel, osName, arch)
+				out.Install = s.releaseInstall(r.Version, kind, channel, osName, arch, out.Package)
 			}
 		} else {
 			out.Release = nil

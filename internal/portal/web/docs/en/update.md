@@ -14,7 +14,19 @@ The client checks for new versions itself: the desktop app shows them at the top
 
 See the [download section](/#download) for the latest version. If the client is older than the minimum version the network requires, sign-in and model calls return `upgrade_required` (HTTP 426). Settlement and account queries are not affected, and your existing credit is not affected.
 
-## Update {#upgrade}
+## One-click update {#one-click}
+
+The desktop app installs a new version by itself: click **Update now** in the line at the top of its window. It downloads the package, checks that it carries the ShareToken release signature, lets jobs in progress finish, installs it and restarts. On macOS the app must be in the Applications folder (not opened from the disk image); on Linux the system asks for an administrator password, as for any package.
+
+The command-line client does the same with:
+
+```bash
+{{exe}} upgrade
+```
+
+It asks before installing (`-y` does not ask) and installs the package the way this copy was installed: the program file of the command-line archive, the macOS app (quit it first, or update from the app), the Windows installer, or the `.deb` with `sudo dpkg -i`. A package without a valid release signature is never installed. A running `{{exe}} up` keeps the old version until you restart it.
+
+## Update by hand {#upgrade}
 
 An update just replaces the program file. Your account, device key and configuration are in the state directory and are not affected, so you do not need to sign in again.
 
