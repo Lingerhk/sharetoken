@@ -8,7 +8,7 @@
 # network. The portal does not list them, but serves them by name.
 # Beside them goes RELEASE-<version>.json: version, commit and the build time all
 # packages share. The portal reads it to tell clients about the release
-# (GET /api/v1/update); before launch the version stays 1.0.0, and the commit and
+# (GET /api/v1/update); the version alone may not tell 1.0.0 builds apart, and the commit and
 # build time are what tell a client a newer build exists.
 # release-notes/<lang>.md, when there, go along as RELEASE-<version>.<lang>.md: what
 # this build brings, shown by the clients that are offered it (docs/versioning.md).

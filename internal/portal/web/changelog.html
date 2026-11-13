@@ -39,6 +39,53 @@
   <p class="lead">ShareToken 每个版本带来的功能。</p>
 
   <!-- 新版本加在最上面：复制一个 article，文案翻译进 i18n/site/ 的每个字典 -->
+  <article class="release" id="v1.0.1">
+    <header class="release-head">
+      <h2>1.0.1</h2>
+      <time datetime="2026-11-14">2026-11-14</time>
+    </header>
+
+    <h3>共享伙伴</h3>
+    <ul>
+      <li>配对成为共享伙伴后，双方可以共享对方的 token 资源；伙伴节点不可用时，自动切换回 P2P 网络。</li>
+      <li>可以限制给出去的量：每 24 小时最多给多少 tokens，以及伙伴最多占每个节点多少并发。并发比例设为 0 就是暂停共享。</li>
+      <li>「只用伙伴的节点」：开启后不再到网络上购买。</li>
+      <li>最多 5 个伙伴。邀请码只能用一次，有效期 1 到 7 天。</li>
+      <li>入口：桌面应用「配对 → 共享伙伴」，或命令行 sharetoken partner。</li>
+    </ul>
+
+    <h3>登录与账户</h3>
+    <ul>
+      <li>不再使用密码：输入邮箱和收到的验证码即可登录，新邮箱会自动注册。</li>
+      <li>可以开启两步验证，管理员必须开启。</li>
+      <li>收不到验证码时，可以写信给支持邮箱，由管理员提供一次性验证码。</li>
+    </ul>
+
+    <h3>桌面应用</h3>
+    <ul>
+      <li>新界面：升级到 Wails v3，窗口更小，带侧边栏导航，底部状态栏显示连接状态、中继和延迟。</li>
+      <li>菜单栏显示当前中继、延迟、共享状态和可用 credit。</li>
+      <li>Linux 支持托盘图标（需要 Ubuntu 24.04 或 Debian 13 以上）。</li>
+      <li>一键升级：有新版本时点「立即更新」就能下载安装，安装包会先校验发布签名。命令行用 sharetoken upgrade。</li>
+    </ul>
+
+    <h3>安全</h3>
+    <ul>
+      <li>本机的管理接口需要密钥才能访问；桌面应用连接后台程序前，会先确认对方的身份。</li>
+      <li>本地 OpenAI 兼容端点默认需要 API key（sk-st-…）。可以在设置里或用 sharetoken apikey 查看、更换或关闭。</li>
+    </ul>
+
+    <h3>编程助手</h3>
+    <ul>
+      <li>sharetoken skill install：让 Claude Code 和 Codex 学会使用 ShareToken 客户端。文档里新增了「在编程助手中使用」一页。</li>
+    </ul>
+
+    <h3>开源</h3>
+    <ul>
+      <li>以 MIT 许可证开源。网站和用户页面右上角加了 GitHub 链接。</li>
+    </ul>
+  </article>
+
   <article class="release" id="v1.0.0">
     <header class="release-head">
       <h2>1.0.0</h2>

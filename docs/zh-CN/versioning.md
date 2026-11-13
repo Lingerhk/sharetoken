@@ -11,7 +11,7 @@
 - **注入：** [`scripts/ldflags.sh`](../../scripts/ldflags.sh) 把版本、提交和构建时间写入 `sharetoken/internal/version`。桌面窗口壳是独立的 module，用 `main.version`。
 - **查看：** `portal|coordinator|mailserver|relay|sharetoken version`，每个程序日志的第一行，门户的 `GET /api/v1/version`，以及管理后台的“版本”页。
 
-**首次公开发布之前，版本保持 1.0.0。** 发布时不升版本号，而是把 tag `v1.0.0` 移到要发布的提交上（`git tag -f -a v1.0.0 -m ...`）。这段时间里“1.0.0”不代表一份固定的代码，`commit` 才是（`GET /api/v1/version`、管理后台“版本”页）；客户端靠比较提交和构建时间来发现更新的构建（见“升级提醒”）。
+**从 1.0.1（2026-11-14）起，发布会升版本号。** 在此之前每次发布都是 1.0.0，靠移动 tag `v1.0.0`，所以各个 1.0.0 构建并不相同，`commit` 才能区分它们（`GET /api/v1/version`、管理后台“版本”页）；客户端靠比较提交和构建时间来发现同一版本的更新构建（见“升级提醒”）。协议 ID 和签名域在首次公开发布前仍沿用 1.0.0 / v1 的名字，格式变化仍然原地修改。
 
 发版步骤：修改 `VERSION`；在更新日志页（[`internal/portal/web/changelog.html`](../../internal/portal/web/changelog.html)，网址 `/changelog/`）最上面加上这个版本及其功能，并补齐翻译；提交；`git tag v1.2.3`；然后构建。
 
