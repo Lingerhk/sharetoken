@@ -4,6 +4,6 @@ Section: net
 Priority: optional
 Maintainer: ShareToken <support@sharetoken.app>
 Homepage: https://sharetoken.app
-Depends: libgtk-4-1, libwebkitgtk-6.0-4
+Depends: libgtk-3-0 | libgtk-3-0t64, libwebkit2gtk-4.1-0
 Description: @NAME@ desktop app and command-line client
  Use and share open-weight model inference over a peer-to-peer network.

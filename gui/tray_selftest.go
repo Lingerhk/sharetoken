@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // trayProbe is what the platform reports about its tray and window.
@@ -19,32 +19,20 @@ type trayProbe struct {
 	WindowVisible      bool
 }
 
-// trayTest drives the real app: the menu items' actions, the window's own close,
-// minimise and reload, a click on the icon (Windows) and Command-W (macOS)
-// through the platform's messages, and a second start of the program, checking
-// the result of each (scripts/gui_tray_test.sh). Whether the icon is on screen
-// is asked of the platform. Every step reports, so a failure names itself.
+// trayTest drives the real tray: the same menu actions and window close a click
+// makes, through the platform's own paths, checking the result of each
+// (scripts/gui_tray_test.sh). Every step reports, so a failure names itself.
 type trayTest struct {
 	ctx   context.Context
 	sup   *supervisor
-	win   *application.WebviewWindow
-	tray  *nativeTray
 	steps []string
-}
-
-// probe reads the tray's menu as last set, whether the platform shows its icon,
-// and the window's state.
-func (t *trayTest) probe() trayProbe {
-	m := t.tray.shownMenu()
-	return trayProbe{IconShown: nativeTrayIconShown(), Status: m.Status, Open: m.Open, Quit: m.Quit,
-		WindowVisible: t.win.IsVisible() && !t.win.IsMinimised()}
 }
 
 func (t *trayTest) waitFor(what string, ok func(trayProbe) bool) error {
 	deadline := time.Now().Add(10 * time.Second)
 	var p trayProbe
 	for time.Now().Before(deadline) {
-		if p = t.probe(); ok(p) {
+		if p = nativeTrayProbe(); ok(p) {
 			t.steps = append(t.steps, what)
 			fmt.Println("tray:", what)
 			return nil
@@ -86,28 +74,25 @@ func (t *trayTest) run(start func() error, reported func() bool, show func(lang 
 	}); err != nil {
 		return err
 	}
-	first := t.probe()
+	first := nativeTrayProbe()
 	fmt.Println("tray: menu reads:", first.Status, "|", first.Open, "|", first.Quit)
 
 	// The menu takes the language of the page: from a report by the page, and
 	// from the page's own report at each load, which puts the first one back.
-	other := "zh-CN" // the other of the two languages the tray speaks
-	if text("zh-CN").Status == first.Status {
-		other = "en"
-	}
+	const other = "th"
 	show(other)
 	if err := t.waitFor("menu follows the language the page reports", func(p trayProbe) bool {
 		return p.Status == text(other).Status && p.Quit == text(other).Quit
 	}); err != nil {
 		return err
 	}
-	t.win.Reload()
+	runtime.WindowReload(t.ctx)
 	if err := t.waitFor("menu follows the page again after a reload", func(p trayProbe) bool { return p.Status == first.Status }); err != nil {
 		return err
 	}
 
 	// Closing hides the window; the app and the daemon go on.
-	t.win.Close()
+	nativeWindowClose()
 	if err := t.waitFor("close hides the window", hidden); err != nil {
 		return err
 	}
@@ -118,51 +103,51 @@ func (t *trayTest) run(start func() error, reported func() bool, show func(lang 
 	if err := t.waitFor("tray still there while the window is closed", func(p trayProbe) bool { return p.IconShown && !p.WindowVisible && p.Status == first.Status }); err != nil {
 		return err
 	}
-	t.tray.click("open")
+	nativeTrayClick("open")
 	if err := t.waitFor("Open brings the window back", visible); err != nil {
 		return err
 	}
 
-	t.win.Minimise()
+	runtime.WindowMinimise(t.ctx)
 	deadline := time.Now().Add(5 * time.Second)
-	for !t.win.IsMinimised() && time.Now().Before(deadline) {
+	for !runtime.WindowIsMinimised(t.ctx) && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !t.win.IsMinimised() {
+	if !runtime.WindowIsMinimised(t.ctx) {
 		return fmt.Errorf("the window would not minimise")
 	}
-	t.tray.click("open")
-	if err := t.waitFor("Open restores a minimised window", func(p trayProbe) bool { return p.WindowVisible && !t.win.IsMinimised() }); err != nil {
+	nativeTrayClick("open")
+	if err := t.waitFor("Open restores a minimised window", func(p trayProbe) bool { return p.WindowVisible && !runtime.WindowIsMinimised(t.ctx) }); err != nil {
 		return err
 	}
 
 	// Quickly, with no time for animations: Wails ends the program if WebView2
 	// refuses the focus at the wrong moment.
 	for range 5 {
-		t.win.Minimise()
-		t.tray.click("open")
+		runtime.WindowMinimise(t.ctx)
+		nativeTrayClick("open")
 		if err := t.waitFor("minimise and Open, at once", visible); err != nil {
 			return err
 		}
 		// Whatever a burst of clicks leaves behind, one more Open recovers it.
-		t.win.Minimise()
+		runtime.WindowMinimise(t.ctx)
 		time.Sleep(20 * time.Millisecond)
-		t.win.Close()
-		t.tray.click("open")
+		nativeWindowClose()
+		nativeTrayClick("open")
 		time.Sleep(1500 * time.Millisecond)
-		t.tray.click("open")
-		if err := t.waitFor("minimise, close and Open, at once, then Open", func(p trayProbe) bool { return p.WindowVisible && !t.win.IsMinimised() }); err != nil {
+		nativeTrayClick("open")
+		if err := t.waitFor("minimise, close and Open, at once, then Open", func(p trayProbe) bool { return p.WindowVisible && !runtime.WindowIsMinimised(t.ctx) }); err != nil {
 			return err
 		}
 	}
 	time.Sleep(time.Second) // clicks still on their way would undo the next step
 
 	if goruntime.GOOS == "windows" { // on macOS a click on the icon opens the menu
-		t.win.Close()
+		nativeWindowClose()
 		if err := t.waitFor("close hides the window again", hidden); err != nil {
 			return err
 		}
-		t.tray.click("icon")
+		nativeTrayClick("icon")
 		if err := t.waitFor("click on the icon opens the window", visible); err != nil {
 			return err
 		}
@@ -173,14 +158,14 @@ func (t *trayTest) run(start func() error, reported func() bool, show func(lang 
 		if err := t.waitFor("the Close Window shortcut hides the window", hidden); err != nil {
 			return err
 		}
-		t.tray.click("open")
+		nativeTrayClick("open")
 		if err := t.waitFor("Open brings it back after the shortcut", visible); err != nil {
 			return err
 		}
 	}
 
 	// A second start on this data directory only brings the window back.
-	t.win.Close()
+	nativeWindowClose()
 	if err := t.waitFor("close before the second start", hidden); err != nil {
 		return err
 	}
@@ -190,12 +175,12 @@ func (t *trayTest) run(start func() error, reported func() bool, show func(lang 
 	if err := t.waitFor("a second start brings the window back", visible); err != nil {
 		return err
 	}
-	t.win.Minimise()
+	runtime.WindowMinimise(t.ctx)
 	time.Sleep(500 * time.Millisecond)
 	if err := t.secondStart(); err != nil {
 		return err
 	}
-	if err := t.waitFor("a second start restores a minimised window", func(p trayProbe) bool { return p.WindowVisible && !t.win.IsMinimised() }); err != nil {
+	if err := t.waitFor("a second start restores a minimised window", func(p trayProbe) bool { return p.WindowVisible && !runtime.WindowIsMinimised(t.ctx) }); err != nil {
 		return err
 	}
 	return t.daemonAnswers("after the second start")

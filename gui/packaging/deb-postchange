@@ -1,15 +1,5 @@
 #!/bin/sh
-# postinst and postrm: shows the new menu entry and icon without a logout, and
-# loads or unloads the window's AppArmor profile (apparmor-profile). None of the
-# tools is required; an AppArmor too old for the profile (before 4.0) does not
-# restrict user namespaces, so it can go without it.
+# Shows the new menu entry and icon without a logout. Neither tool is required.
 set -e
 command -v update-desktop-database >/dev/null && update-desktop-database -q /usr/share/applications || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t /usr/share/icons/hicolor || true
-profile=/etc/apparmor.d/@GUI@
-if command -v apparmor_parser >/dev/null && [ -d /sys/kernel/security/apparmor ]; then
-  case "$0:$1" in
-    *postinst:configure) [ -f "$profile" ] && apparmor_parser -r -T -W "$profile" 2>/dev/null || true ;;
-    *postrm:remove|*postrm:purge) apparmor_parser -R "$profile" 2>/dev/null || true ;;
-  esac
-fi
