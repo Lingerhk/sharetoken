@@ -252,6 +252,7 @@ coordinator -db $DSN -fee-bps 500 \
 |---|---|
 | `portal useradd [-admin] <email>` | 创建账户。账户名是邮箱，用户用发到那里的验证码登录。没有密码。 |
 | `portal rename <user> <email>` | 给账户改名，新名字必须是没有被占用的邮箱：用于没有邮箱的老账户（比如 `root`），不改名就登录不了。余额、设备、token 和两步验证都保留。 |
+| `portal login-code <email>` | 给已有账户生成一个登录验证码并直接打印，不发邮件：用于收不到邮件的用户。它和邮件里的验证码一样用（网页和客户端都行，只能用一次，10 分钟有效），并作废这个地址之前的验证码；两步验证照常要求（`portal mfa-reset` 可清除）。审计日志记为 `user.login_code`。运行它的人能以该用户身份登录，相当于以前运维重置密码。 |
 | `portal grant <user> <micros> [memo]` | 发放 credit。负数为扣减；余额不能扣到负数。 |
 | `portal users`、`portal user <user>`、`portal disable\|enable <user>` | 列出和查看用户。禁用立即生效：token 失效，协调器拒绝该用户的设备。 |
 | `portal mfa-reset <user>` | 清除用户的两步验证密钥并吊销其 token（见[第 4.2 节](#42-浏览器会话与两步验证)）。 |

@@ -1,31 +1,56 @@
 package main
 
 import (
-	"fmt"
+	"os"
 	"unsafe"
 
-	"fyne.io/systray"
 	"golang.org/x/sys/windows"
 )
 
 var (
-	shell32         = windows.NewLazySystemDLL("shell32.dll")
-	procPostMessage = user32.NewProc("PostMessageW")
-	procNotifyIcon  = shell32.NewProc("Shell_NotifyIconW")
+	user32           = windows.NewLazySystemDLL("user32.dll")
+	shell32          = windows.NewLazySystemDLL("shell32.dll")
+	procFindWindowEx = user32.NewProc("FindWindowExW")
+	procPostMessage  = user32.NewProc("PostMessageW")
+	procNotifyIcon   = shell32.NewProc("Shell_NotifyIconW")
 )
 
 const (
-	wmClose, wmCommand, wmLButtonUp = 0x0010, 0x0111, 0x0202
-	// The tray library's icon id and callback message (systray_windows.go).
-	trayIconID, trayCallback = 100, 0x0400 + 1
+	wmLButtonUp = 0x0202
+	// Wails' tray: its window is a message-only one of the app's window class,
+	// the first tray's icon id is 1, and the shell calls it back with WM_USER+1
+	// (systemtray_windows.go).
+	trayWindowClass          = "WailsWebviewWindow"
+	trayIconID, trayCallback = 1, 0x0400 + 1
 )
 
-func trayWindow() windows.HWND { return ownWindow("SystrayClass") }
+// trayWindow finds this process's message-only window of Wails' class.
+func trayWindow() windows.HWND {
+	const hwndMessage = ^uintptr(2) // -3
+	class, _ := windows.UTF16PtrFromString(trayWindowClass)
+	var after uintptr
+	for {
+		h, _, _ := procFindWindowEx.Call(hwndMessage, after, uintptr(unsafe.Pointer(class)), 0)
+		if h == 0 {
+			return 0
+		}
+		var pid uint32
+		if _, err := windows.GetWindowThreadProcessId(windows.HWND(h), &pid); err == nil && pid == uint32(os.Getpid()) {
+			return windows.HWND(h)
+		}
+		after = h
+	}
+}
 
-// iconAdded asks the shell to change nothing about the icon, which it refuses if
-// it does not have one. Where the icon is cannot be asked: Windows 11 keeps a new
-// icon in the overflow flyout, and has no position for it while that is closed.
-func iconAdded(tray windows.HWND) bool {
+// nativeTrayIconShown asks the shell to change nothing about the icon, which it
+// refuses if it does not have one. Where the icon is cannot be asked: Windows 11
+// keeps a new icon in the overflow flyout, and has no position for it while that
+// is closed.
+func nativeTrayIconShown() bool {
+	tray := trayWindow()
+	if tray == 0 {
+		return false
+	}
 	// NOTIFYICONDATAW: cbSize, then hWnd and uID at their 64-bit offsets; no flags.
 	var data [976]byte
 	*(*uint32)(unsafe.Pointer(&data[0])) = uint32(len(data))
@@ -36,41 +61,10 @@ func iconAdded(tray windows.HWND) bool {
 	return r != 0
 }
 
-func nativeTrayProbe() trayProbe {
-	winTray.mu.Lock()
-	m := winTray.shown
-	winTray.mu.Unlock()
-	p := trayProbe{Status: m.Status, Open: m.Open, Quit: m.Quit}
-	if t := trayWindow(); t != 0 {
-		p.IconShown = iconAdded(t)
-	}
-	if w := appWindow(); w != 0 {
-		iconic, _, _ := procIsIconic.Call(uintptr(w))
-		p.WindowVisible = windows.IsWindowVisible(w) && iconic == 0
-	}
-	return p
+// nativeTrayClickIcon posts what the shell sends for a click on the icon
+// (NOTIFYICON_VERSION_4: the event in the low word, the icon id in the high one).
+func nativeTrayClickIcon() {
+	procPostMessage.Call(uintptr(trayWindow()), trayCallback, 0, wmLButtonUp|trayIconID<<16)
 }
-
-func menuItemID(item *systray.MenuItem) uintptr {
-	var id uint32
-	var title string
-	fmt.Sscanf(item.String(), "MenuItem[%d, %q]", &id, &title)
-	return uintptr(id)
-}
-
-// nativeTrayClick posts the messages the shell and the menu send for a click.
-func nativeTrayClick(what string) {
-	t := trayWindow()
-	switch what {
-	case "icon":
-		procPostMessage.Call(uintptr(t), trayCallback, trayIconID, wmLButtonUp)
-	case "open":
-		procPostMessage.Call(uintptr(t), wmCommand, menuItemID(winTray.open), 0)
-	case "quit":
-		procPostMessage.Call(uintptr(t), wmCommand, menuItemID(winTray.quit), 0)
-	}
-}
-
-func nativeWindowClose() { procPostMessage.Call(uintptr(appWindow()), wmClose, 0, 0) }
 
 func nativeCloseShortcut() {}

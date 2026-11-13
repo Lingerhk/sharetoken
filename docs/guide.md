@@ -252,6 +252,7 @@ coordinator -db $DSN -fee-bps 500 \
 |---|---|
 | `portal useradd [-admin] <email>` | Create an account. The name is an email address: the user signs in with a code mailed there. There are no passwords. |
 | `portal rename <user> <email>` | Give an account a new name, which must be an email address nobody else has: for an older account named without one (such as `root`), which cannot sign in otherwise. Balance, devices, tokens and two-factor authentication stay. |
+| `portal login-code <email>` | Print a sign-in code for an existing account instead of mailing it: for someone whose mail does not arrive. It works like a mailed code (web pages and clients, once, 10 minutes) and replaces the address's earlier codes; two-factor authentication still applies (`portal mfa-reset` clears it). Nothing is mailed; the audit log records it as `user.login_code`. Whoever runs it can sign in as that user, like a password reset by an operator used to. |
 | `portal grant <user> <micros> [memo]` | Grant credits. A negative amount deducts; a balance cannot go below zero. |
 | `portal users`, `portal user <user>`, `portal disable\|enable <user>` | List and inspect users. Disabling takes effect at once: tokens stop working and the coordinator refuses the user's devices. |
 | `portal mfa-reset <user>` | Clear a user's two-factor secret and revoke their tokens (see [section 4.2](#42-browser-sessions-and-administrator-two-factor-authentication)). |

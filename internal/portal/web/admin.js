@@ -809,7 +809,7 @@
   // ---- audit log ----
   const AUDIT_ACTIONS = {
     'auth.admin_login': '管理员登录', 'user.create': '创建用户', 'user.credit': '调整 credit', 'user.disable': '禁用用户', 'user.enable': '启用用户', 'user.set_admin': '变更管理员权限',
-    'user.rename': '修改用户邮箱', 'user.mfa_reset': '重置两步验证', 'user.token_revoke': '吊销 token', 'user.tokens_revoke_all': '吊销全部 token', 'user.device_unbind': '解绑设备',
+    'user.rename': '修改用户邮箱', 'user.login_code': '生成登录验证码', 'user.mfa_reset': '重置两步验证', 'user.token_revoke': '吊销 token', 'user.tokens_revoke_all': '吊销全部 token', 'user.device_unbind': '解绑设备',
     'relay.add': '登记中继', 'relay.update': '编辑中继', 'relay.enable': '启用中继', 'relay.disable': '停用中继', 'relay.remove': '删除中继', 'dispute.resolve': '裁决争议', 'version_policy.set': '修改版本策略',
     'mail.send': '写邮件', 'mail.reply': '回复邮件', 'mail.mark_read': '批量标记已读 / 未读', 'mail.delete': '删除邮件', 'mail.move': '归档 / 移回邮件', 'mail.retry': '重发邮件', 'mail.cancel': '取消发送', 'mail.test': '发送测试邮件',
     'feedback.status': '处理反馈', 'settings.update': '修改系统设置', 'settings.apply_blocklist': '禁用黑名单用户', 'invite.create': '创建邀请码', 'invite.disable': '停用邀请码',

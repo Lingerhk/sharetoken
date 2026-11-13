@@ -2,6 +2,7 @@ package portal
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -367,5 +368,47 @@ func TestSchemaHasNoPasswords(t *testing.T) {
 	var need int
 	if err := s.db.QueryRow(`SELECT MAX(min_reader) FROM schema_migrations WHERE component = 'core'`).Scan(&need); err != nil || need != 5 {
 		t.Fatalf("min reader %d %v", need, err)
+	}
+}
+
+// An operator's code (portal login-code) signs in like a mailed one, on the
+// pages and in clients, once; nothing is mailed, and it does not use up the
+// holder's own requests.
+func TestOperatorSignInCode(t *testing.T) {
+	s, a := newPortal(t, Config{})
+	if _, _, err := s.IssueSignInCode("nobody@example.com"); !errors.Is(err, accounts.ErrNotFound) {
+		t.Fatalf("unknown address: %v", err)
+	}
+	u, _ := testUser(t, s, "ann@example.com")
+	code, exp, err := s.IssueSignInCode(" Ann@Example.com ")
+	if err != nil || len(code) != 6 || exp.Before(time.Now().Add(9*time.Minute)) {
+		t.Fatalf("code %q until %v: %v", code, exp, err)
+	}
+	if ms, _ := s.mail.Outbox(mailer.OutFilter{Q: "ann@example.com", Limit: 5}); len(ms) != 0 {
+		t.Fatalf("an operator's code was mailed: %+v", ms)
+	}
+	c := &web{t: t, url: a.url, noWeb: true}
+	var res AuthResponse
+	resp, raw := c.do("POST", "/api/v1/auth/verify", map[string]string{"email": "ann@example.com", "code": code})
+	if resp.StatusCode != 200 || json.Unmarshal(raw, &res) != nil || res.User.ID != u.ID || res.Created {
+		t.Fatalf("client sign-in: %d %s", resp.StatusCode, raw)
+	}
+	c.wantErr("POST", "/api/v1/auth/verify", map[string]string{"email": "ann@example.com", "code": code}, 401, "bad_code")
+	// The holder can still ask for a mailed code at once.
+	sendCode(t, s, c, "ann@example.com")
+	// The pages take one too; a newer code replaces the mailed one.
+	code, _, err = s.IssueSignInCode("ann@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &web{t: t, url: a.url}
+	if resp, raw := w.do("POST", "/api/v1/web/auth/verify", map[string]string{"email": "ann@example.com", "code": code}); resp.StatusCode != 200 {
+		t.Fatalf("web sign-in: %d %s", resp.StatusCode, raw)
+	}
+	if err := s.store.SetDisabled(u.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.IssueSignInCode("ann@example.com"); !errors.Is(err, accounts.ErrDisabled) {
+		t.Fatalf("disabled account: %v", err)
 	}
 }

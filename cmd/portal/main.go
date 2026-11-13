@@ -9,6 +9,7 @@
 //	                                            # web pages: / (users) and /admin/ (operators)
 //	portal useradd [-admin] <email>             # people sign in with a code mailed to the address
 //	portal rename <username> <email>            # e.g. an old account without an address
+//	portal login-code <email>                   # a sign-in code without the mail (10 minutes, once)
 //	portal grant <username> <micros> [memo]     # negative micros deduct
 //	portal users | user <username> | disable <username> | enable <username>
 //	portal relay add <multiaddr> [name] [region] | relay ls | relay rm|enable|disable <id>
@@ -191,7 +192,7 @@ func main() {
 	flag.StringVar(&f.Keys.PassKeyFile, "pass-key", f.Keys.PassKeyFile, "key that signs relay passes (created with mode 0600 if missing; relays trust its public key: `portal pass-key`)")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, `usage: portal [-config portal.yaml] [-db file] <command>
-commands: version, version-policy, serve, check-config, useradd, rename, grant, users, user, disable, enable, mfa-reset, relay, overview, pass-key`)
+commands: version, version-policy, serve, check-config, useradd, rename, login-code, grant, users, user, disable, enable, mfa-reset, relay, overview, pass-key`)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -454,6 +455,23 @@ func admin(p *portal.Server, cmd string, args []string) error {
 		}
 		p.AuditCLI("user.rename", u.Username, map[string]any{"from": args[0]})
 		return printJSON(u)
+	case "login-code":
+		// For someone whose mail does not arrive: the code a mail would carry,
+		// printed here. It is as good as access to the mailbox; it is audited.
+		if err := need(1, "<email>"); err != nil {
+			return err
+		}
+		code, exp, err := p.IssueSignInCode(args[0])
+		if errors.Is(err, accounts.ErrNotFound) {
+			return fmt.Errorf("%s has no account (create it with: portal useradd %s)", args[0], args[0])
+		}
+		if err != nil {
+			return err
+		}
+		p.AuditCLI("user.login_code", accounts.NormalizeEmail(args[0]), nil)
+		fmt.Printf("%s\nsigns in %s on the web pages or in a client, once, until %s (an earlier code of the address no longer works; two-factor authentication still applies)\n",
+			code, accounts.NormalizeEmail(args[0]), exp.Local().Format("15:04:05"))
+		return nil
 	case "grant":
 		if err := need(2, "<username> <micros> [memo]"); err != nil {
 			return err

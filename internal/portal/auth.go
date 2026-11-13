@@ -256,3 +256,19 @@ func (s *Server) issueLoginToken(w http.ResponseWriter, u *accounts.User, name s
 	}
 	writeJSON(w, status, AuthResponse{User: u, Token: plain, Created: created})
 }
+
+// IssueSignInCode makes a sign-in code for an existing account without mailing
+// it: what the operator command "portal login-code" prints, for someone who
+// cannot get the mail. The code signs in on the web pages and in clients like a
+// mailed one (once, for mailer.CodeTTL); two-factor authentication still applies.
+func (s *Server) IssueSignInCode(email string) (code string, expires time.Time, err error) {
+	email = accounts.NormalizeEmail(email)
+	u, err := s.store.UserByName(email)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if u.Disabled {
+		return "", time.Time{}, accounts.ErrDisabled
+	}
+	return s.mail.IssueCode(mailer.PurposeLogin, u.Username)
+}

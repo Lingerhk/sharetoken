@@ -61,6 +61,10 @@ func hashCode(salt []byte, purpose, email, code string) []byte {
 	return h.Sum(nil)
 }
 
+// OperatorIP marks codes an operator issued (IssueCode): they were not asked
+// for from any address and do not count against the limits on asking.
+const OperatorIP = "operator"
+
 // RequestCode rate-limits, records and mails a verification code.
 func (s *Store) RequestCode(r CodeRequest) error {
 	now := s.now()
@@ -71,7 +75,7 @@ func (s *Store) RequestCode(r CodeRequest) error {
 	hourAgo := now.Add(-time.Hour).Unix()
 	var last sql.NullInt64
 	var forEmail, forIP, total int
-	if err := s.DB.QueryRow(`SELECT MAX(created_at), COUNT(*) FROM mail_codes WHERE email = ? AND created_at >= ?`, r.Email, hourAgo).Scan(&last, &forEmail); err != nil {
+	if err := s.DB.QueryRow(`SELECT MAX(created_at), COUNT(*) FROM mail_codes WHERE email = ? AND ip <> ? AND created_at >= ?`, r.Email, OperatorIP, hourAgo).Scan(&last, &forEmail); err != nil {
 		return err
 	}
 	if last.Valid && now.Sub(time.Unix(last.Int64, 0)) < CodeCooldown {
@@ -80,28 +84,14 @@ func (s *Store) RequestCode(r CodeRequest) error {
 	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM mail_codes WHERE ip = ? AND created_at >= ?`, r.IP, hourAgo).Scan(&forIP); err != nil {
 		return err
 	}
-	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM mail_codes WHERE created_at >= ?`, hourAgo).Scan(&total); err != nil {
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM mail_codes WHERE ip <> ? AND created_at >= ?`, OperatorIP, hourAgo).Scan(&total); err != nil {
 		return err
 	}
 	if forEmail >= maxCodesPerEmail || forIP >= maxCodesPerIP || total >= maxCodesPerHour {
 		return ErrCodeLimit
 	}
-	code, err := newCode()
+	code, exp, err := s.storeCode(r.Purpose, r.Email, r.IP, now)
 	if err != nil {
-		return err
-	}
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return err
-	}
-	hash := hashCode(salt, r.Purpose, r.Email, code)
-	// A newer code replaces older ones.
-	if _, err := s.DB.Exec(`UPDATE mail_codes SET consumed = 1 WHERE email = ? AND purpose = ? AND consumed = 0`, r.Email, r.Purpose); err != nil {
-		return err
-	}
-	exp := now.Add(CodeTTL)
-	if _, err := s.DB.Exec(`INSERT INTO mail_codes (purpose, email, ip, salt, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		r.Purpose, r.Email, r.IP, salt, hash, exp.Unix(), now.Unix()); err != nil {
 		return err
 	}
 	m := verifyMail(r.Email, code)
@@ -110,6 +100,34 @@ func (s *Store) RequestCode(r CodeRequest) error {
 	m.From, m.ReplyTo = r.From, r.ReplyTo
 	_, err = s.Enqueue(m)
 	return err
+}
+
+// IssueCode records a code exactly like one that is mailed, and returns it
+// instead of mailing it: an operator hands it to the account holder (or uses it)
+// on the server's command line. It replaces the address's earlier codes.
+func (s *Store) IssueCode(purpose, email string) (code string, expires time.Time, err error) {
+	return s.storeCode(purpose, email, OperatorIP, s.now())
+}
+
+// storeCode makes a code and records its hash; a newer code replaces older ones.
+func (s *Store) storeCode(purpose, email, ip string, now time.Time) (string, time.Time, error) {
+	code, err := newCode()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", time.Time{}, err
+	}
+	if _, err := s.DB.Exec(`UPDATE mail_codes SET consumed = 1 WHERE email = ? AND purpose = ? AND consumed = 0`, email, purpose); err != nil {
+		return "", time.Time{}, err
+	}
+	exp := now.Add(CodeTTL)
+	if _, err := s.DB.Exec(`INSERT INTO mail_codes (purpose, email, ip, salt, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		purpose, email, ip, salt, hashCode(salt, purpose, email, code), exp.Unix(), now.Unix()); err != nil {
+		return "", time.Time{}, err
+	}
+	return code, exp, nil
 }
 
 // VerifyCode redeems a code. It succeeds at most once per code, and each wrong

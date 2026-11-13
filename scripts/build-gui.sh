@@ -46,7 +46,7 @@ fill() { # template: the packaging files name the build type with @ENV@ and so o
   sed -e "s/@EXE@/$EXE/g" -e "s/@GUI@/$GUI/g" -e "s/@NAME@/$NAME/g" -e "s/@BUNDLE_ID@/$BUNDLE_ID/g" -e "s/@VERSION@/$NUMERIC/g" "$1"
 }
 build_shell() { # output path, extra tags
-  (cd gui && CGO_ENABLED=1 go build -trimpath -tags "desktop,production$2" -ldflags "$SHELL_LDFLAGS" -o "../$1" .)
+  (cd gui && CGO_ENABLED=1 go build -trimpath ${2:+-tags "$2"} -ldflags "$SHELL_LDFLAGS" -o "../$1" .)
 }
 # -X says nothing when it misses its variable, and a wrong build type here sends
 # users to the wrong network: look for the stamp in what was built. Works on
