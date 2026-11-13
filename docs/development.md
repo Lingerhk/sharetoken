@@ -65,7 +65,7 @@ on the release tag and `<version>-dev.<commit>` anywhere else, and
 |---|---|
 | `scripts/build.sh portal coordinator relay mailserver` | server programs in `dist/`, named with version, system and architecture. `GOOS` and `GOARCH` cross-compile. Built with `-trimpath -ldflags "-s -w"`; `GOAMD64`/`GOARM64` above the baseline target a newer CPU and are named in the file (`GOAMD64=v3` → `portal-1.0.0-linux-amd64v3`) |
 | `scripts/build-cli.sh <dev\|prod> [system] [arch]` | command-line client archives |
-| `scripts/build-gui.sh <dev\|prod> [macos\|windows] [arch]` | the desktop app and its installer (`.dmg`, `.exe`) |
+| `scripts/build-gui.sh <dev\|prod> [macos\|windows] [arch]` | the desktop app and its installer (`.dmg`, `.exe`). The `.dmg` is laid out by dmgbuild (pinned, installed into `~/.cache/sharetoken/` on first use; settings in `scripts/dmg_settings.py`), which never opens Finder |
 | `scripts/build-gui-linux.sh <dev\|prod> [arch]` | the Linux desktop package (`.deb`), built in Docker (`scripts/gui-builder.Dockerfile`) |
 | `scripts/publish-packages.sh <version> <user@host> <dir>` | builds every package of a release and uploads them to a portal's downloads directory |
 | `docker build -t sharetoken .` | the server image used by `docker-compose.yml` |
