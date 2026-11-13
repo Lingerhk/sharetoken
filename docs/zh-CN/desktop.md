@@ -149,12 +149,14 @@ macOS 在菜单栏、Windows 在通知区、Linux 以状态通知项（StatusNot
 | 门户证书 | 向门户发送任何内容之前先探测它。自签名证书必须由用户核对指纹并确认；确认后固定（pin），之后发生变化时拒绝并显示警告。发往其他机器的明文 HTTP 直接拒绝（`-allow-http` 仅供测试网络） |
 | token | 只在 daemon 和 `config.json`（权限 0600）里。API 不返回它，页面读不到它。登录验证码只转发给门户，不落盘、不进日志 |
 | 恶意网页 | 校验 `Host` 头（防 DNS rebinding）。`/api/v1/` 只接受没有 `Origin` 或同源的请求；`/v1/` 和 `sharetoken up` 一样只放行本地来源。JSON 接口要求 `Content-Type: application/json` |
+| 本机其他程序和用户 | 回环地址对它们都开放。daemon 每次启动生成一个 key，写进 `run.json`（权限 0600，在 0700 的状态目录里）；除页面文件、OpenAI 端点 `/v1/` 和 `GET /api/v1/hello` 外，所有请求都要带 `Authorization: Bearer <key>`，否则 401 `local_auth`。窗口的代理、托盘和 CLI 都从这里读取（`internal/client/localauth.go`） |
+| 占住 daemon 端口的程序 | 窗口只在 daemon 证明自己持有 `run.json` 里的 key 之后才使用它：`GET /api/v1/hello?nonce=…` 返回以 key 为密钥、对其地址和 nonce 计算的 HMAC-SHA256。key 本身不会发往没有通过证明的地址，所以页面、登录验证码和厂商 API key 只会交给本用户的 daemon。没有 `run.json` 时，该地址上无论谁在应答都不用，改用备用端口 |
 | 页面 XSS | CSP 禁止内联脚本和外部资源；DOM 只用 `textContent` 构建 |
 | 换账号 | 设备密钥属于一个账户。换账号登录时旧密钥改名为 `device.key.retired-<时间>` 并生成新密钥。credit 记在账户上，不受影响 |
 
 **已知未解决：**
 
-- 本地 API 对本机其他进程没有认证（`sharetoken up` 也一样）。在多用户的 Linux 机器上，别的用户可以调用 `/v1` 花你的 credit，或者调用 `/api/v1/logout`。要解决需要引入本地 secret（例如 0600 文件加会话 cookie）。
+- OpenAI 端点 `/v1/` 接受任意 API key，所以本机别的程序或用户仍能通过它花 credit（管理 API 已对它们关闭）。
 - token 明文存于 `config.json`（0600；Windows 上是只给本人、SYSTEM 和 Administrators 的 ACL），和命令行相同，没有放进系统钥匙串。
 
 ## 构建
@@ -200,7 +202,7 @@ PORTAL=$PORTAL PIN=$PIN scripts/cli_test.sh <sharetoken-dev 程序的路径>
 scripts/gui_stack.sh stop DIR
 ```
 
-页面也可以不通过窗口使用：运行 `sharetoken daemon`，然后用浏览器打开 `http://127.0.0.1:9787/`（dev：`sharetoken-dev daemon`，端口 9887）。
+页面也可以不通过窗口使用：运行 `sharetoken daemon`，然后用浏览器打开它打印的地址 `http://127.0.0.1:9787/#key=…`（dev：`sharetoken-dev daemon`，端口 9887）。页面把 key 存在这个标签页里（`sessionStorage`），并从地址栏去掉；daemon 每次启动 key 都会变。
 
 ## 测试
 

@@ -128,7 +128,7 @@ func main() {
 		window.Focus()
 	}
 	var nt atomic.Pointer[nativeTray]
-	tray := newTrayController(start, func() string { return sup.addr }, func(m trayMenu) {
+	tray := newTrayController(start, sup.endpoint, func(m trayMenu) {
 		if t := nt.Load(); t != nil {
 			t.set(m)
 		}

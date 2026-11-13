@@ -136,10 +136,14 @@ func (d *testDaemon) call(method, path string, body any, hdr ...string) (int, []
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set("Authorization", "Bearer "+d.Key()) // as the desktop shell and the CLI send it
 	for i := 0; i+1 < len(hdr); i += 2 {
-		if hdr[i] == "Host" {
+		switch {
+		case hdr[i] == "Host":
 			req.Host = hdr[i+1]
-		} else {
+		case hdr[i] == "Authorization" && hdr[i+1] == "":
+			req.Header.Del("Authorization")
+		default:
 			req.Header.Set(hdr[i], hdr[i+1])
 		}
 	}
@@ -153,9 +157,9 @@ func (d *testDaemon) call(method, path string, body any, hdr ...string) (int, []
 }
 
 // want asserts the status and, when not empty, the error code of a request.
-func (d *testDaemon) want(status int, code, method, path string, body any) []byte {
+func (d *testDaemon) want(status int, code, method, path string, body any, hdr ...string) []byte {
 	d.t.Helper()
-	got, data := d.call(method, path, body)
+	got, data := d.call(method, path, body, hdr...)
 	if got != status {
 		d.t.Fatalf("%s %s: status %d, want %d: %s", method, path, got, status, data)
 	}
@@ -909,6 +913,7 @@ func TestDaemonRequestGuards(t *testing.T) {
 	// What a cross-site form could send.
 	req, _ := http.NewRequest("POST", d.base+"/api/v1/auth/verify", strings.NewReader(`{"portal":"x"}`))
 	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Authorization", "Bearer "+d.Key())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -919,7 +924,10 @@ func TestDaemonRequestGuards(t *testing.T) {
 	}
 	// Oversized and malformed bodies.
 	big := strings.NewReader(`{"portal":"` + strings.Repeat("x", 1<<20) + `"}`)
-	resp, err = http.Post(d.base+"/api/v1/auth/verify", "application/json", big)
+	req, _ = http.NewRequest("POST", d.base+"/api/v1/auth/verify", big)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+d.Key())
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -931,6 +939,56 @@ func TestDaemonRequestGuards(t *testing.T) {
 	// agent's routes, and there is no agent).
 	check(401, "GET", "/api/v1/auth/verify", nil)
 	check(401, "PUT", "/api/v1/session", map[string]string{})
+}
+
+// Loopback is open to every program and user of the machine: the management
+// API wants the key from run.json, and the hello proves the daemon holds it.
+func TestDaemonLocalKey(t *testing.T) {
+	e := newDaemonEnv(t, openPortal(), false)
+	d := e.daemon()
+	addr, key := LocalAPI(d.home, Config{})
+	if addr != d.Addr() || key != d.Key() || len(key) != 2*localKeyBytes {
+		t.Fatalf("run.json: %s %q", addr, key)
+	}
+	if info, err := os.Stat(filepath.Join(d.home, RunFile)); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("run.json mode: %v %v", info, err)
+	}
+	noKey := []string{"Authorization", ""}
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/v1/session"}, {"GET", "/api/v1/status"}, {"GET", "/api/v1/account"}, {"POST", "/api/v1/logout"},
+		{"GET", "/api/v1/providers"}, {"POST", "/api/v1/auth/code"}, {"POST", "/api/v1/hello"},
+		{"GET", "/api/v1/../api/v1/session"}, {"GET", "/ui/../api/v1/session"}, {"GET", "/v1/../api/v1/session"}, {"GET", "/nothing"},
+	} {
+		if code, data := d.call(c.method, c.path, nil, noKey...); code != 401 || !strings.Contains(string(data), "local_auth") {
+			t.Errorf("%s %s without the key: %d %s", c.method, c.path, code, data)
+		}
+	}
+	d.want(401, "local_auth", "GET", "/api/v1/session", nil, "Authorization", "Bearer "+strings.Repeat("0", 64))
+	d.want(401, "local_auth", "GET", "/api/v1/session", nil, "Authorization", key)
+	d.want(200, "", "GET", "/api/v1/session", nil)
+	// Open without it: the page, its files, the OpenAI endpoint (401 there is
+	// "not logged in"), and the hello.
+	for _, p := range []string{"/", "/ui/app.js"} {
+		d.want(200, "", "GET", p, nil, noKey...)
+	}
+	d.want(401, "not_logged_in", "GET", "/v1/models", nil, noKey...)
+	nonce := strings.Repeat("ab", 32)
+	var h Hello
+	if code, data := d.call("GET", "/api/v1/hello?nonce="+nonce, nil, noKey...); code != 200 || json.Unmarshal(data, &h) != nil {
+		t.Fatalf("hello: %d %s", code, data)
+	}
+	if h.Env != Env || h.Version != version.Version || h.Proof != LocalProof(key, d.Addr(), nonce) || h.Proof == LocalProof(key, "127.0.0.1:1", nonce) {
+		t.Fatalf("hello: %+v", h)
+	}
+	for _, n := range []string{"", "abc", strings.Repeat("zz", 32), strings.Repeat("ab", 65)} {
+		d.want(400, "bad_request", "GET", "/api/v1/hello?nonce="+n, nil, noKey...)
+	}
+	// A new start, a new key.
+	d.Close()
+	d2 := e.daemonIn(d.home)
+	if d2.Key() == key {
+		t.Fatal("the key did not change")
+	}
 }
 
 // The API listens on loopback only.
@@ -1009,7 +1067,7 @@ func TestDaemonLogsNoSecrets(t *testing.T) {
 	if !strings.Contains(logs, "signed in") {
 		t.Fatalf("no logs captured: %s", logs)
 	}
-	for _, secret := range []string{code, token} {
+	for _, secret := range []string{code, token, d.Key()} {
 		if strings.Contains(logs, secret) {
 			t.Errorf("log contains %q:\n%s", secret, logs)
 		}

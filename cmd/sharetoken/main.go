@@ -641,7 +641,9 @@ func (c *cmdCtx) runDaemon(args []string) error {
 	if err := d.Start(); err != nil {
 		return err
 	}
-	fmt.Printf("sharetoken daemon: app and API at http://%s/\n", d.Addr())
+	// The page reads the key from the address's fragment, which the browser
+	// does not send anywhere (localauth.go).
+	fmt.Printf("sharetoken daemon: app at http://%s/#key=%s (the key changes at each start)\n", d.Addr(), d.Key())
 	<-sctx.Done()
 	fmt.Println("stopping…")
 	d.Close()
@@ -658,9 +660,13 @@ func (c *cmdCtx) daemon(method, path string, body, out any) error {
 		}
 		rd = strings.NewReader(string(data))
 	}
-	req, err := http.NewRequest(method, "http://"+client.APIAddr(c.home, c.cfg)+path, rd)
+	addr, key := client.LocalAPI(c.home, c.cfg)
+	req, err := http.NewRequest(method, "http://"+addr+path, rd)
 	if err != nil {
 		return err
+	}
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	hc := &http.Client{Timeout: 90 * time.Second}
 	resp, err := hc.Do(req)

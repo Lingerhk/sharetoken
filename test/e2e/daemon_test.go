@@ -60,6 +60,7 @@ func (u *daemonUser) call(method, path string, body any, out any) int {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set("Authorization", "Bearer "+u.d.Key())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		u.t.Fatal(err)
@@ -178,8 +179,8 @@ func TestDaemonFullFlow(t *testing.T) {
 		t.Fatalf("share: %d", code)
 	}
 
-	// The CLI finds the daemon through the run file.
-	if addr := client.APIAddr(home, client.Config{}); addr != u.d.Addr() {
+	// The CLI finds the daemon, and its key, through the run file.
+	if addr, key := client.LocalAPI(home, client.Config{}); addr != u.d.Addr() || key != u.d.Key() {
 		t.Fatalf("run file: %s, want %s", addr, u.d.Addr())
 	}
 

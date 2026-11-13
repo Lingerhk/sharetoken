@@ -235,15 +235,19 @@ func chat(t *testing.T, a *client.Agent) (string, http.Header) {
 func (n *network) me(a *client.Agent) *portal.Me {
 	n.t.Helper()
 	var st client.Status
-	getJSON(n.t, "http://"+a.Addr()+"/api/v1/status", &st)
+	getJSON(n.t, a, "/api/v1/status", &st)
 	var me portal.Me
-	getJSON(n.t, "http://"+a.Addr()+"/api/v1/account", &me)
+	getJSON(n.t, a, "/api/v1/account", &me)
 	return &me
 }
 
-func getJSON(t *testing.T, url string, out any) {
+// getJSON reads an answer of a's local API, with its key.
+func getJSON(t *testing.T, a *client.Agent, path string, out any) {
 	t.Helper()
-	resp, err := http.Get(url)
+	url := "http://" + a.Addr() + path
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+a.Key())
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -103,15 +103,18 @@ $ST share on > /dev/null
 # A second account that sells nothing: pairing with it leaves a buyer no models.
 sign_in "$DIR/idle" idle@example.test idle-box
 run seller.log $ST up -http 127.0.0.1:$SELLER_API -listen /ip4/127.0.0.1/tcp/0 -nat=false
-for _ in $(seq 1 100); do curl -s http://127.0.0.1:$SELLER_API/api/v1/status | grep -q '"connected": true' && break; sleep 0.2; done
+# The local API wants the key each client records in its run.json.
+key_of() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["key"])' "$1/run.json" 2>/dev/null; }
+for _ in $(seq 1 100); do curl -s -H "Authorization: Bearer $(key_of "$DIR/seller")" http://127.0.0.1:$SELLER_API/api/v1/status | grep -q '"connected": true' && break; sleep 0.2; done
 
 run daemon.log env SHARETOKEN_PORTAL="$PORTAL" "$BIN/sharetoken-guistack" -home "$DIR/desktop" daemon -http 127.0.0.1:$DAEMON_API -listen /ip4/127.0.0.1/tcp/0 -nat=false
-for _ in $(seq 1 50); do curl -s http://127.0.0.1:$DAEMON_API/api/v1/session > /dev/null && break; sleep 0.2; done
+for _ in $(seq 1 50); do [ -n "$(key_of "$DIR/desktop")" ] && curl -sf -H "Authorization: Bearer $(key_of "$DIR/desktop")" http://127.0.0.1:$DAEMON_API/api/v1/session > /dev/null && break; sleep 0.2; done
 
 cat > env <<ENV
 PORTAL=$PORTAL
 PIN=$PIN
 DAEMON=http://127.0.0.1:$DAEMON_API
+DAEMON_KEY=$(key_of "$DIR/desktop")
 PORTAL_PID=$PORTAL_PID
 DESKTOP_HOME=$DIR/desktop
 DOWNLOADS=$DIR/downloads

@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -69,6 +70,11 @@ func newProxy(sup *supervisor, start func() error, result chan<- string, onLang 
 			r.Out.Host = sup.addr
 			r.Out.Header.Del("Origin")
 			r.Out.Header.Del("Referer")
+			// The management API wants the daemon's key; the OpenAI endpoint keeps
+			// whatever the page sent (internal/client/localauth.go).
+			if p := r.In.URL.Path; p != "/v1" && !strings.HasPrefix(p, "/v1/") {
+				r.Out.Header.Set("Authorization", "Bearer "+sup.key)
+			}
 			if r.In.URL.Path == "/" { // the page is changed on its way back: always take it whole
 				for _, h := range []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match", "Accept-Encoding"} {
 					r.Out.Header.Del(h)

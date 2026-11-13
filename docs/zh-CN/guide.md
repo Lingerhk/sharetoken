@@ -105,7 +105,7 @@ sharetoken up                               # 客户端已在运行时，share �
 | `device.key` | 设备私钥（权限 0600）。换一台机器就是另一个设备。 |
 | `providers.json` | 托管 API 的 provider 及其凭据，与 `config.json` 分开存放。 |
 | `network.json` | 上次从门户取得的中继列表，门户不可达时使用。 |
-| `run.json` | 运行中客户端的 API 地址，供其它命令使用。 |
+| `run.json` | 运行中客户端的 API 地址和 key，供其它命令和桌面应用使用（权限 0600）。 |
 
 ### 1.5 config.json
 
@@ -296,7 +296,13 @@ coordinator -db $DSN -fee-bps 500 \
 
 ## 3. 本地管理 API
 
-`sharetoken up` 监听 `http` 里的地址（prod 构建为 `127.0.0.1:9787`）。带有非本地 `Origin` 的请求返回 403，所以用户浏览器里的网页无法花掉 credit。桌面应用使用的 `sharetoken daemon` 提供同一套 API，另加未登录时可用的登录接口；见 [desktop.md](desktop.md)。
+`sharetoken up` 监听 `http` 里的地址（prod 构建为 `127.0.0.1:9787`）。带有非本地 `Origin` 的请求返回 403，所以用户浏览器里的网页无法花掉 credit。本机的其他程序和用户同样能访问回环地址，所以 `/api/v1/` 还要求运行中的客户端每次启动时写进状态目录 `run.json`（权限 0600）的 key，形式为 `Authorization: Bearer <key>`；没有 key 返回 401 `local_auth`。CLI 从这里读取；脚本也可以这样做：
+
+```bash
+curl -s -H "Authorization: Bearer $(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.sharetoken/run.json")))["key"])')" http://127.0.0.1:9787/api/v1/status
+```
+
+OpenAI 兼容端点 `/v1/` 不需要 key。桌面应用使用的 `sharetoken daemon` 提供同一套 API，另加未登录时可用的登录接口；见 [desktop.md](desktop.md)。
 
 | 方法与路径 | 说明 |
 |---|---|

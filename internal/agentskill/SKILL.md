@@ -126,7 +126,7 @@ sharetoken pair private on | off
 
 ## Local management API
 
-While the client runs, `http://@HTTP@/api/v1/…` serves JSON for scripts: `GET status`, `GET models`, `GET account`, `GET jobs?role=buy&limit=20`, `GET share`, `GET pairing`. Prefer the commands above unless JSON is needed.
+While the client runs, `http://@HTTP@/api/v1/…` serves JSON for scripts: `GET status`, `GET models`, `GET account`, `GET jobs?role=buy&limit=20`, `GET share`, `GET pairing`. Each request needs the key the client writes to `@HOME@/run.json` at each start (field `key`), as `Authorization: Bearer <key>`; without it the answer is 401 `local_auth`. Never print the key or put it in files or messages. Prefer the commands above unless JSON is needed.
 
 ## More
 

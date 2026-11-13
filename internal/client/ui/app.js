@@ -29,10 +29,27 @@ I18N.ready.then(() => {
     constructor(status, code, message) { super(message); this.status = status; this.code = code; }
   }
 
+  // The local API's key, for this page opened in a browser from the address
+  // `sharetoken daemon` prints (…/#key=…). In the desktop window the shell adds
+  // the key itself. sessionStorage keeps it to this tab and this port.
+  const keyInAddress = () => {
+    const m = /(?:^#|&)key=([0-9a-f]{16,128})(?:&|$)/.exec(location.hash);
+    if (!m) return '';
+    try { sessionStorage.setItem('st_local_key', m[1]); } catch (e) { /* this page only */ }
+    history.replaceState(null, '', location.pathname + location.search);
+    return m[1];
+  };
+  const localKey = keyInAddress() || (() => { try { return sessionStorage.getItem('st_local_key') || ''; } catch (e) { return ''; } })();
+  // The address pasted into a tab already on the page changes only the
+  // fragment, which loads nothing: start again with the key.
+  addEventListener('hashchange', () => { if (keyInAddress()) location.reload(); });
+
   async function api(method, path, body) {
     let resp;
+    const headers = body ? { 'Content-Type': 'application/json' } : {};
+    if (localKey) headers.Authorization = 'Bearer ' + localKey;
     try {
-      resp = await fetch(path, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+      resp = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
     } catch (e) {
       throw new ApiError(0, 'daemon_down', tr('后台服务没有响应，请重新打开应用'));
     }
@@ -48,6 +65,7 @@ I18N.ready.then(() => {
   // Messages for the codes the daemon and the portal report.
   const MESSAGES = {
     upgrade_required: tr('这个版本已不再受支持，请升级到最新版本后继续使用'),
+    local_auth: tr('请用 sharetoken daemon 启动时打印的地址（带 #key=）打开这个页面'),
     bad_portal: tr('门户地址格式不对'),
     insecure_portal: tr('拒绝使用其他机器上的明文 HTTP 门户：验证码会以明文传输。请使用 https:// 地址'),
     portal_outdated: tr('ShareToken 服务器版本过旧，暂时无法登录'),

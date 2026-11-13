@@ -39,7 +39,7 @@ You can also set the environment variable `SHARETOKEN_HOME`.
 | `config.json` | Settings and the sign-in token. Readable only by you |
 | `device.key` | The device private key. Readable only by you. On another machine it would be a new device |
 | `network.json` | A cache of the relay list. If you delete it, it is fetched again automatically |
-| `run.json` | The API address of the running client |
+| `run.json` | The API address of the running client and the key of its management API |
 | `daemon.log` | The log of the service started by the desktop app |
 
 > [!WARNING]

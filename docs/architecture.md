@@ -151,6 +151,7 @@ The running client serves the OpenAI-compatible endpoint (`/v1`) and the managem
 Safeguards:
 
 - It binds to loopback. The client writes its actual address to `run.json` in its state directory, and the CLI finds the running client from there.
+- **The management API wants a key.** Loopback is open to every program and user of the machine. The client makes a key at each start and writes it to `run.json` (mode 0600, in the 0700 state directory); `/api/v1/` wants it as `Authorization: Bearer <key>` (`client.requireLocalKey`). The desktop app checks that a daemon holds the key before it uses it: `GET /api/v1/hello?nonce=…` answers with HMAC-SHA256(key, address, nonce) (`client.LocalProof`), so a program of another user that holds the port gets neither the page's sign-in codes nor the key. The OpenAI endpoint `/v1/` takes no key.
 - **Cross-origin requests from web pages are refused.** A request with an `Origin` that is not localhost, a loopback address or an application scheme (`tauri://`, `wails://`) gets 403 (`client.guardOrigin`), so that no web page can spend the user's credits through the user's browser. On a loopback address the `Host` header is checked as well, against DNS rebinding.
 - `config.json` (which holds the portal token) and the device key `device.key` have mode 0600. See [configuration.md](configuration.md) for the state directory.
 
@@ -214,6 +215,7 @@ The full threat model and the guarantees the system makes are in [security.md](s
 | A stolen token | Tokens can be revoked at any time; a client's token expires after 60 days, a browser session after 15; only their SHA-256 is stored | `internal/accounts`, `internal/portal` |
 | Guessing a sign-in code | There are no passwords. Six-digit codes live 10 minutes with 5 tries each and 5 codes an hour per address; wrong codes are throttled per IP and per address (8 in 5 minutes, then 429). The mailbox is the key to the account; two-factor authentication guards it further | `internal/mailer/codes.go`, `portal.Server.throttled` |
 | A malicious web page calls the local endpoint | Origin check | `client.guardOrigin` |
+| Another program or user of the machine calls the local management API, or poses as the daemon | Key in `run.json` (0600); the desktop app checks the daemon's HMAC proof before using it | `client.requireLocalKey`, `client.LocalProof`, `gui/supervisor.go` |
 | Taking tickets without connecting, to fill a node's slots | A job that never started is released 30 seconds after its ticket expires; an account with 5 stale tickets gets no more | `coordinator.Engine.MarkStarted`, `coordinator.Engine.Tick` |
 | Strangers occupying a relay's reservation slots | A reservation needs a short-lived pass signed by the portal; devices are limited per user | `internal/relaypass`, `internal/relay/admission.go` |
 | Eavesdropping on or tampering with portal traffic (sign-in codes, tokens) | HTTPS by default; the client pins a self-signed certificate's fingerprint; refuses to send secrets in plaintext to a remote host | `internal/portal/tls.go`, `client.NewPortalClient` |

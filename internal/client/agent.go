@@ -86,6 +86,7 @@ type Agent struct {
 	cancel  context.CancelFunc
 	srv     *http.Server
 	addr    string
+	key     string // the local API's key while it listens itself (localauth.go)
 	started time.Time
 	kick    chan struct{}
 
@@ -168,7 +169,8 @@ func (a *Agent) Start(ctx context.Context) error {
 			return fmt.Errorf("local API on %s: %w", a.cfg.HTTP, err)
 		}
 		a.addr = ln.Addr().String()
-		a.srv = &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
+		a.key = newLocalKey()
+		a.srv = &http.Server{Handler: requireLocalKey(a.key, agentOpen, a.Handler()), ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			if err := a.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				a.log.Error("local API stopped", "err", err)
@@ -193,29 +195,21 @@ func (a *Agent) Start(ctx context.Context) error {
 	return nil
 }
 
-// RunFile records a running client's API address, for the CLI.
+// RunFile records a running client's API address and key, for the CLI and the
+// desktop shell (localauth.go).
 const RunFile = "run.json"
 
 // RunInfo is the content of RunFile.
 type RunInfo struct {
 	API string `json:"api"` // host:port of the local API
 	PID int    `json:"pid"`
+	Key string `json:"key"` // what the management API wants (localauth.go)
 }
 
-func (a *Agent) writeRunFile() {
-	data, _ := json.Marshal(RunInfo{API: a.addr, PID: os.Getpid()})
-	_ = os.WriteFile(filepath.Join(a.home, RunFile), data, 0o600)
-}
+func (a *Agent) writeRunFile() { writeRunInfo(a.home, a.addr, a.key) }
 
-// APIAddr returns the local API address of the client running with home:
-// the address it recorded at start-up, else the configured one.
-func APIAddr(home string, cfg Config) string {
-	var ri RunInfo
-	if data, err := os.ReadFile(filepath.Join(home, RunFile)); err == nil && json.Unmarshal(data, &ri) == nil && ri.API != "" {
-		return ri.API
-	}
-	return cfg.HTTP
-}
+// Key is the local API's key while the agent listens itself ("" otherwise).
+func (a *Agent) Key() string { return a.key }
 
 // Run starts the agent and blocks until ctx ends.
 func (a *Agent) Run(ctx context.Context) error {

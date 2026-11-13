@@ -151,6 +151,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 安全措施：
 
 - 只绑定回环地址。客户端把实际地址写进状态目录里的 `run.json`，CLI 据此找到正在运行的客户端。
+- **管理 API 需要 key。** 回环地址对本机所有程序和用户开放。客户端每次启动生成一个 key，写进 `run.json`（权限 0600，在 0700 的状态目录里）；`/api/v1/` 要求 `Authorization: Bearer <key>`（`client.requireLocalKey`）。桌面应用使用 daemon 之前先确认它持有这个 key：`GET /api/v1/hello?nonce=…` 返回 HMAC-SHA256(key, 地址, nonce)（`client.LocalProof`），所以占住端口的其他用户的程序既拿不到页面里的登录验证码，也拿不到 key。OpenAI 端点 `/v1/` 不需要 key。
 - **拒绝网页的跨域请求。** 带 `Origin`、且来源不是 localhost、回环地址或应用自定义 scheme（`tauri://`、`wails://`）的请求一律 403（`client.guardOrigin`），防止任意网页借用户的浏览器花用户的 credit。监听回环地址时还检查 `Host` 头，防 DNS rebinding。
 - `config.json`（含门户 token）和设备私钥 `device.key` 的权限是 0600。状态目录见 [configuration.md](configuration.md)。
 
@@ -214,6 +215,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 | token 被盗 | token 可以随时吊销；客户端 token 60 天、浏览器会话 15 天过期；只存它的 SHA-256 | `internal/accounts`、`internal/portal` |
 | 猜登录验证码 | 没有密码。6 位验证码 10 分钟有效、每个可试 5 次，一个邮箱每小时 5 个；错误的验证码按 IP 和按邮箱限流（5 分钟 8 次，之后 429）。邮箱就是账户的钥匙，两步验证再加一道保护 | `internal/mailer/codes.go`、`portal.Server.throttled` |
 | 恶意网页调用本地端点 | Origin 检查 | `client.guardOrigin` |
+| 本机其他程序或用户调用本地管理 API，或冒充 daemon | `run.json`（0600）里的 key；桌面应用使用 daemon 前先核对它的 HMAC 证明 | `client.requireLocalKey`、`client.LocalProof`、`gui/supervisor.go` |
 | 拿了 Ticket 不来连，占满节点名额 | 未开始的单在 Ticket 过期 30 秒后释放；账户有 5 张闲置票时不再发新票 | `coordinator.Engine.MarkStarted`、`coordinator.Engine.Tick` |
 | 陌生人占用中继的预约名额 | 预约需要门户签发的短期凭证；按用户限制设备数 | `internal/relaypass`、`internal/relay/admission.go` |
 | 窃听或篡改门户通信（登录验证码、token） | 默认 HTTPS；客户端 pin 自签名证书的指纹；拒绝把机密明文发往远端 | `internal/portal/tls.go`、`client.NewPortalClient` |

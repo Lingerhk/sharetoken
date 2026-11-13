@@ -81,6 +81,7 @@ func localAPI(t *testing.T, a *client.Agent, method, path string, in, out any) (
 		rd = bytes.NewReader(data)
 	}
 	req, _ := http.NewRequest(method, "http://"+a.Addr()+path, rd)
+	req.Header.Set("Authorization", "Bearer "+a.Key())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -179,11 +180,20 @@ func TestProvidersSellThroughTheirOwnAPIs(t *testing.T) {
 			t.Fatalf("%s: %d %s", path, code, out)
 		}
 	}
-	// Web pages, local ones too, stay out of the providers API.
+	// Web pages, local ones too, stay out of the providers API, even one that
+	// had the key; and nothing gets in without it.
 	req, _ := http.NewRequest("GET", "http://"+seller.Addr()+"/api/v1/providers", nil)
 	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Authorization", "Bearer "+seller.Key())
 	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 403 {
 		t.Fatalf("a local web page: %v %v", resp, err)
+	}
+	if code, out := localAPI(t, seller, "GET", "/api/v1/providers", nil, nil); code != 200 {
+		t.Fatalf("with the key: %d %s", code, out)
+	}
+	req, _ = http.NewRequest("GET", "http://"+seller.Addr()+"/api/v1/providers", nil)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 401 {
+		t.Fatalf("without the key: %v %v", resp, err)
 	}
 
 	var models struct{ Models []string }

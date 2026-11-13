@@ -315,5 +315,6 @@
   "这个账号已被停用，请联系客服": "This account is disabled. Please contact support",
   "ShareToken 服务器版本过旧，暂时无法登录": "The ShareToken server is out of date, so you cannot sign in right now",
   "门户证书和确认的指纹不一致，连接可能被拦截。已停止，邮箱和验证码都没有发送": "The portal certificate does not match the confirmed fingerprint, so the connection may be intercepted. Stopped. Neither your email nor a code was sent",
-  "登录或注册": "Sign in or sign up"
+  "登录或注册": "Sign in or sign up",
+  "请用 sharetoken daemon 启动时打印的地址（带 #key=）打开这个页面": "Open this page from the address that sharetoken daemon prints when it starts (the one with #key=)"
 }

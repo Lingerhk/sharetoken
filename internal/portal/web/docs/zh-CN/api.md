@@ -2,7 +2,7 @@
 
 运行中的客户端在 `http://127.0.0.1:{{port}}` 上提供两组接口：`/v1/` 是 OpenAI 兼容接口，`/api/v1/` 用来查询和管理客户端。
 
-只接受本机请求。带非本机 `Origin` 的请求返回 403。错误统一为 `{"error":{"code","message"}}`。
+只接受本机请求。带非本机 `Origin` 的请求返回 403。管理接口还需要 key（见 [Key](#key)）。错误统一为 `{"error":{"code","message"}}`。
 
 ## OpenAI 兼容接口 {#openai}
 
@@ -35,25 +35,31 @@
 | `DELETE /api/v1/pairing/buyers/{id}` | 卖家：移除一个买家 |
 | `PUT /api/v1/pairing/private` | 卖家：开启或关闭私有模式。请求体：`{"enabled": true}` |
 
+## Key {#key}
+
+客户端每次启动都会生成新的 key，写进数据目录下只有你能读的 `run.json`（字段 `key`）。访问 `/api/v1/` 的每个请求都要带上 `Authorization: Bearer <key>`，否则返回 401 `local_auth`。`{{exe}}` 命令和桌面应用会自己读取。`/v1/` 不需要。
+
 ## 示例 {#examples}
 
 ::: macos linux
 ```bash
-curl -s http://127.0.0.1:{{port}}/api/v1/status
-curl -s http://127.0.0.1:{{port}}/api/v1/account
-curl -s -X POST http://127.0.0.1:{{port}}/api/v1/share/stop
+KEY=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("{{home}}/run.json")))["key"])')
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:{{port}}/api/v1/status
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:{{port}}/api/v1/account
+curl -s -H "Authorization: Bearer $KEY" -X POST http://127.0.0.1:{{port}}/api/v1/share/stop
 ```
 :::
 
 ::: windows
 ```powershell
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/status | ConvertTo-Json -Depth 6
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/account | ConvertTo-Json -Depth 6
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/share/stop -Method Post
+$h = @{ Authorization = "Bearer " + (Get-Content "{{homewin}}\run.json" | ConvertFrom-Json).key }
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/status -Headers $h | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/account -Headers $h | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/share/stop -Method Post -Headers $h
 ```
 :::
 
 ## 安全 {#security}
 
 > [!WARNING]
-> 这些接口对本机其他进程没有认证。多用户机器上，别的用户可以调用 `/v1` 花你的 credit，也可以修改共享设置。请不要把 `http` 改成非本机地址，也不要把端口转发出去。
+> `/v1/` 不需要 key：多用户机器上，别的用户可以调用它花你的 credit。管理接口没有 key 就无法调用。请不要把 `http` 改成非本机地址，也不要把端口转发出去。

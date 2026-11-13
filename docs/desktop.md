@@ -149,12 +149,14 @@ Common error codes: `bad_portal`, `insecure_portal`, `portal_unreachable`, `not_
 | Portal certificate | The portal is probed before anything is sent to it. A self-signed certificate must be confirmed by the user against its fingerprint; it is then pinned, and a later change is refused with a warning. Plain HTTP to another machine is refused (`-allow-http` exists for test networks only) |
 | Token | Kept only in the daemon and in `config.json` (mode 0600). The API never returns it, and the page cannot read it. Sign-in codes are only forwarded to the portal; they are not written to disk or to the log |
 | Hostile web pages | The `Host` header is checked (against DNS rebinding). `/api/v1/` accepts only requests with no `Origin` or the same origin; `/v1/` allows local origins only, as `sharetoken up` does. JSON endpoints require `Content-Type: application/json` |
+| Other programs and users on the machine | Loopback is open to all of them. The daemon makes a key at each start and writes it to `run.json` (mode 0600, in the 0700 state directory); everything but the page's files, the OpenAI endpoint `/v1/` and `GET /api/v1/hello` wants it as `Authorization: Bearer <key>`, else 401 `local_auth`. The window's proxy, the tray and the CLI read it from there (`internal/client/localauth.go`) |
+| A program holding the daemon's port | The window uses a daemon only after it proves it holds the key in `run.json`: `GET /api/v1/hello?nonce=…` answers with an HMAC-SHA256 under the key of its address and the nonce. The key itself never goes to an address that has not proved it, so the page, sign-in codes and provider keys go only to this user's daemon. With no `run.json`, whatever answers at the address is passed over for a spare port |
 | XSS in the page | The CSP forbids inline scripts and external resources; the DOM is built with `textContent` only |
 | Switching accounts | A device key belongs to one account. Signing in as another account renames the old key to `device.key.retired-<time>` and generates a new one. Credits belong to the account and are not affected |
 
 **Known and not solved:**
 
-- The local API does not authenticate other processes on the same machine (the same is true of `sharetoken up`). On a multi-user Linux machine another user can call `/v1` and spend your credits, or call `/api/v1/logout`. Fixing this needs a local secret (for example a 0600 file plus a session cookie).
+- The OpenAI endpoint `/v1/` takes any API key, so another program or user of the machine can still spend credits through it (the management API is closed to them).
 - The token is stored in clear text in `config.json` (0600; on Windows an ACL for the user, SYSTEM and Administrators), as with the CLI. It is not kept in the system keychain.
 
 ## Building
@@ -200,7 +202,7 @@ PORTAL=$PORTAL PIN=$PIN scripts/cli_test.sh <path to sharetoken-dev>
 scripts/gui_stack.sh stop DIR
 ```
 
-The page can also be used without the window: run `sharetoken daemon` and open `http://127.0.0.1:9787/` in a browser (dev: `sharetoken-dev daemon`, port 9887).
+The page can also be used without the window: run `sharetoken daemon` and open the address it prints, `http://127.0.0.1:9787/#key=…`, in a browser (dev: `sharetoken-dev daemon`, port 9887). The page keeps the key for the tab (`sessionStorage`) and takes it out of the address; the key changes at each start of the daemon.
 
 ## Tests
 

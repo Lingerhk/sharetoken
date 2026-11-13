@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -44,18 +45,66 @@ func runFakeDaemon(mode string) {
 		_, _ = io.Copy(io.Discard, os.Stdin)
 		os.Exit(0)
 	}()
-	addr := ""
+	addr, home := "", ""
 	for i, a := range os.Args {
-		if a == "-http" {
+		switch a {
+		case "-http":
 			addr = os.Args[i+1]
+		case "-home":
+			home = os.Args[i+1]
 		}
 	}
-	http.HandleFunc("/api/v1/session", func(w http.ResponseWriter, r *http.Request) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		println(err.Error())
+		os.Exit(1)
+	}
+	key := "fake-daemon-key"
+	data := fmt.Sprintf(`{"api":%q,"pid":%d,"key":%q}`, addr, os.Getpid(), key)
+	if err := os.WriteFile(filepath.Join(home, "run.json"), []byte(data), 0o600); err != nil {
+		println(err.Error())
+		os.Exit(1)
+	}
+	println(http.Serve(ln, fakeDaemonAPI(addr, key, version)).Error())
+}
+
+// fakeDaemonAPI answers like a daemon of release ver at addr with key: the
+// hello without the key, the session only with it.
+func fakeDaemonAPI(addr, key, ver string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/hello", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"env":%q,"version":%q,"proof":%q}`, Env, ver, localProof(key, addr, r.URL.Query().Get("nonce")))
+	})
+	mux.HandleFunc("/api/v1/session", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+key {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		w.Header().Set("X-Seen-Origin", r.Header.Get("Origin"))
 		w.Header().Set("X-Seen-Host", r.Host)
-		io.WriteString(w, `{"env":"`+Env+`","state":"logged_out","version":"`+version+`"}`)
+		io.WriteString(w, `{"env":"`+Env+`","state":"logged_out","version":"`+ver+`"}`)
 	})
-	println(http.ListenAndServe(addr, nil))
+	return mux
+}
+
+// serveFakeDaemon runs fakeDaemonAPI on a port of its own and returns its address.
+func serveFakeDaemon(t *testing.T, key string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	srv := &http.Server{Handler: fakeDaemonAPI(addr, key, version)}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	return addr
+}
+
+// keyOf is the key the daemon on home recorded.
+func keyOf(home string) string {
+	ri, _ := runningClient(home)
+	return ri.Key
 }
 
 func freeAddr(t *testing.T) string {
@@ -77,7 +126,7 @@ func TestStartsAndStopsDaemon(t *testing.T) {
 	if err := s.start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !s.started || probe(context.Background(), addr) != probeDaemon {
+	if !s.started || s.key != "fake-daemon-key" || probe(context.Background(), addr, s.key) != probeDaemon {
 		t.Fatal("daemon not running")
 	}
 	begin := time.Now()
@@ -85,7 +134,7 @@ func TestStartsAndStopsDaemon(t *testing.T) {
 	if d := time.Since(begin); d > 10*time.Second {
 		t.Fatalf("stop waited %v: the daemon did not stop when asked", d)
 	}
-	if got := probe(context.Background(), addr); got != probeNothing {
+	if got := probe(context.Background(), addr, ""); got != probeNothing {
 		t.Fatalf("after stop: %v", got)
 	}
 	s.stop() // idempotent
@@ -94,21 +143,66 @@ func TestStartsAndStopsDaemon(t *testing.T) {
 // A daemon that runs already (from an earlier window, or started by hand) is
 // used and left running.
 func TestAttachesToRunningDaemon(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"env":"`+Env+`","state":"running","version":"`+version+`"}`)
-	}))
-	defer srv.Close()
-	addr := strings.TrimPrefix(srv.URL, "http://")
+	addr := serveFakeDaemon(t, "k1")
 	s := testSupervisor(t, addr, "fail") // would fail if it were started
+	writeRunFile(t, s.home, addr, os.Getpid(), "k1")
 	if err := s.start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if s.started {
-		t.Fatal("started a second daemon")
+	if s.started || s.key != "k1" {
+		t.Fatalf("started %v, key %q", s.started, s.key)
 	}
 	s.stop()
-	if probe(context.Background(), addr) != probeDaemon {
+	if probe(context.Background(), addr, "k1") != probeDaemon {
 		t.Fatal("a daemon it did not start must keep running")
+	}
+}
+
+// What holds the port of this user's daemon but cannot prove its key (another
+// user's program, waiting for the port) gets neither the window nor the key.
+func TestRefusesDaemonWithoutTheKey(t *testing.T) {
+	addr := serveFakeDaemon(t, "someone-else")
+	s := testSupervisor(t, freeAddr(t), "fail")
+	writeRunFile(t, s.home, addr, os.Getpid(), "mine")
+	err := s.start(context.Background())
+	if err == nil || s.started || s.key != "" || !strings.Contains(err.Error(), "not this user's") {
+		t.Fatalf("started %v, key %q, err %v", s.started, s.key, err)
+	}
+}
+
+// Without run.json there is no key to check against: a daemon-like answer at
+// the configured address is passed over for a spare port, as any program.
+func TestDaemonWithoutRunFileIsNotUsed(t *testing.T) {
+	taken := serveFakeDaemon(t, "k1")
+	spare := freeAddr(t)
+	s := testSupervisor(t, taken, "ok")
+	s.spare = []string{spare}
+	if err := s.start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer s.stop()
+	if !s.started || s.addr != spare || probe(context.Background(), spare, keyOf(s.home)) != probeDaemon {
+		t.Fatalf("started %v, addr %s", s.started, s.addr)
+	}
+}
+
+// The key goes to the daemon with each request of the window, but not to the
+// OpenAI endpoint, whose Authorization is the page's.
+func TestProxySendsKey(t *testing.T) {
+	var auth []string
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.URL.Path+" "+r.Header.Get("Authorization"))
+	}))
+	defer daemon.Close()
+	p := newProxy(&supervisor{addr: strings.TrimPrefix(daemon.URL, "http://"), key: "k1"}, started, nil, nil)
+	for _, path := range []string{"/api/v1/session", "/", "/v1/models"} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Authorization", "Bearer from-page")
+		p.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	want := []string{"/api/v1/session Bearer k1", "/ Bearer k1", "/v1/models Bearer from-page"}
+	if strings.Join(auth, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %q", auth)
 	}
 }
 
@@ -134,14 +228,14 @@ func TestDefaultPortTakenUsesSpare(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.stop()
-	if s.addr != spare || probe(context.Background(), spare) != probeDaemon {
+	if s.addr != spare || probe(context.Background(), spare, s.key) != probeDaemon {
 		t.Fatalf("addr %s, want the daemon at %s", s.addr, spare)
 	}
 }
 
-func writeRunFile(t *testing.T, home, addr string, pid int) {
+func writeRunFile(t *testing.T, home, addr string, pid int, key string) {
 	t.Helper()
-	data := fmt.Sprintf(`{"api":%q,"pid":%d}`, addr, pid)
+	data := fmt.Sprintf(`{"api":%q,"pid":%d,"key":%q}`, addr, pid, key)
 	if err := os.WriteFile(filepath.Join(home, "run.json"), []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -163,17 +257,13 @@ func TestRefusesDaemonOfAnotherRelease(t *testing.T) {
 
 // A daemon that moved to a spare port is found again by the next window.
 func TestAttachesToDaemonOnThisHomeAtAnyPort(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"env":"`+Env+`","state":"running","version":"`+version+`"}`)
-	}))
-	defer srv.Close()
-	addr := strings.TrimPrefix(srv.URL, "http://")
+	addr := serveFakeDaemon(t, "k2")
 	s := testSupervisor(t, freeAddr(t), "fail") // would fail if it were started
-	writeRunFile(t, s.home, addr, os.Getpid())
+	writeRunFile(t, s.home, addr, os.Getpid(), "k2")
 	if err := s.start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if s.started || s.addr != addr {
+	if s.started || s.addr != addr || s.key != "k2" {
 		t.Fatalf("started %v, addr %s", s.started, s.addr)
 	}
 }
@@ -185,7 +275,7 @@ func TestUpOnThisHomeIsRefused(t *testing.T) {
 	defer srv.Close()
 	s := testSupervisor(t, freeAddr(t), "ok")
 	s.spare = []string{freeAddr(t)}
-	writeRunFile(t, s.home, strings.TrimPrefix(srv.URL, "http://"), os.Getpid())
+	writeRunFile(t, s.home, strings.TrimPrefix(srv.URL, "http://"), os.Getpid(), "k")
 	err := s.start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "this data directory") || s.started {
 		t.Fatalf("started %v, err %v", s.started, err)
@@ -204,7 +294,7 @@ func TestStaleRunFileIsIgnored(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
-	writeRunFile(t, s.home, strings.TrimPrefix(srv.URL, "http://"), cmd.Process.Pid)
+	writeRunFile(t, s.home, strings.TrimPrefix(srv.URL, "http://"), cmd.Process.Pid, "k")
 	if err := s.start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +430,7 @@ func TestOtherBuildTypesDaemonIsNotUsed(t *testing.T) {
 		io.WriteString(w, `{"env":"prod","state":"logged_out"}`)
 	}))
 	defer srv.Close()
-	if got := probe(context.Background(), strings.TrimPrefix(srv.URL, "http://")); got != probeOther {
+	if got := probe(context.Background(), strings.TrimPrefix(srv.URL, "http://"), ""); got != probeOther {
 		t.Fatalf("probe = %v, want probeOther", got)
 	}
 }

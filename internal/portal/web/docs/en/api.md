@@ -2,7 +2,7 @@
 
 The running client serves two groups of endpoints on `http://127.0.0.1:{{port}}`: `/v1/` is the OpenAI-compatible interface, and `/api/v1/` is for querying and managing the client.
 
-Only requests from your machine are accepted. Requests with a non-local `Origin` get 403. Errors always have the form `{"error":{"code","message"}}`.
+Only requests from your machine are accepted. Requests with a non-local `Origin` get 403. The management endpoints also want a key (see [Key](#key)). Errors always have the form `{"error":{"code","message"}}`.
 
 ## OpenAI-compatible endpoints {#openai}
 
@@ -35,25 +35,31 @@ For usage, see [Call models](/docs/use-models).
 | `DELETE /api/v1/pairing/buyers/{id}` | Seller: remove one of your buyers |
 | `PUT /api/v1/pairing/private` | Seller: turn private mode on or off. Body: `{"enabled": true}` |
 
+## Key {#key}
+
+Each time the client starts, it makes a new key and writes it to `run.json` in its data directory (field `key`), which only you can read. Send it with every request to `/api/v1/` as `Authorization: Bearer <key>`; without it the answer is 401 `local_auth`. The `{{exe}}` commands and the desktop app read it themselves. `/v1/` does not need it.
+
 ## Examples {#examples}
 
 ::: macos linux
 ```bash
-curl -s http://127.0.0.1:{{port}}/api/v1/status
-curl -s http://127.0.0.1:{{port}}/api/v1/account
-curl -s -X POST http://127.0.0.1:{{port}}/api/v1/share/stop
+KEY=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("{{home}}/run.json")))["key"])')
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:{{port}}/api/v1/status
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:{{port}}/api/v1/account
+curl -s -H "Authorization: Bearer $KEY" -X POST http://127.0.0.1:{{port}}/api/v1/share/stop
 ```
 :::
 
 ::: windows
 ```powershell
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/status | ConvertTo-Json -Depth 6
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/account | ConvertTo-Json -Depth 6
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/share/stop -Method Post
+$h = @{ Authorization = "Bearer " + (Get-Content "{{homewin}}\run.json" | ConvertFrom-Json).key }
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/status -Headers $h | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/account -Headers $h | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/share/stop -Method Post -Headers $h
 ```
 :::
 
 ## Security {#security}
 
 > [!WARNING]
-> These endpoints have no authentication for other processes on the machine. On a multi-user machine, other users can call `/v1` and spend your credit, and they can change the sharing settings. Do not change `http` to a non-local address, and do not forward the port.
+> `/v1/` takes no key: on a multi-user machine, other users can call it and spend your credit. The management endpoints are closed to them without the key. Do not change `http` to a non-local address, and do not forward the port.

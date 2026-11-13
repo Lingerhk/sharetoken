@@ -109,7 +109,12 @@ async function shot(name) {
 }
 
 await cdp('Page.enable'); await cdp('Runtime.enable'); await cdp('Log.enable');
-await fetch(`${daemon}/api/v1/logout`, { method: 'POST' });
+// The daemon's page and these checks' calls get the local API's key, as the
+// page opened from the address `sharetoken daemon` prints would keep it.
+const daemonKey = JSON.parse(readFileSync(STACK + '/desktop/run.json', 'utf8')).key;
+await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `if (location.origin === ${JSON.stringify(new URL(daemon).origin)}) try { sessionStorage.setItem('st_local_key', ${JSON.stringify(daemonKey)}); } catch (e) {}
+window.kfetch = (p, o = {}) => fetch(p, { ...o, headers: { ...(o.headers || {}), Authorization: 'Bearer ' + sessionStorage.getItem('st_local_key') } });` });
+await fetch(`${daemon}/api/v1/logout`, { method: 'POST', headers: { Authorization: 'Bearer ' + daemonKey } });
 
 // ---- the landing page and the logged-out portal and client ----
 // Nothing chosen yet: English, whatever the browser's language is.
@@ -209,9 +214,9 @@ ok((await ev('document.body.innerText')).includes('管理控制台') || (await e
 // ---- the desktop client, signed in ----
 await size(1040, 760);
 await go(`${daemon}/?lang=en`);
-const probe = await ev(`fetch('/api/v1/portal/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => r.json())`);
+const probe = await ev(`kfetch('/api/v1/portal/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(r => r.json())`);
 const clientUser = `i18n-client${Date.now()}@example.com`;
-const post = (path, body) => ev(`fetch(${JSON.stringify(path)}, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ${JSON.stringify(JSON.stringify(body))} }).then(r => r.status)`);
+const post = (path, body) => ev(`kfetch(${JSON.stringify(path)}, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ${JSON.stringify(JSON.stringify(body))} }).then(r => r.status)`);
 const sent = await post('/api/v1/auth/code', { pin: probe.fingerprint, email: clientUser });
 const reg = await post('/api/v1/auth/verify', { pin: probe.fingerprint, email: clientUser, code: mailedCode(clientUser) });
 ok(sent === 200 && reg === 200, `the client signs up with a mailed code (HTTP ${sent}, ${reg})`);
@@ -223,7 +228,7 @@ for (const lang of LANGS) {
   await inspect(lang, 'client');
   await shot(`client-${lang}`);
 }
-await ev(`fetch('/api/v1/logout', { method: 'POST' })`);
+await ev(`kfetch('/api/v1/logout', { method: 'POST' })`);
 
 for (const p of problems) ok(false, p);
 console.log(`\n${passed} checks passed, ${failures.length} failed`);

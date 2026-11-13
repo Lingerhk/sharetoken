@@ -105,7 +105,7 @@ Notes:
 | `device.key` | The device's private key (mode 0600). Another machine is another device. |
 | `providers.json` | Hosted-API providers and their credentials, kept apart from `config.json`. |
 | `network.json` | The last relay list from the portal, used when the portal cannot be reached. |
-| `run.json` | The API address of the running client, for the other commands. |
+| `run.json` | The API address of the running client and its key, for the other commands and the desktop app (mode 0600). |
 
 ### 1.5 config.json
 
@@ -296,7 +296,13 @@ Operator commands work on the database directly and can run beside the live serv
 
 ## 3. Local management API
 
-`sharetoken up` listens on the address in `http` (`127.0.0.1:9787` for a prod build). Requests carrying an `Origin` that is not local get 403, so a web page in the user's browser cannot spend credits. `sharetoken daemon`, used by the desktop app, serves the same API plus sign-in endpoints that work while logged out; see [desktop.md](desktop.md).
+`sharetoken up` listens on the address in `http` (`127.0.0.1:9787` for a prod build). Requests carrying an `Origin` that is not local get 403, so a web page in the user's browser cannot spend credits. Every other program and user of the machine reaches the loopback address too, so `/api/v1/` also wants the key that the running client writes to `run.json` in its state directory at each start (mode 0600), as `Authorization: Bearer <key>`; without it the answer is 401 `local_auth`. The CLI reads it from there; a script can do the same:
+
+```bash
+curl -s -H "Authorization: Bearer $(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.sharetoken/run.json")))["key"])')" http://127.0.0.1:9787/api/v1/status
+```
+
+The OpenAI-compatible endpoint `/v1/` takes no key. `sharetoken daemon`, used by the desktop app, serves the same API plus sign-in endpoints that work while logged out; see [desktop.md](desktop.md).
 
 | Method and path | Description |
 |---|---|
