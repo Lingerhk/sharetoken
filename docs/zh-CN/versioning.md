@@ -62,7 +62,7 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
 客户端（桌面应用的 daemon 和 `sharetoken up`）在启动时和之后每小时询问门户：`GET /api/v1/update?kind=desktop|cli&channel=prod|dev&os=…&arch=…`。门户返回：
 
 - 版本策略（`min`、`recommended`、`latest`、`download_url`）。`latest` 为空时用下载目录里的发布；`download_url` 为空时是 `/#download`。
-- `release`：下载目录里的 `RELEASE-<版本>.json`（由 [`scripts/publish-packages.sh`](../../scripts/publish-packages.sh) 写入：版本、提交、构建时间），加上更新日志链接 `/changelog/#v<版本>`。
+- `release`：下载目录里的 `RELEASE-<版本>.json`（发布时由 [`scripts/release-files.sh`](../../scripts/release-files.sh) 写入：版本、提交、构建时间），加上更新日志链接 `/changelog/#v<版本>`。
 - `package`：这个发布里对应客户端种类、构建类型、系统和架构的安装包，带大小和 sha256。dev 客户端拿到的是 `sharetoken-cli-dev-*`。dev 桌面安装包不发布，所以 dev 桌面应用拿不到安装包。
 
 客户端在以下情况判断有新版本：自己的版本低于 `min`（必须升级）、`recommended` 或 `latest`；或者发布是**同一版本号的更新构建**：提交不同、构建时间更晚，而且有这个客户端的安装包。版本保持 1.0.0 期间，起作用的是后一条。一次发布的所有包共用 `ST_BUILD_TIME`，由 `ldflags.sh` 写进 `version.BuildTime`。
@@ -80,7 +80,7 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
 
 客户端可以自己下载并安装新构建，前提是这个包带有**发布密钥**的签名。
 
-- **签名：** 发布密钥是一把 Ed25519 密钥，私钥离线保存（默认 `local/keys/release-signing.pem`，或 `$ST_RELEASE_KEY`），公钥编译进客户端（[`internal/client/upgrade.go`](../../internal/client/upgrade.go) 的 `ReleaseKey`，[`gui/update.go`](../../gui/update.go) 里有同一个，测试保证两处一致）。签名的对象是文件的 SHA-256（对 32 字节摘要做 Ed25519），这也是 Wails 更新器 `ed25519` 算法校验的内容。[`scripts/sign-packages.go`](../../scripts/sign-packages.go) 生成密钥和签名；`publish-packages.sh` 先确认密钥和客户端里的公钥一致，再给每个包签名，写成 `SIGNATURES-<版本>`（格式同 `SHA256SUMS`，每行 `<base64 签名>  <文件名>`）一起发布。
+- **签名：** 发布密钥是一把 Ed25519 密钥，私钥离线保存（默认 `local/keys/release-signing.pem`，或 `$ST_RELEASE_KEY`），在 GitHub Actions 上发布时存为 `release` 环境的 secret（见“发布安装包”），公钥编译进客户端（[`internal/client/upgrade.go`](../../internal/client/upgrade.go) 的 `ReleaseKey`，[`gui/update.go`](../../gui/update.go) 里有同一个，测试保证两处一致）。签名的对象是文件的 SHA-256（对 32 字节摘要做 Ed25519），这也是 Wails 更新器 `ed25519` 算法校验的内容。[`scripts/sign-packages.go`](../../scripts/sign-packages.go) 生成密钥和签名；`scripts/release-files.sh` 先确认密钥和客户端里的公钥一致，再给每个包签名，写成 `SIGNATURES-<版本>`（格式同 `SHA256SUMS`，每行 `<base64 签名>  <文件名>`）一起发布。
 - **门户：** `GET /api/v1/update` 多返回 `install`：这个客户端能自己安装的文件，只有带签名时才有。macOS 桌面应用是 `sharetoken-<版本>-macos-<架构>.app.zip`（整个 .app 打成 zip，下载页不列出），Windows 是安装程序，Linux 是 `.deb`，命令行是压缩包。`package` 和 `install` 都带 `signature`。
 - **下载：** daemon 的 `POST /api/v1/update/download`（请求体 `{"key"}`）在后台把 `install` 下载到数据目录的 `update/`，边下边算 SHA-256，校验和签名都对才保留文件；进度在 `session.update.download`（`downloading`、`ready`、`failed`）。没有签名、签名不对、校验和不对，一律不保留、不安装。
 - **安装（桌面应用）：** 页面上的“立即更新”只在桌面窗口里出现：窗口壳在页面上加 `data-shell-update="1"`，页面再调用壳的 `/__shell/update`（POST `{key}` 开始，GET 查进度）。壳让 daemon 下载，自己再校验一遍签名，然后先停掉 daemon（进行中的作业会结束），再按系统安装：
@@ -89,11 +89,11 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
   - Linux：`pkexec dpkg -i`（桌面会弹出管理员密码框，取消就不安装），装好后由一个小脚本等当前进程退出再启动新的窗口程序。只支持从 `.deb` 安装的副本（`/usr/bin`，dpkg 记录过的）。
 - **安装（命令行）：** `sharetoken upgrade [-y]` 按本程序的安装方式选择安装包（`client.DetectInstallation`）：命令行压缩包就替换程序文件（Windows 上先把正在运行的程序改名为 `.old`，下次启动时删除）；在 macOS 应用里就替换 .app（应用不能在运行）；Windows 桌面安装就静默运行安装程序；`.deb` 就用 `sudo dpkg -i`（不在终端时用 `pkexec`）。版本号不变时也能重装同版本的新构建，所以用 `dpkg -i` 而不是 `apt-get install`。
 
-**还没有：** 自动安装和分批推送；降级保护（签名只针对文件内容，不包含版本号：能篡改门户回复的人可以提供一个旧的、签过名的包）；发布密钥的托管方式还没定。
+**还没有：** 自动安装和分批推送；降级保护（签名只针对文件内容，不包含版本号：能篡改门户回复的人可以提供一个旧的、签过名的包）；用硬件保管发布密钥（现在它是一个文件，在 GitHub 上发布时是一个 secret，见“发布安装包”）。
 
 ### 发布说明
 
-一次发布可以带一段自己的说明，告诉用户这个构建带来了什么。源文件是仓库里的 `release-notes/<语言>.md`（现在有 `en.md` 和 `zh-CN.md`，对应客户端的两种语言），每次发布前改写。`publish-packages.sh` 把它们作为 `RELEASE-<版本>.<语言>.md` 和安装包一起发布；门户读到后放进 `release.notes`（按语言，每种语言有 `summary` 和 `body`），客户端原样转给页面。也可以直接改服务器下载目录里的这些文件，不用重新发布。
+一次发布可以带一段自己的说明，告诉用户这个构建带来了什么。源文件是仓库里的 `release-notes/<语言>.md`（现在有 `en.md` 和 `zh-CN.md`，对应客户端的两种语言），每次发布前改写。发布时它们作为 `RELEASE-<版本>.<语言>.md` 和安装包放在一起；门户读到后放进 `release.notes`（按语言，每种语言有 `summary` 和 `body`），客户端原样转给页面。也可以直接改服务器下载目录里的这些文件，不用重新发布。
 
 写法是一种很小的标记，客户端自己画，不会当作 HTML 解析：
 
@@ -105,7 +105,7 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
 | 其他行 | 段落 |
 | 行内的 `**文字**`、`` `文字` `` | 加粗、代码 |
 
-**摘要**是第一个段落行（不是标题也不是列表项的第一行），显示在只有一行位置的地方：页面顶部的升级提示、系统通知、`sharetoken status`。要写得短：`publish-packages.sh` 要求中文、日文、韩文不超过 30 个字，其他语言不超过 90 个字符，超过就拒绝发布。门户最多保留 120 个字符。每个文件不超过 4096 字节，超过的那种语言不带说明，发布本身不受影响。页面按自己的语言取说明，没有就用英语。
+**摘要**是第一个段落行（不是标题也不是列表项的第一行），显示在只有一行位置的地方：页面顶部的升级提示、系统通知、`sharetoken status`。要写得短：`scripts/release-files.sh` 要求中文、日文、韩文不超过 30 个字，其他语言不超过 90 个字符，超过就拒绝发布。门户最多保留 120 个字符。每个文件不超过 4096 字节，超过的那种语言不带说明，发布本身不受影响。页面按自己的语言取说明，没有就用英语。
 
 ## 升级规则
 
@@ -131,10 +131,30 @@ dist/sharetoken-cli-1.0.0-windows-amd64.zip       scripts/build-cli.sh prod wind
 dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 scripts/build.sh relay
 dist/sharetoken-1.0.0-macos-arm64.app.zip         同上：.app 打成 zip，一键升级用
 dist/SHA256SUMS-1.0.0
-dist/SIGNATURES-1.0.0                             publish-packages.sh 用发布密钥签名
+dist/SIGNATURES-1.0.0                             scripts/release-files.sh 用发布密钥签名
 ```
 
-**发布安装包：** `scripts/publish-packages.sh <版本> <user@host> <目录> [--with-dev-cli] [--owner <用户>]` 在 Mac 上运行，构建 14 个包（桌面安装包、两个 macOS 的 .app.zip 和命令行压缩包，三个系统、两种架构），并用发布密钥签名。它上传这些包，在服务器上校验，然后整体替换门户的下载目录（门户配置里的 `downloads.dir`）；门户在 `/downloads/` 下提供下载。`--owner` 让脚本经 sudo 以门户的运行用户安装这些文件。`--with-dev-cli` 多加 6 个 `sharetoken-cli-dev-*` 包供测试：`GET /api/v1/downloads` 不列出它们，只能按文件名下载。
+**发布安装包。** 一次发布是 14 个包（桌面安装包、两个 macOS 的 .app.zip 和命令行压缩包，三个系统、两种架构），用发布密钥签名，放进门户的下载目录（门户配置里的 `downloads.dir`），整个目录一次替换；门户在 `/downloads/` 下提供下载。有两种做法，跑的是同一套脚本：
+
+- **在 Mac 上：** `scripts/publish-packages.sh <版本> <user@host> <目录> [--with-dev-cli] [--owner <用户>]` 构建、签名、上传，在服务器上校验，然后替换目录。`--owner` 让脚本经 sudo 以门户的运行用户安装这些文件。`--with-dev-cli` 多加 6 个 `sharetoken-cli-dev-*` 包供测试：`GET /api/v1/downloads` 不列出它们，只能按文件名下载。
+- **用 GitHub Actions：** 工作流“Client release”（[`.github/workflows/release-client.yml`](../../.github/workflows/release-client.yml)）。推送 tag `v<VERSION>`，或者移动它（`git tag -f -a v1.0.0 -m ... && git push -f origin v1.0.0`），就在 GitHub 的 runner 上构建：两种架构的 macOS 应用在 Apple 芯片的 runner 上构建，Windows 应用在 Linux 上交叉编译并用 makensis 打包，`.deb` 在每种架构各自的 Linux runner 上用 `build-gui-linux.sh` 的 Docker 镜像构建，命令行在 Linux 上构建。所有包用 `scripts/gui-builder.Dockerfile` 里的 Go 版本，构建时间相同。接着“Sign and publish on GitHub”签名，并创建带全部文件的 GitHub Release（tag 被移动时替换已有 Release 的文件）；“Publish to the portal”替换下载目录。在发布 tag 上手动“Run workflow”效果相同，并会询问是否发布到门户；在分支上运行是试运行：全部构建并检查，不签名也不发布，安装包作为这次运行的产物保留一周。tag 和 `VERSION` 不一致时运行失败。
+
+每一步都是独立的脚本：各个构建脚本；[`scripts/release-files.sh`](../../scripts/release-files.sh) `<版本> [--with-dev-cli] [--unsigned]`，确认 `dist/` 里包齐全、检查发布说明，写出 `SHA256SUMS-<版本>`、`SIGNATURES-<版本>`、`RELEASE-<版本>.json` 和 `RELEASE-<版本>.<语言>.md`；[`scripts/upload-release.sh`](../../scripts/upload-release.sh) `<版本> <user@host> <目录> [--owner <用户>]`，只有每个校验和都对得上、每个签名都能用客户端内置的公钥验证通过时才上传。
+
+工作流需要在 GitHub 上做这些设置（Settings → Environments；Settings → Secrets and variables → Actions）：
+
+| 位置 | 名称 | 值 |
+|---|---|---|
+| 环境 `release` | secret `RELEASE_SIGNING_KEY` | 发布密钥的 PEM 文件（`local/keys/release-signing.pem`） |
+| 环境 `portal` | secret `PORTAL_SSH_KEY` | 在门户服务器上安装文件的账号的 SSH 私钥 |
+| | variable `PORTAL_SSH_TARGET` | `user@host` |
+| | variable `PORTAL_DOWNLOADS_DIR` | 门户的 `downloads.dir` |
+| | variable `PORTAL_SSH_KNOWN_HOSTS` | 服务器的 `known_hosts` 行（例如 `ssh-keyscan -t ed25519 <主机>` 的输出，并人工和服务器的密钥核对）；主机密钥严格校验 |
+| | variable `PORTAL_OWNER`（可选） | 门户的运行用户，同 `--owner` |
+| 仓库 | variable `RELEASE_PUBLISH_PORTAL` | `true`：推送 tag 时也发布到门户；否则只有手动“Run workflow”才会 |
+| | variable `RELEASE_WITH_DEV_CLI` | `true`：每次运行都加上 dev 命令行压缩包 |
+
+**发布密钥放在 GitHub 上。** 存成这个 secret 之后，发布密钥就不再只是离线保存：能让 `release` 作业运行的人，就能给一个所有客户端都会自行安装的包签名。给 `release` 和 `portal` 两个环境设置必需的审批人，只允许从 `v*` tag 部署，再加一条 tag 规则集，只让维护者创建或移动 `v*` tag。作业只在签名期间把密钥写进一个临时文件。没有这个 secret 时，发布运行在签名前停止，仍然可以像以前一样在 Mac 上发布。
 
 程序名不带版本（`sharetoken`、`sharetoken-gui`；dev 构建是 `sharetoken-dev`、`sharetoken-gui-dev`）：窗口按固定的名字查找 daemon，用户的 PATH 在升级后也不用改。用 `scripts/build.sh` 构建的服务端程序则在文件名里带版本。
 

@@ -67,7 +67,10 @@ on the release tag and `<version>-dev.<commit>` anywhere else, and
 | `scripts/build-cli.sh <dev\|prod> [system] [arch]` | command-line client archives |
 | `scripts/build-gui.sh <dev\|prod> [macos\|windows] [arch]` | the desktop app and its installer (`.dmg`, `.exe`) |
 | `scripts/build-gui-linux.sh <dev\|prod> [arch]` | the Linux desktop package (`.deb`), built in Docker (`scripts/gui-builder.Dockerfile`) |
-| `scripts/publish-packages.sh <version> <user@host> <dir>` | builds every package of a release and uploads them to a portal's downloads directory |
+| `scripts/publish-packages.sh <version> <user@host> <dir>` | builds every package of a release on a Mac, signs them and uploads them to a portal's downloads directory |
+| `scripts/release-files.sh <version>` | finishes a release from packages in `dist/`: checksums, signatures, `RELEASE` files |
+| `scripts/upload-release.sh <version> <user@host> <dir>` | checks a finished release and puts it into a portal's downloads directory |
+| [`.github/workflows/release-client.yml`](../.github/workflows/release-client.yml) | the same on GitHub Actions, for a pushed tag `v<VERSION>`: builds, signs, makes the GitHub release, and optionally publishes to the portal ([versioning.md](versioning.md), "Publishing packages") |
 | `docker build -t sharetoken .` | the server image used by `docker-compose.yml` |
 
 The desktop app is described in [desktop.md](desktop.md).
