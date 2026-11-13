@@ -56,7 +56,10 @@ go build -o bin/ ./cmd/...
 | `scripts/build-cli.sh <dev\|prod> [系统] [架构]` | 命令行客户端的压缩包 |
 | `scripts/build-gui.sh <dev\|prod> [macos\|windows] [架构]` | 桌面应用及其安装包（`.dmg`、`.exe`）。`.dmg` 的窗口布局由 dmgbuild 写入（固定版本，首次使用时装到 `~/.cache/sharetoken/`；设置在 `scripts/dmg_settings.py`），构建时不会打开 Finder |
 | `scripts/build-gui-linux.sh <dev\|prod> [架构]` | Linux 桌面包（`.deb`），在 Docker 里构建（`scripts/gui-builder.Dockerfile`） |
-| `scripts/publish-packages.sh <版本> <user@host> <目录>` | 构建一个版本的全部包，并上传到门户的下载目录 |
+| `scripts/publish-packages.sh <版本> <user@host> <目录>` | 在 Mac 上构建一个版本的全部包，签名并上传到门户的下载目录 |
+| `scripts/release-files.sh <版本>` | 用 `dist/` 里已有的包完成一次发布：校验和、签名、`RELEASE` 文件 |
+| `scripts/upload-release.sh <版本> <user@host> <目录>` | 检查完成的发布，并放进门户的下载目录 |
+| [`.github/workflows/release-client.yml`](../../.github/workflows/release-client.yml) | 在 GitHub Actions 上做同样的事，由推送 tag `v<VERSION>` 触发：构建、签名、创建 GitHub Release，可选发布到门户（[versioning.md](versioning.md) 的“发布安装包”） |
 | `docker build -t sharetoken .` | `docker-compose.yml` 使用的服务端镜像 |
 
 桌面应用见 [desktop.md](desktop.md)。

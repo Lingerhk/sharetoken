@@ -1,0 +1,392 @@
+# Builds every client package of a release on GitHub's runners, signs them with
+# the release key and publishes them: as a GitHub release, and optionally into
+# the portal's downloads directory, from where clients are told about the build
+# (GET /api/v1/update) and install it. The steps are the repository's own scripts,
+# the same ones scripts/publish-packages.sh runs on a Mac; docs/versioning.md
+# ("Publishing packages") has the whole story and the settings this needs.
+#
+#   push of tag v<VERSION>          a release: build, sign, GitHub release, and the
+#                                   portal when the variable RELEASE_PUBLISH_PORTAL is true
+#   Run workflow on a release tag   the same; "publish_portal" decides about the portal
+#   Run workflow on a branch        a trial: everything is built and checked, nothing
+#                                   is signed or published; the packages stay as an artifact
+#
+# Packages (14): command-line archives for macOS, Linux and Windows on amd64 and
+# arm64; the macOS .dmg and .app.zip, the Windows installer and the Linux .deb on
+# both architectures. "with_dev_cli" (or the variable RELEASE_WITH_DEV_CLI) adds
+# the six dev command-line archives.
+name: Client release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish_portal:
+        description: On a release tag, also replace the portal's downloads directory
+        type: boolean
+        default: false
+      with_dev_cli:
+        description: Add the six dev command-line archives
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # -eo pipefail
+
+jobs:
+  prepare:
+    name: Version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      commit: ${{ steps.v.outputs.commit }}
+      build_time: ${{ steps.v.outputs.build_time }}
+      go: ${{ steps.v.outputs.go }}
+      release: ${{ steps.v.outputs.release }}
+      portal: ${{ steps.v.outputs.portal }}
+      dev_cli: ${{ steps.v.outputs.dev_cli }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_PORTAL: ${{ inputs.publish_portal }}
+          INPUT_DEV_CLI: ${{ inputs.with_dev_cli }}
+          VAR_PORTAL: ${{ vars.RELEASE_PUBLISH_PORTAL }}
+          VAR_DEV_CLI: ${{ vars.RELEASE_WITH_DEV_CLI }}
+        run: |
+          # A release is a tag v<VERSION> on a tree that scripts/version.sh calls exactly
+          # <VERSION>; any other tag is an error rather than a quiet trial run.
+          version=$(scripts/version.sh)
+          file=$(tr -d ' \n' < VERSION)
+          release=false
+          if [ "$REF_TYPE" = tag ]; then
+            if [ "$REF_NAME" != "v$file" ]; then
+              echo "::error::tag $REF_NAME does not match VERSION ($file)"; exit 1
+            fi
+            if [ "$version" != "$file" ]; then
+              echo "::error::the tree at $REF_NAME is version $version, not $file"; exit 1
+            fi
+            release=true
+          fi
+          portal=false
+          if [ "$release" = true ]; then
+            if [ "$EVENT" = workflow_dispatch ]; then
+              if [ "$INPUT_PORTAL" = true ]; then portal=true; fi
+            elif [ "$VAR_PORTAL" = true ]; then
+              portal=true
+            fi
+          fi
+          dev_cli=false
+          if [ "$INPUT_DEV_CLI" = true ] || [ "$VAR_DEV_CLI" = true ]; then dev_cli=true; fi
+          # The Go of the Linux builder image, so that every package is built with one Go.
+          go=$(sed -n 's/^ARG GO_VERSION=go//p' scripts/gui-builder.Dockerfile)
+          [ -n "$go" ] || { echo "::error::no GO_VERSION in scripts/gui-builder.Dockerfile"; exit 1; }
+          # Every package of a release carries the same build time (scripts/ldflags.sh).
+          build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          commit=$(git rev-parse --short=7 HEAD)
+          {
+            echo "version=$version"; echo "commit=$commit"; echo "build_time=$build_time"; echo "go=$go"
+            echo "release=$release"; echo "portal=$portal"; echo "dev_cli=$dev_cli"
+          } | tee -a "$GITHUB_OUTPUT"
+          {
+            echo "### ShareToken $version"
+            echo
+            echo "| | |"; echo "|---|---|"
+            echo "| Commit | \`$commit\` |"; echo "| Build time | $build_time |"; echo "| Go | $go |"
+            echo "| Release | $release |"; echo "| Portal | $portal |"; echo "| Dev CLI | $dev_cli |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cli:
+    name: Command line
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ST_VERSION: ${{ needs.prepare.outputs.version }}
+      ST_COMMIT: ${{ needs.prepare.outputs.commit }}
+      ST_BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ needs.prepare.outputs.go }}
+          cache-dependency-path: go.sum
+      - run: scripts/build-cli.sh prod all
+      - if: needs.prepare.outputs.dev_cli == 'true'
+        run: scripts/build-cli.sh dev all
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-cli
+          path: |
+            dist/sharetoken-cli-*.tar.gz
+            dist/sharetoken-cli-*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+    env:
+      ST_VERSION: ${{ needs.prepare.outputs.version }}
+      ST_COMMIT: ${{ needs.prepare.outputs.commit }}
+      ST_BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ needs.prepare.outputs.go }}
+          cache-dependency-path: |
+            go.sum
+            gui/go.sum
+      # The runner is Apple silicon; cgo builds the amd64 app too (Go passes -arch to clang).
+      - run: scripts/build-gui.sh prod macos ${{ matrix.arch }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-macos-${{ matrix.arch }}
+          path: |
+            dist/sharetoken-*-macos-*.dmg
+            dist/sharetoken-*-macos-*.app.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    needs: prepare
+    # The Windows app needs no cgo: it cross-compiles, and makensis runs on Linux.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      ST_VERSION: ${{ needs.prepare.outputs.version }}
+      ST_COMMIT: ${{ needs.prepare.outputs.commit }}
+      ST_BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ needs.prepare.outputs.go }}
+          cache-dependency-path: |
+            go.sum
+            gui/go.sum
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends nsis
+      - run: scripts/build-gui.sh prod windows ${{ matrix.arch }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-windows-${{ matrix.arch }}
+          path: dist/sharetoken-*-windows-*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: prepare
+    # Built in the Docker image of scripts/build-gui-linux.sh (Ubuntu 24.04), on a
+    # runner of the package's own architecture, from the committed files only.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      ST_VERSION: ${{ needs.prepare.outputs.version }}
+      ST_COMMIT: ${{ needs.prepare.outputs.commit }}
+      ST_BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: command -v shasum >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq perl; }
+      - run: scripts/build-gui-linux.sh prod ${{ matrix.arch }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-linux-${{ matrix.arch }}
+          path: dist/sharetoken-*-linux-*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  # A trial run (not a release tag): checks that the release is complete and its
+  # notes acceptable, without the key, and keeps the packages for a week.
+  trial:
+    name: Assemble (trial, unsigned)
+    needs: [prepare, cli, macos, windows, linux]
+    if: needs.prepare.outputs.release != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      V: ${{ needs.prepare.outputs.version }}
+      ST_VERSION: ${{ needs.prepare.outputs.version }}
+      ST_COMMIT: ${{ needs.prepare.outputs.commit }}
+      ST_BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
+      DEV_CLI: ${{ needs.prepare.outputs.dev_cli == 'true' && '--with-dev-cli' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pkg-*
+          path: dist
+          merge-multiple: true
+      - run: scripts/release-files.sh "$V" --unsigned ${DEV_CLI:+"$DEV_CLI"}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ needs.prepare.outputs.version }}-unsigned
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Sign and publish on GitHub
+    needs: [prepare, cli, macos, windows, linux]
+    if: needs.prepare.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Holds the secret RELEASE_SIGNING_KEY. Give it required reviewers and limit it
+    # to tags v*: approving this job is what lets a build reach users.
+    environment: release
+    permissions:
+      contents: write
+    env:
+      V: ${{ needs.prepare.outputs.version }}
+      ST_COMMIT: ${{ needs.prepare.outputs.commit }}
+      ST_BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
+      DEV_CLI: ${{ needs.prepare.outputs.dev_cli == 'true' && '--with-dev-cli' || '' }}
+    steps:
+      # No ST_VERSION here: scripts/version.sh must find the release tag on this tree itself.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ needs.prepare.outputs.go }}
+          cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pkg-*
+          path: dist
+          merge-multiple: true
+      - name: Sign
+        env:
+          KEY_PEM: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$KEY_PEM" ]; then
+            echo "::error::the environment 'release' has no secret RELEASE_SIGNING_KEY (the PEM of the release key)"; exit 1
+          fi
+          export ST_RELEASE_KEY="$RUNNER_TEMP/release-signing.pem"
+          trap 'rm -f "$ST_RELEASE_KEY"' EXIT
+          (umask 077 && printf '%s\n' "$KEY_PEM" > "$ST_RELEASE_KEY")
+          scripts/release-files.sh "$V" ${DEV_CLI:+"$DEV_CLI"} > "$RUNNER_TEMP/files"
+          cat "$RUNNER_TEMP/files"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ needs.prepare.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mapfile -t files < "$RUNNER_TEMP/files"
+          {
+            for f in dist/RELEASE-"$V".*.md; do cat "$f"; echo; done
+            echo "---"
+            echo
+            echo "Commit \`$ST_COMMIT\`, built $ST_BUILD_TIME. \`SHA256SUMS-$V\` lists the checksums of the packages and \`SIGNATURES-$V\` their release-key signatures (\`go run scripts/sign-packages.go verify\`)."
+          } > "$RUNNER_TEMP/notes.md"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # The tag was moved (before launch the version stays 1.0.0 and the tag
+            # follows each release): the release takes this build's files.
+            keep=$(printf '%s\n' "${files[@]##*/}")
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r name; do
+              grep -qxF "$name" <<<"$keep" || gh release delete-asset "$TAG" "$name" --yes
+            done
+            gh release upload "$TAG" "${files[@]}" --clobber
+            gh release edit "$TAG" --title "ShareToken $V" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$TAG" "${files[@]}" --verify-tag --title "ShareToken $V" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          echo "GitHub release: $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
+
+  portal:
+    name: Publish to the portal
+    needs: [prepare, publish]
+    if: needs.prepare.outputs.portal == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Holds the secret PORTAL_SSH_KEY and the variables PORTAL_SSH_TARGET,
+    # PORTAL_DOWNLOADS_DIR, PORTAL_SSH_KNOWN_HOSTS and (optional) PORTAL_OWNER.
+    environment: portal
+    env:
+      V: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ needs.prepare.outputs.go }}
+          cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ needs.prepare.outputs.version }}
+          path: dist
+      - name: SSH
+        env:
+          SSH_KEY: ${{ secrets.PORTAL_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.PORTAL_SSH_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$SSH_KEY" ] || [ -z "$KNOWN_HOSTS" ]; then
+            echo "::error::the environment 'portal' needs the secret PORTAL_SSH_KEY and the variable PORTAL_SSH_KNOWN_HOSTS"; exit 1
+          fi
+          install -d -m 700 ~/.ssh
+          (umask 077 && printf '%s\n' "$SSH_KEY" > ~/.ssh/portal_key)
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' 'Host *' '  IdentityFile ~/.ssh/portal_key' '  IdentitiesOnly yes' '  BatchMode yes' '  StrictHostKeyChecking yes' > ~/.ssh/config
+      - name: Upload
+        env:
+          TARGET: ${{ vars.PORTAL_SSH_TARGET }}
+          DIR: ${{ vars.PORTAL_DOWNLOADS_DIR }}
+          OWNER: ${{ vars.PORTAL_OWNER }}
+        run: |
+          if [ -z "$TARGET" ] || [ -z "$DIR" ]; then
+            echo "::error::the environment 'portal' needs the variables PORTAL_SSH_TARGET (user@host) and PORTAL_DOWNLOADS_DIR"; exit 1
+          fi
+          scripts/upload-release.sh "$V" "$TARGET" "$DIR" ${OWNER:+--owner "$OWNER"}
+          echo "Portal: $TARGET:$DIR" >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        run: rm -f ~/.ssh/portal_key

@@ -62,10 +62,10 @@ A development build `1.2.3-dev.x` is compared as `1.2.3`. A network for developm
 A client (the desktop app's daemon, and `sharetoken up`) asks the portal at start-up and every hour after: `GET /api/v1/update?kind=desktop|cli&channel=prod|dev&os=…&arch=…`. The portal returns:
 
 - The version policy (`min`, `recommended`, `latest`, `download_url`). When `latest` is empty, the release in the downloads directory is used; when `download_url` is empty, it is `/#download`.
-- `release`: the `RELEASE-<version>.json` in the downloads directory (written by [`scripts/publish-packages.sh`](../scripts/publish-packages.sh): version, commit, build time), plus the changelog link `/changelog/#v<version>`.
+- `release`: the `RELEASE-<version>.json` in the downloads directory (written by [`scripts/release-files.sh`](../scripts/release-files.sh) when a release is published: version, commit, build time), plus the changelog link `/changelog/#v<version>`.
 - `package`: the package of that release for the client's kind, build type, system and architecture, with its size and sha256. A dev client is offered `sharetoken-cli-dev-*`. Dev desktop installers are not published, so a dev desktop app gets none.
 
-A client decides that a newer version exists when its version is below `min` (upgrade required), `recommended` or `latest`, or when the release is **a newer build of the same version**: the commit differs, the build time is later, and a package exists for this client. While the version stays 1.0.0, the second rule is the one that fires. All packages of one release share `ST_BUILD_TIME`, which `ldflags.sh` writes into `version.BuildTime`.
+A client decides that a newer version exists when its version is below `min` (upgrade required), `recommended` or `latest`, or when the release is **a newer build of the same version**: the commit differs, the build time is later, and a package exists for this client. Before 1.0.1 every release was 1.0.0, so the second rule was the one that fired; it still catches a release rebuilt under the same number. All packages of one release share `ST_BUILD_TIME`, which `ldflags.sh` writes into `version.BuildTime`.
 
 The notice appears in these places:
 
@@ -80,7 +80,7 @@ Local API: `update` in `GET /api/v1/session`, and in `GET /api/v1/status` when t
 
 A client can download and install a new build by itself, provided the package carries the **release key's** signature.
 
-- **Signature:** the release key is an Ed25519 key whose private half is kept offline (by default `local/keys/release-signing.pem`, or `$ST_RELEASE_KEY`); its public half is built into the clients (`ReleaseKey` in [`internal/client/upgrade.go`](../internal/client/upgrade.go), and the same in [`gui/update.go`](../gui/update.go); a test keeps them equal). It signs the file's SHA-256 (Ed25519 over the 32-byte digest), which is what Wails' updater checks with its `ed25519` algorithm. [`scripts/sign-packages.go`](../scripts/sign-packages.go) makes the key and the signatures; `publish-packages.sh` checks the key against the clients' and signs every package into `SIGNATURES-<version>` (the layout of `SHA256SUMS`: `<base64 signature>  <file>`).
+- **Signature:** the release key is an Ed25519 key whose private half is kept offline (by default `local/keys/release-signing.pem`, or `$ST_RELEASE_KEY`), or, for releases made on GitHub Actions, in a secret of the `release` environment (see "Publishing packages"); its public half is built into the clients (`ReleaseKey` in [`internal/client/upgrade.go`](../internal/client/upgrade.go), and the same in [`gui/update.go`](../gui/update.go); a test keeps them equal). It signs the file's SHA-256 (Ed25519 over the 32-byte digest), which is what Wails' updater checks with its `ed25519` algorithm. [`scripts/sign-packages.go`](../scripts/sign-packages.go) makes the key and the signatures; `scripts/release-files.sh` checks the key against the clients' and signs every package into `SIGNATURES-<version>` (the layout of `SHA256SUMS`: `<base64 signature>  <file>`).
 - **Portal:** `GET /api/v1/update` also returns `install`, the file this client installs by itself, only when it is signed: for the macOS app `sharetoken-<version>-macos-<arch>.app.zip` (the .app zipped; not listed on the download page), the installer on Windows, the `.deb` on Linux, the archive for the command line. `package` and `install` carry `signature`.
 - **Download:** the daemon's `POST /api/v1/update/download` (`{"key"}`) fetches `install` into `update/` in the state directory, hashing as it goes, and keeps the file only if checksum and signature match; `session.update.download` reports it (`downloading`, `ready`, `failed`).
 - **Install, desktop app:** "Update now" appears only in the desktop window: its shell marks the page with `data-shell-update="1"`, and the page calls the shell's `/__shell/update` (POST `{key}` to start, GET to follow). The shell has the daemon fetch the file, checks the signature itself, stops the daemon (jobs in flight finish), then:
@@ -89,11 +89,11 @@ A client can download and install a new build by itself, provided the package ca
   - Linux: `pkexec dpkg -i` (the desktop asks for an administrator password; cancelling installs nothing); a small script starts the new window once this one has left. Only a copy installed from the `.deb` qualifies.
 - **Install, command line:** `sharetoken upgrade [-y]` picks the package by how this copy was installed (`client.DetectInstallation`): the archive's program file is replaced (on Windows the running program is renamed `.old` and deleted at the next start); inside the macOS app the bundle is swapped (the app must not be running); a Windows desktop install runs the installer silently; a `.deb` goes through `sudo dpkg -i` (`pkexec` outside a terminal). `dpkg -i` and not `apt-get install`, so that a newer build of the same version installs.
 
-**Not yet:** automatic installs and staged rollouts; downgrade protection (the signature covers the file, not its version: whoever can alter the portal's answer can offer an older signed package); how the release key is held.
+**Not yet:** automatic installs and staged rollouts; downgrade protection (the signature covers the file, not its version: whoever can alter the portal's answer can offer an older signed package); a release key held in hardware (it is a file, or a GitHub secret for releases made there: see "Publishing packages").
 
 ### Release notes
 
-A release can carry a text of its own that tells users what this build brings. The sources are `release-notes/<language>.md` in the repository (`en.md` and `zh-CN.md` today, the client's two languages), rewritten before each release. `publish-packages.sh` publishes them beside the packages as `RELEASE-<version>.<language>.md`; the portal puts what it reads into `release.notes` (by language, each with a `summary` and a `body`), and the client hands it to the page unchanged. The files in the server's downloads directory can also be edited in place, without publishing again.
+A release can carry a text of its own that tells users what this build brings. The sources are `release-notes/<language>.md` in the repository (`en.md` and `zh-CN.md` today, the client's two languages), rewritten before each release. Publishing a release puts them beside the packages as `RELEASE-<version>.<language>.md`; the portal puts what it reads into `release.notes` (by language, each with a `summary` and a `body`), and the client hands it to the page unchanged. The files in the server's downloads directory can also be edited in place, without publishing again.
 
 The text is in a very small markup that clients draw themselves; it is never parsed as HTML:
 
@@ -105,7 +105,7 @@ The text is in a very small markup that clients draw themselves; it is never par
 | Any other line | A paragraph |
 | `**text**`, `` `text` `` inside a line | Bold, code |
 
-The **summary** is the first paragraph line (the first line that is neither a heading nor a list item). It is shown where there is room for one line: the update line at the top of the page, the system notification, `sharetoken status`. Keep it short: `publish-packages.sh` refuses more than 30 characters in Chinese, Japanese and Korean and more than 90 in other languages. The portal keeps 120 characters at most. A file may be 4096 bytes at most; a larger one leaves that language without notes, and the release is still offered. The page takes the notes in its own language, or else in English.
+The **summary** is the first paragraph line (the first line that is neither a heading nor a list item). It is shown where there is room for one line: the update line at the top of the page, the system notification, `sharetoken status`. Keep it short: `scripts/release-files.sh` refuses more than 30 characters in Chinese, Japanese and Korean and more than 90 in other languages. The portal keeps 120 characters at most. A file may be 4096 bytes at most; a larger one leaves that language without notes, and the release is still offered. The page takes the notes in its own language, or else in English.
 
 ## Upgrade rules
 
@@ -131,10 +131,30 @@ dist/sharetoken-cli-1.0.0-windows-amd64.zip       scripts/build-cli.sh prod wind
 dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 scripts/build.sh relay
 dist/sharetoken-1.0.0-macos-arm64.app.zip         the same: the .app zipped, for one-click updates
 dist/SHA256SUMS-1.0.0
-dist/SIGNATURES-1.0.0                             publish-packages.sh, with the release key
+dist/SIGNATURES-1.0.0                             scripts/release-files.sh, with the release key
 ```
 
-**Publishing packages:** `scripts/publish-packages.sh <version> <user@host> <directory> [--with-dev-cli] [--owner <user>]` runs on a Mac and builds 14 packages (desktop installers, the two macOS .app.zip files and command-line archives, for three systems and two architectures), and signs them with the release key. It uploads them, verifies them on the server, and then replaces the portal's downloads directory (`downloads.dir` in the portal's configuration) as a whole; the portal serves them under `/downloads/`. `--owner` installs the files through sudo as the user the portal runs as. `--with-dev-cli` adds six `sharetoken-cli-dev-*` packages for testing: `GET /api/v1/downloads` does not list them, and they can only be fetched by file name.
+**Publishing packages.** A release is 14 packages (desktop installers, the two macOS .app.zip files and command-line archives, for three systems and two architectures), signed with the release key and put into the portal's downloads directory (`downloads.dir` in the portal's configuration), which is replaced as a whole; the portal serves them under `/downloads/`. There are two ways to make one, and both run the same scripts:
+
+- **From a Mac:** `scripts/publish-packages.sh <version> <user@host> <directory> [--with-dev-cli] [--owner <user>]` builds the packages, signs them, uploads them, verifies them on the server and swaps the directory. `--owner` installs the files through sudo as the user the portal runs as. `--with-dev-cli` adds six `sharetoken-cli-dev-*` packages for testing: `GET /api/v1/downloads` does not list them, and they can only be fetched by file name.
+- **From GitHub Actions:** the workflow "Client release" ([`.github/workflows/release-client.yml`](../.github/workflows/release-client.yml)). Pushing the tag `v<VERSION>`, or moving it (`git tag -f -a v1.0.1 -m ... && git push -f origin v1.0.1`), builds the packages on GitHub's runners: the macOS app for both architectures on an Apple silicon runner, the Windows app cross-compiled and packed with makensis on Linux, the `.deb` in the Docker image of `build-gui-linux.sh` on a Linux runner of each architecture, and the command line on Linux. Every package gets the Go of `scripts/gui-builder.Dockerfile` and the same build time. The job "Sign and publish on GitHub" then signs them and creates the GitHub release with every file (for a moved tag it replaces the files of the existing release), and "Publish to the portal" swaps the downloads directory. "Run workflow" on a release tag does the same and asks whether to publish to the portal; on a branch it is a trial: everything is built and checked, nothing is signed or published, and the packages stay with the run for a week. A tag that does not match `VERSION` fails the run.
+
+The steps are scripts of their own: the build scripts; [`scripts/release-files.sh`](../scripts/release-files.sh) `<version> [--with-dev-cli] [--unsigned]`, which checks that every package is in `dist/`, checks the release notes, and writes `SHA256SUMS-<version>`, `SIGNATURES-<version>`, `RELEASE-<version>.json` and `RELEASE-<version>.<language>.md`; and [`scripts/upload-release.sh`](../scripts/upload-release.sh) `<version> <user@host> <directory> [--owner <user>]`, which sends nothing unless every checksum matches and every signature verifies against the key built into the clients.
+
+The workflow needs these settings on GitHub (Settings, Environments; and Settings, Secrets and variables, Actions):
+
+| Where | Name | Value |
+|---|---|---|
+| Environment `release` | secret `RELEASE_SIGNING_KEY` | the release key's PEM file (`local/keys/release-signing.pem`) |
+| Environment `portal` | secret `PORTAL_SSH_KEY` | a private SSH key of the account that installs the files on the portal's server |
+| | variable `PORTAL_SSH_TARGET` | `user@host` |
+| | variable `PORTAL_DOWNLOADS_DIR` | the portal's `downloads.dir` |
+| | variable `PORTAL_SSH_KNOWN_HOSTS` | the server's `known_hosts` line (for example from `ssh-keyscan -t ed25519 <host>`, compared by hand with the server's key); the host key is checked strictly |
+| | variable `PORTAL_OWNER` (optional) | the portal's service user, as `--owner` |
+| Repository | variable `RELEASE_PUBLISH_PORTAL` | `true`: a pushed tag also publishes to the portal; otherwise only "Run workflow" does |
+| | variable `RELEASE_WITH_DEV_CLI` | `true`: every run adds the dev command-line archives |
+
+**The release key on GitHub.** Kept as that secret, the release key is no longer only offline: whoever gets the `release` job to run can sign a package that every client installs by itself. Give the environments `release` and `portal` required reviewers and let them deploy from tags `v*` only, and add a tag ruleset so that only maintainers can create or move `v*` tags. The job writes the key to a temporary file only while signing. Without the secret a release run stops before signing, and releases can still be made from a Mac as before.
 
 Program names carry no version (`sharetoken`, `sharetoken-gui`; dev builds are `sharetoken-dev`, `sharetoken-gui-dev`): the window finds the daemon by a fixed name, and a user's PATH keeps working across upgrades. Server programs built with `scripts/build.sh` do carry the version in their file name.
 
