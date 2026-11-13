@@ -18,7 +18,7 @@ A new account gets some credit. See the [home page](/) for the amount. If the po
 
 If the code does not arrive, check your spam folder first. See [Troubleshooting](/docs/troubleshooting#no-code).
 
-Signing in binds this machine to the account. The sign-in lasts 60 days. When it expires, run `login` again.
+Signing in binds this machine to the account. The sign-in lasts 60 days. When it expires, run `login` again. On the web portal a sign-in lasts 15 days.
 
 Use `-device` to give the device a recognizable name. It appears in the device list on the portal:
 
@@ -42,6 +42,8 @@ The first command only mails the code. The second signs in with it. Run both on 
 You can add a code from an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password and the like) to every sign-in. Turn it on under **Two-factor authentication** on the portal's [account page](/app/#/account): scan the QR code and enter the first code from the app. Turning it off needs a current code from the app.
 
 With it on, `login` asks for the authenticator code after the emailed code. In a script, pass it as `-totp 123456`. Administrators always have it.
+
+If you lose the phone or the app, you cannot sign in, and nobody can read its codes for you. Write to this portal's support ({{support}}) from the account's address: once they have checked it is you, an administrator turns two-factor authentication off, and you can turn it on again on the new phone.
 
 > [!WARNING]
 > Anyone who can read your mailbox can sign in to the account. Keep your email account safe, or turn on two-factor authentication.

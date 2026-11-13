@@ -11,7 +11,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"log/slog"
 	"os"
 	goruntime "runtime"
 	"strings"
@@ -119,7 +118,9 @@ func main() {
 			return
 		}
 		if goruntime.GOOS == "darwin" {
-			app.Show() // the app may be hidden as a whole (Command-H)
+			// The app may be hidden as a whole (Command-H). Unlike the window's
+			// methods, App.Show does not move itself to the main thread.
+			application.InvokeSync(app.Show)
 		}
 		window.Show()
 		window.Restore()
@@ -156,7 +157,6 @@ func main() {
 
 	notifier := notifications.New()
 	opts := application.Options{
-		LogLevel:     slog.LevelDebug,
 		OnShutdown:   stopDaemon,
 		PostShutdown: finish,
 		Name:     windowTitle(),

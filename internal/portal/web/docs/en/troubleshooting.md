@@ -72,7 +72,7 @@ If your home directory is mounted `noexec`, install to `/usr/local/bin` instead.
 
 ### The verification code does not arrive {#no-code}
 
-Check your spam folder first. The code can take a few minutes, and it is valid for 10 minutes. Do not resend again and again: an address gets at most 5 codes an hour, and a code allows 5 wrong tries before you need a new one. If it keeps failing, contact us through [feedback](#feedback).
+Check your spam folder first. The code can take a few minutes, and it is valid for 10 minutes. Do not resend again and again: an address gets at most 5 codes an hour, and a code allows 5 wrong tries before you need a new one. If it never arrives, write to this portal's support ({{support}}) from that address: once they have checked it is you, an administrator can give you a one-time sign-in code (valid for 10 minutes) to enter on the sign-in page as usual.
 
 ### The message is `not logged in` {#not-logged-in}
 

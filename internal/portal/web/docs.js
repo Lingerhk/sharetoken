@@ -8,7 +8,8 @@
 //   ::: downloads desktop               the desktop installers for the chosen system
 //   ::: cards ... [title](url) text     a grid of links
 // {{exe}}, {{home}}, {{homewin}} and {{port}} name the released program, the same
-// on every portal; {{version}} and {{origin}} say what this one offers and where.
+// on every portal; {{version}} and {{origin}} say what this one offers and where,
+// {{support}} where its users write to (the support address, else the portal's host).
 'use strict';
 
 I18N.ready.then(async () => {
@@ -40,6 +41,11 @@ I18N.ready.then(async () => {
     const r = await fetch('/api/v1/downloads', { headers: { Accept: 'application/json' } });
     if (r.ok) downloads = await r.json();
   } catch (e) { /* the guide still reads without the package list */ }
+  let support = '';
+  try {
+    const r = await fetch('/api/v1/info', { headers: { Accept: 'application/json' } });
+    if (r.ok) support = (await r.json()).support_email || '';
+  } catch (e) { /* the fallback below */ }
   const VARS = {
     exe: 'sharetoken',
     home: '~/.sharetoken',
@@ -47,6 +53,7 @@ I18N.ready.then(async () => {
     port: '9787',
     version: downloads.version || '<version>',
     origin: location.origin,
+    support: support || location.host,
   };
   const fill = s => s.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in VARS ? VARS[k] : m));
 

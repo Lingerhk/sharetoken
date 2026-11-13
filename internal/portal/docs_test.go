@@ -99,7 +99,7 @@ var (
 	docLinkRe = regexp.MustCompile(`\]\(([^)\s]+)\)`)
 	docIDRe   = regexp.MustCompile(`\{#([a-z0-9-]+)\}\s*$`)
 	docVarRe  = regexp.MustCompile(`\{\{(\w*)\}\}`)
-	docKnown  = map[string]bool{"exe": true, "home": true, "homewin": true, "port": true, "version": true, "origin": true}
+	docKnown  = map[string]bool{"exe": true, "home": true, "homewin": true, "port": true, "version": true, "origin": true, "support": true}
 )
 
 func TestDocsPagesMatchAcrossLanguages(t *testing.T) {
