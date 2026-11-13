@@ -247,3 +247,7 @@ docs/           documentation, English and 简体中文
 | [docs/versioning.md](docs/versioning.md) | Release versions, interface versions, upgrade rules |
 | [docs/i18n.md](docs/i18n.md) | Languages of the site, the portal and the client |
 | [docs/development.md](docs/development.md) | Building, testing and packaging |
+
+## License
+
+ShareToken is released under the [MIT License](LICENSE).

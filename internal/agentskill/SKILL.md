@@ -145,4 +145,4 @@ While the client runs, `http://@HTTP@/api/v1/…` serves JSON for scripts: `GET 
 
 ## More
 
-`sharetoken` with no arguments prints every command and flag. The user guide is at the portal's `/docs/`.
+`sharetoken` with no arguments prints every command and flag. The user guide is at <@PORTAL@/docs/>.

@@ -201,3 +201,7 @@ docs/           文档：英文和简体中文
 | [versioning.md](docs/zh-CN/versioning.md) | 发布版本、接口版本、升级规则 |
 | [i18n.md](docs/zh-CN/i18n.md) | 官网、门户和客户端的语言 |
 | [development.md](docs/zh-CN/development.md) | 构建、测试和打包 |
+
+## 许可证
+
+ShareToken 以 [MIT 许可证](LICENSE) 发布。
