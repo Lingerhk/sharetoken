@@ -103,7 +103,7 @@ macOS 在菜单栏、Windows 在通知区、Linux 以状态通知项（StatusNot
 - 新版本：每个新构建发一次系统通知（[`gui/notify.go`](../../gui/notify.go)，点击打开窗口）。规则见 [versioning.md](versioning.md) 的“升级提醒”。Windows 上 Wails 每次启动都会在 HKCU 下以应用名登记通知激活器，卸载程序会删掉它。
 - 菜单文字跟随页面语言：页面加载时和语言变化时都把自己的语言报给窗口壳（`/__shell/lang`，不到 daemon）。文字在 [`gui/tray_text.go`](../../gui/tray_text.go)，有测试检查它和页面的语言列表、相同词条的译文是否一致。
 - Windows 11 默认把新图标收进 `^` 溢出区，用户可以把它拖到任务栏上。
-- 图标由 `go run packaging/gen_tray_icons.go` 生成（在 `gui/` 下运行）。macOS 是模板图，由系统配色；Windows 是彩色 ICO；Linux 用 `packaging/tray.png`，即 64×64 的应用图标。
+- 图标由 `go run packaging/gen_tray_icons.go` 生成（在 `gui/` 下运行）。macOS 是模板图，由系统配色；Windows 是彩色 ICO；Linux 用 `packaging/tray.png`，即 64×64 的 Windows 托盘图形。
 - 实现：三个系统都用 Wails v3 的系统托盘（[`gui/tray_native.go`](../../gui/tray_native.go)；图标和各系统的差异在 `tray_platform_<系统>.go`）。系统会把某个字符当助记符标记的地方，菜单文字做了转义（Windows 的 `&`、Linux 的 `_`）。
 - 单实例锁用 Wails 的。ID 是 `app.sharetoken.desktop.<构建类型>.h<数据目录的哈希>`；在 Linux 上它是 D-Bus 名字，各段不能以数字开头。
 - Wails v3 自己处理 WebView2 拒绝 `MoveFocus` 的情况（v2 会直接结束进程）；托盘自检里快速最小化再打开的步骤覆盖了它。升级 Wails 后要重新跑托盘自检。

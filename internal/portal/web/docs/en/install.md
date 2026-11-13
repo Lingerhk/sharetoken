@@ -5,7 +5,7 @@ The command-line edition is a single executable. It has no other dependencies an
 ## System requirements {#requirements}
 
 ::: macos
-macOS 12 or later, Apple Silicon or Intel.
+macOS 13 or later, Apple Silicon or Intel.
 :::
 
 ::: linux

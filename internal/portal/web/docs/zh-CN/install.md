@@ -5,7 +5,7 @@
 ## 系统要求 {#requirements}
 
 ::: macos
-macOS 12 或更新版本，Apple Silicon 或 Intel。
+macOS 13 或更新版本，Apple Silicon 或 Intel。
 :::
 
 ::: linux

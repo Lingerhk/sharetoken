@@ -67,6 +67,11 @@ build_macos() { # architecture
   # Cgo builds for the other architecture too: Go passes -arch to clang.
   local arch=$1 app="$OUT/ShareToken$SUFFIX.app" dmg stage icons
   export GOARCH=$arch
+  # The oldest macOS the app runs on, for clang's Objective-C and the linker as
+  # well: Go 1.27 programs need macOS 13, and Info.plist says the same. Without it
+  # the cgo objects target this machine's macOS (checks for newer systems compile
+  # away), and Wails' own -mmacosx-version-min=10.13 sets the program's.
+  export MACOSX_DEPLOYMENT_TARGET=13.0 CGO_LDFLAGS="-mmacosx-version-min=13.0"
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$app/Contents/MacOS/$EXE" ./cmd/sharetoken
@@ -97,8 +102,14 @@ build_macos() { # architecture
   hdiutil create -quiet -volname "$NAME" -srcfolder "$stage" -fs HFS+ -format UDRW "$stage.rw.dmg"
   local mnt
   mnt=$(hdiutil attach -readwrite -noverify -noautoopen "$stage.rw.dmg" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -1)
-  osascript <<OSA || echo "warning: Finder could not lay out the disk image; it opens as a plain folder" >&2
+  # Finder may not know a volume yet just after it was attached: wait for it, and try twice.
+  local tries=0
+  until osascript <<OSA; do
 tell application "Finder"
+  repeat 20 times
+    if exists disk "$(basename "$mnt")" then exit repeat
+    delay 0.5
+  end repeat
   tell disk "$(basename "$mnt")"
     open
     set current view of container window to icon view
@@ -118,6 +129,10 @@ tell application "Finder"
   end tell
 end tell
 OSA
+    tries=$((tries + 1))
+    [ "$tries" -lt 2 ] || { echo "warning: Finder could not lay out the disk image; it opens as a plain folder" >&2; break; }
+    sleep 3
+  done
   sync
   hdiutil detach -quiet "$mnt" || { sleep 3; hdiutil detach -quiet -force "$mnt"; }
   hdiutil convert -quiet "$stage.rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$OUT/$dmg"
