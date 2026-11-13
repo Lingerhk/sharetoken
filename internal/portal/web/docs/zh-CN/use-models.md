@@ -132,6 +132,8 @@ $env:OPENAI_API_KEY = 'local'
 
 网页里的工具如果带着非本机的 `Origin` 调用，端点会返回 403，这是为了防止恶意网页花你的 credit。
 
+想让 Claude Code 或 Codex 替你查看客户端、调用模型、管理共享，见[在编程助手中使用](/docs/agents)。
+
 ## 如何计费 {#billing}
 
 - **按实际 token 结算：** 价格由节点报出，你按收据上的 token 数付费。

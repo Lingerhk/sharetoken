@@ -126,7 +126,7 @@ The ids are the ones `pair` lists. See [Pair with your buyers](/docs/share#pairi
 {{exe}} skill install -agent codex
 ```
 
-A file of the same name that the client did not write is left alone unless you add `-force`. Restart an open agent session to pick the skill up.
+A file of the same name that the client did not write is left alone unless you add `-force`. Restart an open agent session to pick the skill up. See [Use with coding agents](/docs/agents).
 
 ## Other {#other}
 

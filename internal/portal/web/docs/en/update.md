@@ -21,6 +21,7 @@ An update just replaces the program file. Your account, device key and configura
 1. Stop the running client (`Ctrl+C`, or stop the [background service](/docs/running#background)).
 2. Download the new version and replace the program. The commands are below.
 3. Check the version with `{{exe}} version`, then start the client again.
+4. If you [installed the skill for coding agents](/docs/agents), run `{{exe}} skill install` again.
 
 ::: macos
 ```bash
@@ -62,6 +63,12 @@ This revokes the token on this machine:
 ```
 
 If you will not use this machine any more, unbind it on the portal's [devices page](/app/#/devices).
+
+If you installed the [skill for coding agents](/docs/agents), remove it while the program is still there:
+
+```bash
+{{exe}} skill uninstall
+```
 
 ### Step 2: Remove the program and background service {#uninstall-program}
 

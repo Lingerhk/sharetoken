@@ -132,6 +132,8 @@ $env:OPENAI_API_KEY = 'local'
 
 If a tool on a web page calls the endpoint with a non-local `Origin`, the endpoint returns 403. This stops a malicious web page from spending your credit.
 
+To have Claude Code or Codex check the client, call models and manage sharing for you, see [Use with coding agents](/docs/agents).
+
 ## How billing works {#billing}
 
 - **Billed by actual tokens:** The node sets the price, and you pay for the token counts on the receipt.

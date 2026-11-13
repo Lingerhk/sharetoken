@@ -27,6 +27,7 @@ ShareToken 是开源权重模型的 P2P 共享网络。这份指南说明如何�
 [调用模型](/docs/use-models) curl、PowerShell、Python 和 Node.js 示例。
 [共享模型](/docs/share) 接入 Ollama，定价，查看收益。
 [运行客户端](/docs/running) 查看状态，开机后在后台运行。
+[在编程助手中使用](/docs/agents) 给 Claude Code 和 Codex 装上 skill。
 [故障排查](/docs/troubleshooting) 常见报错的原因和解决办法。
 :::
 

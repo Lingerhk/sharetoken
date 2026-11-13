@@ -112,7 +112,7 @@
 
 ## 编程助手 {#agents}
 
-`skill install` 让本机的 Claude Code 和 Codex 学会使用客户端：查看状态和余额、通过本地接口调用模型、共享模型。它在 `~/.claude` 和 `~/.codex` 下写入 `skills/sharetoken/SKILL.md`（Windows 上在 `%USERPROFILE%` 下；设置了 `CLAUDE_CONFIG_DIR`、`CODEX_HOME` 时以它们为准）。这个 skill 要求助手在修改设置或大量花费积分之前先征得你的同意。
+`skill install` 让本机的 Claude Code 和 Codex 学会使用客户端：查看状态和余额、通过本地接口调用模型、共享模型。它在 `~/.claude` 和 `~/.codex` 下写入 `skills/sharetoken/SKILL.md`（Windows 上在 `%USERPROFILE%` 下；设置了 `CLAUDE_CONFIG_DIR`、`CODEX_HOME` 时以它们为准）。这个 skill 要求助手在修改设置或大量花费 credit 之前先征得你的同意。
 
 | 命令 | 作用 |
 |---|---|
@@ -126,7 +126,7 @@
 {{exe}} skill install -agent codex
 ```
 
-同名但不是客户端写的文件不会被覆盖或删除，除非加 `-force`。已打开的助手会话重启后才会加载。
+同名但不是客户端写的文件不会被覆盖或删除，除非加 `-force`。已打开的助手会话重启后才会加载。详见[在编程助手中使用](/docs/agents)。
 
 ## 其他 {#other}
 

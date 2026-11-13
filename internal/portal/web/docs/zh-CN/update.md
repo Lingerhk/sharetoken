@@ -21,6 +21,7 @@
 1. 停止正在运行的客户端（`Ctrl+C`，或者停掉[后台服务](/docs/running#background)）。
 2. 下载新版本并替换程序，命令见下面。
 3. 用 `{{exe}} version` 确认版本，然后重新启动客户端。
+4. 如果[给编程助手装过 skill](/docs/agents)，再运行一次 `{{exe}} skill install`。
 
 ::: macos
 ```bash
@@ -62,6 +63,12 @@ Unblock-File "$HOME\AppData\Local\Programs\sharetoken\{{exe}}.exe"
 ```
 
 如果这台机器不再使用，到门户的[设备页面](/app/#/devices)解绑它。
+
+如果[给编程助手装过 skill](/docs/agents)，趁程序还在先卸载它：
+
+```bash
+{{exe}} skill uninstall
+```
 
 ### 第 2 步：删除程序和后台服务 {#uninstall-program}
 

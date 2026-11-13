@@ -120,4 +120,5 @@ Finally, see how much it cost:
 [Call models](/docs/use-models) Connect Python, Node.js and OpenAI-compatible tools.
 [Share a model](/docs/share) Share a local model and earn credit.
 [Run the client](/docs/running) Keep the client running in the background.
+[Use with coding agents](/docs/agents) Let Claude Code or Codex run the client for you.
 :::

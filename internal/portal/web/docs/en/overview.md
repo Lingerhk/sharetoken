@@ -27,6 +27,7 @@ Both editions use the same program and the same state directory. You only need o
 [Call models](/docs/use-models) Examples for curl, PowerShell, Python and Node.js.
 [Share a model](/docs/share) Connect Ollama, set prices, check your earnings.
 [Run the client](/docs/running) Check status and run in the background after boot.
+[Use with coding agents](/docs/agents) Install the skill for Claude Code and Codex.
 [Troubleshooting](/docs/troubleshooting) Causes and fixes for common errors.
 :::
 

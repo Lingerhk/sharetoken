@@ -120,4 +120,5 @@ Invoke-RestMethod http://127.0.0.1:{{port}}/v1/chat/completions -Method Post -Co
 [调用模型](/docs/use-models) 接入 Python、Node.js 和各种 OpenAI 兼容工具。
 [共享模型](/docs/share) 把本机模型共享出去赚 credit。
 [运行客户端](/docs/running) 让客户端在后台一直运行。
+[在编程助手中使用](/docs/agents) 让 Claude Code 或 Codex 替你操作客户端。
 :::

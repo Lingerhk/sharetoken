@@ -12,7 +12,8 @@
     {"slug": "account", "title": {"en": "Account and devices", "zh-CN": "账户和设备"}},
     {"slug": "running", "title": {"en": "Run the client", "zh-CN": "运行客户端"}},
     {"slug": "use-models", "title": {"en": "Call models", "zh-CN": "调用模型"}},
-    {"slug": "share", "title": {"en": "Share a model", "zh-CN": "共享模型"}}
+    {"slug": "share", "title": {"en": "Share a model", "zh-CN": "共享模型"}},
+    {"slug": "agents", "title": {"en": "Use with coding agents", "zh-CN": "在编程助手中使用"}}
   ]},
   {"title": {"en": "Reference", "zh-CN": "参考"}, "pages": [
     {"slug": "cli", "title": {"en": "Command reference", "zh-CN": "命令参考"}},
