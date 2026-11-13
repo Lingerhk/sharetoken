@@ -135,8 +135,8 @@ Please do not open a public issue for it.
    sharetoken up               # OpenAI-compatible endpoint at http://127.0.0.1:9787/v1
    ```
 
-3. Point any OpenAI-compatible tool at `http://127.0.0.1:9787/v1` (the API key
-   can be anything).
+3. Point any OpenAI-compatible tool at `http://127.0.0.1:9787/v1`, with the API
+   key that `sharetoken apikey -q` prints.
 4. To earn credits, share a model:
 
    ```bash

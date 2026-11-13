@@ -67,9 +67,19 @@ has "$(st models)" mock-fast || fail "the seller's model is not listed"
 ok "models lists the seller's model"
 st relays >/dev/null || fail "relays"
 ok "relays"
-REPLY=$(curl -s -m 60 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d '{"model":"mock-fast","messages":[{"role":"user","content":"hello"}]}')
+NOKEY=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$API/v1/models")
+[ "$NOKEY" = 401 ] || fail "the endpoint answered $NOKEY without the API key"
+has "$(st apikey)" "required" || fail "apikey does not say the key is required"
+ok "the endpoint wants the API key"
+REPLY=$(curl -s -m 60 "$API/v1/chat/completions" -H "Authorization: Bearer $(st apikey -q)" -H 'Content-Type: application/json' -d '{"model":"mock-fast","messages":[{"role":"user","content":"hello"}]}')
 has "$REPLY" '"choices"' || fail "inference: $REPLY"
 ok "the local OpenAI endpoint answers through the network"
+st apikey off > /dev/null || fail "apikey off"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$API/v1/models")" = 200 ] || fail "apikey off: the running client still wants the key"
+OLD=$(st apikey -q); st apikey on > /dev/null; st apikey rotate > /dev/null
+[ "$(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Authorization: Bearer $OLD" "$API/v1/models")" = 401 ] || fail "the old key still works after rotate"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Authorization: Bearer $(st apikey -q)" "$API/v1/models")" = 200 ] || fail "the new key does not work"
+ok "apikey off, on and rotate reach the running client"
 sleep 1
 has "$(st jobs -role buy -n 5)" mock-fast || fail "the job is not listed"
 ok "jobs lists the purchase"

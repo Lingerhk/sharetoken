@@ -76,6 +76,17 @@
 
 显示各中继的延迟。`-measure` 立即重新测速。需要客户端正在运行。
 
+### apikey {#apikey}
+
+本地端点的 API key（见[调用模型](/docs/use-models#endpoint)）。正在运行的客户端会立即按修改生效。
+
+| 命令 | 含义 |
+|---|---|
+| `apikey` | 显示端点、key，以及是否需要 key |
+| `apikey -q` | 只打印 key，供脚本使用：`export OPENAI_API_KEY=$({{exe}} apikey -q)` |
+| `apikey on` / `apikey off` | 要求 key（默认），或不带 key 也放行 |
+| `apikey rotate` | 生成新 key，旧 key 立即失效 |
+
 ## 共享 {#share}
 
 | 命令 | 作用 |

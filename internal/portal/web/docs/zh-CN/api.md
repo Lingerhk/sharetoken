@@ -37,7 +37,7 @@
 
 ## Key {#key}
 
-客户端每次启动都会生成新的 key，写进数据目录下只有你能读的 `run.json`（字段 `key`）。访问 `/api/v1/` 的每个请求都要带上 `Authorization: Bearer <key>`，否则返回 401 `local_auth`。`{{exe}}` 命令和桌面应用会自己读取。`/v1/` 不需要。
+客户端每次启动都会生成新的 key，写进数据目录下只有你能读的 `run.json`（字段 `key`）。访问 `/api/v1/` 的每个请求都要带上 `Authorization: Bearer <key>`，否则返回 401 `local_auth`。`{{exe}}` 命令和桌面应用会自己读取。`/v1/` 用的是另一把不随启动变化的 API key（`{{exe}} apikey`；`GET /api/v1/apikey`、带 `{"required": bool}` 的 `PUT /api/v1/apikey`、`POST /api/v1/apikey/rotate`）。
 
 ## 示例 {#examples}
 
@@ -62,4 +62,4 @@ Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/share/stop -Method Post -Head
 ## 安全 {#security}
 
 > [!WARNING]
-> `/v1/` 不需要 key：多用户机器上，别的用户可以调用它花你的 credit。管理接口没有 key 就无法调用。请不要把 `http` 改成非本机地址，也不要把端口转发出去。
+> `/v1/` 需要客户端的 API key（见[调用模型](/docs/use-models#endpoint)），`/api/v1/` 需要 `run.json` 里的 key。如果关掉 API key（`{{exe}} apikey off`），本机别的用户就能调用 `/v1/` 花你的 credit。请不要把 `http` 改成非本机地址，也不要把端口转发出去。

@@ -156,7 +156,7 @@ Common error codes: `bad_portal`, `insecure_portal`, `portal_unreachable`, `not_
 
 **Known and not solved:**
 
-- The OpenAI endpoint `/v1/` takes any API key, so another program or user of the machine can still spend credits through it (the management API is closed to them).
+- With the API key turned off (Settings, or `sharetoken apikey off`), another program or user of the machine can spend credits through `/v1/`. It is on by default.
 - The token is stored in clear text in `config.json` (0600; on Windows an ACL for the user, SYSTEM and Administrators), as with the CLI. It is not kept in the system keychain.
 
 ## Building

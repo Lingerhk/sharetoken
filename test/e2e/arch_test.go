@@ -212,7 +212,7 @@ func shareMock(upstream string, pin, pout uint64) *client.ShareConfig {
 // chat posts a chat completion to a client's local OpenAI endpoint.
 func chat(t *testing.T, a *client.Agent) (string, http.Header) {
 	t.Helper()
-	resp, err := http.Post("http://"+a.Addr()+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	resp, err := postV1("http://"+a.Addr()+"/v1/chat/completions", a.APIKey(), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ func TestUnboundAndDisabledUsersAreRefused(t *testing.T) {
 	if err := pc.Do(n.ctx, "POST", "/api/v1/admin/users/bob/disable", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.Post("http://"+bob.Addr()+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	resp, err := postV1("http://"+bob.Addr()+"/v1/chat/completions", bob.APIKey(), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,6 +472,7 @@ func TestLocalAPIRefusesWebPages(t *testing.T) {
 	bob := n.user("bob", nil)
 	req, _ := http.NewRequest("POST", "http://"+bob.Addr()+"/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Authorization", "Bearer "+bob.APIKey()) // even with the key
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

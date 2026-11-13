@@ -7,13 +7,33 @@ While the client runs, it serves an OpenAI-compatible endpoint on your machine. 
 | Setting | Value |
 |---|---|
 | Base URL | `http://127.0.0.1:{{port}}/v1` |
-| API key | Not checked. Use any non-empty value |
+| API key | This client's key, `sk-st-…`: `{{exe}} apikey -q` prints it, and the desktop app has it next to the endpoint |
 | Interface | `POST /v1/chat/completions`, `GET /v1/models` |
 
 First make sure `{{exe}} up` is running, or [run it in the background](/docs/running#background).
 
-> [!NOTE]
-> The endpoint only listens on your machine, so other machines cannot reach it. But other programs and users on the same machine can call it, which spends your credit. Keep this in mind on shared machines.
+The key keeps other programs and users of your machine from spending your credit through the endpoint. It stays the same until you make a new one, so a tool needs it only once:
+
+::: macos linux
+```bash
+export OPENAI_API_KEY=$({{exe}} apikey -q)
+```
+:::
+
+::: windows
+```powershell
+$env:OPENAI_API_KEY = ({{exe}} apikey -q)
+```
+:::
+
+| Command | What it does |
+|---|---|
+| `{{exe}} apikey` | Show the endpoint, the key, and whether it is required |
+| `{{exe}} apikey rotate` | Make a new key. The old one stops working at once |
+| `{{exe}} apikey off` | Let any request in without the key. Only on a machine nobody else uses |
+| `{{exe}} apikey on` | Require the key again |
+
+The desktop app has the same switch and **New key** under **Settings**. A running client follows the change at once. Without the key the endpoint answers 401 `invalid_api_key`; it also accepts the key in an `x-api-key` header.
 
 ## List the models {#models}
 
@@ -33,6 +53,7 @@ gemma-4-e4b  2      0    100000       200000
 ::: macos linux
 ```bash
 curl http://127.0.0.1:{{port}}/v1/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"gemma-4-e4b","messages":[{"role":"user","content":"Hello"}],"max_tokens":200}'
 ```
@@ -49,7 +70,7 @@ $body = @{
   max_tokens = 200
   messages = @(@{ role = 'user'; content = 'Hello' })
 } | ConvertTo-Json -Depth 5
-$r = Invoke-RestMethod http://127.0.0.1:{{port}}/v1/chat/completions -Method Post -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
+$r = Invoke-RestMethod http://127.0.0.1:{{port}}/v1/chat/completions -Method Post -Headers @{ Authorization = "Bearer $env:OPENAI_API_KEY" } -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
 $r.choices[0].message.content
 ```
 
@@ -73,7 +94,8 @@ py -m pip install openai
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:{{port}}/v1", api_key="local")
+# api_key comes from $OPENAI_API_KEY (see above)
+client = OpenAI(base_url="http://127.0.0.1:{{port}}/v1")
 
 reply = client.chat.completions.create(
     model="gemma-4-e4b",
@@ -102,7 +124,8 @@ npm install openai
 ```javascript
 import OpenAI from "openai";
 
-const client = new OpenAI({ baseURL: "http://127.0.0.1:{{port}}/v1", apiKey: "local" });
+// apiKey comes from $OPENAI_API_KEY (see above)
+const client = new OpenAI({ baseURL: "http://127.0.0.1:{{port}}/v1" });
 
 const reply = await client.chat.completions.create({
   model: "gemma-4-e4b",
@@ -119,14 +142,14 @@ Any tool that supports a custom OpenAI base URL works. Many tools read these two
 ::: macos linux
 ```bash
 export OPENAI_BASE_URL=http://127.0.0.1:{{port}}/v1
-export OPENAI_API_KEY=local
+export OPENAI_API_KEY=$({{exe}} apikey -q)
 ```
 :::
 
 ::: windows
 ```powershell
 $env:OPENAI_BASE_URL = 'http://127.0.0.1:{{port}}/v1'
-$env:OPENAI_API_KEY = 'local'
+$env:OPENAI_API_KEY = ({{exe}} apikey -q)
 ```
 :::
 

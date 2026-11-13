@@ -94,7 +94,7 @@ The command-line edition includes the same interface. Run:
 {{exe}} daemon
 ```
 
-Then open `http://127.0.0.1:{{port}}/` in a browser to sign in on the page. The difference from `up` is that `daemon` can run while signed out, and it joins the network only after you sign in.
+Then open the address it prints, `http://127.0.0.1:{{port}}/#key=…`, in a browser to sign in on the page. The `#key=` part is what lets the page use the client; it changes each time `daemon` starts. The difference from `up` is that `daemon` can run while signed out, and it joins the network only after you sign in.
 
 ## Use with the command line {#with-cli}
 

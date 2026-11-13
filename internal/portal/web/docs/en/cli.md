@@ -76,6 +76,17 @@ List the models on the network, the node count, the TEE node count and the lowes
 
 Show the latency of each relay. `-measure` measures again right away. The client must be running.
 
+### apikey {#apikey}
+
+The local endpoint's API key (see [Call models](/docs/use-models#endpoint)). A running client follows a change at once.
+
+| Command | Meaning |
+|---|---|
+| `apikey` | The endpoint, the key, and whether it is required |
+| `apikey -q` | The key only, for scripts: `export OPENAI_API_KEY=$({{exe}} apikey -q)` |
+| `apikey on` / `apikey off` | Require the key (the default), or let any request in |
+| `apikey rotate` | Make a new key. The old one stops working at once |
+
 ## Share {#share}
 
 | Command | What it does |

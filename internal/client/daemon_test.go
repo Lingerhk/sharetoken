@@ -136,7 +136,11 @@ func (d *testDaemon) call(method, path string, body any, hdr ...string) (int, []
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Authorization", "Bearer "+d.Key()) // as the desktop shell and the CLI send it
+	if strings.HasPrefix(path, "/v1/") {
+		req.Header.Set("Authorization", "Bearer "+d.APIKey()) // as a tool set up with the API key sends it
+	} else {
+		req.Header.Set("Authorization", "Bearer "+d.Key()) // as the desktop shell and the CLI send it
+	}
 	for i := 0; i+1 < len(hdr); i += 2 {
 		switch {
 		case hdr[i] == "Host":
@@ -966,12 +970,12 @@ func TestDaemonLocalKey(t *testing.T) {
 	d.want(401, "local_auth", "GET", "/api/v1/session", nil, "Authorization", "Bearer "+strings.Repeat("0", 64))
 	d.want(401, "local_auth", "GET", "/api/v1/session", nil, "Authorization", key)
 	d.want(200, "", "GET", "/api/v1/session", nil)
-	// Open without it: the page, its files, the OpenAI endpoint (401 there is
-	// "not logged in"), and the hello.
+	// Open without it: the page, its files and the hello. The OpenAI endpoint
+	// wants the API key instead (TestDaemonAPIKey), not this one.
 	for _, p := range []string{"/", "/ui/app.js"} {
 		d.want(200, "", "GET", p, nil, noKey...)
 	}
-	d.want(401, "not_logged_in", "GET", "/v1/models", nil, noKey...)
+	d.want(401, "invalid_api_key", "GET", "/v1/models", nil, "Authorization", "Bearer "+key)
 	nonce := strings.Repeat("ab", 32)
 	var h Hello
 	if code, data := d.call("GET", "/api/v1/hello?nonce="+nonce, nil, noKey...); code != 200 || json.Unmarshal(data, &h) != nil {
@@ -988,6 +992,71 @@ func TestDaemonLocalKey(t *testing.T) {
 	d2 := e.daemonIn(d.home)
 	if d2.Key() == key {
 		t.Fatal("the key did not change")
+	}
+}
+
+// The OpenAI endpoint wants the API key from apikey.json unless the user
+// turned it off; a change to the file reaches the running daemon.
+func TestDaemonAPIKey(t *testing.T) {
+	e := newDaemonEnv(t, openPortal(), false)
+	d := e.daemon()
+	path := filepath.Join(d.home, APIKeyFile)
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("apikey.json: %v %v", info, err)
+	}
+	s, err := LoadAPIKey(d.home)
+	if err != nil || !s.Required || !strings.HasPrefix(s.Key, "sk-st-") || s.Key != d.APIKey() {
+		t.Fatalf("new home: %+v %v", s, err)
+	}
+	noKey := []string{"Authorization", ""}
+	d.want(401, "invalid_api_key", "GET", "/v1/models", nil, noKey...)
+	d.want(401, "invalid_api_key", "GET", "/v1/models", nil, "Authorization", "Bearer sk-st-"+strings.Repeat("0", 48))
+	d.want(401, "invalid_api_key", "GET", "/v1/models", nil, "Authorization", "Bearer "+d.Key()) // the management API's key is not this one
+	d.want(401, "not_logged_in", "GET", "/v1/models", nil)                                      // with the key, on to the agent
+	d.want(401, "not_logged_in", "GET", "/v1/models", nil, "Authorization", "", "X-Api-Key", s.Key)
+
+	// The management API shows and changes it, with its own key only.
+	var v apiKeyView
+	if code, data := d.call("GET", "/api/v1/apikey", nil); code != 200 || json.Unmarshal(data, &v) != nil || v.Key != s.Key || !v.Required {
+		t.Fatalf("GET: %d %s", code, data)
+	}
+	d.want(401, "local_auth", "GET", "/api/v1/apikey", nil, noKey...)
+	d.want(400, "bad_request", "PUT", "/api/v1/apikey", map[string]string{})
+	d.want(200, "", "PUT", "/api/v1/apikey", map[string]bool{"required": false})
+	d.want(401, "not_logged_in", "GET", "/v1/models", nil, noKey...)
+	d.want(403, "", "GET", "/v1/models", nil, "Authorization", "", "Origin", "https://evil.example.com") // web pages stay out all the same
+
+	// `sharetoken apikey on` writes the file; the daemon reads it again.
+	if _, err := SetAPIKeyRequired(d.home, true); err != nil {
+		t.Fatal(err)
+	}
+	d.want(401, "invalid_api_key", "GET", "/v1/models", nil, noKey...)
+
+	// A new key: the old one stops working.
+	var r apiKeyView
+	if code, data := d.call("POST", "/api/v1/apikey/rotate", nil); code != 200 || json.Unmarshal(data, &r) != nil || r.Key == s.Key || !validAPIKey(r.Key) {
+		t.Fatalf("rotate: %d %s", code, data)
+	}
+	d.want(401, "invalid_api_key", "GET", "/v1/models", nil, "Authorization", "Bearer "+s.Key)
+	d.want(401, "not_logged_in", "GET", "/v1/models", nil, "Authorization", "Bearer "+r.Key)
+
+	// A damaged file lets nothing in, and says what to do.
+	if err := os.WriteFile(path, []byte(`{"key":"nope","required":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, data := d.call("GET", "/v1/models", nil, noKey...); !strings.Contains(string(data), "damaged") {
+		t.Fatalf("damaged: %s", data)
+	}
+	// The key outlives the daemon.
+	os.Remove(path)
+	d.Close()
+	d2 := e.daemonIn(d.home)
+	k2 := d2.APIKey()
+	d2.Close()
+	d3 := e.daemonIn(d.home)
+	if k2 == "" || d3.APIKey() != k2 {
+		t.Fatal("the key changed with a restart")
 	}
 }
 

@@ -244,3 +244,6 @@ html.i18n-pending body { visibility: hidden; }
 .os-darwin .auth-main { padding-top: 48px; }
 .os-darwin :is(.head, .side, .auth-side, .env-banner) { --wails-draggable: drag; }
 .os-darwin :is(.head, .side, .auth-side) :is(button, a, input, select) { --wails-draggable: no-drag; }
+.warn-text { color: var(--warn); }
+.rows > .check { margin-top: 0; align-items: center; }
+.rows > .check input { margin-top: 0; }

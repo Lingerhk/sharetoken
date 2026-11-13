@@ -99,7 +99,7 @@ flowchart LR
    sharetoken up               # OpenAI 兼容端点 http://127.0.0.1:9787/v1
    ```
 
-3. 把任何 OpenAI 兼容工具的 base URL 指向 `http://127.0.0.1:9787/v1`（API key 随便填）。
+3. 把任何 OpenAI 兼容工具的 base URL 指向 `http://127.0.0.1:9787/v1`，API key 填 `sharetoken apikey -q` 打印的值。
 4. 想赚 credit 就共享一个模型：
 
    ```bash

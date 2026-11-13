@@ -72,11 +72,20 @@ type Hello struct {
 }
 
 // requireLocalKey lets through requests with the key, and without it only
-// those that open allows. The path is judged cleaned, as the mux routes it.
-func requireLocalKey(key string, open func(method, cleanPath string) bool, h http.Handler) http.Handler {
+// those that open allows. The OpenAI endpoint is the API key's instead
+// (apikey.go). The path is judged cleaned, as the mux routes it.
+func requireLocalKey(key string, open func(method, cleanPath string) bool, api *apiKeyGate, h http.Handler) http.Handler {
 	want := []byte("Bearer " + key)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := path.Clean("/" + r.URL.Path)
+		if openOpenAI(p) {
+			if ok, why := api.allow(r); !ok {
+				writeErrorCode(w, http.StatusUnauthorized, "invalid_api_key", why)
+				return
+			}
+			h.ServeHTTP(w, r)
+			return
+		}
 		if !open(r.Method, p) && subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
 			writeErrorCode(w, http.StatusUnauthorized, "local_auth",
 				"the local API wants the key from "+RunFile+" in this user's sharetoken directory (Authorization: Bearer <key>)")
@@ -86,8 +95,8 @@ func requireLocalKey(key string, open func(method, cleanPath string) bool, h htt
 	})
 }
 
-// openOpenAI: the OpenAI-compatible endpoint, which tools reach with any API
-// key; the Origin check keeps web pages out of it.
+// openOpenAI: the OpenAI-compatible endpoint, which wants the API key instead
+// of this one (apikey.go); the Origin check keeps web pages out of it.
 func openOpenAI(p string) bool { return p == "/v1" || strings.HasPrefix(p, "/v1/") }
 
 // agentOpen is what `sharetoken up` serves without the key.

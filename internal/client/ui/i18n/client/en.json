@@ -316,5 +316,14 @@
   "ShareToken 服务器版本过旧，暂时无法登录": "The ShareToken server is out of date, so you cannot sign in right now",
   "门户证书和确认的指纹不一致，连接可能被拦截。已停止，邮箱和验证码都没有发送": "The portal certificate does not match the confirmed fingerprint, so the connection may be intercepted. Stopped. Neither your email nor a code was sent",
   "登录或注册": "Sign in or sign up",
-  "请用 sharetoken daemon 启动时打印的地址（带 #key=）打开这个页面": "Open this page from the address that sharetoken daemon prints when it starts (the one with #key=)"
+  "请用 sharetoken daemon 启动时打印的地址（带 #key=）打开这个页面": "Open this page from the address that sharetoken daemon prints when it starts (the one with #key=)",
+  "API key": "API key",
+  "调用本地 OpenAI 接口需要 API key": "The local OpenAI endpoint requires an API key",
+  "复制 key": "Copy key",
+  "复制 API key": "Copy API key",
+  "重新生成": "New key",
+  "旧 key 会立即失效，用到它的工具要换成新 key。": "The old key stops working at once: the tools that use it need the new one.",
+  "工具把它填作 OpenAI API key": "Tools use it as their OpenAI API key",
+  "未开启：本机任何程序都能用这个接口花你的 credit": "Off: any program on this machine can spend your credits through this endpoint",
+  "无法读写 API key 文件（apikey.json），请检查数据目录的权限": "Cannot read or write the API key file (apikey.json): check the permissions of the data directory"
 }

@@ -23,7 +23,7 @@ The examples below write `sharetoken`; use the command above if `sharetoken` is 
 ## Ground rules
 
 - **Credits are money.** Requests through the endpoint spend the user's credits. Do not send large batches, loops or long generations without the user's go-ahead, and set `max_tokens` on requests.
-- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `share`, `provider`, `pair`, `config`) is always fine.
+- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private`, `apikey on/off/rotate`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `share`, `provider`, `pair`, `config`) is always fine.
 - **Never put secrets on a command line.** A provider API key goes in through standard input or `$SHARETOKEN_PROVIDER_KEY`, never as an argument. Never print the `token` from `config.json` or `providers.json`; `sharetoken config` masks it.
 - **Sign-in needs the user.** `login` mails a six-digit code to the user's address. Ask the user for the address and then for the code; do not guess them.
 - **`up` runs until stopped.** Start it in the background (or ask the user to run it in a terminal); never wait on it in the foreground.
@@ -54,16 +54,18 @@ Two steps, because the code arrives by mail. An address without an account gets 
 sharetoken models          # model IDs on the network, nodes, lowest prices
 ```
 
-Any OpenAI-compatible tool works with base URL `http://@HTTP@/v1` and any API key:
+Any OpenAI-compatible tool works with base URL `http://@HTTP@/v1` and the client's API key, which `@CMD@ apikey -q` prints (it stays the same until `@CMD@ apikey rotate`; `@CMD@ apikey` says whether it is required). Pass it straight on; do not print it or write it into files or messages:
 
 ```bash
-curl -s http://@HTTP@/v1/chat/completions -H 'Content-Type: application/json' \
+curl -s http://@HTTP@/v1/chat/completions -H "Authorization: Bearer $(@CMD@ apikey -q)" -H 'Content-Type: application/json' \
   -d '{"model":"MODEL_ID","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://@HTTP@/v1", api_key="sharetoken")
+import subprocess
+key = subprocess.run(["@CMD@", "apikey", "-q"], capture_output=True, text=True, check=True).stdout.strip()
+client = OpenAI(base_url="http://@HTTP@/v1", api_key=key)
 r = client.chat.completions.create(model="MODEL_ID", max_tokens=256,
                                    messages=[{"role": "user", "content": "Hello"}])
 ```

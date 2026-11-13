@@ -99,6 +99,11 @@ Pairing (a buyer that pairs with a seller buys only from the sellers it is paire
   pair revoke <code id>                 seller: stop a code from admitting more buyers
   pair private on|off                   seller: serve only the buyers paired with you, or anyone
 
+The OpenAI-compatible endpoint's API key (by default required; tools send it as their OpenAI API key):
+  apikey [-q]                           the endpoint, whether the key is required, and the key; -q prints the key only
+  apikey on | off                       require the key, or let any program of this machine in without it
+  apikey rotate                         make a new key; the old one stops working
+
 Coding agents (Claude Code, Codex):
   skill                                 which agents are found, and whether they have the skill
   skill install [-agent claude|codex|all] [-force]
@@ -161,6 +166,8 @@ func main() {
 		run = c.provider
 	case "pair":
 		run = c.pair
+	case "apikey":
+		run = c.apikey
 	case "skill":
 		run = c.skill
 	case "config":
@@ -596,6 +603,11 @@ func (c *cmdCtx) up(args []string) error {
 	st := a.Status()
 	fmt.Printf("sharetoken client for %s (device %s)\n", st.User, st.Peer)
 	fmt.Printf("   OpenAI-compatible endpoint: %s\n", st.API)
+	if s, err := client.LoadAPIKey(c.home); err == nil && s.Required {
+		fmt.Println("   API key required: `sharetoken apikey` shows it")
+	} else if err == nil {
+		fmt.Println("   no API key required (`sharetoken apikey on`)")
+	}
 	if st.Coordinator.Via != "" {
 		fmt.Printf("   coordinator via relay %s\n", st.Coordinator.Via)
 	}

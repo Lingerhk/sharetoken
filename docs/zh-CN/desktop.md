@@ -156,7 +156,7 @@ macOS 在菜单栏、Windows 在通知区、Linux 以状态通知项（StatusNot
 
 **已知未解决：**
 
-- OpenAI 端点 `/v1/` 接受任意 API key，所以本机别的程序或用户仍能通过它花 credit（管理 API 已对它们关闭）。
+- 关掉 API key 后（设置里，或 `sharetoken apikey off`），本机别的程序或用户可以通过 `/v1/` 花 credit。默认是开启的。
 - token 明文存于 `config.json`（0600；Windows 上是只给本人、SYSTEM 和 Administrators 的 ACL），和命令行相同，没有放进系统钥匙串。
 
 ## 构建

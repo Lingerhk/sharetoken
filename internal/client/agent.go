@@ -170,7 +170,13 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 		a.addr = ln.Addr().String()
 		a.key = newLocalKey()
-		a.srv = &http.Server{Handler: requireLocalKey(a.key, agentOpen, a.Handler()), ReadHeaderTimeout: 10 * time.Second}
+		gate, err := newAPIKeyGate(a.home)
+		if err != nil {
+			ln.Close()
+			a.Close()
+			return err
+		}
+		a.srv = &http.Server{Handler: requireLocalKey(a.key, agentOpen, gate, a.Handler()), ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			if err := a.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				a.log.Error("local API stopped", "err", err)

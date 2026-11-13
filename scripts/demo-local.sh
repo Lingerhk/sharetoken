@@ -95,7 +95,7 @@ stup alice -http 127.0.0.1:9787 -listen /ip6/::1/tcp/0 -nat=false > alice.log 2>
 stup carol -http 127.0.0.1:9789 "${UP[@]}" > carol.log 2>&1 & PIDS+=($!)
 stup bob -http 127.0.0.1:9788 "${UP[@]}" > bob.log 2>&1 & PIDS+=($!)
 waitlog alice.log "endpoint"; waitlog carol.log "endpoint"; waitlog bob.log "endpoint"
-for _ in $(seq 1 60); do curl -s -m 2 http://127.0.0.1:9788/v1/models | grep -q '"nodes":2' && break; sleep 0.5; done
+for _ in $(seq 1 60); do curl -s -m 2 -H "Authorization: Bearer $(st bob apikey -q)" http://127.0.0.1:9788/v1/models | grep -q '"nodes":2' && break; sleep 0.5; done
 echo; echo "== 2. bob's client: relays measured, coordinator reached through the best one"
 SHARETOKEN_HOME="$S/bob" "$BIN/sharetoken" status | strip | sed 's/^/   /'
 echo; echo "   relay admission (sharers present a portal-signed pass before reserving):"
@@ -103,13 +103,17 @@ curl -s 127.0.0.1:4211 | python3 -c 'import json,sys;s=json.load(sys.stdin)["sta
 echo; echo "   models on the network (two sellers; carol is cheaper):"
 SHARETOKEN_HOME="$S/bob" "$BIN/sharetoken" models | sed 's/^/   /'
 
-ALICE=$(curl -s http://127.0.0.1:9787/api/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["peer"])')
-CAROL=$(curl -s http://127.0.0.1:9789/api/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["peer"])')
+# The local API wants the keys each client keeps in its directory.
+lkey() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["key"])' "$S/$1/run.json"; }
+akey() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["key"])' "$S/$1/apikey.json"; }
+lapi() { curl -s -H "Authorization: Bearer $(lkey "$1")" "http://127.0.0.1:$2/api/v1/status"; }
+ALICE=$(lapi alice 9787 | python3 -c 'import json,sys;print(json.load(sys.stdin)["peer"])')
+CAROL=$(lapi carol 9789 | python3 -c 'import json,sys;print(json.load(sys.stdin)["peer"])')
 names() { sed -E "s/$ALICE/<alice>/g; s/$CAROL/<carol>/g"; }
 
 PROMPT="In one short sentence: what is a sealed box in cryptography?"
 echo; echo "== 3. bob asks; the cheaper node (carol) is matched first"
-curl -s -m 600 -D headers.txt http://127.0.0.1:9788/v1/chat/completions -H 'Content-Type: application/json' \
+curl -s -m 600 -D headers.txt http://127.0.0.1:9788/v1/chat/completions -H "Authorization: Bearer $(akey bob)" -H 'Content-Type: application/json' \
   -d "{\"model\":\"gemma-4-e4b\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT\"}],\"max_tokens\":1000}" | head -c 500; echo
 grep -i "^x-sharetoken" headers.txt | names | sed 's/^/   /'
 sleep 2
@@ -123,17 +127,17 @@ for _ in $(seq 1 120); do [ "$(mismatches)" -ge 2 ] && break; sleep 2; done
 grep "component=auditor" coord.log | names | strip | sed 's/^/   /'
 
 echo; echo "== 5. alice buys too: her own node is never matched for her (carol suspended -> no seller)"
-curl -s -m 120 http://127.0.0.1:9787/v1/chat/completions -H 'Content-Type: application/json' \
+curl -s -m 120 http://127.0.0.1:9787/v1/chat/completions -H "Authorization: Bearer $(akey alice)" -H 'Content-Type: application/json' \
   -d '{"model":"gemma-4-e4b","messages":[{"role":"user","content":"Say hi."}],"max_tokens":50}' | head -c 300; echo
 
 echo; echo "== 6. Kill the relay bob uses for the coordinator; bob switches and keeps working"
-VIA=$(curl -s http://127.0.0.1:9788/api/v1/status | python3 -c 'import json,sys;print(json.load(sys.stdin)["coordinator"]["via"])')
+VIA=$(lapi bob 9788 | python3 -c 'import json,sys;print(json.load(sys.stdin)["coordinator"]["via"])')
 if [ "$VIA" = "$RA" ]; then kill $RELAY_A; echo "   killed relay-a"; else kill $RELAY_B; echo "   killed relay-b"; fi
 for _ in $(seq 1 60); do
-  NOW=$(curl -s http://127.0.0.1:9788/api/v1/status | python3 -c 'import json,sys;s=json.load(sys.stdin)["coordinator"];print(s["via"] if s["connected"] else "")')
+  NOW=$(lapi bob 9788 | python3 -c 'import json,sys;s=json.load(sys.stdin)["coordinator"];print(s["via"] if s["connected"] else "")')
   [ -n "$NOW" ] && [ "$NOW" != "$VIA" ] && break; sleep 0.5; done
 SHARETOKEN_HOME="$S/bob" "$BIN/sharetoken" status | grep -E "coordinator|link:|NAME|relay-" | strip | sed 's/^/   /'
-curl -s -m 600 -D headers2.txt http://127.0.0.1:9788/v1/chat/completions -H 'Content-Type: application/json' \
+curl -s -m 600 -D headers2.txt http://127.0.0.1:9788/v1/chat/completions -H "Authorization: Bearer $(akey bob)" -H 'Content-Type: application/json' \
   -d '{"model":"gemma-4-e4b","stream":true,"messages":[{"role":"user","content":"Count from 1 to 5, comma separated, nothing else."}],"max_tokens":200}' \
   | grep -v '^$' | tail -2 | names | sed 's/^/   /'
 

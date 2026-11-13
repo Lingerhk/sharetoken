@@ -37,7 +37,7 @@ For usage, see [Call models](/docs/use-models).
 
 ## Key {#key}
 
-Each time the client starts, it makes a new key and writes it to `run.json` in its data directory (field `key`), which only you can read. Send it with every request to `/api/v1/` as `Authorization: Bearer <key>`; without it the answer is 401 `local_auth`. The `{{exe}}` commands and the desktop app read it themselves. `/v1/` does not need it.
+Each time the client starts, it makes a new key and writes it to `run.json` in its data directory (field `key`), which only you can read. Send it with every request to `/api/v1/` as `Authorization: Bearer <key>`; without it the answer is 401 `local_auth`. The `{{exe}}` commands and the desktop app read it themselves. `/v1/` wants the API key instead, which does not change at each start (`{{exe}} apikey`; `GET /api/v1/apikey`, `PUT /api/v1/apikey` with `{"required": bool}`, `POST /api/v1/apikey/rotate`).
 
 ## Examples {#examples}
 
@@ -62,4 +62,4 @@ Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/share/stop -Method Post -Head
 ## Security {#security}
 
 > [!WARNING]
-> `/v1/` takes no key: on a multi-user machine, other users can call it and spend your credit. The management endpoints are closed to them without the key. Do not change `http` to a non-local address, and do not forward the port.
+> `/v1/` wants the client's API key (see [Call models](/docs/use-models#endpoint)), and `/api/v1/` the key in `run.json`. If you turn the API key off (`{{exe}} apikey off`), other users of the machine can call `/v1/` and spend your credit. Do not change `http` to a non-local address, and do not forward the port.

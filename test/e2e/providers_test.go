@@ -99,7 +99,7 @@ func localAPI(t *testing.T, a *client.Agent, method, path string, in, out any) (
 func chatModel(t *testing.T, a *client.Agent, model string) (int, string, http.Header) {
 	t.Helper()
 	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, model)
-	resp, err := http.Post("http://"+a.Addr()+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	resp, err := postV1("http://"+a.Addr()+"/v1/chat/completions", a.APIKey(), body)
 	if err != nil {
 		t.Fatal(err)
 	}

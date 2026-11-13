@@ -36,7 +36,7 @@ sharetoken share add deepseek-flash -provider deepseek
 sharetoken up                               # share commands take effect on a running client at once
 ```
 
-Point any OpenAI-compatible tool at `http://127.0.0.1:9787/v1`. The API key can be anything.
+Point any OpenAI-compatible tool at `http://127.0.0.1:9787/v1`, with the client's API key: `sharetoken apikey -q` prints it (`sharetoken apikey` for more; `apikey off` lets any request in, `apikey rotate` makes a new key).
 
 There are no passwords. `login` mails a six-digit code and asks for it; the same step signs up an address that has no account yet (when the portal's registration is open). For scripts, `login -send` only mails the code and `login -code 123456` redeems it. With two-factor authentication on, `login` then asks for the authenticator code (or pass `-totp`).
 
@@ -106,6 +106,7 @@ Notes:
 | `providers.json` | Hosted-API providers and their credentials, kept apart from `config.json`. |
 | `network.json` | The last relay list from the portal, used when the portal cannot be reached. |
 | `run.json` | The API address of the running client and its key, for the other commands and the desktop app (mode 0600). |
+| `apikey.json` | The OpenAI endpoint's API key and whether it is required (mode 0600; `sharetoken apikey`). |
 
 ### 1.5 config.json
 
@@ -302,7 +303,7 @@ Operator commands work on the database directly and can run beside the live serv
 curl -s -H "Authorization: Bearer $(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.sharetoken/run.json")))["key"])')" http://127.0.0.1:9787/api/v1/status
 ```
 
-The OpenAI-compatible endpoint `/v1/` takes no key. `sharetoken daemon`, used by the desktop app, serves the same API plus sign-in endpoints that work while logged out; see [desktop.md](desktop.md).
+The OpenAI-compatible endpoint `/v1/` wants the API key from `apikey.json` instead (unless turned off with `sharetoken apikey off`), which stays the same across starts; `GET`/`PUT /api/v1/apikey` and `POST /api/v1/apikey/rotate` show and change it. `sharetoken daemon`, used by the desktop app, serves the same API plus sign-in endpoints that work while logged out; see [desktop.md](desktop.md).
 
 | Method and path | Description |
 |---|---|

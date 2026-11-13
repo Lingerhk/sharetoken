@@ -144,7 +144,7 @@ func TestDaemonFullFlow(t *testing.T) {
 	}
 
 	// Buy through the daemon's OpenAI endpoint.
-	resp, err := http.Post(u.base+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	resp, err := postV1(u.base+"/v1/chat/completions", u.d.APIKey(), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestDaemonFullFlow(t *testing.T) {
 	if code := u.call("POST", "/api/v1/logout", struct{}{}, &s); code != 200 || s.LoggedIn {
 		t.Fatalf("logout: %d %+v", code, s)
 	}
-	resp, err = http.Post(u.base+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	resp, err = postV1(u.base+"/v1/chat/completions", u.d.APIKey(), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestDaemonFullFlow(t *testing.T) {
 		t.Fatalf("after login: %+v", s)
 	}
 	waitFor(t, 20*time.Second, "buying again", func() bool {
-		resp, err := http.Post(u.base+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		resp, err := postV1(u.base+"/v1/chat/completions", u.d.APIKey(), body)
 		if err != nil {
 			return false
 		}

@@ -65,6 +65,7 @@ I18N.ready.then(() => {
   // Messages for the codes the daemon and the portal report.
   const MESSAGES = {
     upgrade_required: tr('这个版本已不再受支持，请升级到最新版本后继续使用'),
+    apikey: tr('无法读写 API key 文件（apikey.json），请检查数据目录的权限'),
     local_auth: tr('请用 sharetoken daemon 启动时打印的地址（带 #key=）打开这个页面'),
     bad_portal: tr('门户地址格式不对'),
     insecure_portal: tr('拒绝使用其他机器上的明文 HTTP 门户：验证码会以明文传输。请使用 https:// 地址'),
@@ -366,7 +367,7 @@ I18N.ready.then(() => {
     return { el, set(key, ...nodes) { const k = JSON.stringify(key); if (k !== last) { last = k; body.replaceChildren(...nodes.flat().filter(Boolean)); } } };
   }
 
-  function copyButton(getText, id = 'copy-endpoint') {
+  function copyButton(getText, id = 'copy-endpoint', label = tr('复制')) {
     const b = h('button', { type: 'button', class: 'small', id, onclick: async () => {
       const text = getText();
       try {
@@ -378,8 +379,8 @@ I18N.ready.then(() => {
         t.remove();
       }
       b.textContent = tr('已复制');
-      setTimeout(() => { b.textContent = tr('复制'); }, 1500);
-    } }, tr('复制'));
+      setTimeout(() => { b.textContent = label; }, 1500);
+    } }, label);
     return b;
   }
 
@@ -1081,8 +1082,46 @@ I18N.ready.then(() => {
     const versionText = h('span', { id: 'settings-version' });
     const checkResult = h('span', { class: 'small muted', id: 'update-check-result', role: 'status' });
     const checkBtn = h('button', { type: 'button', id: 'update-check', onclick: checkUpdate }, tr('检查更新'));
+    // The endpoint's API key (internal/client/apikey.go): switched and made
+    // anew in the settings, copied from the overview. It is fetched with the
+    // account data, so a change made with `sharetoken apikey` shows up too.
+    let apiKey = null, apiURL = '';
+    const apiKeyBox = h('input', { type: 'checkbox', id: 'apikey-required', disabled: true, onchange: async () => {
+      apiKeyBox.disabled = true;
+      try { apiKey = await api('PUT', '/api/v1/apikey', { required: apiKeyBox.checked }); setBanner(''); }
+      catch (e) { setBanner(message(e)); }
+      apiKeyBox.disabled = false;
+      drawAPIKey();
+    } });
+    const apiKeyText = h('code', { id: 'apikey-text' });
+    const apiKeyNote = h('span', { class: 'small muted', id: 'apikey-note' });
+    const apiKeyCopy = copyButton(() => apiKey ? apiKey.key : '', 'apikey-copy', tr('复制 key'));
+    const rotateBtn = h('button', { type: 'button', id: 'apikey-rotate', onclick: () => confirmBox(
+      tr('旧 key 会立即失效，用到它的工具要换成新 key。'), tr('重新生成'),
+      async () => { apiKey = await api('POST', '/api/v1/apikey/rotate'); }, async () => drawAPIKey()) }, tr('重新生成'));
+    function drawAPIKey() {
+      if (!apiKey) return;
+      apiKeyBox.checked = apiKey.required;
+      apiKeyBox.disabled = false;
+      apiKeyText.textContent = apiKey.key.slice(0, 6) + '…' + apiKey.key.slice(-4);
+      apiKeyNote.textContent = apiKey.required ? tr('工具把它填作 OpenAI API key') : tr('未开启：本机任何程序都能用这个接口花你的 credit');
+      apiKeyNote.className = 'small ' + (apiKey.required ? 'muted' : 'warn-text');
+      drawEndpoint();
+    }
+    function drawEndpoint() {
+      if (!apiURL) return;
+      const req = !!(apiKey && apiKey.required);
+      endpoint.set([apiURL, req, req && apiKey.key], h('div', { class: 'endpoint' }, h('code', { id: 'endpoint-url' }, apiURL), copyButton(() => apiURL),
+        req ? copyButton(() => apiKey.key, 'copy-apikey', tr('复制 API key')) : null));
+    }
+    async function loadAPIKey() {
+      try { apiKey = await api('GET', '/api/v1/apikey'); drawAPIKey(); } catch (e) { /* shown again at the next try */ }
+    }
+
     const settings = h('section', { class: 'panel', id: 'settings' }, h('div', { class: 'rows' },
       h('span', { class: 'k' }, tr('账户')), accountName, logoutBtn,
+      h('span', { class: 'k' }, tr('API key')), h('label', { class: 'v check' }, apiKeyBox, h('span', null, tr('调用本地 OpenAI 接口需要 API key'))), apiKeyCopy,
+      h('span', { class: 'k' }), h('span', { class: 'v' }, apiKeyText, ' ', apiKeyNote), rotateBtn,
       h('span', { class: 'k' }, tr('语言')), h('span', { class: 'v' }), I18N.picker() || h('span'),
       h('span', { class: 'k' }, tr('版本')), h('span', { class: 'v' }, versionText, ' ', checkResult), checkBtn,
       h('span', { class: 'k' }, tr('反馈')), h('span', { class: 'v muted' }, tr('告诉我们你遇到的问题或建议。')),
@@ -1239,7 +1278,8 @@ I18N.ready.then(() => {
       const [cls, label] = STATE[s.state] || ['', s.state];
       pill.className = 'pill ' + cls;
       pill.textContent = label;
-      endpoint.set(s.api, h('div', { class: 'endpoint' }, h('code', { id: 'endpoint-url' }, s.api), copyButton(() => s.api)));
+      apiURL = s.api;
+      drawEndpoint();
     }
 
     // What a new release means for this client: one line over the views (the
@@ -1316,6 +1356,7 @@ I18N.ready.then(() => {
         renderSession(s);
         // Account data: every third tick; the state: every tick.
         if (tick++ % 3 === 0) {
+          loadAPIKey();
           try {
             const [me, j, sj] = await Promise.all([api('GET', '/api/v1/account'), api('GET', '/api/v1/jobs?limit=10'), api('GET', '/api/v1/jobs?role=sell&limit=10')]);
             if (stopped) return;

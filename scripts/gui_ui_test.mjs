@@ -15,6 +15,8 @@ const dir = process.argv[2];
 const shots = process.argv[3] || dir + '/shots';
 mkdirSync(shots, { recursive: true });
 const env = Object.fromEntries(readFileSync(dir + '/env', 'utf8').trim().split('\n').map(l => { const i = l.indexOf('='); return [l.slice(0, i), l.slice(i + 1)]; }));
+// The OpenAI endpoint's key and switch (internal/client/apikey.go), as the daemon keeps them.
+const apiKeyFile = () => JSON.parse(readFileSync(env.DESKTOP_HOME + '/apikey.json', 'utf8'));
 const chrome = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const port = 9334;
 const proc = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--remote-debugging-port=${port}`,
@@ -190,7 +192,7 @@ await shot('06-dashboard');
 console.log('buying shows up');
 let chatStatus = 0;
 for (let i = 0; i < 20 && chatStatus !== 200; i++) {
-  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
+  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKeyFile().key }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
   chatStatus = r.status; await r.text();
   if (chatStatus !== 200) await sleep(1000);
 }
@@ -239,6 +241,31 @@ await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-sche
 await sleep(200);
 await shot('09-dark');
 await cdp('Emulation.setEmulatedMedia', { features: [] });
+
+console.log('the endpoint\'s API key');
+const v1Status = async key => (await fetch(env.DAEMON + '/v1/models', { headers: key ? { Authorization: 'Bearer ' + key } : {} })).status;
+const key1 = apiKeyFile().key;
+ok(apiKeyFile().required && await v1Status('') === 401 && await v1Status(key1) === 200, 'the endpoint wants the API key from the start');
+await waitFor(el('#copy-apikey'));
+ok(!(await ev('document.documentElement.outerHTML')).includes(key1), 'the overview offers to copy the key without showing it');
+await click('#nav-settings');
+await waitFor(`${el('#apikey-required')}?.checked && !${el('#apikey-required')}.disabled`);
+ok((await text('#apikey-text')).endsWith(key1.slice(-4)) && !(await text('#apikey-text')).includes(key1), 'the settings show the end of the key only');
+await click('#apikey-required');
+await waitFor(`!${el('#apikey-required')}.checked && !${el('#apikey-required')}.disabled`);
+ok(!apiKeyFile().required && await v1Status('') === 200, 'turned off, any request gets in, at once');
+ok(await has('#apikey-note.warn-text'), 'and the settings warn about it');
+await click('#apikey-required');
+await waitFor(`${el('#apikey-required')}.checked && !${el('#apikey-required')}.disabled`);
+ok(apiKeyFile().required && await v1Status('') === 401, 'turned on again');
+await shot('09b-apikey');
+await click('#apikey-rotate'); await waitFor(el('#dlg-confirm'));
+await click('#confirm-ok'); await waitFor(`!${el('#dlg-confirm')}`);
+const key2 = apiKeyFile().key;
+ok(key2 !== key1 && await v1Status(key1) === 401 && await v1Status(key2) === 200, 'a new key replaces the old one');
+await waitFor(`${el('#apikey-text')}.textContent.endsWith(${q(key2.slice(-4))})`);
+ok(true, 'and the settings show it');
+await click('#nav-overview');
 
 console.log('feedback');
 ok(!(await has('#feedback-text')), 'the feedback form is not on the page until asked for');
@@ -411,7 +438,7 @@ console.log('pairing');
 const cli = (home, ...args) => execFileSync(`${dir}/bin/sharetoken`, ['-home', `${dir}/${home}`, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const codeOf = out => out.match(/[A-Z2-7]{4}(?:-[A-Z2-7]{4}){3}/)[0];
 const buyOnce = async () => {
-  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
+  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKeyFile().key }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
   return { status: r.status, body: await r.text() };
 };
 const clickRow = (panel, needle, button) => ev(`[...document.querySelectorAll(${q(panel + ' tbody tr')})].find(r => r.textContent.includes(${q(needle)})).querySelector(${q(button)}).click()`);

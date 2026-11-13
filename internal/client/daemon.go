@@ -49,6 +49,8 @@ type Daemon struct {
 	addr string
 	key  string // the local API's key (localauth.go)
 
+	apiKeys *apiKeyGate // the OpenAI endpoint's key (apikey.go)
+
 	authMu sync.Mutex // serializes what changes who is logged in
 	bg     sync.WaitGroup
 
@@ -144,6 +146,10 @@ func (d *Daemon) Start() error {
 	}
 	d.addr = ln.Addr().String()
 	d.key = newLocalKey()
+	if d.apiKeys, err = newAPIKeyGate(d.home); err != nil {
+		ln.Close()
+		return err
+	}
 	d.srv = &http.Server{Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := d.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -869,7 +875,8 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/ledger", d.fromPortal("/api/v1/ledger"))
 	mux.HandleFunc("/api/v1/", d.toAgent)
 	mux.HandleFunc("/v1/", d.toAgent)
-	return guardHost(guardAPIOrigin(guardOrigin(requireLocalKey(d.key, daemonOpen, mux))))
+	apiKeyRoutes(mux, d.home)
+	return guardHost(guardAPIOrigin(guardOrigin(requireLocalKey(d.key, daemonOpen, d.apiKeys, mux))))
 }
 
 // guardAPIOrigin keeps the management API, which handles logins, to the app:

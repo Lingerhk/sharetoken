@@ -7,13 +7,33 @@
 | 设置 | 值 |
 |---|---|
 | Base URL | `http://127.0.0.1:{{port}}/v1` |
-| API key | 不校验，随便填一个非空值 |
+| API key | 本客户端的 key，`sk-st-…`：`{{exe}} apikey -q` 会打印它，桌面应用在端点旁边也有 |
 | 接口 | `POST /v1/chat/completions`、`GET /v1/models` |
 
 先确认 `{{exe}} up` 在运行，或者[在后台运行](/docs/running#background)。
 
-> [!NOTE]
-> 端点只监听本机，别的机器访问不到。不过同一台机器上的其他程序和用户可以调用它，也就是花你的 credit。多人共用的机器上要注意这一点。
+这个 key 防止本机的其他程序和用户通过端点花你的 credit。它一直不变，直到你生成新的，所以工具里只需填一次：
+
+::: macos linux
+```bash
+export OPENAI_API_KEY=$({{exe}} apikey -q)
+```
+:::
+
+::: windows
+```powershell
+$env:OPENAI_API_KEY = ({{exe}} apikey -q)
+```
+:::
+
+| 命令 | 作用 |
+|---|---|
+| `{{exe}} apikey` | 显示端点、key，以及是否需要 key |
+| `{{exe}} apikey rotate` | 生成新 key，旧 key 立即失效 |
+| `{{exe}} apikey off` | 不带 key 也能调用。只适合没有别人使用的机器 |
+| `{{exe}} apikey on` | 重新要求 key |
+
+桌面应用在**设置**里有同样的开关和**重新生成**。正在运行的客户端会立即生效。不带 key 时端点返回 401 `invalid_api_key`；key 也可以放在 `x-api-key` 请求头里。
 
 ## 看有哪些模型 {#models}
 
@@ -33,6 +53,7 @@ gemma-4-e4b  2      0    100000       200000
 ::: macos linux
 ```bash
 curl http://127.0.0.1:{{port}}/v1/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"gemma-4-e4b","messages":[{"role":"user","content":"Hello"}],"max_tokens":200}'
 ```
@@ -49,7 +70,7 @@ $body = @{
   max_tokens = 200
   messages = @(@{ role = 'user'; content = 'Hello' })
 } | ConvertTo-Json -Depth 5
-$r = Invoke-RestMethod http://127.0.0.1:{{port}}/v1/chat/completions -Method Post -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
+$r = Invoke-RestMethod http://127.0.0.1:{{port}}/v1/chat/completions -Method Post -Headers @{ Authorization = "Bearer $env:OPENAI_API_KEY" } -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
 $r.choices[0].message.content
 ```
 
@@ -73,7 +94,8 @@ py -m pip install openai
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:{{port}}/v1", api_key="local")
+# api_key comes from $OPENAI_API_KEY (see above)
+client = OpenAI(base_url="http://127.0.0.1:{{port}}/v1")
 
 reply = client.chat.completions.create(
     model="gemma-4-e4b",
@@ -102,7 +124,8 @@ npm install openai
 ```javascript
 import OpenAI from "openai";
 
-const client = new OpenAI({ baseURL: "http://127.0.0.1:{{port}}/v1", apiKey: "local" });
+// apiKey comes from $OPENAI_API_KEY (see above)
+const client = new OpenAI({ baseURL: "http://127.0.0.1:{{port}}/v1" });
 
 const reply = await client.chat.completions.create({
   model: "gemma-4-e4b",
@@ -119,14 +142,14 @@ console.log(reply.choices[0].message.content);
 ::: macos linux
 ```bash
 export OPENAI_BASE_URL=http://127.0.0.1:{{port}}/v1
-export OPENAI_API_KEY=local
+export OPENAI_API_KEY=$({{exe}} apikey -q)
 ```
 :::
 
 ::: windows
 ```powershell
 $env:OPENAI_BASE_URL = 'http://127.0.0.1:{{port}}/v1'
-$env:OPENAI_API_KEY = 'local'
+$env:OPENAI_API_KEY = ({{exe}} apikey -q)
 ```
 :::
 

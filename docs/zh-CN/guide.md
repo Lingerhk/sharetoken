@@ -36,7 +36,7 @@ sharetoken share add deepseek-flash -provider deepseek
 sharetoken up                               # 客户端已在运行时，share 命令立即生效
 ```
 
-任何 OpenAI 兼容的工具，把 base URL 设为 `http://127.0.0.1:9787/v1` 即可。API key 随便填。
+任何 OpenAI 兼容的工具，把 base URL 设为 `http://127.0.0.1:9787/v1`，API key 填客户端的 key：`sharetoken apikey -q` 会打印它（`sharetoken apikey` 看详情；`apikey off` 不再要求 key，`apikey rotate` 生成新 key）。
 
 没有密码。`login` 发送 6 位验证码并提示输入；还没有账户的邮箱在同一步注册（门户开放注册时）。脚本里可以分两步：`login -send` 只发送验证码，`login -code 123456` 用它登录。开启了两步验证时，`login` 接着询问身份验证器里的动态码（或用 `-totp` 给出）。
 
@@ -106,6 +106,7 @@ sharetoken up                               # 客户端已在运行时，share �
 | `providers.json` | 托管 API 的 provider 及其凭据，与 `config.json` 分开存放。 |
 | `network.json` | 上次从门户取得的中继列表，门户不可达时使用。 |
 | `run.json` | 运行中客户端的 API 地址和 key，供其它命令和桌面应用使用（权限 0600）。 |
+| `apikey.json` | OpenAI 端点的 API key 以及是否需要它（权限 0600；`sharetoken apikey`）。 |
 
 ### 1.5 config.json
 
@@ -302,7 +303,7 @@ coordinator -db $DSN -fee-bps 500 \
 curl -s -H "Authorization: Bearer $(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.sharetoken/run.json")))["key"])')" http://127.0.0.1:9787/api/v1/status
 ```
 
-OpenAI 兼容端点 `/v1/` 不需要 key。桌面应用使用的 `sharetoken daemon` 提供同一套 API，另加未登录时可用的登录接口；见 [desktop.md](desktop.md)。
+OpenAI 兼容端点 `/v1/` 用的是 `apikey.json` 里的 API key（除非用 `sharetoken apikey off` 关掉），它不随启动变化；`GET`/`PUT /api/v1/apikey` 和 `POST /api/v1/apikey/rotate` 查看和修改它。桌面应用使用的 `sharetoken daemon` 提供同一套 API，另加未登录时可用的登录接口；见 [desktop.md](desktop.md)。
 
 | 方法与路径 | 说明 |
 |---|---|
