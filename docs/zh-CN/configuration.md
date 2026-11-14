@@ -45,6 +45,7 @@
 | `limits.max_circuits` | `-max-circuits` | 4096 | 到同一目的 peer 的并发电路数（协调器每个在线用户占一条） |
 | `limits.reservation_ttl` | — | 1h | 预约的有效期；至少 1m |
 | `limits.circuit_buffer` | — | 16KiB | 每条电路的缓冲区 |
+| `limits.memory` | — | 本机（或 cgroup）内存的四分之三 | 所有对端合计可以向 libp2p 资源管理器预留的内存。yamux 每条流预留 256 KiB，一条电路是两条流，而一条空闲电路实际只占约 30 KiB，所以在小内存机器上，限制 TCP 电路数的是它，不是实际用量（453 MB 时约 510 条）。中继还会设置 85% 的 Go 软内存上限，除非设置了 `GOMEMLIMIT` |
 | `status.listen` | `-status` | 空 | 在 `/` 提供 JSON 统计，在 `/metrics` 提供 Prometheus 指标。没有认证，所以只接受 `127.0.0.1:8093` 这样的回环地址 |
 | `status.stats_interval` | — | 5m | 周期性统计日志的间隔；0 关闭 |
 | `log.*` | — | info / text / stderr | 见第 1 节 |

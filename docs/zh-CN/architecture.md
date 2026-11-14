@@ -245,7 +245,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 | 被禁用的用户继续交易 | 协调器每次请求都查用户状态；token 立即失效 | `accounts.DeviceAccount` |
 | 网页会话被窃取、跨站请求伪造、注入脚本 | HttpOnly + SameSite cookie；自定义头 + Origin 校验；严格 CSP、无内联代码 | `internal/portal/web.go`（§2.12） |
 | 管理员邮箱被别人读到 | 管理员强制 TOTP；没有第二因素的 token 进不了 `/admin/*`；错码限流、challenge 限次、验证码不能重放；密钥加密存放 | `internal/portal/mfa.go`、`internal/totp`（§2.12） |
-| 陌生人用超大帧或海量流耗尽中继或协调器的内存 | 帧的缓冲区随实际到达的数据增长，不按声明的长度预分配。流处理器先向 libp2p 资源管理器预留帧大小，超出每流（16 MiB）、每 peer 或全局（RAM 的四分之一）限额就拒绝这一帧。只含几个字段的帧（凭证、ack）上限 64 KiB。枢纽进程只放宽随用户数增长的计数（全局连接、流、文件描述符；circuit、ping 等内建服务），其余沿用 libp2p 按机器规模缩放的默认值。用户端每个 peer 允许 8 个并发 ping（默认 3 个），免得测速与链路监控重叠时把中继误判为不可达 | `protocol.RecvStream`、`p2p.HubLimits`、`p2p.ClientLimits` |
+| 陌生人用超大帧或海量流耗尽中继或协调器的内存 | 帧的缓冲区随实际到达的数据增长，不按声明的长度预分配。流处理器先向 libp2p 资源管理器预留帧大小，超出每流（16 MiB）、每 peer 或全局限额（内存的四分之一；中继是四分之三，`limits.memory`）就拒绝这一帧。只含几个字段的帧（凭证、ack）上限 64 KiB。枢纽进程只放宽随用户数增长的计数（全局连接、流、文件描述符；circuit、ping 等内建服务），其余沿用 libp2p 按机器规模缩放的默认值。用户端每个 peer 允许 8 个并发 ping（默认 3 个），免得测速与链路监控重叠时把中继误判为不可达 | `protocol.RecvStream`、`p2p.HubLimits`、`p2p.ClientLimits` |
 
 ## 5. 诚实的边界
 

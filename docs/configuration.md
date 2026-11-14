@@ -45,6 +45,7 @@ Example: [`configs/relay.example.yaml`](../configs/relay.example.yaml). The acce
 | `limits.max_circuits` | `-max-circuits` | 4096 | Open circuits to one destination peer (the coordinator receives one per online user) |
 | `limits.reservation_ttl` | — | 1h | Lifetime of a reservation; at least 1m |
 | `limits.circuit_buffer` | — | 16KiB | Buffer per circuit |
+| `limits.memory` | — | three quarters of the machine's (or the cgroup's) memory | What all peers may reserve with libp2p's resource manager. yamux reserves 256 KiB per stream and a circuit is two streams, although an idle circuit holds about 30 KiB, so on a small machine this, not the memory in use, caps TCP circuits (about 510 on 453 MB). The relay also sets a soft Go memory limit of 85% unless `GOMEMLIMIT` is set |
 | `status.listen` | `-status` | empty | Serves JSON statistics at `/` and Prometheus metrics at `/metrics`. There is no authentication, so only a loopback address such as `127.0.0.1:8093` is accepted |
 | `status.stats_interval` | — | 5m | Interval of the periodic statistics log line; 0 turns it off |
 | `log.*` | — | info / text / stderr | See section 1 |
