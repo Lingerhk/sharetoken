@@ -12,12 +12,13 @@ type Usage struct {
 // ChunkInfo is what the node and the buyer each extract from one streamed
 // chat.completion.chunk payload.
 type ChunkInfo struct {
-	Content      string
-	Reasoning    string
-	ToolArgs     string
-	ToolCalls    []ToolCallDelta
-	FinishReason string
-	Usage        *Usage
+	Content           string
+	Reasoning         string
+	ToolArgs          string
+	ToolCalls         []ToolCallDelta
+	FinishReason      string
+	Usage             *Usage
+	AnthropicThinking []json.RawMessage
 }
 
 // ToolCallDelta is one streamed fragment of a tool call. Fragments with the
@@ -86,10 +87,11 @@ func ParseChunk(payload []byte) (ChunkInfo, error) {
 	var c struct {
 		Choices []struct {
 			Delta struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-				Reasoning        string `json:"reasoning"`
-				ToolCalls        []struct {
+				AnthropicThinking []json.RawMessage `json:"anthropic_thinking"`
+				Content           string            `json:"content"`
+				ReasoningContent  string            `json:"reasoning_content"`
+				Reasoning         string            `json:"reasoning"`
+				ToolCalls         []struct {
 					Index    int    `json:"index"`
 					ID       string `json:"id"`
 					Type     string `json:"type"`
@@ -108,6 +110,7 @@ func ParseChunk(payload []byte) (ChunkInfo, error) {
 	}
 	info := ChunkInfo{Usage: c.Usage}
 	for _, ch := range c.Choices {
+		info.AnthropicThinking = append(info.AnthropicThinking, ch.Delta.AnthropicThinking...)
 		info.Content += ch.Delta.Content
 		info.Reasoning += ch.Delta.ReasoningContent + ch.Delta.Reasoning
 		for _, tc := range ch.Delta.ToolCalls {

@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -263,7 +264,16 @@ func (s *Service) announce() error {
 		Quote:          s.cfg.Quote,
 	}
 	for _, m := range s.cfg.Models {
+		if up, ok := m.Upstream.(interface{ ReadyAt() time.Time }); ok && up.ReadyAt().After(now) {
+			continue
+		}
 		o.Models = append(o.Models, protocol.ModelPrice{Model: m.ID, PriceInMicros: m.PriceInMicros, PriceOutMicros: m.PriceOutMicros})
+	}
+	// Empty offers are invalid. Withdraw until a provider becomes available.
+	if len(o.Models) == 0 {
+		ctx, cancel := context.WithTimeout(s.ctx, withdrawTimeout)
+		defer cancel()
+		return s.call(ctx, protocol.TypeWithdraw, protocol.WithdrawRequest{IssuedAt: now.UnixNano()}, protocol.TypeOK, nil)
 	}
 	o.Sign(s.keys.Signer)
 	s.statMu.Lock()
@@ -334,10 +344,25 @@ func (s *Service) handleInfer(st network.Stream) {
 		go s.abandonNoFault(*t, "bad request")
 		return
 	}
+	if up, ok := mc.Upstream.(interface{ ReadyAt() time.Time }); ok && up.ReadyAt().After(s.cfg.Now()) {
+		fail(st, protocol.Errorf(protocol.CodeBusy, "provider is temporarily rate limited"))
+		go s.abandonNoFault(*t, "provider cooldown")
+		return
+	}
 
 	_ = st.SetDeadline(time.Now().Add(s.cfg.JobTimeout))
 	ctx, cancel := context.WithTimeout(s.ctx, s.cfg.JobTimeout)
 	defer cancel()
+	ctx = WithRequestScope(ctx, t.Buyer)
+	var session struct {
+		ID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(plain, &session); err != nil || len(session.ID) > 256 {
+		fail(st, protocol.Errorf(protocol.CodeBadRequest, "session_id must be a string of at most 256 bytes"))
+		go s.abandonNoFault(*t, "invalid session_id")
+		return
+	}
+	ctx = WithRequestSession(ctx, session.ID)
 	// Tell the coordinator the buyer showed up (in the background: it must
 	// not delay the first byte). If the job was already released for not
 	// starting in time, nobody will pay for it: stop.

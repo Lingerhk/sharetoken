@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"sharetoken/internal/node"
 )
 
 // httpClient has no overall timeout: streams run long. The job's context
@@ -32,14 +30,14 @@ func postSSE(ctx context.Context, url string, header http.Header, body []byte, o
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "text/event-stream")
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := clientForContext(ctx).Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return &node.StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(msg))}
+		return responseStatus(resp, string(msg))
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), maxSSELine)
@@ -69,7 +67,7 @@ func getJSON(ctx context.Context, url string, header http.Header, out any) error
 	}
 	req.Header = header.Clone()
 	req.Header.Set("Accept", "application/json")
-	resp, err := httpClient.Do(req)
+	resp, err := clientForContext(ctx).Do(req)
 	if err != nil {
 		return err
 	}
@@ -79,7 +77,7 @@ func getJSON(ctx context.Context, url string, header http.Header, out any) error
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return &node.StatusError{Status: resp.StatusCode, Body: clip(strings.TrimSpace(string(body)), 300)}
+		return responseStatus(resp, clip(strings.TrimSpace(string(body)), 300))
 	}
 	return json.Unmarshal(body, out)
 }

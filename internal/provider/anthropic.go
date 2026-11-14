@@ -15,19 +15,18 @@ import (
 
 const anthropicVersion = "2023-06-01"
 
-// claudeCodeIdentity is the first system block an OAuth (subscription) request
-// must carry: the Messages API serves such a login to Claude Code only, and
-// refuses one whose system prompt does not lead with this line.
+// claudeCodeIdentity is the identity line used by both OAuth request profiles.
 const claudeCodeIdentity = "You are Claude Code, Anthropic's official CLI for Claude."
 
 type anthropicUpstream struct {
 	base   string // without /v1
 	limits outputLimits
 	// API-key path: header carries the key. OAuth path: ts gives the bearer
-	// token, oauth makes requests lead with the Claude Code system line.
+	// token; oauth selects the configured OAuth request profile.
 	header http.Header
 	ts     TokenSource
 	oauth  bool
+	entry  *Entry
 }
 
 func (u *anthropicUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
@@ -35,27 +34,53 @@ func (u *anthropicUpstream) Stream(ctx context.Context, body []byte, emit func([
 	if err != nil {
 		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 	}
-	return u.limits.retry(func() error {
-		req, err := anthropicRequest(chat, u.limits.of(chat.Model))
-		if err != nil {
-			return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
+	responseModel := chat.Model
+	if u.oauth {
+		if model := claudeOAuthModelIDs[chat.Model]; model != "" {
+			chat.Model = model
 		}
-		if u.oauth {
-			req["system"] = claudeCodeSystem(req["system"])
-			if m, ok := req["model"].(string); ok {
-				if full := claudeOAuthModelIDs[m]; full != "" {
-					req["model"] = full
+	}
+	sampling := ""
+	if u.entry != nil && u.entry.Anthropic != nil {
+		sampling = u.entry.Anthropic.Sampling
+	}
+	if err := validateAnthropicParameters(chat, sampling); err != nil {
+		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
+	}
+	profile := u.entry != nil && u.entry.claudeProfile()
+	endpoint, err := anthropicMessagesURL(u.base, profile)
+	if err != nil {
+		return err
+	}
+	return u.limits.retry(func() error {
+		send := func(tok *Token) error {
+			req, err := anthropicRequest(chat, u.limits.of(responseModel))
+			if err != nil {
+				return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
+			}
+			h := u.header.Clone()
+			if u.oauth {
+				h = anthropicOAuthHeader(tok)
+				if profile {
+					h, err = applyClaudeOAuthProfile(ctx, req, chat, u.entry, tok)
+					if err != nil {
+						return err
+					}
+				} else {
+					req["system"] = claudeCodeSystem(req["system"])
 				}
 			}
-		}
-		out, err := json.Marshal(req)
-		if err != nil {
-			return err
-		}
-		send := func(h http.Header) error {
+			if h == nil {
+				h = http.Header{}
+			}
+			normalizeAnthropicCache(req)
 			h.Set("anthropic-version", anthropicVersion)
-			st := &anthropicStream{out: newChunks(chat.Model, emit), tool: map[int]int{}}
-			if err := postSSE(ctx, u.base+"/v1/messages", h, out, st.event); err != nil {
+			out, err := json.Marshal(req)
+			if err != nil {
+				return err
+			}
+			st := &anthropicStream{out: newChunks(responseModel, emit), tool: map[int]int{}}
+			if err := postSSE(ctx, endpoint, h, out, st.event); err != nil {
 				return err
 			}
 			if !st.done {
@@ -64,11 +89,9 @@ func (u *anthropicUpstream) Stream(ctx context.Context, body []byte, emit func([
 			return nil
 		}
 		if u.ts != nil {
-			return withToken(ctx, u.ts, func(tok *Token) error {
-				return send(anthropicOAuthHeader(tok))
-			})
+			return withToken(ctx, u.ts, send)
 		}
-		return send(u.header.Clone())
+		return send(nil)
 	}, body)
 }
 
@@ -129,15 +152,30 @@ func anthropicRequest(chat *chatRequest, limit uint64) (map[string]any, error) {
 	}
 	for i := range chat.Messages {
 		m := &chat.Messages[i]
+		for _, p := range m.parts() {
+			if err := p.CacheControl.valid(); err != nil {
+				return nil, err
+			}
+		}
 		switch m.Role {
 		case "system", "developer":
-			if t := m.text(); t != "" {
-				system = append(system, map[string]any{"type": "text", "text": t})
+			for _, p := range m.parts() {
+				if (p.Type == "" || p.Type == "text") && p.Text != "" {
+					block := map[string]any{"type": "text", "text": p.Text}
+					if p.CacheControl != nil {
+						block["cache_control"] = p.CacheControl.value()
+					}
+					system = append(system, block)
+				}
 			}
 		case "user":
 			add("user", anthropicBlocks(m)...)
 		case "assistant":
-			blocks := anthropicBlocks(m)
+			blocks, err := anthropicThinkingHistory(m.AnthropicThinking)
+			if err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, anthropicBlocks(m)...)
 			for _, tc := range m.ToolCalls {
 				blocks = append(blocks, map[string]any{"type": "tool_use", "id": tc.ID, "name": tc.Function.Name, "input": rawObject(tc.Function.Arguments)})
 			}
@@ -194,6 +232,12 @@ func anthropicRequest(chat *chatRequest, limit uint64) (map[string]any, error) {
 				schema = json.RawMessage(`{"type":"object","properties":{}}`)
 			}
 			tool := map[string]any{"name": t.Function.Name, "input_schema": schema}
+			if err := t.CacheControl.valid(); err != nil {
+				return nil, err
+			}
+			if t.CacheControl != nil {
+				tool["cache_control"] = t.CacheControl.value()
+			}
 			if t.Function.Description != "" {
 				tool["description"] = t.Function.Description
 			}
@@ -218,6 +262,7 @@ func anthropicRequest(chat *chatRequest, limit uint64) (map[string]any, error) {
 func anthropicBlocks(m *chatMessage) []any {
 	var out []any
 	for _, p := range m.parts() {
+		before := len(out)
 		switch p.Type {
 		case "text", "":
 			if p.Text != "" {
@@ -230,18 +275,22 @@ func anthropicBlocks(m *chatMessage) []any {
 				out = append(out, map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": p.ImageURL.URL}})
 			}
 		}
+		if p.CacheControl != nil && len(out) > before {
+			out[len(out)-1].(map[string]any)["cache_control"] = p.CacheControl.value()
+		}
 	}
 	return out
 }
 
 // anthropicStream turns Messages stream events into chunks.
 type anthropicStream struct {
-	out    *chunks
-	tool   map[int]int // content block index → tool call index
-	prompt uint64
-	output uint64
-	reason string
-	done   bool
+	out      *chunks
+	tool     map[int]int // content block index → tool call index
+	prompt   uint64
+	output   uint64
+	reason   string
+	done     bool
+	thinking map[int]*anthropicThinkingBlock
 }
 
 func (s *anthropicStream) event(data []byte) error {
@@ -252,15 +301,19 @@ func (s *anthropicStream) event(data []byte) error {
 			Usage anthropicUsage `json:"usage"`
 		} `json:"message"`
 		ContentBlock struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-			Name string `json:"name"`
-			Text string `json:"text"`
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			Text      string `json:"text"`
+			Thinking  string `json:"thinking"`
+			Signature string `json:"signature"`
+			Data      string `json:"data"`
 		} `json:"content_block"`
 		Delta struct {
 			Type        string `json:"type"`
 			Text        string `json:"text"`
 			Thinking    string `json:"thinking"`
+			Signature   string `json:"signature"`
 			PartialJSON string `json:"partial_json"`
 			StopReason  string `json:"stop_reason"`
 		} `json:"delta"`
@@ -279,6 +332,12 @@ func (s *anthropicStream) event(data []byte) error {
 		s.output = ev.Message.Usage.OutputTokens
 	case "content_block_start":
 		switch ev.ContentBlock.Type {
+		case "thinking", "redacted_thinking":
+			if s.thinking == nil {
+				s.thinking = map[int]*anthropicThinkingBlock{}
+			}
+			s.thinking[ev.Index] = &anthropicThinkingBlock{Type: ev.ContentBlock.Type, Thinking: ev.ContentBlock.Thinking, Signature: ev.ContentBlock.Signature, Data: ev.ContentBlock.Data}
+			return s.out.reasoning(ev.ContentBlock.Thinking)
 		case "tool_use":
 			i, err := s.out.toolStart(ev.ContentBlock.ID, ev.ContentBlock.Name, "")
 			s.tool[ev.Index] = i
@@ -291,10 +350,24 @@ func (s *anthropicStream) event(data []byte) error {
 		case "text_delta":
 			return s.out.text(ev.Delta.Text)
 		case "thinking_delta":
+			if block := s.thinking[ev.Index]; block != nil {
+				block.Thinking += ev.Delta.Thinking
+			}
 			return s.out.reasoning(ev.Delta.Thinking)
+		case "signature_delta":
+			if block := s.thinking[ev.Index]; block != nil {
+				block.Signature += ev.Delta.Signature
+			}
 		case "input_json_delta":
 			if i, ok := s.tool[ev.Index]; ok {
 				return s.out.toolArgs(i, ev.Delta.PartialJSON)
+			}
+		}
+	case "content_block_stop":
+		if block := s.thinking[ev.Index]; block != nil {
+			delete(s.thinking, ev.Index)
+			if block.Signature != "" || block.Type == "redacted_thinking" {
+				return s.out.send(map[string]any{"anthropic_thinking": []any{block}}, "", nil)
 			}
 		}
 	case "message_delta":

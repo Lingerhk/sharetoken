@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -37,6 +38,18 @@ type Login struct {
 
 	state, verifier, redirect string
 	created                   time.Time
+	options                   LoginOptions
+	mu                        sync.Mutex
+	finished                  bool
+}
+
+// LoginOptions applies to the whole login and is saved with its credentials.
+// Secrets (including a proxy password) are not returned in Login's JSON.
+type LoginOptions struct {
+	Project   string            `json:"project,omitempty"`
+	Mode      string            `json:"mode,omitempty"` // Anthropic: full or inference
+	Transport *TransportOptions `json:"transport,omitempty"`
+	Anthropic *AnthropicOptions `json:"anthropic,omitempty"`
 }
 
 // oauthFlow is the login of one kind.
@@ -79,6 +92,10 @@ var (
 // StartLogin begins an OAuth login for a kind. project is only for Google
 // logins, and usually empty.
 func StartLogin(kind, project string) (*Login, error) {
+	return StartLoginWithOptions(kind, LoginOptions{Project: project})
+}
+
+func StartLoginWithOptions(kind string, options LoginOptions) (*Login, error) {
 	k, ok := LookupKind(kind)
 	if !ok || !k.OAuth {
 		return nil, fmt.Errorf("%q has no OAuth login", kind)
@@ -87,7 +104,26 @@ func StartLogin(kind, project string) (*Login, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &Login{ID: randomHex(16), Type: k.ID, Project: project, state: randomHex(32), verifier: randomURLSafe(64), created: time.Now()}
+	if options.Mode != "" && options.Mode != "full" && options.Mode != "inference" {
+		return nil, errors.New("login mode must be full or inference")
+	}
+	if options.Mode == "inference" && k.ID != KindAnthropic {
+		return nil, errors.New("inference-only login requires Anthropic")
+	}
+	if options.Transport != nil {
+		if err := options.Transport.validate(); err != nil {
+			return nil, err
+		}
+	}
+	if options.Anthropic != nil {
+		if k.ID != KindAnthropic {
+			return nil, errors.New("Anthropic options require Anthropic")
+		}
+		if err := options.Anthropic.validate(AuthOAuth); err != nil {
+			return nil, err
+		}
+	}
+	l := &Login{ID: randomHex(16), Type: k.ID, Project: options.Project, options: options, state: randomHex(32), verifier: randomURLSafe(64), created: time.Now()}
 	if err := f.start(l); err != nil {
 		return nil, err
 	}
@@ -116,6 +152,11 @@ func FinishLogin(ctx context.Context, id, input string) (*Token, string, error) 
 
 // Finish is FinishLogin for the Login itself.
 func (l *Login) Finish(ctx context.Context, input string) (*Token, string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.finished || time.Since(l.created) > loginTTL {
+		return nil, "", errors.New("this login has expired: start again")
+	}
 	f, err := flowOf(l.Type)
 	if err != nil {
 		return nil, "", err
@@ -129,6 +170,12 @@ func (l *Login) Finish(ctx context.Context, input string) (*Token, string, error
 	}
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
+	client, err := tokenHTTPClient("login:"+l.ID, l.options.Transport)
+	if err != nil {
+		return nil, "", err
+	}
+	defer releaseHTTPClient("login:" + l.ID + ":token")
+	ctx = withHTTPClient(ctx, client)
 	tok, err := f.exchange(ctx, l, code)
 	if err != nil {
 		return nil, "", err
@@ -136,6 +183,8 @@ func (l *Login) Finish(ctx context.Context, input string) (*Token, string, error
 	loginMu.Lock()
 	delete(logins, l.ID)
 	loginMu.Unlock()
+	l.finished = true
+	tok.LoginMode = l.options.Mode
 	return tok, l.Type, nil
 }
 
@@ -178,8 +227,6 @@ func oauthModels(ctx context.Context, e *Entry, ts TokenSource) ([]string, error
 // one back to the providers file.
 type Tokens struct {
 	Home string
-	mu   sync.Mutex
-	one  map[string]*sync.Mutex // per provider: one renewal at a time
 }
 
 // renewBefore: a token with less than this left is renewed before use.
@@ -194,18 +241,21 @@ type tokenSource struct {
 }
 
 func (s *tokenSource) Token(ctx context.Context, force bool) (*Token, error) {
-	s.t.mu.Lock()
-	if s.t.one == nil {
-		s.t.one = map[string]*sync.Mutex{}
+	return s.token(ctx, force, "")
+}
+
+// RefreshRejected avoids rotating again when a concurrent request already
+// replaced the rejected token, including when that request ran in the CLI.
+func (s *tokenSource) RefreshRejected(ctx context.Context, rejected string) (*Token, error) {
+	return s.token(ctx, true, rejected)
+}
+
+func (s *tokenSource) token(ctx context.Context, force bool, rejected string) (*Token, error) {
+	unlock, err := lockProviderFile(ctx, s.t.Home, "refresh:"+strings.ToLower(s.name))
+	if err != nil {
+		return nil, err
 	}
-	mu := s.t.one[s.name]
-	if mu == nil {
-		mu = &sync.Mutex{}
-		s.t.one[s.name] = mu
-	}
-	s.t.mu.Unlock()
-	mu.Lock()
-	defer mu.Unlock()
+	defer unlock()
 
 	f, err := Load(s.t.Home)
 	if err != nil {
@@ -219,12 +269,16 @@ func (s *tokenSource) Token(ctx context.Context, force bool) (*Token, error) {
 		return nil, fmt.Errorf("provider %s is not logged in", s.name)
 	}
 	tok := *e.OAuth
+	valid := tok.AccessToken != "" && (tok.ExpiresAt.IsZero() || time.Until(tok.ExpiresAt) > 0)
+	if rejected != "" && tok.AccessToken != rejected && valid {
+		return &tok, nil
+	}
 	fresh := tok.AccessToken != "" && (tok.ExpiresAt.IsZero() || time.Until(tok.ExpiresAt) > renewBefore)
 	if fresh && !force {
 		return &tok, nil
 	}
 	if tok.RefreshToken == "" {
-		if fresh {
+		if valid {
 			return &tok, nil // nothing to renew it with: the server has the last word
 		}
 		return nil, fmt.Errorf("the login of provider %s has expired: `sharetoken provider login %s -name %s`", s.name, e.Type, s.name)
@@ -235,18 +289,28 @@ func (s *tokenSource) Token(ctx context.Context, force bool) (*Token, error) {
 	}
 	rctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	client, err := tokenHTTPClient(e.ID, e.Transport)
+	if err != nil {
+		return nil, err
+	}
+	rctx = withHTTPClient(rctx, client)
 	nt, err := flow.refresh(rctx, &tok)
 	if err != nil {
-		if fresh {
+		if valid && !force {
 			return &tok, nil
 		}
 		return nil, fmt.Errorf("renewing the login of provider %s: %w", s.name, err)
 	}
 	merged := mergeToken(&tok, nt)
 	err = Update(s.t.Home, func(f *File) error {
-		if cur := f.Get(s.name); cur != nil && cur.Auth == AuthOAuth {
-			cur.OAuth = merged
+		cur := f.Get(s.name)
+		if cur == nil || cur.Auth != AuthOAuth || cur.OAuth == nil {
+			return errors.New("provider credentials changed during refresh")
 		}
+		if cur.OAuth.AccessToken != tok.AccessToken || cur.OAuth.RefreshToken != tok.RefreshToken || cur.Type != e.Type {
+			return errors.New("provider credentials changed during refresh; retry with the new login")
+		}
+		cur.OAuth = merged
 		return nil
 	})
 	return merged, err
@@ -264,15 +328,26 @@ func mergeToken(old, nt *Token) *Token {
 	if out.AccountID == "" {
 		out.AccountID = old.AccountID
 	}
+	if out.AccountUUID == "" {
+		out.AccountUUID = old.AccountUUID
+	}
+	if out.Scope == "" {
+		out.Scope = old.Scope
+	}
+	if out.LoginMode == "" {
+		out.LoginMode = old.LoginMode
+	}
 	if out.ProjectID == "" {
 		out.ProjectID = old.ProjectID
 	}
 	if out.Plan == "" {
 		out.Plan = old.Plan
 	}
-	if len(out.Extra) == 0 {
-		out.Extra = old.Extra
+	out.Extra = maps.Clone(old.Extra)
+	if out.Extra == nil && len(nt.Extra) > 0 {
+		out.Extra = map[string]string{}
 	}
+	maps.Copy(out.Extra, nt.Extra)
 	return &out
 }
 
@@ -294,7 +369,15 @@ func withToken(ctx context.Context, ts TokenSource, do func(tok *Token) error) e
 	err = do(tok)
 	var se *node.StatusError
 	if errors.As(err, &se) && se.Status == http.StatusUnauthorized {
-		nt, rerr := ts.Token(ctx, true)
+		var nt *Token
+		var rerr error
+		if source, ok := ts.(interface {
+			RefreshRejected(context.Context, string) (*Token, error)
+		}); ok {
+			nt, rerr = source.RefreshRejected(ctx, tok.AccessToken)
+		} else {
+			nt, rerr = ts.Token(ctx, true)
+		}
 		if rerr != nil || nt.AccessToken == tok.AccessToken {
 			return err
 		}
@@ -339,6 +422,7 @@ type tokenResponse struct {
 	RefreshToken string `json:"refresh_token"`
 	IDToken      string `json:"id_token"`
 	ExpiresIn    int64  `json:"expires_in"`
+	Scope        string `json:"scope"`
 	Error        any    `json:"error"`
 	ErrorDesc    string `json:"error_description"`
 	// Anthropic names the account beside the token.
@@ -352,7 +436,7 @@ type tokenResponse struct {
 }
 
 func (r *tokenResponse) token() *Token {
-	t := &Token{AccessToken: r.AccessToken, RefreshToken: r.RefreshToken}
+	t := &Token{AccessToken: r.AccessToken, RefreshToken: r.RefreshToken, Scope: r.Scope}
 	if r.ExpiresIn > 0 {
 		t.ExpiresAt = time.Now().Add(time.Duration(r.ExpiresIn) * time.Second).UTC().Truncate(time.Second)
 	}
@@ -381,8 +465,10 @@ func postToken(ctx context.Context, endpoint string, header http.Header, form ur
 		req.Header = header.Clone()
 	}
 	req.Header.Set("Content-Type", ct)
-	req.Header.Set("Accept", "application/json")
-	resp, err := httpClient.Do(req)
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
+	resp, err := clientForContext(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +477,12 @@ func postToken(ctx context.Context, endpoint string, header http.Header, form ur
 	var out tokenResponse
 	_ = json.Unmarshal(data, &out)
 	if resp.StatusCode != http.StatusOK || out.AccessToken == "" {
-		return nil, fmt.Errorf("the login server answered HTTP %d: %s", resp.StatusCode, clip(strings.TrimSpace(string(data)), 300))
+		code, _ := out.Error.(string)
+		if object, ok := out.Error.(map[string]any); ok {
+			code, _ = object["type"].(string)
+			out.ErrorDesc, _ = object["message"].(string)
+		}
+		return nil, tokenError(resp.StatusCode, code, out.ErrorDesc)
 	}
 	return &out, nil
 }

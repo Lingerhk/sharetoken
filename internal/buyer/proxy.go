@@ -86,6 +86,9 @@ func (p *Proxy) chat(w http.ResponseWriter, r *http.Request) {
 	if res.Reasoning != "" {
 		msg["reasoning_content"] = res.Reasoning
 	}
+	if len(res.AnthropicThinking) > 0 {
+		msg["anthropic_thinking"] = res.AnthropicThinking
+	}
 	if len(res.ToolCalls) > 0 {
 		msg["tool_calls"] = res.ToolCalls
 		if res.Content == "" {

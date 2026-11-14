@@ -15,7 +15,7 @@ import (
 //
 //	GET    /api/v1/providers                  kinds that can be added, and the configured providers
 //	POST   /api/v1/providers                  add one with an API key (provider.AddRequest)
-//	PATCH  /api/v1/providers/{name}           {"enabled": bool}
+//	PATCH  /api/v1/providers/{name}           provider.ConfigureRequest
 //	DELETE /api/v1/providers/{name}
 //	GET    /api/v1/providers/{name}/models    models the credentials may use
 //	PUT    /api/v1/providers/{name}/models    add or reprice a model to sell (node.ModelConfig)
@@ -87,16 +87,11 @@ func (a *Agent) providerRoutes(mux *http.ServeMux) {
 		return out, err
 	})
 	handle("PATCH /api/v1/providers/{name}", func(w http.ResponseWriter, r *http.Request) (any, error) {
-		var req struct {
-			Enabled *bool `json:"enabled"`
-		}
+		var req provider.ConfigureRequest
 		if err := read(r, &req); err != nil {
 			return nil, err
 		}
-		if req.Enabled == nil {
-			return nil, errors.New("nothing to change: give \"enabled\"")
-		}
-		v, err := provider.SetEnabled(a.home, r.PathValue("name"), *req.Enabled)
+		v, err := provider.Configure(a.home, r.PathValue("name"), req)
 		if err == nil {
 			changed()
 		}
@@ -110,8 +105,7 @@ func (a *Agent) providerRoutes(mux *http.ServeMux) {
 		return map[string]bool{"ok": err == nil}, err
 	})
 	handle("GET /api/v1/providers/{name}/models", func(w http.ResponseWriter, r *http.Request) (any, error) {
-		ms, err := provider.Models(r.Context(), a.home, r.PathValue("name"))
-		return map[string]any{"models": ms}, err
+		return provider.Discover(r.Context(), a.home, r.PathValue("name"))
 	})
 	handle("PUT /api/v1/providers/{name}/models", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var m node.ModelConfig
@@ -156,13 +150,26 @@ func (a *Agent) providerRoutes(mux *http.ServeMux) {
 	})
 	handle("POST /api/v1/providers/oauth/start", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var req struct {
-			Type    string `json:"type"`
-			Project string `json:"project"`
+			Type string `json:"type"`
+			Name string `json:"name"`
+			provider.LoginOptions
 		}
 		if err := read(r, &req); err != nil {
 			return nil, err
 		}
-		return provider.StartLogin(req.Type, req.Project)
+		return provider.StartProviderLogin(a.home, req.Name, req.Type, req.LoginOptions)
+	})
+	handle("POST /api/v1/providers/oauth/session/start",func(w http.ResponseWriter,r *http.Request)(any,error){
+		var req struct { Name string `json:"name"`; SessionKey string `json:"session_key"`; provider.LoginOptions }
+		if err:=read(r,&req);err!=nil{return nil,err}
+		return provider.StartSessionLogin(r.Context(),a.home,req.Name,req.SessionKey,req.LoginOptions)
+	})
+	handle("POST /api/v1/providers/oauth/session/finish",func(w http.ResponseWriter,r *http.Request)(any,error){
+		var req struct { ID string `json:"id"`; Name string `json:"name"`; SessionKey string `json:"session_key"`; Organization string `json:"organization"` }
+		if err:=read(r,&req);err!=nil{return nil,err}
+		out,err:=provider.FinishSessionLogin(r.Context(),a.home,req.ID,req.SessionKey,req.Organization,req.Name)
+		if err==nil{changed()}
+		return out,err
 	})
 	handle("POST /api/v1/providers/oauth/finish", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var req struct {

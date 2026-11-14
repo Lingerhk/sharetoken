@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -116,16 +117,17 @@ type ChatRequest struct {
 
 // Result is a completed, verified job.
 type Result struct {
-	Ticket       protocol.Ticket
-	Receipt      receipt.SignedReceipt
-	Content      string
-	Reasoning    string // a thinking model's reasoning, billed as output
-	Text         string // everything billed as output: content, reasoning, tool arguments
-	ToolCalls    []protocol.ToolCall
-	FinishReason string
-	CostMicros   uint64
-	Verified     bool   // receipt passed every check and was acknowledged
-	Attested     string // allow-list label of the node's verified TEE image, if any
+	Ticket            protocol.Ticket
+	Receipt           receipt.SignedReceipt
+	Content           string
+	Reasoning         string // a thinking model's reasoning, billed as output
+	Text              string // everything billed as output: content, reasoning, tool arguments
+	ToolCalls         []protocol.ToolCall
+	AnthropicThinking []json.RawMessage
+	FinishReason      string
+	CostMicros        uint64
+	Verified          bool   // receipt passed every check and was acknowledged
+	Attested          string // allow-list label of the node's verified TEE image, if any
 }
 
 // Chat runs one request. onChunk, if set, receives each decrypted chunk
@@ -405,6 +407,7 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, body []byte, on
 	var (
 		content, reasoning, all strings.Builder
 		tools                   protocol.ToolCallAccumulator
+		thinking                []json.RawMessage
 		finish                  string
 		sr                      receipt.SignedReceipt
 	)
@@ -456,6 +459,7 @@ recv:
 				reasoning.WriteString(info.Reasoning)
 				all.WriteString(info.Text())
 				tools.Add(info.ToolCalls)
+				thinking = append(thinking, info.AnthropicThinking...)
 				if info.FinishReason != "" {
 					finish = info.FinishReason
 				}
@@ -480,6 +484,7 @@ recv:
 	}
 
 	res = &Result{Ticket: *t, Receipt: sr, Content: content.String(), Reasoning: reasoning.String(), Text: all.String(), ToolCalls: tools.Calls(), FinishReason: finish}
+	res.AnthropicThinking = thinking
 	if err := c.checkReceipt(t, &sr, tr, body, all.String()); err != nil {
 		_ = protocol.Send(st, protocol.TypeReject, protocol.Reject{Reason: err.Error()})
 		return res, delivered, fmt.Errorf("%w: %v", ErrReceiptRejected, err)

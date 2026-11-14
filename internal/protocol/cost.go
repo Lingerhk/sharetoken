@@ -100,7 +100,10 @@ const perMessageOverhead = 4 // role markers and separators in chat templates
 func EstimatePromptTokens(body []byte) (uint64, error) {
 	var req struct {
 		Messages []struct {
-			Content json.RawMessage `json:"content"`
+			Content  json.RawMessage `json:"content"`
+			Thinking []struct {
+				Thinking string `json:"thinking"`
+			} `json:"anthropic_thinking"`
 		} `json:"messages"`
 		Tools json.RawMessage `json:"tools"`
 	}
@@ -110,6 +113,9 @@ func EstimatePromptTokens(body []byte) (uint64, error) {
 	var n uint64
 	for _, m := range req.Messages {
 		n += perMessageOverhead + EstimateTokens(messageText(m.Content))
+		for _, block := range m.Thinking {
+			n += EstimateTokens(block.Thinking)
+		}
 	}
 	if len(req.Tools) > 0 {
 		n += EstimateTokens(string(req.Tools))

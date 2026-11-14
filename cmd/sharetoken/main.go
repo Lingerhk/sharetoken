@@ -86,6 +86,10 @@ Hosted APIs to share (kept in providers.json, apart from the configuration):
   provider login <kind> [-name N] [-project ID]
                                         add one with an OAuth login: anthropic, openai, gemini, antigravity, grok
   provider models <name>                models its credentials may use
+  provider configure <name> [-proxy-mode environment|direct|custom] [-proxy URL]
+                           [-profile standard|claude-code] [-sampling strict|default]
+                           [-tls-profile native|chrome] [-token-tls-profile native|chrome]
+  provider login anthropic [-mode full|inference] [-session-key] [-profile standard|claude-code]
   provider test <name> [-model M]       send one small request through it
   provider on | off <name>              sell its models, or stop
   provider rm <name>
@@ -1271,6 +1275,7 @@ func (c *cmdCtx) provider(args []string) error {
 	switch args[0] {
 	case "add":
 		fs := flag.NewFlagSet("provider add", flag.ExitOnError)
+		options := addProviderOptionFlags(fs)
 		name := fs.String("name", "", "your name for it (default: the kind)")
 		base := fs.String("url", "", "base URL of the API (needed for custom; otherwise the kind's own)")
 		noCheck := fs.Bool("no-check", false, "save it without asking the provider whether the key works")
@@ -1280,6 +1285,7 @@ func (c *cmdCtx) provider(args []string) error {
 			return usageErr("add <kind> [-name N] [-url URL] [-header K=V] [-no-check]")
 		}
 		_ = fs.Parse(args[2:])
+		transport, anthropic := options.values(fs)
 		kind, ok := provider.LookupKind(args[1])
 		if !ok {
 			return fmt.Errorf("unknown kind %q: `sharetoken provider` lists them", args[1])
@@ -1287,7 +1293,7 @@ func (c *cmdCtx) provider(args []string) error {
 		if !kind.APIKey {
 			return fmt.Errorf("%s has no API-key access: `sharetoken provider login %s`", kind.Name, kind.ID)
 		}
-		req := provider.AddRequest{Type: kind.ID, Name: *name, BaseURL: *base, NoCheck: *noCheck}
+		req := provider.AddRequest{Type: kind.ID, Name: *name, BaseURL: *base, NoCheck: *noCheck, Transport: transport, Anthropic: anthropic}
 		for _, h := range headers {
 			k, v, ok := strings.Cut(h, "=")
 			if !ok {
@@ -1328,13 +1334,28 @@ func (c *cmdCtx) provider(args []string) error {
 		printAdded(added)
 	case "login":
 		fs := flag.NewFlagSet("provider login", flag.ExitOnError)
+		options := addProviderOptionFlags(fs)
+		sessionKey := fs.Bool("session-key", false, "Anthropic: sign in with a sessionKey cookie using a hidden prompt")
+		mode := fs.String("mode", "", "Anthropic authorization scope: full or inference")
 		name := fs.String("name", "", "your name for it (default: the kind)")
 		project := fs.String("project", "", "Google Cloud project ID, for a Google account that has no Code Assist project of its own")
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			return usageErr("login <kind> [-name N] [-project ID]")
 		}
 		_ = fs.Parse(args[2:])
-		login, err := provider.StartLogin(args[1], *project)
+		transport, anthropic := options.values(fs)
+		if *sessionKey {
+			if !strings.EqualFold(args[1], provider.KindAnthropic) {
+				return errors.New("-session-key requires Anthropic")
+			}
+			added, err := c.providerSessionLogin(*name, provider.LoginOptions{Mode: *mode, Transport: transport, Anthropic: anthropic})
+			if err != nil {
+				return err
+			}
+			printAdded(added)
+			break
+		}
+		login, err := provider.StartProviderLogin(c.home, *name, args[1], provider.LoginOptions{Project: *project, Mode: *mode, Transport: transport, Anthropic: anthropic})
 		if err != nil {
 			return err
 		}
@@ -1345,15 +1366,40 @@ func (c *cmdCtx) provider(args []string) error {
 		}
 		cx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		tok, kind, err := login.Finish(cx, input)
-		if err != nil {
-			return err
-		}
-		added, err := provider.SaveLogin(cx, c.home, kind, *name, tok)
+		added, err := login.FinishAndSave(cx, c.home, input, *name)
 		if err != nil {
 			return err
 		}
 		printAdded(added)
+	case "configure":
+		fs := flag.NewFlagSet("provider configure", flag.ExitOnError)
+		options := addProviderOptionFlags(fs)
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return usageErr("configure <name> [-proxy-mode environment|direct|custom] [-profile standard|claude-code] [-sampling strict|default]")
+		}
+		_ = fs.Parse(args[2:])
+		transport, anthropic := options.values(fs)
+		if anthropic != nil {
+			f, err := provider.Load(c.home)
+			if err != nil {
+				return err
+			}
+			e, err := f.Find(args[1])
+			if err != nil {
+				return err
+			}
+			if e.Anthropic != nil {
+				if anthropic.Profile == "" {
+					anthropic.Profile = e.Anthropic.Profile
+				}
+				if anthropic.Sampling == "" {
+					anthropic.Sampling = e.Anthropic.Sampling
+				}
+			}
+		}
+		if _, err := provider.Configure(c.home, args[1], provider.ConfigureRequest{Transport: transport, Anthropic: anthropic}); err != nil {
+			return err
+		}
 	case "rm":
 		if len(args) != 2 {
 			return usageErr("rm <name>")
@@ -1375,11 +1421,14 @@ func (c *cmdCtx) provider(args []string) error {
 		}
 		cx, cancel := ctx()
 		defer cancel()
-		ms, err := provider.Models(cx, c.home, args[1])
+		discovery, err := provider.Discover(cx, c.home, args[1])
 		if err != nil {
 			return err
 		}
-		for _, m := range ms {
+		if discovery.Warning != "" {
+			fmt.Fprintln(os.Stderr, discovery.Warning)
+		}
+		for _, m := range discovery.Models {
 			fmt.Println(m)
 		}
 		return nil
@@ -1399,6 +1448,9 @@ func (c *cmdCtx) provider(args []string) error {
 		}
 		fmt.Printf("%s answered: %q\n", used, strings.TrimSpace(res.Text))
 		fmt.Printf("   finish %s, %d prompt + %d completion tokens, %d chunks\n", res.FinishReason, res.PromptTokens, res.CompletionTokens, res.Chunks)
+		if res.PromptReported > 0 {
+			fmt.Printf("   upstream input: %d tokens; billable input estimate: %d (the seller pays for adapter instructions)\n", res.PromptReported, res.PromptTokens)
+		}
 		if res.Reported > 0 {
 			fmt.Printf("   note: the provider counted %d completion tokens, more than the answer shows (hidden reasoning); buyers pay for at most %d of them\n", res.Reported, res.CompletionTokens)
 		}
@@ -1423,6 +1475,9 @@ func printAdded(a *provider.Added) {
 	}
 	fmt.Printf("saved provider %s (%s, %s) %s\n", v.Name, v.TypeName, v.Auth, who)
 	if a.Check != nil {
+		if a.Check.Warning != "" {
+			fmt.Println("   note:", a.Check.Warning)
+		}
 		fmt.Printf("   models: %s\n", strings.Join(a.Check.Models, ", "))
 		if a.Check.Balance != "" {
 			fmt.Println("   balance", a.Check.Balance)
@@ -1434,6 +1489,39 @@ func printAdded(a *provider.Added) {
 	if len(v.Models) == 0 {
 		fmt.Printf("next: `sharetoken share add <model> -provider %s`\n", v.Name)
 	}
+}
+
+type providerOptionFlags struct{ proxyMode, proxyURL, profile, sampling, tlsProfile, tokenTLSProfile *string }
+
+func addProviderOptionFlags(fs *flag.FlagSet) providerOptionFlags {
+	return providerOptionFlags{
+		proxyMode:       fs.String("proxy-mode", "", "environment, direct or custom"),
+		proxyURL:        fs.String("proxy", "", "proxy URL; use SHARETOKEN_PROVIDER_PROXY for a URL containing a password"),
+		profile:         fs.String("profile", "", "Anthropic: standard or claude-code OAuth request profile"),
+		sampling:        fs.String("sampling", "", "Anthropic: strict, or default to ignore unsupported sampling parameters"),
+		tlsProfile:      fs.String("tls-profile", "", "inference TLS transport: native or chrome"),
+		tokenTLSProfile: fs.String("token-tls-profile", "", "login and refresh TLS transport: native or chrome"),
+	}
+}
+
+func (o providerOptionFlags) values(fs *flag.FlagSet) (*provider.TransportOptions, *provider.AnthropicOptions) {
+	seen := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+	var tr *provider.TransportOptions
+	if seen["proxy-mode"] || seen["proxy"] || seen["tls-profile"] || seen["token-tls-profile"] {
+		tr = &provider.TransportOptions{ProxyMode: *o.proxyMode, ProxyURL: *o.proxyURL, TLSProfile: *o.tlsProfile, TokenTLSProfile: *o.tokenTLSProfile}
+		if tr.ProxyURL == "" && tr.ProxyMode == "custom" {
+			tr.ProxyURL = os.Getenv("SHARETOKEN_PROVIDER_PROXY")
+		}
+		if tr.ProxyURL != "" && tr.ProxyMode == "" {
+			tr.ProxyMode = "custom"
+		}
+	}
+	var anth *provider.AnthropicOptions
+	if seen["profile"] || seen["sampling"] {
+		anth = &provider.AnthropicOptions{Profile: *o.profile, Sampling: *o.sampling}
+	}
+	return tr, anth
 }
 
 // showProviders lists the kinds that can be added and the providers configured.
