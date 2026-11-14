@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"sharetoken/internal/accounts"
 )
@@ -105,4 +106,30 @@ func TestFeedback(t *testing.T) {
 	}
 	a.call("POST", "/api/v1/feedback", alice.Token, msg("too many"), 429, nil)
 	a.call("POST", "/api/v1/feedback", bob.Token, msg("still fine"), 201, nil)
+}
+
+// Many accounts behind one address share FeedbackPerIPHour; rejected input does
+// not count, other addresses are not affected, and the limit lifts after an hour.
+func TestFeedbackPerIP(t *testing.T) {
+	clock := time.Now()
+	s, a := newPortal(t, Config{OpenRegistration: true, Now: func() time.Time { return clock }})
+	msg := FeedbackRequest{Category: "idea", Message: "hi", Source: "portal"}
+	from := func(ip string) *api { return &api{t: t, url: a.url, hdr: map[string]string{"X-Real-IP": ip}} }
+	one, other := from("203.0.113.7"), from("198.51.100.9")
+
+	n := 0
+	for i := 0; n < FeedbackPerIPHour; i++ {
+		_, tok := testUser(t, s, fmt.Sprintf("ip%d", i))
+		one.call("POST", "/api/v1/feedback", tok, FeedbackRequest{Category: "nope", Message: "x", Source: "portal"}, 400, nil)
+		for j := 0; j < accounts.FeedbackPerHour && n < FeedbackPerIPHour; j++ {
+			one.call("POST", "/api/v1/feedback", tok, msg, 201, nil)
+			n++
+		}
+	}
+	_, fresh := testUser(t, s, "fresh")
+	one.call("POST", "/api/v1/feedback", fresh, msg, 429, nil)
+	other.call("POST", "/api/v1/feedback", fresh, msg, 201, nil)
+
+	clock = clock.Add(time.Hour + time.Second)
+	one.call("POST", "/api/v1/feedback", fresh, msg, 201, nil)
 }

@@ -86,6 +86,9 @@ type Server struct {
 	failMu sync.Mutex
 	fails  map[string][]time.Time // login failures per username and per IP
 
+	feedbackMu sync.Mutex
+	feedbackIP map[string][]time.Time // accepted feedback per client IP, last hour
+
 	mfaKey     []byte
 	mfaMu      sync.Mutex
 	challenges map[string]*mfaChallenge // half-finished admin logins
@@ -158,6 +161,7 @@ func New(cfg Config) (*Server, error) {
 		store:      &accounts.Store{DB: cfg.DB, Now: cfg.Now},
 		mail:       &mailer.Store{DB: cfg.DB, Now: cfg.Now},
 		fails:      make(map[string][]time.Time),
+		feedbackIP: make(map[string][]time.Time),
 		mfaKey:     key,
 		challenges: make(map[string]*mfaChallenge),
 	}
