@@ -390,3 +390,43 @@ jobs:
           echo "Portal: $TARGET:$DIR" >> "$GITHUB_STEP_SUMMARY"
       - if: always()
         run: rm -f ~/.ssh/portal_key
+
+  # Tells the maintainer how a release run ended, through Pushover (repository
+  # secrets PUSHOVER_TOKEN and PUSHOVER_USER; without them it only warns). Runs for
+  # tags only: trial runs on branches send nothing.
+  notify:
+    name: Notify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [prepare, cli, macos, windows, linux, publish, portal]
+    if: always() && github.ref_type == 'tag'
+    steps:
+      - env:
+          TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          USER_KEY: ${{ secrets.PUSHOVER_USER }}
+          TAG: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          PORTAL: ${{ needs.portal.result }}
+        run: |
+          if [ -z "$TOKEN" ] || [ -z "$USER_KEY" ]; then
+            echo "::warning::no PUSHOVER_TOKEN / PUSHOVER_USER secrets: no notification sent"; exit 0
+          fi
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*)
+              title="ShareToken $TAG release failed"
+              message="The release run did not finish ($RESULTS)."
+              url=$RUN_URL url_title="Open the run" priority=1 ;;
+            *)
+              title="ShareToken $TAG released"
+              message="Packages built, signed and on GitHub."
+              if [ "$PORTAL" = success ]; then message="$message Published to the portal."; else message="$message Not published to the portal."; fi
+              url=$RELEASE_URL url_title="Open the release" priority=0 ;;
+          esac
+          curl -sS --fail-with-body -m 20 https://api.pushover.net/1/messages.json \
+            --form-string "token=$TOKEN" --form-string "user=$USER_KEY" \
+            --form-string "title=$title" --form-string "message=$message" \
+            --form-string "url=$url" --form-string "url_title=$url_title" \
+            --form-string "priority=$priority" > /dev/null
+          echo "Pushover: $title" >> "$GITHUB_STEP_SUMMARY"

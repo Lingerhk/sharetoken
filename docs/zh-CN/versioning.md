@@ -152,6 +152,7 @@ dist/SIGNATURES-1.0.0                             scripts/release-files.sh 用�
 | | variable `PORTAL_SSH_KNOWN_HOSTS` | 服务器的 `known_hosts` 行（例如 `ssh-keyscan -t ed25519 <主机>` 的输出，并人工和服务器的密钥核对）；主机密钥严格校验 |
 | 仓库 | variable `RELEASE_PUBLISH_PORTAL` | `true`：推送 tag 时也发布到门户；否则只有手动“Run workflow”才会 |
 | | variable `RELEASE_WITH_DEV_CLI` | `true`：每次运行都加上 dev 命令行压缩包 |
+| | secret `PUSHOVER_TOKEN`、`PUSHOVER_USER` | Pushover 的应用 token 和用户 key：“Notify”作业推送每次 tag 运行的结果（已发布、是否发布到门户，或失败并附运行链接）；没有它们时只给出警告 |
 
 **发布密钥放在 GitHub 上。** 存成这个 secret 之后，发布密钥就不再只是离线保存：能让 `release` 作业运行的人，就能给一个所有客户端都会自行安装的包签名。给 `release` 和 `portal` 两个环境设置必需的审批人，只允许从 `v*` tag 部署，再加一条 tag 规则集，只让维护者创建或移动 `v*` tag。作业只在签名期间把密钥写进一个临时文件。没有这个 secret 时，发布运行在签名前停止，仍然可以像以前一样在 Mac 上发布。
 

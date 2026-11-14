@@ -152,6 +152,7 @@ The workflow needs these settings on GitHub (Settings, Environments; and Setting
 | | variable `PORTAL_SSH_KNOWN_HOSTS` | the server's `known_hosts` line (for example from `ssh-keyscan -t ed25519 <host>`, compared by hand with the server's key); the host key is checked strictly |
 | Repository | variable `RELEASE_PUBLISH_PORTAL` | `true`: a pushed tag also publishes to the portal; otherwise only "Run workflow" does |
 | | variable `RELEASE_WITH_DEV_CLI` | `true`: every run adds the dev command-line archives |
+| | secrets `PUSHOVER_TOKEN`, `PUSHOVER_USER` | a Pushover application token and user key: the job "Notify" sends how each tag run ended (released, with or without the portal, or failed, with a link to the run); without them it only warns |
 
 **The release key on GitHub.** Kept as that secret, the release key is no longer only offline: whoever gets the `release` job to run can sign a package that every client installs by itself. Give the environments `release` and `portal` required reviewers and let them deploy from tags `v*` only, and add a tag ruleset so that only maintainers can create or move `v*` tags. The job writes the key to a temporary file only while signing. Without the secret a release run stops before signing, and releases can still be made from a Mac as before.
 
