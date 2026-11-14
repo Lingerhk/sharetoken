@@ -19,7 +19,6 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
-	"github.com/pbnjay/memory"
 
 	"sharetoken/internal/protocol"
 	"sharetoken/internal/version"
@@ -93,7 +92,8 @@ func ClientLimits() rcmgr.ConcreteLimitConfig {
 		ServicePeer:  map[string]rcmgr.ResourceLimits{ping.ServiceName: pingPeer},
 		ProtocolPeer: map[lproto.ID]rcmgr.ResourceLimits{ping.ID: pingPeer},
 	}
-	return partial.Build(scaling.AutoScale())
+	// libp2p's AutoScale, but with the memory a cgroup allows.
+	return partial.Build(scaling.Scale(int64(machineMemory())/8, numFDs()/2))
 }
 
 // HubLimits are the resource manager limits of a host that serves many peers
@@ -108,7 +108,7 @@ func ClientLimits() rcmgr.ConcreteLimitConfig {
 // service, since every relayed connection is one long-lived hop stream on the
 // relay and one stop stream on the coordinator, and the bundled services
 // (ping, identify, autonat, hole punching). The system memory limit is a
-// quarter of RAM (libp2p's default is an eighth): the aggregate cap on what
+// quarter of RAM (or of a cgroup's memory.max when that is lower) (libp2p's default is an eighth): the aggregate cap on what
 // all peers can hold, legitimate buffers included.
 func HubLimits(maxConns int) rcmgr.ConcreteLimitConfig {
 	scaled := ClientLimits()
@@ -116,7 +116,7 @@ func HubLimits(maxConns int) rcmgr.ConcreteLimitConfig {
 	streams := rcmgr.LimitVal(4 * maxConns)
 	transient := rcmgr.LimitVal(max(maxConns/8, 64))
 	mem := rcmgr.DefaultLimit64
-	if total := memory.TotalMemory(); total > 0 {
+	if total := machineMemory(); total > 0 {
 		mem = rcmgr.LimitVal64(total / 4)
 	}
 	// The bundled libp2p services and protocols: their default limits are a

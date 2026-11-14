@@ -51,13 +51,13 @@ by two layers:
 - **Lengths and timing** (`protocol/codec.go`). Before sealing, the request is
   compressed and padded to a size bucket (steps of a quarter), so a relay sees
   its size only within 25%. The response is one compressed stream; the seller
-  cuts it into frames at most every 20 ms, so tokens that arrive together share
+  cuts it into frames at most every 50 ms, so tokens that arrive together share
   a frame, and pads each frame to 32-byte steps (256-byte steps above 1 KiB). A
   relay therefore cannot read the length of single tokens off the frame sizes,
   the way published attacks on streamed answers do. Compression alone would
   make that worse (a compressed size reflects how repetitive the text is),
   which is why padding comes with it. What remains visible: the time at which
-  frames are sent, and so the rhythm of the answer at 20 ms resolution, and its
+  frames are sent, and so the rhythm of the answer at 50 ms resolution, and its
   total size.
 
 The second layer exists because of what the first cannot do: the box key can
