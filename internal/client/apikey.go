@@ -11,8 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 
 	"sharetoken/internal/secfile"
 )
@@ -109,15 +107,12 @@ func RotateAPIKey(home string) (APIKeySettings, error) {
 }
 
 // apiKeyGate checks the endpoint's requests against home's APIKeyFile, read
-// again when it changes on disk. If the file cannot be read, nothing gets in.
+// again for each request: the file is small, and a cache keyed on its
+// modification time and size let a rotated key's predecessor in on file systems
+// whose timestamps are coarse (ext4), since a new key has the same length. If
+// the file cannot be read, nothing gets in.
 type apiKeyGate struct {
 	home string
-
-	mu   sync.Mutex
-	mod  time.Time
-	size int64
-	s    APIKeySettings
-	err  error
 }
 
 func newAPIKeyGate(home string) (*apiKeyGate, error) {
@@ -126,19 +121,7 @@ func newAPIKeyGate(home string) (*apiKeyGate, error) {
 	return g, err
 }
 
-func (g *apiKeyGate) current() (APIKeySettings, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	info, err := os.Stat(filepath.Join(g.home, APIKeyFile))
-	if err == nil && g.err == nil && info.ModTime().Equal(g.mod) && info.Size() == g.size {
-		return g.s, nil
-	}
-	g.s, g.err = LoadAPIKey(g.home)
-	if info, err := os.Stat(filepath.Join(g.home, APIKeyFile)); err == nil {
-		g.mod, g.size = info.ModTime(), info.Size()
-	}
-	return g.s, g.err
-}
+func (g *apiKeyGate) current() (APIKeySettings, error) { return LoadAPIKey(g.home) }
 
 // presentedAPIKey is the key a request carries, the OpenAI way or the
 // Anthropic way.
