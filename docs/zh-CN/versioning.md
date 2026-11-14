@@ -146,11 +146,10 @@ dist/SIGNATURES-1.0.0                             scripts/release-files.sh 用�
 | 位置 | 名称 | 值 |
 |---|---|---|
 | 环境 `release` | secret `RELEASE_SIGNING_KEY` | 发布密钥的 PEM 文件（`local/keys/release-signing.pem`） |
-| 环境 `portal` | secret `PORTAL_SSH_KEY` | 在门户服务器上安装文件的账号的 SSH 私钥 |
+| 环境 `portal` | secret `PORTAL_SSH_KEY` | 在门户服务器上安装文件的账号的 SSH 私钥；文件用 sudo 放到位，属主是门户的运行用户 `st-portal`（在工作流里写死） |
 | | variable `PORTAL_SSH_TARGET` | `user@host` |
 | | variable `PORTAL_DOWNLOADS_DIR` | 门户的 `downloads.dir` |
 | | variable `PORTAL_SSH_KNOWN_HOSTS` | 服务器的 `known_hosts` 行（例如 `ssh-keyscan -t ed25519 <主机>` 的输出，并人工和服务器的密钥核对）；主机密钥严格校验 |
-| | variable `PORTAL_OWNER`（可选） | 门户的运行用户，同 `--owner` |
 | 仓库 | variable `RELEASE_PUBLISH_PORTAL` | `true`：推送 tag 时也发布到门户；否则只有手动“Run workflow”才会 |
 | | variable `RELEASE_WITH_DEV_CLI` | `true`：每次运行都加上 dev 命令行压缩包 |
 

@@ -349,7 +349,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # Holds the secret PORTAL_SSH_KEY and the variables PORTAL_SSH_TARGET,
-    # PORTAL_DOWNLOADS_DIR, PORTAL_SSH_KNOWN_HOSTS and (optional) PORTAL_OWNER.
+    # PORTAL_DOWNLOADS_DIR and PORTAL_SSH_KNOWN_HOSTS. The files are installed
+    # owned by st-portal, the portal's service user (local/ops/st-host-setup.sh).
     environment: portal
     env:
       V: ${{ needs.prepare.outputs.version }}
@@ -381,12 +382,11 @@ jobs:
         env:
           TARGET: ${{ vars.PORTAL_SSH_TARGET }}
           DIR: ${{ vars.PORTAL_DOWNLOADS_DIR }}
-          OWNER: ${{ vars.PORTAL_OWNER }}
         run: |
           if [ -z "$TARGET" ] || [ -z "$DIR" ]; then
             echo "::error::the environment 'portal' needs the variables PORTAL_SSH_TARGET (user@host) and PORTAL_DOWNLOADS_DIR"; exit 1
           fi
-          scripts/upload-release.sh "$V" "$TARGET" "$DIR" ${OWNER:+--owner "$OWNER"}
+          scripts/upload-release.sh "$V" "$TARGET" "$DIR" --owner st-portal
           echo "Portal: $TARGET:$DIR" >> "$GITHUB_STEP_SUMMARY"
       - if: always()
         run: rm -f ~/.ssh/portal_key
