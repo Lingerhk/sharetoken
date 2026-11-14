@@ -226,7 +226,11 @@ Anthropic 必须带 `max_tokens`；`anthropicMaxOutput` 给出默认值。
 
 ### 凭据被拒
 
-上游返回 401 或 403（凭据被拒）或 402（余额不足）时，`watchedUpstream` 给卖家一条告警 `source:<名字>:credentials`，在 `sharetoken status` 和 API 里可见。修好之前，经过这个 provider 的作业都会失败。其他错误不触发这条告警。
+上游返回 401 或 403（凭据被拒）或 402（余额不足）时，`watchedUpstream` 给卖家一条告警 `source:<名字>:credentials`，在 `sharetoken status` 和 API 里可见。修好之前，经过这个 provider 的作业都会失败。HTTP 429 也会触发状态告警（见下）；其他错误不触发。
+
+### 限流
+
+适用于所有 provider，登录和 API key 都一样。上游返回 HTTP 429 时，该 provider 按 `Retry-After` 冷却，缺失时默认一分钟。节点立即重新报价：冷却中的 provider 的模型不在报价里；全部 provider 都在冷却时撤下报价。冷却到期后，下一次报价（`OfferInterval` 内，默认 15 秒）恢复这些模型。按旧报价签发的 Ticket 返回 `busy`，不再请求上游，也不归咎于买方。本机 provider View 返回最近的上游 HTTP 状态、request ID 和冷却截止时间。该状态只在 daemon 进程内维护，重启后清空。
 
 ## 9. 验证情况
 
@@ -289,7 +293,7 @@ sharetoken provider test claude -model claude-sonnet-4-6
 
 **输入计费。** `claude-code` 会将原 system/developer 指令移入 messages 并加入适配提示词，指令角色因此发生变化。该配置下向买方报告的输入为 `min(上游总输入, 原 OpenAI 请求输入估算)`；额外提示词成本由卖方承担，上游实报数保留在 `prompt_tokens_reported`。`total_tokens` 和收据使用同一可计费口径，不提高全网账单容差或输出预算。输出格式和 Agent 行为仍需按实际模型验证。
 
-**限流与诊断。** 本机 provider View 返回最近 HTTP 状态、上游 request ID 和冷却截止时间。429 按 Retry-After 冷却，缺失时默认一分钟；冷却来源暂不报价，全部来源冷却时撤下报价，到期后恢复。收到旧报价所签发的 Ticket 时返回 busy，不继续请求上游，也不归咎于买方。该运行状态仅在 daemon 进程内维护，重启后重新探测。
+**限流与诊断。** HTTP 429 冷却适用于所有 provider，见第 8 节“限流”。
 
 新增 mock 测试覆盖 TLS 验证、Cookie 组织选择、账号/代理隔离、并发刷新、请求构造、缓存、签名历史和输入计费。真实 Anthropic 登录、工具多轮、额度归类仍需持有者手动验证。这个功能不增加买方原生 `/v1/messages` 接口，也不引入本机多账号池；后两项是独立扩展。
 

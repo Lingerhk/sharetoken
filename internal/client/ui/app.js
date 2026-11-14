@@ -599,7 +599,7 @@ I18N.ready.then(() => {
               h('button', { type: 'button', class: 'mini danger prov-remove', onclick: () => removeProvider(p) }, tr('删除')))),
           h('div', { class: 'kv small prov-meta' },
             h('span', { class: 'mono' }, p.base_url),
-            p.token_expires ? h('span', null, tr(p.can_refresh ? '令牌有效期至 {time}（会自动续期）' : '令牌有效期至 {time}（需重新登录续期）', { time: clock(p.token_expires) })) : null,
+            p.token_expires ? h('span', null, p.can_refresh ? tr('令牌有效期至 {time}（会自动续期）', { time: clock(p.token_expires) }) : tr('令牌有效期至 {time}（需重新登录续期）', { time: clock(p.token_expires) })) : null,
             p.runtime?.retry_at && new Date(p.runtime.retry_at) > new Date() ? h('span', null, tr('上游限流，{time} 后恢复', { time: clock(p.runtime.retry_at) })) : null,
             p.headers && p.headers.length ? h('span', null, tr('附加请求头：{names}', { names: p.headers.join(', ') })) : null),
           p.models.length === 0 ? h('div', { class: 'empty prov-empty' }, tr('还没有要出售的模型')) : modelTable(p, p.models, serving))));

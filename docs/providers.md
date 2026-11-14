@@ -226,7 +226,11 @@ Token upkeep (`Tokens` / `TokenSource`):
 
 ### Refused credentials
 
-When the upstream answers 401 or 403 (credentials refused) or 402 (out of balance), `watchedUpstream` raises the warning `source:<name>:credentials` for the seller. It shows in `sharetoken status` and in the API. Until it is fixed, every job through that provider fails. HTTP 429 also raises a status warning and starts the temporary cooldown described in section 11.
+When the upstream answers 401 or 403 (credentials refused) or 402 (out of balance), `watchedUpstream` raises the warning `source:<name>:credentials` for the seller. It shows in `sharetoken status` and in the API. Until it is fixed, every job through that provider fails. HTTP 429 raises a status warning too (below); other errors do not.
+
+### Rate limits
+
+This applies to every provider, whether signed in or using an API key. When the upstream answers HTTP 429, the provider cools down until `Retry-After`, or for one minute when the header is missing. The node announces a new offer at once: the cooling provider's models are left out, and if every provider is cooling down the node withdraws its offer. The models come back with the first offer after the cooldown ends (within `OfferInterval`, 15 s by default). A ticket issued against an older offer gets `busy` without another upstream call and without blaming the buyer. Provider views report the last upstream HTTP status, request ID and cooldown deadline. This state lives in the daemon only and resets at restart.
 
 ## 9. What is verified
 
@@ -282,7 +286,7 @@ The desktop connection settings expose the same options. Partial `transport` upd
 
 **Input billing.** The compatibility profile moves the original system/developer instructions into messages and injects adapter instructions, changing the instruction role. Billable input is `min(upstream total input, original OpenAI input estimate)`. The seller pays the additional prompt cost, while `prompt_tokens_reported` preserves upstream accounting. Usage totals and receipts use the same billable figures, without increasing marketplace tolerances or output budgets. Verify output-format and agent behavior with the actual model.
 
-**Rate limits and diagnostics.** Provider views report the last upstream HTTP status, request ID and cooldown deadline. HTTP 429 follows Retry-After, defaulting to one minute. Cooling providers are omitted from offers; if all are cooling down, the node withdraws its offer and advertises again after recovery. Tickets based on stale offers receive busy without another upstream call or a buyer fault. Runtime state is local to the daemon and resets at restart.
+**Rate limits and diagnostics.** HTTP 429 cooldown applies to every provider and is described in section 8 (Rate limits).
 
 Mock tests cover TLS verification, cookie organization selection, identity/proxy isolation, concurrent renewal, request construction, caching, signed history and input accounting. Real Anthropic login, tool continuations and quota classification still require account-holder verification. Native buyer `/v1/messages` and a local pool of interchangeable accounts remain separate features.
 
