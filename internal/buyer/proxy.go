@@ -139,8 +139,8 @@ func (p *Proxy) stream(w http.ResponseWriter, r *http.Request, req ChatRequest) 
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", errorJSON(err.Error(), codeFor(err)))
 	} else {
 		tm := &res.Timing
-		_, _ = fmt.Fprintf(w, ": sharetoken job=%s node=%s verified=true cost_micros=%d tee=%q ticket_ms=%.1f dial_ms=%.1f first_byte_ms=%.1f relayed=%t preferred=%t frames=%d up_bytes=%d down_bytes=%d\n\n",
-			res.Ticket.JobID, res.Ticket.Node, res.CostMicros, res.Attested, tm.TicketMs, tm.DialMs, tm.FirstByteMs, tm.Relayed, tm.Preferred, tm.Frames, tm.UpBytes, tm.DownBytes)
+		_, _ = fmt.Fprintf(w, ": sharetoken job=%s node=%s verified=true cost_micros=%d tee=%q ticket_ms=%.1f dial_ms=%.1f first_byte_ms=%.1f relayed=%t preferred=%t frames=%d resumes=%d up_bytes=%d down_bytes=%d\n\n",
+			res.Ticket.JobID, res.Ticket.Node, res.CostMicros, res.Attested, tm.TicketMs, tm.DialMs, tm.FirstByteMs, tm.Relayed, tm.Preferred, tm.Frames, tm.Resumes, tm.UpBytes, tm.DownBytes)
 	}
 	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	if flusher != nil {

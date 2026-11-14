@@ -31,6 +31,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -79,6 +80,9 @@ type Client struct {
 	// It is abandoned: a request that has delivered nothing to the caller yet
 	// fails over to another node.
 	FirstByteTimeout, IdleTimeout time.Duration
+	// ResumeWindow is how long the buyer tries to resume a job whose stream
+	// broke (default 45 s, within the node's node.ResumeWindow).
+	ResumeWindow time.Duration
 	// MaxSilence bounds how long a job may go without response data while
 	// the node keeps sending progress frames (default 5 minutes): long
 	// enough for a reasoning model, short enough for a hung model server.
@@ -105,7 +109,7 @@ type Attestation struct {
 func New(h host.Host, keys *p2p.Keys, coordinator peer.AddrInfo) *Client {
 	h.Peerstore().AddAddrs(coordinator.ID, coordinator.Addrs, peerstore.PermanentAddrTTL)
 	return &Client{h: h, keys: keys, coordinator: coordinator, Retries: 2, Evidence: true, QueueWait: DefaultQueueWait,
-		FirstByteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxSilence: 5 * time.Minute, log: slog.Default().With("component", "buyer")}
+		FirstByteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxSilence: 5 * time.Minute, ResumeWindow: 45 * time.Second, log: slog.Default().With("component", "buyer")}
 }
 
 // ChatRequest is one chat-completions call.
@@ -158,6 +162,7 @@ type Timing struct {
 	Via         string  `json:"via,omitempty"` // that relay's peer ID
 	Preferred   bool    `json:"preferred"`     // the session's previous node served it again
 	Attempts    int     `json:"attempts"`
+	Resumes     int     `json:"resumes"`  // the stream broke and the job went on over a new one
 	Frames      int     `json:"frames"`   // response data frames
 	Progress    int     `json:"progress"` // progress frames (the model was silent)
 	Chunks      int     `json:"chunks"`   // upstream payloads delivered
@@ -463,9 +468,13 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body [
 	if err != nil {
 		return nil, false, err
 	}
-	st := &countingStream{Stream: raw}
-	defer func() { tm.UpBytes, tm.DownBytes = st.out, st.in }()
-	defer st.Close()
+	js := &jobStream{st: &countingStream{Stream: raw}}
+	defer func() { tm.UpBytes, tm.DownBytes = js.totals() }()
+	defer func() { _ = js.cur().Close() }()
+	// A caller that goes away (the HTTP client closed the connection) stops
+	// the job: the node stops its model and bills what was delivered.
+	defer context.AfterFunc(ctx, js.cancel)()
+	st := js.cur()
 	tm.Relayed = p2p.IsRelayed(raw.Conn())
 	tm.Via = ""
 	if tm.Relayed {
@@ -512,6 +521,7 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body [
 	dec := protocol.NewResponseDecoder()
 	frames := 0
 	lastData := sent
+	resumedAt := 0 // frames received when the stream was last replaced
 recv:
 	for {
 		wait := c.IdleTimeout
@@ -523,12 +533,26 @@ recv:
 			if cd, ok := ctx.Deadline(); ok && cd.Before(dl) {
 				dl = cd
 			}
-			_ = st.SetReadDeadline(dl)
+			_ = js.cur().SetReadDeadline(dl)
 		}
-		f, err := protocol.ReadStreamFrame(st, protocol.MaxFrameSize)
+		f, err := protocol.ReadStreamFrame(js.cur(), protocol.MaxFrameSize)
 		if err != nil {
+			if ctx.Err() == nil && !js.cancelled() && frames > resumedAt && c.ResumeWindow > 0 {
+				// The node took the job and the stream broke (or went quiet
+				// past every heartbeat): continue it over a new stream. Not
+				// again before the new stream brought a frame: a node that
+				// answers a resume and then says nothing is the problem, not
+				// the path to it.
+				_ = js.cur().Reset()
+				if rerr := c.resume(ctx, js, nodeID, t, uint64(len(tr.chunks))); rerr == nil {
+					tm.Resumes++
+					resumedAt = frames
+					c.log.Info("resumed a job over a new stream", "job", t.JobID, "from", len(tr.chunks), "after", err)
+					continue
+				}
+			}
 			if wait > 0 && isTimeout(err) && ctx.Err() == nil {
-				_ = st.Reset()
+				_ = js.cur().Reset()
 				err = fmt.Errorf("node stalled: nothing received for %v: %w", wait, err)
 			}
 			return nil, delivered, err
@@ -538,7 +562,7 @@ recv:
 		case f.Env == nil && f.Kind == protocol.BinProgress:
 			tm.Progress++
 			if c.MaxSilence > 0 && time.Since(lastData) > c.MaxSilence {
-				_ = st.Reset()
+				js.cancel()
 				return nil, delivered, fmt.Errorf("node stalled: no response data for %v", c.MaxSilence.Round(time.Second))
 			}
 		case f.Env == nil && f.Kind == protocol.BinData:
@@ -585,7 +609,7 @@ recv:
 				if onChunk != nil {
 					delivered = true
 					if err := onChunk(payload); err != nil {
-						_ = st.Reset()
+						js.cancel()
 						return nil, true, err
 					}
 				}
@@ -610,16 +634,16 @@ recv:
 	res = &Result{Ticket: *t, Receipt: sr, Content: content.String(), Reasoning: reasoning.String(), Text: all.String(), ToolCalls: tools.Calls(), FinishReason: finish}
 	res.AnthropicThinking = thinking
 	if err := c.checkReceipt(t, &sr, tr, body, all.String()); err != nil {
-		_ = protocol.Send(st, protocol.TypeReject, protocol.Reject{Reason: err.Error()})
+		_ = js.send(protocol.TypeReject, protocol.Reject{Reason: err.Error()})
 		return res, delivered, fmt.Errorf("%w: %v", ErrReceiptRejected, err)
 	}
 	ack := ed25519.Sign(c.keys.Signer, protocol.AckBytes(&sr.Receipt))
-	if err := protocol.Send(st, protocol.TypeAck, protocol.Ack{Sig: ack}); err != nil {
+	if err := js.send(protocol.TypeAck, protocol.Ack{Sig: ack}); err != nil {
 		// The node settles without the ack; the payout then waits out the
 		// dispute window. The output itself is verified either way.
 		c.log.Warn("could not deliver ack", "job", t.JobID, "err", err)
 	}
-	_ = st.CloseWrite()
+	_ = js.cur().CloseWrite()
 	res.CostMicros = protocol.TicketCost(t, sr.Receipt.PromptTokens, sr.Receipt.CompletionTokens)
 	res.Verified = true
 	return res, delivered, nil
@@ -628,19 +652,111 @@ recv:
 // countingStream counts the bytes of a stream's frames.
 type countingStream struct {
 	network.Stream
-	in, out int64
+	in, out atomic.Int64
 }
 
 func (s *countingStream) Read(p []byte) (int, error) {
 	n, err := s.Stream.Read(p)
-	s.in += int64(n)
+	s.in.Add(int64(n))
 	return n, err
 }
 
 func (s *countingStream) Write(p []byte) (int, error) {
 	n, err := s.Stream.Write(p)
-	s.out += int64(n)
+	s.out.Add(int64(n))
 	return n, err
+}
+
+// jobStream is a job's stream to the node, which a resume replaces. Frames
+// the buyer writes (cancel, reject, ack) go through it, so that a cancel from
+// another goroutine does not interleave with them.
+type jobStream struct {
+	mu      sync.Mutex
+	st      *countingStream
+	in, out int64 // bytes of the streams replaced
+	stopped bool
+}
+
+func (j *jobStream) cur() *countingStream {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.st
+}
+
+func (j *jobStream) send(typ string, body any) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return protocol.Send(j.st, typ, body)
+}
+
+// cancel tells the node to stop the job, then closes the stream. It closes
+// rather than resets: a reset makes the node's side discard what it has not
+// read yet, the cancel frame included, and the node would wait for a resume.
+func (j *jobStream) cancel() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.stopped {
+		return
+	}
+	j.stopped = true
+	_ = j.st.SetWriteDeadline(time.Now().Add(time.Second))
+	if protocol.Send(j.st, protocol.TypeCancel, struct{}{}) == nil {
+		_ = j.st.Close()
+		return
+	}
+	_ = j.st.Reset()
+}
+
+func (j *jobStream) cancelled() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.stopped
+}
+
+func (j *jobStream) replace(st *countingStream) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.in += j.st.in.Load()
+	j.out += j.st.out.Load()
+	j.st = st
+}
+
+func (j *jobStream) totals() (up, down int64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.out + j.st.out.Load(), j.in + j.st.in.Load()
+}
+
+// resume opens a new stream to the node for job t, from frame from on. The
+// old connection is dropped first: it may be dead without knowing it yet,
+// and the dial then finds another path (another relay, or direct).
+func (c *Client) resume(ctx context.Context, js *jobStream, nodeID peer.ID, t *protocol.Ticket, from uint64) error {
+	deadline := time.Now().Add(c.ResumeWindow)
+	for {
+		_ = c.h.Network().ClosePeer(nodeID)
+		dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		raw, err := c.h.NewStream(network.WithAllowLimitedConn(dctx, "sharetoken-infer"), nodeID, lproto.ID(protocol.InferProtocol))
+		cancel()
+		if err == nil {
+			st := &countingStream{Stream: raw}
+			if dl, ok := ctx.Deadline(); ok {
+				_ = st.SetDeadline(dl)
+			}
+			if err = protocol.SendRequest(st, protocol.TypeResume, protocol.ResumeRequest{JobID: t.JobID, From: from}); err == nil {
+				js.replace(st)
+				return nil
+			}
+			_ = st.Reset()
+		}
+		if ctx.Err() != nil || js.cancelled() || time.Now().Add(time.Second).After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

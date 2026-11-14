@@ -74,6 +74,8 @@ const (
 	TypeDispute       = "dispute"
 	TypeOK            = "ok"
 	TypeInfer         = "infer"
+	TypeCancel        = "cancel" // buyer -> node: stop the job, the user does not want the rest
+	TypeResume        = "resume" // buyer -> node: continue a job whose stream broke
 	TypeReceipt       = "receipt"
 	TypeAck           = "ack"
 	TypeReject        = "reject"
@@ -340,6 +342,17 @@ type InferRequest struct {
 	Ticket       Ticket `json:"ticket"`
 	BuyerBoxPub  []byte `json:"buyer_box_pub"` // per-job X25519 key; begins the sealed request
 	RequestBytes uint64 `json:"request_bytes"` // length of the sealed request that follows
+}
+
+// ResumeRequest opens a new stream for a job whose stream broke (a relay
+// restarted, the network changed). The node checks the stream comes from the
+// job's buyer, and sends the response frames from From on (each with its
+// number), then the live ones and the receipt, as if nothing had happened.
+// A node keeps a broken job for a while (node.ResumeWindow); after that the
+// job is settled as delivered so far.
+type ResumeRequest struct {
+	JobID string `json:"job_id"`
+	From  uint64 `json:"from"` // the first response frame the buyer has not received
 }
 
 // Ack is the buyer's signature over AckBytes(receipt).
