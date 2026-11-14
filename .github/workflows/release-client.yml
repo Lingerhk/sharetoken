@@ -323,7 +323,7 @@ jobs:
         run: |
           mapfile -t files < "$RUNNER_TEMP/files"
           {
-            for f in dist/RELEASE-"$V".*.md; do cat "$f"; echo; done
+            for f in dist/RELEASE-"$V".*.md; do [ -e "$f" ] || continue; cat "$f"; echo; done
             echo "---"
             echo
             echo "Commit \`$ST_COMMIT\`, built $ST_BUILD_TIME. \`SHA256SUMS-$V\` lists the checksums of the packages and \`SIGNATURES-$V\` their release-key signatures (\`go run scripts/sign-packages.go verify\`)."
