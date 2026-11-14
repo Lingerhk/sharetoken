@@ -28,7 +28,7 @@ import (
 // libp2p protocol IDs.
 const (
 	InferProtocol = "/sharetoken/infer/1.0.2"
-	CtrlProtocol  = "/sharetoken/ctrl/1.0.0"
+	CtrlProtocol  = "/sharetoken/ctrl/1.0.2"
 )
 
 // InferVersion is the buyer <-> node protocol this build prefers. It is agreed

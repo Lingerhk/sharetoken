@@ -120,7 +120,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 预约是中继的稀缺资源（有了预约，别人才能经它找到你），所以只给注册用户的设备。中继仍然不连门户、不连数据库：
 
 1. 门户持有一把 Ed25519 签名密钥（`portal-pass.key`，`portal pass-key` 打印公钥）。用户客户端用自己的 token 调 `POST /api/v1/relay-pass {peer}`。门户只给**该用户已绑定**的设备签发 `{peer, account, 签发时间, 过期时间, client}`，并且用户不能已被禁用。凭证默认有效 1 小时（`-pass-ttl`）。`client` 是客户端随请求上报的版本、系统和架构（`X-ST-Client-Version`、`X-ST-Client-Platform: darwin/arm64`），门户只检查格式。
-2. 每次预约或续约之前，客户端先在 `/sharetoken/relay-pass/1.0.0` 上把凭证交给中继（`p2p.Reserver.Prepare`）。凭证剩余不到 15 分钟时自动换新；门户暂时连不上时，客户端继续用未过期的凭证。
+2. 每次预约或续约之前，客户端先在 `/sharetoken/relay-pass/1.0.2` 上把凭证交给中继（`p2p.Reserver.Prepare`）。凭证剩余不到 15 分钟时自动换新；门户暂时连不上时，客户端继续用未过期的凭证。
 3. 中继用配置里的门户公钥离线验证：签名正确、未过期、凭证里的 peer 就是 libp2p 认证过的对方。通过后，在 ACL（`relayv2.WithACL`）里放行这台设备的预约，直到凭证过期。
 4. 同一用户账户同时持有预约的设备数有上限（`max_devices_per_user`，默认 4）。这比按 IP 限制更准，不会误伤同一运营商 NAT 后面的大量用户。
 5. 协调器不是用户，中继通过 `allow_peers` 放行它（`coordinator id` 打印 ID）。
