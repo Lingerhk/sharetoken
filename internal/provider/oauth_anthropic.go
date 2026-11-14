@@ -12,9 +12,8 @@ import (
 // Max account signs in through claude.com, approves, and the page shows a
 // "code#state" to paste back. Requests then go to the Messages API as that
 // account, carrying the bearer token and the beta that makes the API take it
-// in place of an API key. The API serves such a token to Claude Code only,
-// so every request leads with Claude Code's own system line (claudeCodeIdentity,
-// in anthropic.go).
+// in place of an API key. The outgoing request layout is selected separately
+// through AnthropicOptions; login and token exchange do not select it implicitly.
 
 const (
 	claudeClientID  = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -28,6 +27,7 @@ const (
 // claudeOAuthModels is what a subscription login may use when the models
 // endpoint cannot be listed with it.
 var claudeOAuthModels = []string{
+	"claude-fable-5-2", "claude-mythos-5-2",
 	"claude-fable-5-1", "claude-fable-5",
 	"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5-20251101",
 	"claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929",
@@ -38,12 +38,16 @@ func init() {
 	oauthFlows[KindAnthropic] = &oauthFlow{
 		start: func(l *Login) error {
 			l.redirect = claudeRedirect
+			scope := claudeScope
+			if l.options.Mode == "inference" {
+				scope = "user:inference"
+			}
 			q := url.Values{
 				"code":                  {"true"},
 				"client_id":             {claudeClientID},
 				"response_type":         {"code"},
 				"redirect_uri":          {l.redirect},
-				"scope":                 {claudeScope},
+				"scope":                 {scope},
 				"state":                 {l.state},
 				"code_challenge":        {challengeS256(l.verifier)},
 				"code_challenge_method": {"S256"},
@@ -78,7 +82,7 @@ func init() {
 			return claudeToken(r), nil
 		},
 		upstream: func(e *Entry, ts TokenSource) (node.Upstream, error) {
-			return &anthropicUpstream{base: e.URL(), limits: outputLimits{set: e.caps()}, ts: ts, oauth: true}, nil
+			return &anthropicUpstream{base: e.URL(), limits: outputLimits{set: e.caps()}, ts: ts, oauth: true, entry: e}, nil
 		},
 		models: func(ctx context.Context, e *Entry, ts TokenSource) ([]string, error) {
 			var ids []string
@@ -87,13 +91,7 @@ func init() {
 				ids, err = anthropicModels(ctx, e.URL(), anthropicOAuthHeader(tok))
 				return err
 			})
-			if se, ok := err.(*node.StatusError); ok && se.Status == http.StatusUnauthorized {
-				return nil, err
-			}
-			if len(ids) == 0 {
-				return append([]string(nil), claudeOAuthModels...), nil
-			}
-			return ids, nil
+			return ids, err
 		},
 	}
 }
@@ -104,6 +102,7 @@ func claudeToken(r *tokenResponse) *Token {
 	t := r.token()
 	if r.Account != nil {
 		t.Email = r.Account.Email
+		t.AccountUUID = r.Account.UUID
 	}
 	if r.Organization != nil {
 		t.AccountID = r.Organization.UUID
@@ -114,7 +113,7 @@ func claudeToken(r *tokenResponse) *Token {
 // claudeOAuthUserAgent names this client to the token server, which refuses a
 // request with no User-Agent.
 func claudeOAuthUserAgent() http.Header {
-	return http.Header{"User-Agent": {"sharetoken-anthropic-oauth/1.0"}}
+	return http.Header{"User-Agent": {"axios/1.13.6"}, "Accept": {"application/json, text/plain, */*"}}
 }
 
 // anthropicOAuthHeader authenticates a Messages request made with a Claude

@@ -9,6 +9,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +18,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"sharetoken/internal/node"
@@ -44,6 +44,7 @@ type File struct {
 
 // Entry is one configured provider.
 type Entry struct {
+	ID      string `json:"id,omitempty"`
 	Name    string `json:"name"` // the user's handle for it, unique in the file
 	Type    string `json:"type"` // a Kind's ID
 	Auth    string `json:"auth"` // AuthAPIKey or AuthOAuth
@@ -52,8 +53,11 @@ type Entry struct {
 	BaseURL string `json:"base_url,omitempty"`
 	APIKey  string `json:"api_key,omitempty"` // secret
 	// Headers are sent with every request (e.g. anthropic-workspace-id).
-	Headers map[string]string `json:"headers,omitempty"`
-	OAuth   *Token            `json:"oauth,omitempty"` // secret
+	Headers   map[string]string  `json:"headers,omitempty"`
+	OAuth     *Token             `json:"oauth,omitempty"` // secret
+	Transport *TransportOptions  `json:"transport,omitempty"`
+	Anthropic *AnthropicOptions  `json:"anthropic,omitempty"`
+	Identity  *AnthropicIdentity `json:"anthropic_identity,omitempty"` // secret, never in View
 	// Models are what this provider sells: network model ID, the provider's
 	// name for it, and prices.
 	Models  []node.ModelConfig `json:"models"`
@@ -66,6 +70,9 @@ type Token struct {
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at,omitzero"`
 	Email        string    `json:"email,omitempty"`
+	AccountUUID  string    `json:"account_uuid,omitempty"` // Anthropic user, not organization
+	Scope        string    `json:"scope,omitempty"`
+	LoginMode    string    `json:"login_mode,omitempty"`
 	// AccountID is the account the token acts for, where requests must name
 	// it (ChatGPT account, Anthropic organization).
 	AccountID string `json:"account_id,omitempty"`
@@ -78,8 +85,6 @@ type Token struct {
 
 // Path is where home's providers file is.
 func Path(home string) string { return filepath.Join(home, FileName) }
-
-var fileMu sync.Mutex // serializes read-modify-write within this process
 
 // Load reads home's providers file; a missing file is an empty one.
 func Load(home string) (*File, error) {
@@ -129,8 +134,13 @@ func (f *File) Save(home string) error {
 // that changes the file goes through here, so that a token refreshed by the
 // running client and a setting changed by a command do not undo each other.
 func Update(home string, fn func(*File) error) error {
-	fileMu.Lock()
-	defer fileMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	unlock, err := lockProviderFile(ctx, home, "store")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	f, err := Load(home)
 	if err != nil {
 		return err
@@ -138,7 +148,28 @@ func Update(home string, fn func(*File) error) error {
 	if err := fn(f); err != nil {
 		return err
 	}
+	for _, e := range f.Providers {
+		e.ensureIdentity()
+	}
 	return f.Save(home)
+}
+
+// LoadReady persists missing identities once, including for providers written
+// by older clients. Read-only display calls may continue to use Load.
+func LoadReady(home string) (*File, error) {
+	f, err := Load(home)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range f.Providers {
+		if e.ID == "" || (e.Type == KindAnthropic && e.Auth == AuthOAuth && e.Identity == nil) {
+			if err := Update(home, func(*File) error { return nil }); err != nil {
+				return nil, err
+			}
+			return Load(home)
+		}
+	}
+	return f, nil
 }
 
 // Get finds a provider by name.
@@ -186,18 +217,40 @@ func (f *File) Put(e *Entry) error {
 	if err := e.Validate(); err != nil {
 		return err
 	}
+	for _, old := range f.Providers {
+		if !strings.EqualFold(old.Name, e.Name) && e.Type == KindAnthropic && e.OAuth != nil && old.Type == KindAnthropic && old.OAuth != nil {
+			if (e.OAuth.AccountUUID != "" && e.OAuth.AccountUUID == old.OAuth.AccountUUID) || (e.OAuth.RefreshToken != "" && e.OAuth.RefreshToken == old.OAuth.RefreshToken) {
+				return fmt.Errorf("this Anthropic account is already configured as %s", old.Name)
+			}
+		}
+	}
 	for i, old := range f.Providers {
 		if strings.EqualFold(old.Name, e.Name) {
 			if old.Type == e.Type {
 				e.Models, e.AddedAt = old.Models, old.AddedAt
+				e.ID = old.ID
+				if e.Transport == nil {
+					e.Transport = old.Transport
+				}
+				if e.Anthropic == nil && e.Auth == old.Auth {
+					e.Anthropic = old.Anthropic
+				}
+				if sameAnthropicAccount(old.OAuth, e.OAuth) {
+					e.Identity = old.Identity
+				}
 				if len(e.Headers) == 0 {
 					e.Headers = old.Headers
 				}
 			}
+			if err := e.Validate(); err != nil {
+				return err
+			}
+			e.ensureIdentity()
 			f.Providers[i] = e
 			return nil
 		}
 	}
+	e.ensureIdentity()
 	f.Providers = append(f.Providers, e)
 	return nil
 }
@@ -207,6 +260,19 @@ func (e *Entry) Validate() error {
 	k, ok := LookupKind(e.Type)
 	if !ok {
 		return fmt.Errorf("unknown provider type %q", e.Type)
+	}
+	if e.Transport != nil {
+		if err := e.Transport.validate(); err != nil {
+			return err
+		}
+	}
+	if e.Anthropic != nil {
+		if e.Type != KindAnthropic {
+			return fmt.Errorf("Anthropic options require an Anthropic provider")
+		}
+		if err := e.Anthropic.validate(e.Auth); err != nil {
+			return err
+		}
 	}
 	switch e.Auth {
 	case AuthAPIKey:
@@ -262,24 +328,39 @@ func (e *Entry) Selling() bool { return e.Enabled && len(e.Models) > 0 }
 
 // View is an entry without its secrets, for display and the local API.
 type View struct {
-	Name     string             `json:"name"`
-	Type     string             `json:"type"`
-	TypeName string             `json:"type_name"`
-	Auth     string             `json:"auth"`
-	Enabled  bool               `json:"enabled"`
-	BaseURL  string             `json:"base_url"`
-	Key      string             `json:"key,omitempty"`     // masked
-	Account  string             `json:"account,omitempty"` // OAuth: who is logged in
-	Plan     string             `json:"plan,omitempty"`
-	Expires  *time.Time         `json:"token_expires,omitempty"` // OAuth access token; it is renewed by itself
-	Headers  []string           `json:"headers,omitempty"`       // names only
-	Models   []node.ModelConfig `json:"models"`
+	Name            string             `json:"name"`
+	Type            string             `json:"type"`
+	TypeName        string             `json:"type_name"`
+	Auth            string             `json:"auth"`
+	Enabled         bool               `json:"enabled"`
+	BaseURL         string             `json:"base_url"`
+	Key             string             `json:"key,omitempty"`     // masked
+	Account         string             `json:"account,omitempty"` // OAuth: who is logged in
+	Plan            string             `json:"plan,omitempty"`
+	Expires         *time.Time         `json:"token_expires,omitempty"` // OAuth access token; it is renewed by itself
+	Headers         []string           `json:"headers,omitempty"`       // names only
+	Models          []node.ModelConfig `json:"models"`
+	ProxyMode       string             `json:"proxy_mode,omitempty"`
+	ProxyAddress    string             `json:"proxy_address,omitempty"`
+	Anthropic       *AnthropicOptions  `json:"anthropic,omitempty"`
+	LoginMode       string             `json:"login_mode,omitempty"`
+	IdentityReady   bool               `json:"identity_ready,omitempty"`
+	Runtime         RuntimeStatus      `json:"runtime"`
+	CanRefresh      bool               `json:"can_refresh,omitempty"`
+	TLSProfile      string             `json:"tls_profile,omitempty"`
+	TokenTLSProfile string             `json:"token_tls_profile,omitempty"`
 }
 
 // View hides the secrets of e.
 func (e *Entry) View() View {
 	k, _ := LookupKind(e.Type)
 	v := View{Name: e.Name, Type: e.Type, TypeName: k.Name, Auth: e.Auth, Enabled: e.Enabled, BaseURL: e.URL(), Models: e.Models}
+	v.Anthropic = e.Anthropic
+	v.Runtime = providerStatus(e.ID)
+	if e.Transport != nil {
+		v.ProxyMode, v.ProxyAddress = e.Transport.ProxyMode, e.Transport.summary()
+		v.TLSProfile, v.TokenTLSProfile = e.Transport.TLSProfile, e.Transport.TokenTLSProfile
+	}
 	if v.Models == nil {
 		v.Models = []node.ModelConfig{}
 	}
@@ -287,6 +368,9 @@ func (e *Entry) View() View {
 		v.Key = MaskKey(e.APIKey)
 	}
 	if t := e.OAuth; t != nil {
+		v.CanRefresh = t.RefreshToken != ""
+		v.LoginMode = t.LoginMode
+		v.IdentityReady = t.AccountUUID != "" && e.Identity != nil
 		v.Account, v.Plan = t.Email, t.Plan
 		if v.Account == "" {
 			v.Account = t.AccountID

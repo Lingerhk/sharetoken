@@ -45,6 +45,7 @@ Example: [`configs/relay.example.yaml`](../configs/relay.example.yaml). The acce
 | `limits.max_circuits` | `-max-circuits` | 4096 | Open circuits to one destination peer (the coordinator receives one per online user) |
 | `limits.reservation_ttl` | — | 1h | Lifetime of a reservation; at least 1m |
 | `limits.circuit_buffer` | — | 16KiB | Buffer per circuit |
+| `limits.memory` | — | three quarters of the machine's (or the cgroup's) memory | What all peers may reserve with libp2p's resource manager. yamux reserves 256 KiB per stream and a circuit is two streams, although an idle circuit holds about 30 KiB, so on a small machine this, not the memory in use, caps TCP circuits (about 510 on 453 MB). The relay also sets a soft Go memory limit of 85% unless `GOMEMLIMIT` is set |
 | `status.listen` | `-status` | empty | Serves JSON statistics at `/` and Prometheus metrics at `/metrics`. There is no authentication, so only a loopback address such as `127.0.0.1:8093` is accepted |
 | `status.stats_interval` | — | 5m | Interval of the periodic statistics log line; 0 turns it off |
 | `log.*` | — | info / text / stderr | See section 1 |
@@ -190,7 +191,7 @@ The directory is created with mode 0700. Files in it:
 | `buy.evidence` | true | Disclose a provably bad job's key for an automatic refund |
 | `buy.require_tee`, `buy.tee_policy`, `buy.tee_online` | off | Buy only from attested TEE nodes; allow-list file of trusted images; online revocation check |
 | `buy.queue_seconds` | 30 | How long a request waits for a free node when all are busy; negative: fail at once |
-| `buy.first_byte_seconds`, `buy.idle_seconds` | 120, 60 | How long a job may wait for the node's first frame, and between frames |
+| `buy.first_byte_seconds`, `buy.idle_seconds` | 30, 30 | How long a job may wait for the node's first frame, and between frames. Nodes send a progress frame every 10 seconds while the model is silent |
 | `share.enabled` | false | Sharing on or off |
 | `share.upstream`, `share.upstream_key_env` | `http://127.0.0.1:11434/v1`, empty | OpenAI-compatible base URL of the local model server, and the environment variable holding its API key |
 | `share.concurrency` | 2 | Concurrent jobs |

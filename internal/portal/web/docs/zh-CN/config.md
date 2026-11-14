@@ -67,8 +67,8 @@
     "evidence": true,
     "require_tee": false,
     "queue_seconds": 30,
-    "first_byte_seconds": 120,
-    "idle_seconds": 60
+    "first_byte_seconds": 30,
+    "idle_seconds": 30
   }
 }
 ```
@@ -81,8 +81,8 @@
 | `evidence` | 节点虚报用量时，交出这一单的密钥以自动退款 | `true` |
 | `require_tee` | 只把请求发给 TEE 节点 | `false` |
 | `queue_seconds` | 节点全部满载时最多等多久，负数表示立即失败 | `30` |
-| `first_byte_seconds` | 等节点第一个数据帧的时限，超时换节点。慢模型请调大 | `120` |
-| `idle_seconds` | 两帧之间的时限，超时判定为卡死。慢模型请调大 | `60` |
+| `first_byte_seconds` | 等节点第一帧的时限，超时换节点。模型思考期间节点每 10 秒发一个进度帧，所以慢模型也不需要调大 | `30` |
+| `idle_seconds` | 两帧之间的时限，超时判定为卡死。只收到进度帧、连续 5 分钟没有输出，也判定为卡死 | `30` |
 
 ## 共享设置 {#share}
 

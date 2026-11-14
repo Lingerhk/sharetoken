@@ -67,8 +67,8 @@ The file is strict JSON and cannot contain comments. The examples below list onl
     "evidence": true,
     "require_tee": false,
     "queue_seconds": 30,
-    "first_byte_seconds": 120,
-    "idle_seconds": 60
+    "first_byte_seconds": 30,
+    "idle_seconds": 30
   }
 }
 ```
@@ -81,8 +81,8 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 | `evidence` | If a node overstates usage, hand over the key for that job to get an automatic refund | `true` |
 | `require_tee` | Send requests only to TEE nodes | `false` |
 | `queue_seconds` | How long to wait when all nodes are full. A negative value fails immediately | `30` |
-| `first_byte_seconds` | Time limit for the node's first data frame. On timeout, another node is used. Raise it for slow models | `120` |
-| `idle_seconds` | Time limit between two frames. On timeout, the job is judged stuck. Raise it for slow models | `60` |
+| `first_byte_seconds` | Time limit for the node's first frame. On timeout, another node is used. Nodes send a progress frame every 10 seconds while the model is thinking, so slow models do not need a higher value | `30` |
+| `idle_seconds` | Time limit between two frames. On timeout, the job is judged stuck. A job that gets only progress frames and no output for 5 minutes is judged stuck too | `30` |
 
 ## Sharing settings {#share}
 

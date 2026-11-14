@@ -17,10 +17,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -73,7 +73,13 @@ type Config struct {
 	OfferInterval  time.Duration
 	OfferTTL       time.Duration
 	JobTimeout     time.Duration
-	Quote          *attest.Quote // optional TEE quote binding the receipt and box keys
+	// Heartbeat is how long a job's stream may stay silent before the node
+	// sends a progress frame (default HeartbeatInterval).
+	Heartbeat time.Duration
+	// ResumeWindow is how long a job whose buyer's stream broke waits for
+	// the buyer to resume it (default ResumeWindow).
+	ResumeWindow time.Duration
+	Quote        *attest.Quote // optional TEE quote binding the receipt and box keys
 	// Addrs returns the addresses to advertise (default: the host's own).
 	// A node behind NAT adds its relay circuit addresses here.
 	Addrs func() []string
@@ -96,6 +102,12 @@ func (c *Config) setDefaults() {
 	}
 	if c.JobTimeout == 0 {
 		c.JobTimeout = 10 * time.Minute
+	}
+	if c.Heartbeat == 0 {
+		c.Heartbeat = HeartbeatInterval
+	}
+	if c.ResumeWindow == 0 {
+		c.ResumeWindow = ResumeWindow
 	}
 	if c.Now == nil {
 		c.Now = time.Now
@@ -128,6 +140,7 @@ type Service struct {
 
 	mu   sync.Mutex
 	seen map[string]int64 // job ID -> ticket expiry; rejects ticket replay
+	jobs map[string]*liveJob
 
 	served, failed, earned atomic.Uint64
 	statMu                 sync.Mutex
@@ -179,6 +192,7 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 		cancel: cancel,
 		log:    slog.Default().With("component", "node"),
 		seen:   make(map[string]int64),
+		jobs:   make(map[string]*liveJob),
 	}
 	if s.cfg.Addrs == nil {
 		s.cfg.Addrs = func() []string { return p2p.AddrStrings(h) }
@@ -263,7 +277,16 @@ func (s *Service) announce() error {
 		Quote:          s.cfg.Quote,
 	}
 	for _, m := range s.cfg.Models {
+		if up, ok := m.Upstream.(interface{ ReadyAt() time.Time }); ok && up.ReadyAt().After(now) {
+			continue
+		}
 		o.Models = append(o.Models, protocol.ModelPrice{Model: m.ID, PriceInMicros: m.PriceInMicros, PriceOutMicros: m.PriceOutMicros})
+	}
+	// Empty offers are invalid. Withdraw until a provider becomes available.
+	if len(o.Models) == 0 {
+		ctx, cancel := context.WithTimeout(s.ctx, withdrawTimeout)
+		defer cancel()
+		return s.call(ctx, protocol.TypeWithdraw, protocol.WithdrawRequest{IssuedAt: now.UnixNano()}, protocol.TypeOK, nil)
 	}
 	o.Sign(s.keys.Signer)
 	s.statMu.Lock()
@@ -274,20 +297,60 @@ func (s *Service) announce() error {
 	return s.call(ctx, protocol.TypeAnnounce, o, protocol.TypeOK, nil)
 }
 
-func (s *Service) handleInfer(st network.Stream) {
-	defer st.Close()
-	remote := st.Conn().RemotePeer().String()
-	_ = st.SetDeadline(time.Now().Add(requestTimeout))
+// liveJob is a running job a buyer may resume on a new stream.
+type liveJob struct {
+	buyer string
+	rw    *respWriter
+}
 
-	env, err := protocol.RecvStream(st, protocol.MaxFrameSize)
+func (s *Service) handleInfer(st network.Stream) {
+	_ = st.SetDeadline(time.Now().Add(requestTimeout))
+	env, err := protocol.RecvStream(st, protocol.MaxSmallFrame)
 	if err != nil {
 		_ = st.Reset()
 		return
 	}
 	if env.Ver == "" {
 		fail(st, protocol.Errorf(protocol.CodeBadRequest, "the request does not say the client's version"))
+		_ = st.Close()
 		return
 	}
+	if env.Type == protocol.TypeResume {
+		s.handleResume(st, env)
+		return
+	}
+	s.runJob(st, env)
+}
+
+// handleResume hands a buyer's new stream to its running job.
+func (s *Service) handleResume(st network.Stream, env *protocol.Envelope) {
+	var req protocol.ResumeRequest
+	if err := env.Decode(protocol.TypeResume, &req); err != nil {
+		fail(st, protocol.Errorf(protocol.CodeBadRequest, "malformed resume request"))
+		_ = st.Close()
+		return
+	}
+	s.mu.Lock()
+	j := s.jobs[req.JobID]
+	s.mu.Unlock()
+	if j == nil || j.buyer != st.Conn().RemotePeer().String() {
+		fail(st, protocol.Errorf(protocol.CodeNotFound, "no such job to resume"))
+		_ = st.Close()
+		return
+	}
+	_ = st.SetDeadline(time.Now().Add(s.cfg.JobTimeout))
+	if err := j.rw.attach(st, req.From); err != nil {
+		fail(st, err)
+		_ = st.Close()
+		return
+	}
+	s.log.Info("buyer resumed a job", "job", req.JobID, "from", req.From)
+}
+
+func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
+	cur := st // the buyer's stream when the job ends
+	defer func() { _ = cur.Close() }()
+	remote := st.Conn().RemotePeer().String()
 	var req protocol.InferRequest
 	if err := env.Decode(protocol.TypeInfer, &req); err != nil {
 		fail(st, protocol.Errorf(protocol.CodeBadRequest, "malformed infer request"))
@@ -299,11 +362,24 @@ func (s *Service) handleInfer(st network.Stream) {
 		fail(st, err)
 		return
 	}
-	// The response is sealed to the key the request was sealed from, so the
-	// signed request hash commits to it: that is what lets the buyer prove
-	// this job's transcript to a dispute judge by disclosing one key.
-	if len(req.BuyerBoxPub) != box.PublicKeySize || len(req.Sealed) < box.Overhead ||
-		!bytes.Equal(req.BuyerBoxPub, req.Sealed[:box.PublicKeySize]) {
+	// The sealed request follows the header, in frames; only a valid ticket
+	// for this node gets this far. Each frame may take requestTimeout.
+	sealedReq, err := protocol.ReadSealedRequest(func(max int) (*protocol.Frame, error) { return protocol.ReadStreamFrame(st, max) },
+		req.RequestBytes, func() { _ = st.SetReadDeadline(time.Now().Add(requestTimeout)) })
+	if err != nil {
+		if protocol.CodeOf(err) != "" {
+			fail(st, err)
+		} else {
+			_ = st.Reset()
+		}
+		return
+	}
+	// The response is sealed under a key derived from the key the request was
+	// sealed from, so the signed request hash commits to it: that is what lets
+	// the buyer prove this job's transcript to a dispute judge by disclosing
+	// one key.
+	if len(req.BuyerBoxPub) != box.PublicKeySize || len(sealedReq) < box.Overhead ||
+		!bytes.Equal(req.BuyerBoxPub, sealedReq[:box.PublicKeySize]) {
 		fail(st, protocol.Errorf(protocol.CodeBadRequest, "the response key must be the key the request was sealed from"))
 		return
 	}
@@ -322,10 +398,22 @@ func (s *Service) handleInfer(st network.Stream) {
 
 	// The plaintext request exists only in memory for the life of this job; it
 	// is never logged or written anywhere.
-	plain, err := s.keys.Box.Open(req.Sealed, protocol.RequestAAD(t))
+	opened, err := s.keys.Box.Open(sealedReq, protocol.RequestAAD(t))
 	if err != nil {
 		fail(st, protocol.Errorf(protocol.CodeBadRequest, "cannot open sealed request"))
 		go s.abandonNoFault(*t, "unreadable request")
+		return
+	}
+	plain, err := protocol.DecodeRequest(opened)
+	if err != nil {
+		fail(st, protocol.Errorf(protocol.CodeBadRequest, "cannot decode the request: %v", err))
+		go s.abandonNoFault(*t, "undecodable request")
+		return
+	}
+	key, err := s.keys.Box.NewStream(req.BuyerBoxPub, protocol.ResponseKeyInfo(t, req.BuyerBoxPub))
+	if err != nil {
+		fail(st, protocol.Errorf(protocol.CodeBadRequest, "bad response key"))
+		go s.abandonNoFault(*t, "bad response key")
 		return
 	}
 	body, estPrompt, err := UpstreamRequest(t, plain, mc.UpstreamModel)
@@ -334,100 +422,120 @@ func (s *Service) handleInfer(st network.Stream) {
 		go s.abandonNoFault(*t, "bad request")
 		return
 	}
+	if up, ok := mc.Upstream.(interface{ ReadyAt() time.Time }); ok && up.ReadyAt().After(s.cfg.Now()) {
+		fail(st, protocol.Errorf(protocol.CodeBusy, "provider is temporarily rate limited"))
+		go s.abandonNoFault(*t, "provider cooldown")
+		return
+	}
 
 	_ = st.SetDeadline(time.Now().Add(s.cfg.JobTimeout))
 	ctx, cancel := context.WithTimeout(s.ctx, s.cfg.JobTimeout)
 	defer cancel()
+	ctx = WithRequestScope(ctx, t.Buyer)
+	var session struct {
+		ID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(plain, &session); err != nil || len(session.ID) > 256 {
+		fail(st, protocol.Errorf(protocol.CodeBadRequest, "session_id must be a string of at most 256 bytes"))
+		go s.abandonNoFault(*t, "invalid session_id")
+		return
+	}
+	ctx = WithRequestSession(ctx, session.ID)
 	// Tell the coordinator the buyer showed up (in the background: it must
 	// not delay the first byte). If the job was already released for not
 	// starting in time, nobody will pay for it: stop.
 	go s.reportStarted(*t, cancel)
 
-	hasher := receipt.NewStreamHasher()
-	var (
-		seq   uint64
-		usage *protocol.Usage
-		text  strings.Builder
-	)
-	err = mc.Upstream.Stream(ctx, body, func(payload []byte) error {
-		info, perr := protocol.ParseChunk(payload)
-		sealed, err := box.Seal(req.BuyerBoxPub, payload, protocol.ChunkAAD(t, seq))
-		if err != nil {
-			return err
+	// From here on the response writer is the only writer on the buyer's
+	// stream (which a resume may replace) until it stops; it also sends
+	// progress frames while the model is silent.
+	rw := newRespWriter(st, t, key, s.cfg.Heartbeat, s.cfg.ResumeWindow)
+	s.mu.Lock()
+	s.jobs[t.JobID] = &liveJob{buyer: t.Buyer, rw: rw}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.jobs, t.JobID)
+		s.mu.Unlock()
+	}()
+	stop := func() {
+		if last := rw.Stop(); last != nil {
+			cur = last
 		}
-		if err := protocol.Send(st, protocol.TypeChunk, protocol.Chunk{Seq: seq, Sealed: sealed}); err != nil {
-			return fmt.Errorf("%w: %v", errBuyerGone, err)
-		}
-		// Only what reached the buyer's stream counts.
-		hasher.WriteChunk(sealed)
-		if perr == nil {
-			text.WriteString(info.Text())
-			if info.Usage != nil {
-				usage = info.Usage
-			}
-		}
-		seq++
-		return nil
-	})
-	if err == nil && seq == 0 {
+	}
+	err = mc.Upstream.Stream(ctx, body, rw.Write)
+	if err == nil && rw.written() == 0 {
 		err = errors.New("upstream returned an empty stream")
 	}
-	if errors.Is(err, errBuyerGone) {
-		if seq == 0 {
+	if cerr := rw.Close(err == nil); err == nil && cerr != nil {
+		err = cerr
+	} else if err != nil && cerr != nil && !errors.Is(err, errBuyerGone) && !errors.Is(err, errCancelled) {
+		err = fmt.Errorf("%w: %v", cerr, err)
+	}
+	delivered, frames, text := rw.Delivered()
+	if errors.Is(err, errBuyerGone) || errors.Is(err, errCancelled) {
+		stop()
+		cancel()
+		if delivered == 0 {
 			// Gone before any output: nothing to bill, and not this node's fault.
-			s.log.Info("buyer left before the first chunk", "job", t.JobID)
+			s.log.Info("buyer left before the first chunk", "job", t.JobID, "why", err)
 			go s.abandonNoFault(*t, "buyer left before any output")
 			return
 		}
-		// The buyer stopped reading mid-stream (a user pressing "stop"). The
-		// output it received was produced and delivered: bill exactly the
-		// chunks sent, settled without an ack, so the payout waits out the
-		// dispute window like any unacknowledged job. Not a node failure.
-		s.log.Info("buyer cancelled mid-stream; billing the delivered part", "job", t.JobID, "chunks", seq)
-		cancel()
-		sr, serr := s.signReceipt(t, req.Sealed, hasher.Sum(), estPrompt, protocol.EstimateTokens(text.String()))
+		// The buyer stopped (a user pressing "stop") or did not come back
+		// after its stream broke. The output it received was produced and
+		// delivered: bill exactly the frames it got, settled without an ack,
+		// so the payout waits out the dispute window like any unacknowledged
+		// job. Not a node failure.
+		s.log.Info("buyer left mid-stream; billing the delivered part", "job", t.JobID, "why", err, "chunks", delivered, "frames", frames)
+		sr, serr := s.signReceipt(t, sealedReq, rw.Digest(), estPrompt, protocol.EstimateTokens(text))
 		if serr == nil {
 			go s.settle(*t, *sr, nil)
 		}
 		return
 	}
 	if err != nil {
+		stop()
 		// No receipt, no settlement: a failed job is never billed.
 		var se *StatusError
-		if seq == 0 && errors.As(err, &se) && se.RequestRejected() {
+		if delivered == 0 && errors.As(err, &se) && se.RequestRejected() {
 			// The buyer's request is invalid: tell it why (the message goes to
 			// the buyer only, over the end-to-end encrypted stream) and release
 			// the job without counting it against this node.
 			s.log.Info("model server rejected the request", "job", t.JobID, "status", se.Status)
-			fail(st, protocol.Errorf(protocol.CodeBadRequest, "model server rejected the request (HTTP %d): %s", se.Status, clip(se.Body, 300)))
+			fail(cur, protocol.Errorf(protocol.CodeBadRequest, "model server rejected the request (HTTP %d): %s", se.Status, clip(se.Body, 300)))
 			go s.abandonNoFault(*t, "request rejected by the model server")
 			return
 		}
 		s.failed.Add(1)
 		s.log.Warn("job failed", "job", t.JobID, "err", err)
-		fail(st, protocol.Errorf(protocol.CodeUpstream, "model server error"))
+		fail(cur, protocol.Errorf(protocol.CodeUpstream, "model server error"))
 		go s.abandon(*t, "model server error")
 		return
 	}
 
-	pt, ct := estPrompt, protocol.EstimateTokens(text.String())
-	if usage != nil {
+	pt, ct := estPrompt, protocol.EstimateTokens(text)
+	if usage := rw.usage; usage != nil {
 		pt, ct = usage.PromptTokens, usage.CompletionTokens
 	}
-	sr, err := s.signReceipt(t, req.Sealed, hasher.Sum(), pt, ct)
+	sr, err := s.signReceipt(t, sealedReq, rw.Digest(), pt, ct)
 	if err != nil {
-		fail(st, err)
+		stop()
+		fail(cur, err)
 		return
 	}
-	if err := protocol.Send(st, protocol.TypeReceipt, sr); err != nil {
+	var trailer bytes.Buffer
+	_ = protocol.Send(&trailer, protocol.TypeReceipt, sr)
+	if err := rw.Finish(trailer.Bytes()); err != nil {
+		// The buyer did not come back for the receipt: settle without it.
+		stop()
+		go s.settle(*t, *sr, nil)
 		return
 	}
-
 	// Wait for the buyer's verdict. An ack lets the coordinator pay out at once;
 	// without one the payout waits out the dispute window.
-	_ = st.SetDeadline(time.Now().Add(ackTimeout))
 	var ack []byte
-	if env, err := protocol.RecvStream(st, protocol.MaxSmallFrame); err == nil {
+	if env := rw.Ack(ackTimeout); env != nil {
 		switch env.Type {
 		case protocol.TypeAck:
 			var a protocol.Ack
@@ -440,11 +548,10 @@ func (s *Service) handleInfer(st network.Stream) {
 			s.log.Warn("buyer rejected receipt", "job", t.JobID, "reason", r.Reason)
 		}
 	}
+	stop()
+	s.log.Debug("job streamed", "job", t.JobID, "chunks", delivered, "frames", frames, "progress_frames", rw.beats, "resumes", rw.resumes, "wire_bytes", rw.wireOut)
 	go s.settle(*t, *sr, ack)
 }
-
-// errBuyerGone marks a failure to write to the buyer's stream.
-var errBuyerGone = errors.New("buyer stream closed")
 
 func (s *Service) signReceipt(t *protocol.Ticket, sealedReq, respHash []byte, pt, ct uint64) (*receipt.SignedReceipt, error) {
 	nonce := make([]byte, 16)

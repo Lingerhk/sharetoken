@@ -10,6 +10,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/google/go-sev-guest v0.15.0
 	github.com/google/go-tdx-guest v0.3.1
+	github.com/imroc/req/v3 v3.59.0
 	github.com/libp2p/go-libp2p v0.51.0
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/resend/resend-go/v2 v2.28.0
@@ -19,7 +20,14 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
-require github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
+require (
+	github.com/andybalholm/brotli v1.2.0 // indirect
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
+	github.com/icholy/digest v1.1.0 // indirect
+	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/refraction-networking/utls v1.8.2 // indirect
+)
 
 require (
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect

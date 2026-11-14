@@ -45,6 +45,7 @@
 | `limits.max_circuits` | `-max-circuits` | 4096 | 到同一目的 peer 的并发电路数（协调器每个在线用户占一条） |
 | `limits.reservation_ttl` | — | 1h | 预约的有效期；至少 1m |
 | `limits.circuit_buffer` | — | 16KiB | 每条电路的缓冲区 |
+| `limits.memory` | — | 本机（或 cgroup）内存的四分之三 | 所有对端合计可以向 libp2p 资源管理器预留的内存。yamux 每条流预留 256 KiB，一条电路是两条流，而一条空闲电路实际只占约 30 KiB，所以在小内存机器上，限制 TCP 电路数的是它，不是实际用量（453 MB 时约 510 条）。中继还会设置 85% 的 Go 软内存上限，除非设置了 `GOMEMLIMIT` |
 | `status.listen` | `-status` | 空 | 在 `/` 提供 JSON 统计，在 `/metrics` 提供 Prometheus 指标。没有认证，所以只接受 `127.0.0.1:8093` 这样的回环地址 |
 | `status.stats_interval` | — | 5m | 周期性统计日志的间隔；0 关闭 |
 | `log.*` | — | info / text / stderr | 见第 1 节 |
@@ -190,7 +191,7 @@
 | `buy.evidence` | true | 对可以证明有问题的单披露密钥，换取自动退款 |
 | `buy.require_tee`、`buy.tee_policy`、`buy.tee_online` | 关闭 | 只从经过证明的 TEE 节点购买；可信镜像的白名单文件；联网查询吊销状态 |
 | `buy.queue_seconds` | 30 | 所有节点都忙时，请求等待空闲节点多久；负数：立即失败 |
-| `buy.first_byte_seconds`、`buy.idle_seconds` | 120、60 | 一单等待节点第一帧的时间上限，以及两帧之间的时间上限 |
+| `buy.first_byte_seconds`、`buy.idle_seconds` | 30、30 | 一单等待节点第一帧的时间上限，以及两帧之间的时间上限。模型不出声时，节点每 10 秒发一个进度帧 |
 | `share.enabled` | false | 共享的开关 |
 | `share.upstream`、`share.upstream_key_env` | `http://127.0.0.1:11434/v1`、空 | 本机模型服务的 OpenAI 兼容 base URL，以及存放其 API key 的环境变量 |
 | `share.concurrency` | 2 | 并发作业数 |

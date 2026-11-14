@@ -11,7 +11,7 @@ import (
 
 func TestPrepareUpstreamBodyEnforcesNodePolicy(t *testing.T) {
 	in := []byte(`{"model":"gpt-something","n":8,"best_of":4,"stream":false,"max_tokens":500,
-		"temperature":0.2,"messages":[{"role":"user","content":"hi"}],"logprobs":true}`)
+		"temperature":0.2,"messages":[{"role":"user","content":"hi"}],"logprobs":true,"session_id":"local-session"}`)
 	out, err := prepareUpstreamBody(in, "qwen2.5:7b", 300)
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +23,7 @@ func TestPrepareUpstreamBodyEnforcesNodePolicy(t *testing.T) {
 	if got["model"] != "qwen2.5:7b" {
 		t.Errorf("model not overridden: %v", got["model"])
 	}
-	for _, k := range []string{"n", "best_of", "logprobs"} {
+	for _, k := range []string{"n", "best_of", "logprobs", "session_id"} {
 		if _, ok := got[k]; ok {
 			t.Errorf("%s must be dropped", k)
 		}

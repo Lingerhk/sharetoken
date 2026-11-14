@@ -23,16 +23,18 @@ type chatRequest struct {
 	ResponseFormat   json.RawMessage `json:"response_format"`
 	Seed             *int64          `json:"seed"`
 	User             string          `json:"user"`
+	SessionID        string          `json:"session_id"`
 	PresencePenalty  *float64        `json:"presence_penalty"`
 	FrequencyPenalty *float64        `json:"frequency_penalty"`
 }
 
 type chatMessage struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content"` // a string, or parts
-	Name       string          `json:"name"`
-	ToolCalls  []chatToolCall  `json:"tool_calls"`
-	ToolCallID string          `json:"tool_call_id"`
+	Role              string            `json:"role"`
+	Content           json.RawMessage   `json:"content"` // a string, or parts
+	Name              string            `json:"name"`
+	ToolCalls         []chatToolCall    `json:"tool_calls"`
+	ToolCallID        string            `json:"tool_call_id"`
+	AnthropicThinking []json.RawMessage `json:"anthropic_thinking,omitempty"`
 }
 
 type chatToolCall struct {
@@ -45,8 +47,9 @@ type chatToolCall struct {
 }
 
 type chatTool struct {
-	Type     string `json:"type"`
-	Function struct {
+	Type         string        `json:"type"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+	Function     struct {
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
 		Parameters  json.RawMessage `json:"parameters"`
@@ -55,9 +58,10 @@ type chatTool struct {
 
 // chatPart is one part of a message's content.
 type chatPart struct {
-	Type     string `json:"type"` // text, image_url
-	Text     string `json:"text"`
-	ImageURL struct {
+	Type         string        `json:"type"` // text, image_url
+	Text         string        `json:"text"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+	ImageURL     struct {
 		URL string `json:"url"`
 	} `json:"image_url"`
 }

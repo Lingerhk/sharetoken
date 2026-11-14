@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -60,6 +61,9 @@ type File struct {
 		MaxCircuits          int             `yaml:"max_circuits"`
 		ReservationTTL       config.Duration `yaml:"reservation_ttl"`
 		CircuitBuffer        config.Size     `yaml:"circuit_buffer"`
+		// Memory caps what peers may reserve with libp2p's resource manager
+		// (0: three quarters of the machine's or the cgroup's memory).
+		Memory config.Size `yaml:"memory"`
 	} `yaml:"limits"`
 	Status struct {
 		Listen        string          `yaml:"listen"`
@@ -131,6 +135,7 @@ func relayConfig(f File) (relay.Config, error) {
 		MaxReservations: f.Limits.MaxReservations, MaxReservationsPerIP: f.Limits.MaxReservationsPerIP,
 		MaxCircuits: f.Limits.MaxCircuits, MaxConns: f.Network.MaxConns,
 		ReservationTTL: f.Limits.ReservationTTL.T(), BufferSize: int(f.Limits.CircuitBuffer),
+		Memory: int64(f.Limits.Memory),
 	}
 	var errs []error
 	if len(cfg.Listen) == 0 {
@@ -206,6 +211,14 @@ func main() {
 	if check {
 		_ = yaml.NewEncoder(os.Stdout).Encode(f)
 		return
+	}
+	// The resource manager may let peers reserve more than a quarter of the
+	// memory (relay.Config.Memory); the garbage collector then works harder
+	// near the machine's limit instead of the kernel killing the relay.
+	if os.Getenv("GOMEMLIMIT") == "" {
+		if m := p2p.MachineMemory(); m > 0 {
+			debug.SetMemoryLimit(int64(m / 100 * 85))
+		}
 	}
 	_, closeLog, err := f.Log.Setup()
 	if err != nil {

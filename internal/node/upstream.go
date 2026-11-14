@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Upstream is the model server a node serves from.
@@ -36,8 +37,10 @@ const maxSSELine = 1 << 20
 
 // StatusError is a non-200 answer from the model server.
 type StatusError struct {
-	Status int
-	Body   string
+	Status    int
+	Body      string
+	RequestID string
+	RetryAt   time.Time
 }
 
 func (e *StatusError) Error() string { return fmt.Sprintf("upstream status %d: %s", e.Status, e.Body) }

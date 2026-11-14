@@ -15,11 +15,13 @@ import (
 
 // AddRequest describes a provider reached with an API key.
 type AddRequest struct {
-	Type    string            `json:"type"`
-	Name    string            `json:"name,omitempty"` // default: the type
-	APIKey  string            `json:"api_key,omitempty"`
-	BaseURL string            `json:"base_url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Type      string            `json:"type"`
+	Name      string            `json:"name,omitempty"` // default: the type
+	APIKey    string            `json:"api_key,omitempty"`
+	BaseURL   string            `json:"base_url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Transport *TransportOptions `json:"transport,omitempty"`
+	Anthropic *AnthropicOptions `json:"anthropic,omitempty"`
 	// NoCheck saves the provider without asking it whether the key works.
 	NoCheck bool `json:"no_check,omitempty"`
 }
@@ -38,11 +40,14 @@ func AddWithKey(ctx context.Context, home string, req AddRequest) (*Added, error
 		return nil, fmt.Errorf("unknown provider type %q", req.Type)
 	}
 	e := &Entry{Name: req.Name, Type: k.ID, Auth: AuthAPIKey, Enabled: true, APIKey: strings.TrimSpace(req.APIKey),
-		BaseURL: strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"), Headers: req.Headers, AddedAt: time.Now().UTC().Truncate(time.Second)}
+		BaseURL: strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"), Headers: req.Headers, Transport: req.Transport, Anthropic: req.Anthropic, AddedAt: time.Now().UTC().Truncate(time.Second)}
 	if e.Name == "" {
 		e.Name = k.ID
 	}
 	e.Name = strings.ToLower(e.Name)
+	if err := inheritProviderOptions(home, e); err != nil {
+		return nil, err
+	}
 	if err := e.Validate(); err != nil {
 		return nil, err
 	}
@@ -57,29 +62,127 @@ func AddWithKey(ctx context.Context, home string, req AddRequest) (*Added, error
 	return out, save(home, e, out)
 }
 
-// FinishLoginAndSave completes an OAuth login and saves the provider.
-func FinishLoginAndSave(ctx context.Context, home, loginID, input, name string) (*Added, error) {
-	tok, kind, err := FinishLogin(ctx, loginID, input)
+// StartProviderLogin keeps an existing provider's outbound configuration.
+func StartProviderLogin(home, name, kind string, options LoginOptions) (*Login, error) {
+	kind = strings.ToLower(kind)
+	if name == "" {
+		name = kind
+	}
+	f, err := Load(home)
 	if err != nil {
 		return nil, err
 	}
-	return SaveLogin(ctx, home, kind, name, tok)
+	if old := f.Get(name); old != nil && old.Type == kind {
+		options.Transport = mergeTransport(old.Transport, options.Transport)
+		if options.Anthropic == nil {
+			options.Anthropic = old.Anthropic
+		}
+		if options.Mode == "" && old.OAuth != nil {
+			options.Mode = old.OAuth.LoginMode
+		}
+	}
+	return StartLoginWithOptions(kind, options)
+}
+
+func FinishLoginAndSave(ctx context.Context, home, loginID, input, name string) (*Added, error) {
+	loginMu.Lock()
+	l := logins[loginID]
+	loginMu.Unlock()
+	if l == nil {
+		return nil, errors.New("this login has expired: start again")
+	}
+	return l.FinishAndSave(ctx, home, input, name)
+}
+
+func (l *Login) FinishAndSave(ctx context.Context, home, input, name string) (*Added, error) {
+	tok, kind, err := l.Finish(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	return SaveLoginWithOptions(ctx, home, kind, name, tok, l.options)
 }
 
 // SaveLogin saves a provider with the token of a finished login.
 func SaveLogin(ctx context.Context, home, kind, name string, tok *Token) (*Added, error) {
+	return SaveLoginWithOptions(ctx, home, kind, name, tok, LoginOptions{})
+}
+
+func SaveLoginWithOptions(ctx context.Context, home, kind, name string, tok *Token, options LoginOptions) (*Added, error) {
 	if name == "" {
 		name = kind
 	}
-	e := &Entry{Name: strings.ToLower(name), Type: kind, Auth: AuthOAuth, Enabled: true, OAuth: tok, AddedAt: time.Now().UTC().Truncate(time.Second)}
+	e := &Entry{Name: strings.ToLower(name), Type: kind, Auth: AuthOAuth, Enabled: true, OAuth: tok, Transport: options.Transport, Anthropic: options.Anthropic, AddedAt: time.Now().UTC().Truncate(time.Second)}
+	if err := inheritProviderOptions(home, e); err != nil {
+		return nil, err
+	}
 	if err := e.Validate(); err != nil {
 		return nil, err
 	}
 	out := &Added{}
-	if ms, err := e.ListModels(ctx, FixedToken(tok)); err == nil {
-		out.Check = &CheckResult{Models: ms}
+	discovery, err := e.DiscoverModels(ctx, FixedToken(tok))
+	if err != nil {
+		discovery.Verification = "failed"
+		discovery.Warning = clip(err.Error(), 300)
 	}
+	out.Check = &discovery
 	return out, save(home, e, out)
+}
+
+func inheritProviderOptions(home string, e *Entry) error {
+	f, err := Load(home)
+	if err != nil {
+		return err
+	}
+	if old := f.Get(e.Name); old != nil && old.Type == e.Type {
+		e.ID = old.ID
+		if e.BaseURL == "" && old.Auth == e.Auth {
+			e.BaseURL = old.BaseURL
+		}
+		e.Transport = mergeTransport(old.Transport, e.Transport)
+		if e.Anthropic == nil && e.Auth == old.Auth {
+			e.Anthropic = old.Anthropic
+		}
+		if sameAnthropicAccount(old.OAuth, e.OAuth) {
+			e.Identity = old.Identity
+		}
+	}
+	e.ensureIdentity()
+	return nil
+}
+
+// ConfigureRequest changes local provider options without replacing secrets.
+type ConfigureRequest struct {
+	Enabled   *bool             `json:"enabled,omitempty"`
+	Transport *TransportOptions `json:"transport,omitempty"`
+	Anthropic *AnthropicOptions `json:"anthropic,omitempty"`
+}
+
+func Configure(home, name string, req ConfigureRequest) (View, error) {
+	var v View
+	if req.Enabled == nil && req.Transport == nil && req.Anthropic == nil {
+		return v, errors.New("nothing to change")
+	}
+	err := Update(home, func(f *File) error {
+		e, err := f.Find(name)
+		if err != nil {
+			return err
+		}
+		if req.Enabled != nil {
+			e.Enabled = *req.Enabled
+		}
+		if req.Transport != nil {
+			e.Transport = mergeTransport(e.Transport, req.Transport)
+		}
+		if req.Anthropic != nil {
+			e.Anthropic = req.Anthropic
+		}
+		if err := e.Validate(); err != nil {
+			return err
+		}
+		v = e.View()
+		return nil
+	})
+	return v, err
 }
 
 func save(home string, e *Entry, out *Added) error {
@@ -92,6 +195,7 @@ func save(home string, e *Entry, out *Added) error {
 		if err := f.Put(e); err != nil {
 			return err
 		}
+		recordProviderStatus(e.ID, nil)
 		out.Provider = e.View()
 		return nil
 	})
@@ -114,6 +218,11 @@ func SetEnabled(home, name string, on bool) (View, error) {
 // Remove deletes a provider with its credentials and models.
 func Remove(home, name string) error {
 	return Update(home, func(f *File) error {
+		if e := f.Get(name); e != nil {
+			releaseHTTPClient(e.ID)
+			releaseHTTPClient(e.ID + ":token")
+			recordProviderStatus(e.ID, nil)
+		}
 		if !f.Remove(name) {
 			return fmt.Errorf("%w: %q", ErrNotFound, name)
 		}
@@ -174,7 +283,7 @@ func RemoveModel(home, id string) (string, error) {
 
 // With loads a provider and runs fn with it and its token source.
 func With(home, name string, fn func(e *Entry, ts TokenSource) error) error {
-	f, err := Load(home)
+	f, err := LoadReady(home)
 	if err != nil {
 		return err
 	}
@@ -192,6 +301,15 @@ func Models(ctx context.Context, home, name string) ([]string, error) {
 		ms, err = e.ListModels(ctx, ts)
 		return err
 	})
+}
+
+func Discover(ctx context.Context, home, name string) (CheckResult, error) {
+	var r CheckResult
+	err := With(home, name, func(e *Entry, ts TokenSource) (err error) {
+		r, err = e.DiscoverModels(ctx, ts)
+		return err
+	})
+	return r, err
 }
 
 // Test sends one small request through a saved provider. model defaults to
