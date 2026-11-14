@@ -12,21 +12,10 @@ gui/rsrc_windows_*.syso
 !.env.example
 *.secrets.md
 
-# Local only: deployment scripts and configuration of real environments (dev,
-# prod, relays, test machines), operations notes, research. Kept out of the
-# repository on purpose.
+# Local only
 local/
 workspace/
-reports/
-
-# Test and run output
-*.log
-__pycache__/
-/real-qwen.json
-node_modules/
 
 # Editors and operating systems
 .DS_Store
-.idea/
-.vscode/
-*.swp
+.claude/
