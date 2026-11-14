@@ -422,10 +422,10 @@ func sendInfer(t *testing.T, h host.Host, tk protocol.Ticket) error {
 	jobKey, _ := box.GenerateIdentity()
 	encoded, _ := protocol.EncodeRequest([]byte(body))
 	sealed, _ := box.SealFrom(jobKey, tk.NodeBoxPub, encoded, protocol.RequestAAD(&tk))
-	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: tk, BuyerBoxPub: jobKey.Public()}); err != nil {
+	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: tk, BuyerBoxPub: jobKey.Public(), RequestBytes: uint64(len(sealed))}); err != nil {
 		return err
 	}
-	if err := protocol.SendBinary(st, protocol.BinRequest, sealed); err != nil {
+	if err := protocol.SendSealedRequest(st, sealed); err != nil {
 		return err
 	}
 	f, err := protocol.ReadFrame(st, protocol.MaxFrameSize)

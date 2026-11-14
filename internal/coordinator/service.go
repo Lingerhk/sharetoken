@@ -316,16 +316,16 @@ func (s *Service) handleEvidence(st network.Stream, remote string, env *protocol
 		s.sendError(st, env.Type, err)
 		return
 	}
-	rf, err := protocol.ReadStreamFrame(st, protocol.MaxFrameSize)
+	sealedReq, err := protocol.ReadSealedRequest(func(max int) (*protocol.Frame, error) { return protocol.ReadStreamFrame(st, max) }, ev.RequestBytes, nil)
 	if err != nil {
-		_ = st.Reset()
+		if protocol.CodeOf(err) != "" {
+			s.sendError(st, env.Type, err)
+		} else {
+			_ = st.Reset()
+		}
 		return
 	}
-	if rf.Env != nil || rf.Kind != protocol.BinRequest {
-		s.sendError(st, env.Type, protocol.Errorf(protocol.CodeBadRequest, "expected the sealed request"))
-		return
-	}
-	judge, err := evidence.New(t, settledReceipt, ev.Receipt, &ev, rf.Payload)
+	judge, err := evidence.New(t, settledReceipt, ev.Receipt, &ev, sealedReq)
 	if errors.Is(err, evidence.ErrNoReceipt) {
 		// Nothing was signed yet, so there is nothing to judge: record the
 		// dispute so that a later settlement goes to arbitration.

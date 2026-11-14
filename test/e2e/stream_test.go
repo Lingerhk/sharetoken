@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -109,5 +111,27 @@ func TestSessionStaysOnItsNode(t *testing.T) {
 	}
 	if res := chat("b"); res.Ticket.Node != cheap.ID() {
 		t.Fatalf("another session: served by %s, want the cheaper %s", res.Ticket.Node, cheap.ID())
+	}
+}
+
+// A request near the 32 MiB limit that does not compress (an image in base64)
+// travels in many frames and is served.
+func TestLargeIncompressibleRequest(t *testing.T) {
+	m := newMarket(t)
+	m.addNode(mockUpstream(t, "mock-7b", false).URL, 1, 1)
+	m.waitOffers(1)
+	cl, _, _ := m.addBuyer(5_000_000)
+	raw := make([]byte, 22<<20)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	img := base64.StdEncoding.EncodeToString(raw) // about 29 MiB
+	req := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":[{"type":"text","text":"what is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,%s"}}]}]}`, model, img)
+	res, err := cl.Chat(m.ctx, buyer.ChatRequest{Model: model, Body: []byte(req), BudgetMicros: 1_000_000}, nil)
+	if err != nil || res.Content != "Hello, world!" {
+		t.Fatalf("large request: %v", err)
+	}
+	if res.Timing.UpBytes < int64(len(req)) {
+		t.Fatalf("sent %d bytes for a %d byte request that does not compress", res.Timing.UpBytes, len(req))
 	}
 }

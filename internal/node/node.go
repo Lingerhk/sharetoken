@@ -314,17 +314,18 @@ func (s *Service) handleInfer(st network.Stream) {
 		fail(st, err)
 		return
 	}
-	// The sealed request follows the header in a binary frame.
-	rf, err := protocol.ReadStreamFrame(st, protocol.MaxFrameSize)
+	// The sealed request follows the header, in frames; only a valid ticket
+	// for this node gets this far. Each frame may take requestTimeout.
+	sealedReq, err := protocol.ReadSealedRequest(func(max int) (*protocol.Frame, error) { return protocol.ReadStreamFrame(st, max) },
+		req.RequestBytes, func() { _ = st.SetReadDeadline(time.Now().Add(requestTimeout)) })
 	if err != nil {
-		_ = st.Reset()
+		if protocol.CodeOf(err) != "" {
+			fail(st, err)
+		} else {
+			_ = st.Reset()
+		}
 		return
 	}
-	if rf.Env != nil || rf.Kind != protocol.BinRequest {
-		fail(st, protocol.Errorf(protocol.CodeBadRequest, "expected the sealed request"))
-		return
-	}
-	sealedReq := rf.Payload
 	// The response is sealed under a key derived from the key the request was
 	// sealed from, so the signed request hash commits to it: that is what lets
 	// the buyer prove this job's transcript to a dispute judge by disclosing

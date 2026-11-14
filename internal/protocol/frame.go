@@ -14,8 +14,8 @@ import (
 )
 
 // MaxFrameSize bounds a single frame so a peer cannot make us allocate
-// unbounded memory with a forged length prefix. Only a sealed request comes
-// anywhere near it: up to MaxRequestBody of JSON, compressed before sealing.
+// unbounded memory with a forged length prefix. Data frames stay far below it
+// (a sealed request travels in RequestFrameSize pieces).
 const MaxFrameSize = 8 << 20
 
 // MaxSmallFrame bounds frames whose contents are a few fields: relay passes,
@@ -33,7 +33,7 @@ const recvChunk = 64 << 10
 // one of the Bin* kinds below (all below 0x20, so never '{'), followed by its
 // bytes. The data plane sends its bulk in binary frames: no JSON, no base64.
 const (
-	BinRequest  byte = 0x01 // the sealed request (EncodeRequest, box.SealFrom)
+	BinRequest  byte = 0x01 // a piece of the sealed request (EncodeRequest, box.SealFrom; SendSealedRequest)
 	BinData     byte = 0x02 // uvarint sequence number, then one sealed response frame
 	BinProgress byte = 0x03 // empty; the node is alive while the model is silent
 )

@@ -31,8 +31,17 @@ import (
 // refer back to) continues where the previous frame stopped.
 
 // MaxRequestBody bounds a request's JSON before compression (the local API's
-// limit) and, on the node, after decompression.
-const MaxRequestBody = 16 << 20
+// limit) and, on the node, after decompression: 32 MiB, the Messages limit of
+// most clouds that serve Claude (Anthropic's own API takes 128 MB).
+const MaxRequestBody = 32 << 20
+
+// MaxSealedRequest bounds the sealed request on the wire: MaxRequestBody that
+// does not compress (images in base64), padded, plus the box.
+const MaxSealedRequest = MaxRequestBody + MaxRequestBody/4 + 1<<20
+
+// RequestFrameSize is the size of the BinRequest frames a sealed request is
+// sent in; each is reserved with the resource manager on its own.
+const RequestFrameSize = 1 << 20
 
 // codecDict primes both compressors: the JSON that every request and every
 // streamed chunk repeats.
@@ -249,4 +258,48 @@ func (d *ResponseDecoder) Frame(plain []byte) ([][]byte, error) {
 		out = out[k+int(l):]
 	}
 	return recs, nil
+}
+
+// SendSealedRequest writes a sealed request as BinRequest frames of at most
+// RequestFrameSize bytes. The header before it says how many bytes follow.
+func SendSealedRequest(w io.Writer, sealed []byte) error {
+	for len(sealed) > 0 {
+		n := min(len(sealed), RequestFrameSize)
+		if err := SendBinary(w, BinRequest, sealed[:n]); err != nil {
+			return err
+		}
+		sealed = sealed[n:]
+	}
+	return nil
+}
+
+// FrameReader reads one frame: ReadFrame, or ReadStreamFrame on a stream.
+type FrameReader func(max int) (*Frame, error)
+
+// ReadSealedRequest reads the n bytes of a sealed request that
+// SendSealedRequest wrote. before, if set, runs ahead of each frame (to move
+// a read deadline: a large request may take minutes on a slow link, but no
+// single frame should).
+func ReadSealedRequest(read FrameReader, n uint64, before func()) ([]byte, error) {
+	if n == 0 || n > MaxSealedRequest {
+		return nil, Errorf(CodeBadRequest, "a sealed request of %d bytes is not allowed (at most %d)", n, MaxSealedRequest)
+	}
+	out := make([]byte, 0, min(n, RequestFrameSize))
+	for uint64(len(out)) < n {
+		if before != nil {
+			before()
+		}
+		f, err := read(RequestFrameSize + 16)
+		if err != nil {
+			return nil, err
+		}
+		if f.Env != nil || f.Kind != BinRequest {
+			return nil, Errorf(CodeBadRequest, "expected the sealed request")
+		}
+		if uint64(len(out)+len(f.Payload)) > n {
+			return nil, Errorf(CodeBadRequest, "the sealed request is longer than announced")
+		}
+		out = append(out, f.Payload...)
+	}
+	return out, nil
 }

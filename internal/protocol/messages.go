@@ -321,9 +321,10 @@ type TicketResponse struct {
 	Offer  Offer  `json:"offer"`
 }
 
-// InferRequest opens a job on the node. A BinRequest frame follows it with
-// the sealed request: box.SealFrom(jobKey, NodeBoxPub, EncodeRequest(JSON),
-// RequestAAD), which begins with BuyerBoxPub.
+// InferRequest opens a job on the node. BinRequest frames follow it with the
+// RequestBytes of the sealed request (SendSealedRequest):
+// box.SealFrom(jobKey, NodeBoxPub, EncodeRequest(JSON), RequestAAD), which
+// begins with BuyerBoxPub.
 //
 // The node answers with BinData frames: the response stream (see codec.go),
 // sealed under the key both derive from the agreement of the per-job key and
@@ -336,8 +337,9 @@ type TicketResponse struct {
 // thereby commits to the response key, and disclosing that one private key
 // later opens exactly this job for a dispute judge.
 type InferRequest struct {
-	Ticket      Ticket `json:"ticket"`
-	BuyerBoxPub []byte `json:"buyer_box_pub"` // per-job X25519 key; begins the sealed request
+	Ticket       Ticket `json:"ticket"`
+	BuyerBoxPub  []byte `json:"buyer_box_pub"` // per-job X25519 key; begins the sealed request
+	RequestBytes uint64 `json:"request_bytes"` // length of the sealed request that follows
 }
 
 // Ack is the buyer's signature over AckBytes(receipt).
@@ -424,8 +426,9 @@ type DisputeRequest struct {
 }
 
 // Evidence opens a dispute that the coordinator can decide on the facts. It is
-// followed on the same stream by a BinRequest frame (the sealed request
-// exactly as sent) and exactly Chunks BinData frames (the sealed response
+// followed on the same stream by the RequestBytes of the sealed request
+// exactly as sent (BinRequest frames, SendSealedRequest) and exactly Chunks
+// BinData frames (the sealed response
 // frames as received, in order), then the coordinator answers with a
 // TypeVerdict frame.
 //
@@ -437,6 +440,8 @@ type Evidence struct {
 	JobSecret []byte                 `json:"job_secret"`        // the per-job X25519 private key
 	Receipt   *receipt.SignedReceipt `json:"receipt,omitempty"` // as received from the node
 	Chunks    uint64                 `json:"chunks"`
+	// RequestBytes is the length of the sealed request that follows.
+	RequestBytes uint64 `json:"request_bytes"`
 }
 
 // MaxEvidenceChunks bounds the response frames that may follow an Evidence frame.

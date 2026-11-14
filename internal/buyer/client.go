@@ -492,10 +492,10 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body [
 		return nil, false, err
 	}
 	t0 = time.Now()
-	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: tr.jobKey.Public()}); err != nil {
+	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: tr.jobKey.Public(), RequestBytes: uint64(len(tr.request))}); err != nil {
 		return nil, false, err
 	}
-	if err := protocol.SendBinary(st, protocol.BinRequest, tr.request); err != nil {
+	if err := protocol.SendSealedRequest(st, tr.request); err != nil {
 		return nil, false, err
 	}
 	sent := time.Now()
@@ -725,11 +725,12 @@ func (c *Client) SubmitEvidence(ctx context.Context, ev *protocol.Evidence, requ
 	if dl, ok := ctx.Deadline(); ok {
 		_ = st.SetDeadline(dl)
 	}
+	ev.RequestBytes = uint64(len(request))
 	if err := protocol.SendRequest(st, protocol.TypeEvidence, ev); err != nil {
 		_ = st.Reset()
 		return nil, err
 	}
-	if err := protocol.SendBinary(st, protocol.BinRequest, request); err != nil {
+	if err := protocol.SendSealedRequest(st, request); err != nil {
 		_ = st.Reset()
 		return nil, err
 	}

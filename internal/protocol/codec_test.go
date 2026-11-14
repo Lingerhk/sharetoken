@@ -120,3 +120,30 @@ func TestPadBuckets(t *testing.T) {
 		prev = p
 	}
 }
+
+// A sealed request larger than a frame travels in pieces, and the reader
+// refuses requests that are too long or longer than announced.
+func TestSealedRequestFrames(t *testing.T) {
+	sealed := make([]byte, 3*protocol.RequestFrameSize+123)
+	for i := range sealed {
+		sealed[i] = byte(i * 7)
+	}
+	var buf bytes.Buffer
+	if err := protocol.SendSealedRequest(&buf, sealed); err != nil {
+		t.Fatal(err)
+	}
+	r := bytes.NewReader(buf.Bytes())
+	read := func(max int) (*protocol.Frame, error) { return protocol.ReadFrame(r, max) }
+	frames := 0
+	got, err := protocol.ReadSealedRequest(read, uint64(len(sealed)), func() { frames++ })
+	if err != nil || !bytes.Equal(got, sealed) || frames != 4 {
+		t.Fatalf("round trip: %v, %d frames", err, frames)
+	}
+	if _, err := protocol.ReadSealedRequest(read, protocol.MaxSealedRequest+1, nil); protocol.CodeOf(err) != protocol.CodeBadRequest {
+		t.Fatalf("oversized announcement: %v", err)
+	}
+	r = bytes.NewReader(buf.Bytes())
+	if _, err := protocol.ReadSealedRequest(read, uint64(len(sealed)-1), nil); protocol.CodeOf(err) != protocol.CodeBadRequest {
+		t.Fatalf("longer than announced: %v", err)
+	}
+}
