@@ -1,5 +1,5 @@
 // Package version says which build this is. Every program of a release carries
-// the same version, from the VERSION file through scripts/ldflags.sh. It says
+// the same version, from the VERSION file through scripts/build/ldflags.sh. It says
 // which code runs; whether two programs can talk is decided by the interface
 // versions (docs/versioning.md).
 package version

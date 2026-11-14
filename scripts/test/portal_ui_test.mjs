@@ -4,11 +4,11 @@
 // and the admin console, checking the DOM after each step and saving
 // screenshots.
 //
-//   scripts/gui_stack.sh start DIR && . DIR/env
-//   STACK=DIR ST_INSECURE=1 node scripts/portal_ui_test.mjs "$PORTAL" ./shots
+//   scripts/test/gui_stack.sh start DIR && . DIR/env
+//   STACK=DIR ST_INSECURE=1 node scripts/test/portal_ui_test.mjs "$PORTAL" ./shots
 //
 // Signing in takes a code mailed to the address: the test reads it from the
-// stack's outbox (scripts/gui_stack.sh code), and creates what it needs there:
+// stack's outbox (scripts/test/gui_stack.sh code), and creates what it needs there:
 // alice-<run>@example.test and the admin root@example.test.
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -18,15 +18,15 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const base = process.argv[2] || 'https://127.0.0.1:18092';
 const STACK = process.env.STACK;
 if (!STACK) { console.error('STACK=<gui_stack.sh directory> is required: sign-in codes are read from its outbox'); process.exit(2); }
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = new URL('../..', import.meta.url).pathname;
 const run = (cmd, ...args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 const db = () => readFileSync(STACK + '/dsn', 'utf8').trim().replace(/.*\//, '');
-const sql = q => run(ROOT + 'scripts/local-mysql.sh', 'sql', db(), q);
+const sql = q => run(ROOT + 'scripts/test/local-mysql.sh', 'sql', db(), q);
 const portalCmd = (...args) => { try { return run(STACK + '/bin/portal', '-db', readFileSync(STACK + '/dsn', 'utf8').trim(), ...args); } catch (e) { return ''; } };
 // An address may get one code a minute and five an hour: a test signing in
 // again and again starts each time from a clean slate.
 const forgetCodes = email => sql(`DELETE FROM mail_codes WHERE email='${email}'; DELETE FROM mail_outbox WHERE to_addr='${email}'`);
-const mailedCode = email => run(ROOT + 'scripts/gui_stack.sh', 'code', STACK, email);
+const mailedCode = email => run(ROOT + 'scripts/test/gui_stack.sh', 'code', STACK, email);
 // alice is new on every run, so that a run finds her as the page leaves a new account.
 const ALICE = `alice-${Date.now().toString(36)}@example.test`, ADMIN = 'root@example.test';
 portalCmd('useradd', ALICE); portalCmd('useradd', '-admin', ADMIN);

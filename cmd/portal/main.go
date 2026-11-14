@@ -88,7 +88,7 @@ type File struct {
 		From    string `yaml:"from"`    // ShareToken <team@sharetoken.app>
 		Support string `yaml:"support"` // ShareToken Support <support@sharetoken.app>
 	} `yaml:"mail"`
-	// Downloads: the client packages the portal offers at /downloads/ (scripts/publish-packages.sh puts them there).
+	// Downloads: the client packages the portal offers at /downloads/ (scripts/release/publish-packages.sh puts them there).
 	Downloads struct {
 		Dir string `yaml:"dir"`
 	} `yaml:"downloads"`

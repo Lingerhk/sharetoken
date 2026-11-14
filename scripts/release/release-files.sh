@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Finishes a release in dist/ from packages that are already built there, by this
-# machine (scripts/publish-packages.sh) or by GitHub Actions (.github/workflows/
+# machine (scripts/release/publish-packages.sh) or by GitHub Actions (.github/workflows/
 # release-client.yml), and prints the release's files, one per line:
-#   scripts/release-files.sh <version> [--with-dev-cli] [--unsigned]
-#   scripts/release-files.sh <version> --check      only check the key and the tree
+#   scripts/release/release-files.sh <version> [--with-dev-cli] [--unsigned]
+#   scripts/release/release-files.sh <version> --check      only check the key and the tree
 #
 # The packages: the desktop installers (.dmg, .exe, .deb), the macOS .app.zip and
 # the command-line archives, for three systems and two architectures each, 14 in
 # all; --with-dev-cli adds the six dev command-line archives. Beside them it writes:
 #   SHA256SUMS-<version>   afresh, for exactly these packages
-#   SIGNATURES-<version>   the release key's signature of each (scripts/sign-packages.go).
+#   SIGNATURES-<version>   the release key's signature of each (scripts/release/sign-packages.go).
 #                          The key is $ST_RELEASE_KEY, by default local/keys/release-signing.pem,
 #                          and must be the one whose public half the clients carry.
 #                          --unsigned leaves it out (a trial run; nothing to publish).
@@ -17,7 +17,7 @@
 #                          which must be the build time every package was built with.
 #   RELEASE-<version>.<lang>.md  release-notes/<lang>.md if there are any, checked for size and summary length.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 V=${1:-}
 [ -n "$V" ] && [ "${V#-}" = "$V" ] || { sed -n 5,6p "$0" >&2; exit 2; }
 shift
@@ -36,9 +36,9 @@ KEY=${ST_RELEASE_KEY:-local/keys/release-signing.pem}
 check() {
   if [ -z "$UNSIGNED" ]; then
     [ -r "$KEY" ] || { echo "no release key at $KEY (set ST_RELEASE_KEY)" >&2; exit 2; }
-    [ "$(go run scripts/sign-packages.go pub "$KEY")" = "$(sed -n 's/^const ReleaseKey = "\(.*\)"$/\1/p' internal/client/upgrade.go)" ] || { echo "$KEY is not the release key the clients carry" >&2; exit 2; }
+    [ "$(go run scripts/release/sign-packages.go pub "$KEY")" = "$(sed -n 's/^const ReleaseKey = "\(.*\)"$/\1/p' internal/client/upgrade.go)" ] || { echo "$KEY is not the release key the clients carry" >&2; exit 2; }
   fi
-  [ "$(scripts/version.sh)" = "$V" ] || { echo "this tree is $(scripts/version.sh), not $V" >&2; exit 2; }
+  [ "$(scripts/build/version.sh)" = "$V" ] || { echo "this tree is $(scripts/build/version.sh), not $V" >&2; exit 2; }
 }
 check
 [ -z "$CHECK" ] || exit 0
@@ -74,7 +74,7 @@ rm -f "dist/SHA256SUMS-$V" "dist/SIGNATURES-$V" "dist/RELEASE-$V.json" dist/RELE
 (cd dist && for f in "${FILES[@]}"; do shasum -a 256 "${f#dist/}"; done | sort -k2 > "SHA256SUMS-$V")
 OUT=("${FILES[@]}" "dist/SHA256SUMS-$V")
 if [ -z "$UNSIGNED" ]; then
-  go run scripts/sign-packages.go sign "$KEY" "dist/SIGNATURES-$V" "${FILES[@]}"
+  go run scripts/release/sign-packages.go sign "$KEY" "dist/SIGNATURES-$V" "${FILES[@]}"
   OUT+=("dist/SIGNATURES-$V")
 fi
 printf '{"version":"%s","commit":"%s","build_time":"%s"}\n' "$V" "$COMMIT" "$ST_BUILD_TIME" > "dist/RELEASE-$V.json"

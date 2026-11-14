@@ -5,7 +5,7 @@
 # involved. macOS and Linux (on Wayland the minimise steps are skipped; run with
 # GDK_BACKEND=x11 for them); on Windows start the app with SHARETOKEN_GUI_SELFTEST=tray.
 #
-#   scripts/gui_tray_test.sh <dev|prod> <dir with the programs of that build (sharetoken and sharetoken-gui, or sharetoken-dev and sharetoken-gui-dev)>
+#   scripts/test/gui_tray_test.sh <dev|prod> <dir with the programs of that build (sharetoken and sharetoken-gui, or sharetoken-dev and sharetoken-gui-dev)>
 set -euo pipefail
 ENV=$1
 BIN=$(cd "$2" && pwd)

@@ -18,7 +18,7 @@ import (
 	"sharetoken/internal/version"
 )
 
-// releaseRe names the file scripts/publish-packages.sh puts beside the packages.
+// releaseRe names the file scripts/release/publish-packages.sh puts beside the packages.
 var releaseRe = regexp.MustCompile(`^RELEASE-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)\.json$`)
 
 // Release is the published build: RELEASE-<version>.json. Before launch the

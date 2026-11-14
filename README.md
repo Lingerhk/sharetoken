@@ -187,8 +187,8 @@ Requirements: Go 1.26 or newer, and Docker for the tests (they run against MySQL
 
 ```bash
 go build -o bin/ ./cmd/...        # sharetoken, relay, coordinator, portal, mailserver
-scripts/test.sh ./...             # starts MySQL 8 in Docker, then go test
-scripts/demo-local.sh             # a whole network on 127.0.0.1 with a real model (needs Ollama)
+scripts/test/test.sh ./...             # starts MySQL 8 in Docker, then go test
+scripts/dev/demo-local.sh             # a whole network on 127.0.0.1 with a real model (needs Ollama)
 ```
 
 The demo runs two relays, a portal, a coordinator and three users. It shows a

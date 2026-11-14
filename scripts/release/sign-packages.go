@@ -8,10 +8,10 @@
 // The signature is over the file's SHA-256 digest (Ed25519 of the 32 bytes),
 // which is also what Wails' updater checks ("ed25519" with a sha256 digest).
 //
-//	go run scripts/sign-packages.go genkey <private.pem>          make a key; prints the public key
-//	go run scripts/sign-packages.go pub <private.pem>             print the public key
-//	go run scripts/sign-packages.go sign <private.pem> <SIGNATURES-file> <files...>
-//	go run scripts/sign-packages.go verify <public-base64> <SIGNATURES-file> <files...>
+//	go run scripts/release/sign-packages.go genkey <private.pem>          make a key; prints the public key
+//	go run scripts/release/sign-packages.go pub <private.pem>             print the public key
+//	go run scripts/release/sign-packages.go sign <private.pem> <SIGNATURES-file> <files...>
+//	go run scripts/release/sign-packages.go verify <public-base64> <SIGNATURES-file> <files...>
 //
 // SIGNATURES-<version> has a line "<base64 signature>  <file name>" per file,
 // the layout of SHA256SUMS; the portal reads both.

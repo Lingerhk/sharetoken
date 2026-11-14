@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// TestServerEnv names the test server: mysql://user@host:port/. scripts/test.sh
+// TestServerEnv names the test server: mysql://user@host:port/. scripts/test/test.sh
 // starts one in Docker and sets it.
 const TestServerEnv = "SHARETOKEN_TEST_MYSQL"
 
@@ -25,7 +25,7 @@ const testDBPrefix = "sttest_"
 func TestDSN() (string, error) {
 	server := os.Getenv(TestServerEnv)
 	if server == "" {
-		return "", errors.New("mysqldb: tests need a MySQL server: run scripts/test.sh, or set " + TestServerEnv + "=mysql://user@host:port/")
+		return "", errors.New("mysqldb: tests need a MySQL server: run scripts/test/test.sh, or set " + TestServerEnv + "=mysql://user@host:port/")
 	}
 	cfg, err := ParseDSN(server)
 	if err != nil {

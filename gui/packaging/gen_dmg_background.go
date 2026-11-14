@@ -8,7 +8,7 @@
 // It writes packaging/dmg-background.png (660x420) and dmg-background@2x.png
 // (1320x840); build-gui.sh joins them into one TIFF for Retina screens. The
 // 160-point icons sit at (165,200) and (495,200) in the 660x420 window
-// (scripts/dmg_settings.py).
+// (scripts/build/dmg_settings.py).
 package main
 
 import (

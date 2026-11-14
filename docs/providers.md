@@ -234,7 +234,7 @@ When the upstream answers 401 or 403 (credentials refused) or 402 (out of balanc
 
 In the tests against the real services, jobs reached `final` with `verified=true`, the seller was credited, the providers API leaked no key, and a request with a foreign `Origin` got 403.
 
-Run the automated tests with `scripts/test.sh ./...` (see [development.md](development.md)).
+Run the automated tests with `scripts/test/test.sh ./...` (see [development.md](development.md)).
 
 ## 10. Known limits
 

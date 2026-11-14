@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-// ReleaseKey is the public half of the release key (scripts/sign-packages.go).
+// ReleaseKey is the public half of the release key (scripts/release/sign-packages.go).
 // A package is installed only if the key signed its SHA-256. gui/updatekey.go
 // holds the same key; a test keeps them equal.
 const ReleaseKey = "LOGeF+4zN0c420kfo3JRwLIHC6QT/gKO0pvCL0kPCrY="

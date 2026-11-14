@@ -16,7 +16,7 @@
 # credits move between user accounts and the books balance; no prompt in any log.
 # Everything binds 127.0.0.1; every process is stopped on exit.
 set -u
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="$ROOT/bin"
 MODEL_UPSTREAM="${MODEL_UPSTREAM:-gemma4:e4b}"
 OLLAMA=http://127.0.0.1:11434/v1
@@ -35,12 +35,12 @@ if ! curl -s -m 1 http://127.0.0.1:11434/api/tags >/dev/null; then
   for _ in $(seq 1 40); do curl -s -m 1 http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 0.5; done
   echo "started ollama serve (will be stopped on exit)"
 fi
-python3 "$ROOT/scripts/inflating_upstream.py" 11999 "$OLLAMA" > cheat-upstream.log 2>&1 & PIDS+=($!)
+python3 "$ROOT/scripts/dev/inflating_upstream.py" 11999 "$OLLAMA" > cheat-upstream.log 2>&1 & PIDS+=($!)
 for _ in $(seq 1 50); do nc -z 127.0.0.1 11999 2>/dev/null && break; sleep 0.2; done
 
 echo; echo "== 0. Relays, portal, coordinator"
 export SHARETOKEN_DB_PASSWORD=
-DSN=$("$ROOT/scripts/local-mysql.sh" new-db st_demo)
+DSN=$("$ROOT/scripts/test/local-mysql.sh" new-db st_demo)
 COORD=(-key coord.key -db "$DSN")
 PASSKEY=$("$BIN/portal" -db "$DSN" pass-key)   # relays trust passes signed with it
 COORD_ID=$("$BIN/coordinator" "${COORD[@]}" id)        # relays let the coordinator reserve without one
@@ -80,7 +80,7 @@ echo; echo "== 1. Users sign up with a code mailed to them, and configure sharin
 user() { # name
   export SHARETOKEN_HOME="$S/$1"
   SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" login -email "$1@example.test" -send > /dev/null
-  code=$("$ROOT/scripts/local-mysql.sh" sql st_demo "SELECT subject FROM mail_outbox WHERE to_addr = '$1@example.test' ORDER BY id DESC LIMIT 1")
+  code=$("$ROOT/scripts/test/local-mysql.sh" sql st_demo "SELECT subject FROM mail_outbox WHERE to_addr = '$1@example.test' ORDER BY id DESC LIMIT 1")
   SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" login -email "$1@example.test" -code "${code##* }" -device "$1-box" | tail -2 | head -1 | strip | sed "s/^/   $1: /"
 }
 st() { SHARETOKEN_HOME="$S/$1" "$BIN/sharetoken" "${@:2}"; }

@@ -5,7 +5,7 @@
 // mail to the real receiving server. Nothing leaves this machine: delivery goes
 // to a closed local port, so outgoing mail stays queued where the test reads it.
 //
-//   node scripts/mail_ui_test.mjs [workdir]
+//   node scripts/test/mail_ui_test.mjs [workdir]
 import { spawn, execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-const ROOT = resolve(new URL('..', import.meta.url).pathname);
+const ROOT = resolve(new URL('../..', import.meta.url).pathname);
 const dir = process.argv[2] ? resolve(process.argv[2]) : mkdtempSync(join(tmpdir(), 'st-mail-ui-'));
 mkdirSync(dir, { recursive: true });
 const shots = join(dir, 'shots'); mkdirSync(shots, { recursive: true });
@@ -32,7 +32,7 @@ function run(bin, args, name) {
 
 // ---- stack ----
 execFileSync('go', ['build', '-o', dir + '/', './cmd/portal', './cmd/mailserver'], { cwd: ROOT, stdio: 'inherit' });
-const DSN = execFileSync(join(ROOT, 'scripts/local-mysql.sh'), ['new-db', 'st_mail_ui'], { encoding: 'utf8' }).trim();
+const DSN = execFileSync(join(ROOT, 'scripts/test/local-mysql.sh'), ['new-db', 'st_mail_ui'], { encoding: 'utf8' }).trim();
 process.env.SHARETOKEN_DB_PASSWORD = '';
 writeFileSync(join(dir, 'portal.yaml'), `version: 1
 database: {dsn: "${DSN}"}

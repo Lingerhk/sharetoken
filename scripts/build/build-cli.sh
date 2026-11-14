@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Builds the command-line client into dist/, for one build type, which must be
 # named. It needs no cgo and no window system, so any system builds them all:
-#   scripts/build-cli.sh <dev|prod>                      this machine's system
-#   scripts/build-cli.sh <dev|prod> <macos|linux|windows> [amd64|arm64]
-#   scripts/build-cli.sh <dev|prod> all                  three systems, two architectures
+#   scripts/build/build-cli.sh <dev|prod>                      this machine's system
+#   scripts/build/build-cli.sh <dev|prod> <macos|linux|windows> [amd64|arm64]
+#   scripts/build/build-cli.sh <dev|prod> all                  three systems, two architectures
 #
 # Each makes dist/sharetoken-cli-<version>-<os>-<arch>.tar.gz (.zip for Windows),
 # listed in dist/SHA256SUMS-<version>. It holds the program sharetoken, the same
@@ -17,18 +17,18 @@
 # and notarization to run without a Gatekeeper warning, and Windows ones are not
 # code-signed.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 ENV=${1:-}
 case $ENV in
   dev|prod) shift ;;
   *) sed -n 2,6p "$0" >&2; exit 2 ;;
 esac
 OUT=dist
-VERSION=$(scripts/version.sh)
+VERSION=$(scripts/build/version.sh)
 STAMP=sharetoken-build-type=$ENV
 SUFFIX=-$ENV; [ "$ENV" = prod ] && SUFFIX=
 LABEL=" ($ENV build)"; [ "$ENV" = prod ] && LABEL=
-LDFLAGS=$(scripts/client_ldflags.sh "$ENV")
+LDFLAGS=$(scripts/build/ldflags.sh "$ENV")
 mkdir -p "$OUT"
 
 build() { # go's system name, architecture
@@ -43,7 +43,7 @@ build() { # go's system name, architecture
   # -X says nothing when it misses its variable; see scripts/build-gui.sh.
   LC_ALL=C grep -aq "$STAMP" "$dir/$exe" || { echo "$exe is not a $ENV build" >&2; exit 1; }
   LC_ALL=C grep -aq "$VERSION" "$dir/$exe" || { echo "$exe does not carry version $VERSION" >&2; exit 1; }
-  sed -e "s/@EXE@/$exe/g" -e "s/@VERSION@/$VERSION/g" -e "s/@LABEL@/$LABEL/g" scripts/cli-readme.txt > "$dir/README.txt"
+  sed -e "s/@EXE@/$exe/g" -e "s/@VERSION@/$VERSION/g" -e "s/@LABEL@/$LABEL/g" scripts/build/cli-readme.txt > "$dir/README.txt"
   if [ "$goos" = windows ]; then
     archive=$base.zip
     (cd "$OUT" && rm -f "$archive" && zip -qr "$archive" "$base")

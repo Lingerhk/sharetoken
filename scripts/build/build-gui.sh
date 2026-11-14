@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Builds the desktop app and its installer into dist/, for one build type, which
 # must be named:
-#   scripts/build-gui.sh <dev|prod>                        for this machine
-#   scripts/build-gui.sh <dev|prod> macos [amd64|arm64]    on a Mac, either architecture
-#   scripts/build-gui.sh <dev|prod> windows [amd64|arm64]  from any system, no cgo
-#   scripts/build-gui-linux.sh <dev|prod> [amd64|arm64]    Linux, from any system with Docker
+#   scripts/build/build-gui.sh <dev|prod>                        for this machine
+#   scripts/build/build-gui.sh <dev|prod> macos [amd64|arm64]    on a Mac, either architecture
+#   scripts/build/build-gui.sh <dev|prod> windows [amd64|arm64]  from any system, no cgo
+#   scripts/build/build-gui-linux.sh <dev|prod> [amd64|arm64]    Linux, from any system with Docker
 #
 #   macOS:   dist/ShareToken.app (not signed or notarized), sharetoken-<version>-macos-<arch>.dmg,
 #            and the app zipped for one-click updates, sharetoken-<version>-macos-<arch>.app.zip
 #   Linux:   dist/sharetoken-<version>-linux-<arch>/, and sharetoken-<version>-linux-<arch>.deb
 #   Windows: dist/sharetoken-<version>-windows-<arch>/ (not code-signed), and sharetoken-<version>-windows-<arch>.exe,
-#            made with makensis, or in the Docker image of scripts/build-gui-linux.sh if it is not installed
+#            made with makensis, or in the Docker image of scripts/build/build-gui-linux.sh if it is not installed
 #   dist/SHA256SUMS-<version> lists the installers.
 #
 # Programs: sharetoken (CLI and daemon), sharetoken-gui (window). Their names carry
@@ -27,20 +27,20 @@
 #   sudo apt install build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
 #
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 ENV=${1:-}
 case $ENV in
   dev|prod) shift ;;
-  *) echo "usage: scripts/build-gui.sh <dev|prod> [windows [amd64|arm64]]" >&2; exit 2 ;;
+  *) echo "usage: scripts/build/build-gui.sh <dev|prod> [windows [amd64|arm64]]" >&2; exit 2 ;;
 esac
 if [ "$ENV" = prod ]; then NAME=ShareToken; BUNDLE_ID=app.sharetoken.desktop; SUFFIX=
 else NAME="ShareToken DEV"; BUNDLE_ID=app.sharetoken.desktop.dev; SUFFIX=-$ENV; fi
 EXE=sharetoken$SUFFIX; GUI=sharetoken-gui$SUFFIX
 OUT=dist
-VERSION=$(scripts/version.sh)
+VERSION=$(scripts/build/version.sh)
 NUMERIC=${VERSION%%-*}  # macOS and Windows metadata take only numbers
 STAMP=sharetoken-build-type=$ENV
-LDFLAGS=$(scripts/client_ldflags.sh "$ENV")
+LDFLAGS=$(scripts/build/ldflags.sh "$ENV")
 SHELL_LDFLAGS="-s -w -X main.buildType=$STAMP -X main.version=$VERSION"
 
 fill() { # template: the packaging files name the build type with @ENV@ and so on
@@ -91,7 +91,7 @@ build_macos() { # architecture
   # a Gatekeeper warning.
   codesign --force --deep --sign - "$app" 2>/dev/null
   # The disk image opens as a small window: the app, an arrow, the Applications
-  # link (scripts/dmg_settings.py).
+  # link (scripts/build/dmg_settings.py).
   dmg=sharetoken$SUFFIX-$VERSION-macos-$arch.dmg
   stage=$(mktemp -d)
   ditto "$app" "$stage/$NAME.app"
@@ -114,7 +114,7 @@ build_macos() { # architecture
   # opens on the desktop while building, and nothing waits on Finder.
   tiffutil -cathidpicheck gui/packaging/dmg-background.png gui/packaging/dmg-background@2x.png -out "$stage/background.tiff" 2>/dev/null
   rm -f "$OUT/$dmg"
-  "$(dmgbuild_bin)" -s scripts/dmg_settings.py -D app="$stage/$NAME.app" -D background="$stage/background.tiff" "$NAME" "$OUT/$dmg" >/dev/null
+  "$(dmgbuild_bin)" -s scripts/build/dmg_settings.py -D app="$stage/$NAME.app" -D background="$stage/background.tiff" "$NAME" "$OUT/$dmg" >/dev/null
   rm -rf "$stage"
   sums "$dmg"
   echo "built $OUT/$dmg"
@@ -137,7 +137,7 @@ nsis() { # makensis arguments; paths in them are relative to dist/
     local nsi=$PWD/gui/packaging/installer.nsi
     (cd "$OUT" && makensis -NOCD "$@" "$nsi")
   else
-    scripts/build-gui-linux.sh --image amd64
+    scripts/build/build-gui-linux.sh --image amd64
     docker run --rm --platform linux/amd64 -v "$PWD/$OUT:/out" -v "$PWD/gui/packaging:/packaging:ro" -w /out sharetoken-gui-builder:amd64 makensis -NOCD "$@" /packaging/installer.nsi
   fi
 }

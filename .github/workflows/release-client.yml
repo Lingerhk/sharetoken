@@ -2,7 +2,7 @@
 # the release key and publishes them: as a GitHub release, and optionally into
 # the portal's downloads directory, from where clients are told about the build
 # (GET /api/v1/update) and install it. The steps are the repository's own scripts,
-# the same ones scripts/publish-packages.sh runs on a Mac; docs/versioning.md
+# the same ones scripts/release/publish-packages.sh runs on a Mac; docs/versioning.md
 # ("Publishing packages") has the whole story and the settings this needs.
 #
 #   push of tag v<VERSION>          a release: build, sign, GitHub release, and the
@@ -69,9 +69,9 @@ jobs:
           VAR_PORTAL: ${{ vars.RELEASE_PUBLISH_PORTAL }}
           VAR_DEV_CLI: ${{ vars.RELEASE_WITH_DEV_CLI }}
         run: |
-          # A release is a tag v<VERSION> on a tree that scripts/version.sh calls exactly
+          # A release is a tag v<VERSION> on a tree that scripts/build/version.sh calls exactly
           # <VERSION>; any other tag is an error rather than a quiet trial run.
-          version=$(scripts/version.sh)
+          version=$(scripts/build/version.sh)
           file=$(tr -d ' \n' < VERSION)
           release=false
           if [ "$REF_TYPE" = tag ]; then
@@ -94,9 +94,9 @@ jobs:
           dev_cli=false
           if [ "$INPUT_DEV_CLI" = true ] || [ "$VAR_DEV_CLI" = true ]; then dev_cli=true; fi
           # The Go of the Linux builder image, so that every package is built with one Go.
-          go=$(sed -n 's/^ARG GO_VERSION=go//p' scripts/gui-builder.Dockerfile)
-          [ -n "$go" ] || { echo "::error::no GO_VERSION in scripts/gui-builder.Dockerfile"; exit 1; }
-          # Every package of a release carries the same build time (scripts/ldflags.sh).
+          go=$(sed -n 's/^ARG GO_VERSION=go//p' scripts/build/gui-builder.Dockerfile)
+          [ -n "$go" ] || { echo "::error::no GO_VERSION in scripts/build/gui-builder.Dockerfile"; exit 1; }
+          # Every package of a release carries the same build time (scripts/build/ldflags.sh).
           build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           commit=$(git rev-parse --short=7 HEAD)
           {
@@ -128,9 +128,9 @@ jobs:
         with:
           go-version: ${{ needs.prepare.outputs.go }}
           cache-dependency-path: go.sum
-      - run: scripts/build-cli.sh prod all
+      - run: scripts/build/build-cli.sh prod all
       - if: needs.prepare.outputs.dev_cli == 'true'
-        run: scripts/build-cli.sh dev all
+        run: scripts/build/build-cli.sh dev all
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pkg-cli
@@ -163,7 +163,7 @@ jobs:
             go.sum
             gui/go.sum
       # The runner is Apple silicon; cgo builds the amd64 app too (Go passes -arch to clang).
-      - run: scripts/build-gui.sh prod macos ${{ matrix.arch }}
+      - run: scripts/build/build-gui.sh prod macos ${{ matrix.arch }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pkg-macos-${{ matrix.arch }}
@@ -197,7 +197,7 @@ jobs:
             go.sum
             gui/go.sum
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends nsis
-      - run: scripts/build-gui.sh prod windows ${{ matrix.arch }}
+      - run: scripts/build/build-gui.sh prod windows ${{ matrix.arch }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pkg-windows-${{ matrix.arch }}
@@ -208,7 +208,7 @@ jobs:
   linux:
     name: Linux ${{ matrix.arch }}
     needs: prepare
-    # Built in the Docker image of scripts/build-gui-linux.sh (Ubuntu 24.04), on a
+    # Built in the Docker image of scripts/build/build-gui-linux.sh (Ubuntu 24.04), on a
     # runner of the package's own architecture, from the committed files only.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -228,7 +228,7 @@ jobs:
         with:
           persist-credentials: false
       - run: command -v shasum >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq perl; }
-      - run: scripts/build-gui-linux.sh prod ${{ matrix.arch }}
+      - run: scripts/build/build-gui-linux.sh prod ${{ matrix.arch }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pkg-linux-${{ matrix.arch }}
@@ -259,7 +259,7 @@ jobs:
           pattern: pkg-*
           path: dist
           merge-multiple: true
-      - run: scripts/release-files.sh "$V" --unsigned ${DEV_CLI:+"$DEV_CLI"}
+      - run: scripts/release/release-files.sh "$V" --unsigned ${DEV_CLI:+"$DEV_CLI"}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ needs.prepare.outputs.version }}-unsigned
@@ -284,7 +284,7 @@ jobs:
       ST_BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
       DEV_CLI: ${{ needs.prepare.outputs.dev_cli == 'true' && '--with-dev-cli' || '' }}
     steps:
-      # No ST_VERSION here: scripts/version.sh must find the release tag on this tree itself.
+      # No ST_VERSION here: scripts/build/version.sh must find the release tag on this tree itself.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -307,7 +307,7 @@ jobs:
           export ST_RELEASE_KEY="$RUNNER_TEMP/release-signing.pem"
           trap 'rm -f "$ST_RELEASE_KEY"' EXIT
           (umask 077 && printf '%s\n' "$KEY_PEM" > "$ST_RELEASE_KEY")
-          scripts/release-files.sh "$V" ${DEV_CLI:+"$DEV_CLI"} > "$RUNNER_TEMP/files"
+          scripts/release/release-files.sh "$V" ${DEV_CLI:+"$DEV_CLI"} > "$RUNNER_TEMP/files"
           cat "$RUNNER_TEMP/files"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -326,7 +326,7 @@ jobs:
             for f in dist/RELEASE-"$V".*.md; do [ -e "$f" ] || continue; cat "$f"; echo; done
             echo "---"
             echo
-            echo "Commit \`$ST_COMMIT\`, built $ST_BUILD_TIME. \`SHA256SUMS-$V\` lists the checksums of the packages and \`SIGNATURES-$V\` their release-key signatures (\`go run scripts/sign-packages.go verify\`)."
+            echo "Commit \`$ST_COMMIT\`, built $ST_BUILD_TIME. \`SHA256SUMS-$V\` lists the checksums of the packages and \`SIGNATURES-$V\` their release-key signatures (\`go run scripts/release/sign-packages.go verify\`)."
           } > "$RUNNER_TEMP/notes.md"
           if gh release view "$TAG" >/dev/null 2>&1; then
             # The tag was moved (before launch the version stays 1.0.0 and the tag
@@ -386,7 +386,7 @@ jobs:
           if [ -z "$TARGET" ] || [ -z "$DIR" ]; then
             echo "::error::the environment 'portal' needs the variables PORTAL_SSH_TARGET (user@host) and PORTAL_DOWNLOADS_DIR"; exit 1
           fi
-          scripts/upload-release.sh "$V" "$TARGET" "$DIR" --owner st-portal
+          scripts/release/upload-release.sh "$V" "$TARGET" "$DIR" --owner st-portal
           echo "Portal: $TARGET:$DIR" >> "$GITHUB_STEP_SUMMARY"
       - if: always()
         run: rm -f ~/.ssh/portal_key

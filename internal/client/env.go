@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// buildType is set at build time (scripts/build-gui.sh <dev|prod>), with -ldflags
+// buildType is set at build time (scripts/build/build-gui.sh <dev|prod>), with -ldflags
 // "-X sharetoken/internal/client.buildType=sharetoken-build-type=prod". A build that does
 // not say is dev, so that forgetting cannot reach production. The prefix lets the
 // build script find the value in a finished binary, also one for another system.

@@ -4,8 +4,8 @@
 // language and direction, no Chinese source text is left, nothing runs off the
 // screen, and the language picker and pinned admin console behave.
 //
-//   scripts/gui_stack.sh start DIR && . DIR/env
-//   STACK=DIR node scripts/i18n_ui_test.mjs "$PORTAL" "$DAEMON" [shots-dir]
+//   scripts/test/gui_stack.sh start DIR && . DIR/env
+//   STACK=DIR node scripts/test/i18n_ui_test.mjs "$PORTAL" "$DAEMON" [shots-dir]
 //
 // It signs in on the portal and in the client with codes read from the stack's outbox.
 //
@@ -23,7 +23,7 @@ if (!portal || !daemon || !STACK) { console.error('usage: STACK=<gui_stack.sh di
 // The last sign-in code mailed to an address, from the stack's outbox.
 const mailedCode = email => execFileSync(new URL('gui_stack.sh', import.meta.url).pathname, ['code', STACK, email], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 mkdirSync(shots, { recursive: true });
-const runtime = readFileSync(new URL('../internal/portal/web/i18n.js', import.meta.url), 'utf8');
+const runtime = readFileSync(new URL('../../internal/portal/web/i18n.js', import.meta.url), 'utf8');
 const ALL = [...runtime.slice(runtime.indexOf('const LANGS = {'), runtime.indexOf('};')).matchAll(/'?([A-Za-z-]+)'?: '/g)].map(m => m[1]);
 const LANGS = process.env.LANGS ? process.env.LANGS.split(',') : ALL;
 const HAN_OK = new Set(['zh-CN', 'zh-TW', 'ja']);

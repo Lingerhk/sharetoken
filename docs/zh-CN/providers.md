@@ -234,7 +234,7 @@ Anthropic 必须带 `max_tokens`；`anthropicMaxOutput` 给出默认值。
 
 对接真实服务的测试里，作业都到达 `final` 且 `verified=true`，卖家入账，providers API 没有泄漏密钥，带外部 `Origin` 的请求得到 403。
 
-自动测试用 `scripts/test.sh ./...` 运行（见 [development.md](development.md)）。
+自动测试用 `scripts/test/test.sh ./...` 运行（见 [development.md](development.md)）。
 
 ## 10. 已知限制
 

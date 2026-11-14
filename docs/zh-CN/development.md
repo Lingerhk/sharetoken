@@ -13,7 +13,8 @@ gui/         桌面窗口壳（Wails），独立的 Go module，有自己的 go.
 test/        基于真实 libp2p 主机的端到端测试（test/e2e、test/flow）
 configs/     配置文件样板，测试会加载它们
 docker/      容器镜像的入口脚本
-scripts/     构建、打包、测试和演示脚本
+scripts/     build/（程序和安装包）、release/（签名和发布）、
+             test/（测试脚本和 UI 测试）、dev/（演示和模拟模型服务）
 docs/        文档：英文在这一层，简体中文在 docs/zh-CN
 ```
 
@@ -48,17 +49,17 @@ go build -o bin/ ./cmd/...
 
 连接自己的网络时，用 dev 构建并设置 `SHARETOKEN_PORTAL`（[self-hosting.md](self-hosting.md)）。
 
-**版本。** `VERSION` 文件里是发布版本号。`scripts/version.sh` 在发布 tag 上打印它，在其他位置打印 `<版本>-dev.<提交>`；`scripts/ldflags.sh` 把它写进程序。规则见 [versioning.md](versioning.md)。
+**版本。** `VERSION` 文件里是发布版本号。`scripts/build/version.sh` 在发布 tag 上打印它，在其他位置打印 `<版本>-dev.<提交>`；`scripts/build/ldflags.sh` 把它写进程序。规则见 [versioning.md](versioning.md)。
 
 | 脚本 | 产物 |
 |---|---|
-| `scripts/build.sh portal coordinator relay mailserver` | `dist/` 下的服务端程序，文件名带版本、系统和架构。用 `GOOS` 和 `GOARCH` 交叉编译。编译参数为 `-trimpath -ldflags "-s -w"`；`GOAMD64`/`GOARM64` 高于基线时面向更新的 CPU，并写进文件名（`GOAMD64=v3` → `portal-1.0.0-linux-amd64v3`） |
-| `scripts/build-cli.sh <dev\|prod> [系统] [架构]` | 命令行客户端的压缩包 |
-| `scripts/build-gui.sh <dev\|prod> [macos\|windows] [架构]` | 桌面应用及其安装包（`.dmg`、`.exe`）。`.dmg` 的窗口布局由 dmgbuild 写入（固定版本，首次使用时装到 `~/.cache/sharetoken/`；设置在 `scripts/dmg_settings.py`），构建时不会打开 Finder |
-| `scripts/build-gui-linux.sh <dev\|prod> [架构]` | Linux 桌面包（`.deb`），在 Docker 里构建（`scripts/gui-builder.Dockerfile`） |
-| `scripts/publish-packages.sh <版本> <user@host> <目录>` | 在 Mac 上构建一个版本的全部包，签名并上传到门户的下载目录 |
-| `scripts/release-files.sh <版本>` | 用 `dist/` 里已有的包完成一次发布：校验和、签名、`RELEASE` 文件 |
-| `scripts/upload-release.sh <版本> <user@host> <目录>` | 检查完成的发布，并放进门户的下载目录 |
+| `scripts/build/build.sh portal coordinator relay mailserver` | `dist/` 下的服务端程序，文件名带版本、系统和架构。用 `GOOS` 和 `GOARCH` 交叉编译。编译参数为 `-trimpath -ldflags "-s -w"`；`GOAMD64`/`GOARM64` 高于基线时面向更新的 CPU，并写进文件名（`GOAMD64=v3` → `portal-1.0.0-linux-amd64v3`） |
+| `scripts/build/build-cli.sh <dev\|prod> [系统] [架构]` | 命令行客户端的压缩包 |
+| `scripts/build/build-gui.sh <dev\|prod> [macos\|windows] [架构]` | 桌面应用及其安装包（`.dmg`、`.exe`）。`.dmg` 的窗口布局由 dmgbuild 写入（固定版本，首次使用时装到 `~/.cache/sharetoken/`；设置在 `scripts/build/dmg_settings.py`），构建时不会打开 Finder |
+| `scripts/build/build-gui-linux.sh <dev\|prod> [架构]` | Linux 桌面包（`.deb`），在 Docker 里构建（`scripts/build/gui-builder.Dockerfile`） |
+| `scripts/release/publish-packages.sh <版本> <user@host> <目录>` | 在 Mac 上构建一个版本的全部包，签名并上传到门户的下载目录 |
+| `scripts/release/release-files.sh <版本>` | 用 `dist/` 里已有的包完成一次发布：校验和、签名、`RELEASE` 文件 |
+| `scripts/release/upload-release.sh <版本> <user@host> <目录>` | 检查完成的发布，并放进门户的下载目录 |
 | [`.github/workflows/release-client.yml`](../../.github/workflows/release-client.yml) | 在 GitHub Actions 上做同样的事，由推送 tag `v<VERSION>` 触发：构建、签名、创建 GitHub Release，可选发布到门户（[versioning.md](versioning.md) 的“发布安装包”） |
 | `docker build -t sharetoken .` | `docker-compose.yml` 使用的服务端镜像 |
 
@@ -66,12 +67,12 @@ go build -o bin/ ./cmd/...
 
 ## 3. 测试
 
-代码只在 MySQL 8 上运行，测试也一样。`scripts/test.sh` 先启动一个 MySQL 容器（`scripts/local-mysql.sh`：只监听回环地址，数据放在内存里，两次运行之间保持运行），再执行 `go test`：
+代码只在 MySQL 8 上运行，测试也一样。`scripts/test/test.sh` 先启动一个 MySQL 容器（`scripts/test/local-mysql.sh`：只监听回环地址，数据放在内存里，两次运行之间保持运行），再执行 `go test`：
 
 ```bash
-scripts/test.sh                        # go test ./...
-scripts/test.sh -race ./...
-scripts/test.sh ./internal/coordinator
+scripts/test/test.sh                        # go test ./...
+scripts/test/test.sh -race ./...
+scripts/test/test.sh ./internal/coordinator
 ```
 
 要用现成的服务器，就设置 `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`，然后直接运行 `go test`。每个测试都会创建自己的数据库。
@@ -84,12 +85,12 @@ Go 测试覆盖的内容：签名与防篡改、整数计费运算、账本（�
 (cd gui && go test ./...)
 ```
 
-**浏览器测试。** 网页和桌面应用的页面用无头 Chrome 通过 DevTools 协议驱动。它们需要 Node 22 和 Chrome，不依赖任何包。`scripts/gui_stack.sh` 在临时目录里为它们启动一个私有网络：
+**浏览器测试。** 网页和桌面应用的页面用无头 Chrome 通过 DevTools 协议驱动。它们需要 Node 22 和 Chrome，不依赖任何包。`scripts/test/gui_stack.sh` 在临时目录里为它们启动一个私有网络：
 
 ```bash
-scripts/gui_stack.sh start /tmp/st && . /tmp/st/env
-node scripts/gui_ui_test.mjs /tmp/st /tmp/st/shots       # 桌面应用的页面
-scripts/gui_stack.sh stop /tmp/st
+scripts/test/gui_stack.sh start /tmp/st && . /tmp/st/env
+node scripts/test/gui_ui_test.mjs /tmp/st /tmp/st/shots       # 桌面应用的页面
+scripts/test/gui_stack.sh stop /tmp/st
 ```
 
 其余几个（`portal_ui_test.mjs`、`settings_ui_test.mjs`、`theme_ui_test.mjs`、`i18n_ui_test.mjs`、`docs_ui_test.mjs`、`mail_ui_test.mjs`、`version_ui_test.mjs`）的文件开头写明了前提条件和运行方法。
@@ -98,12 +99,10 @@ scripts/gui_stack.sh stop /tmp/st
 
 | 脚本 | 用途 |
 |---|---|
-| `scripts/demo-local.sh` | 在 127.0.0.1 上用 Ollama 的真实模型跑完整网络，其中包括一个作弊的卖家 |
-| `scripts/mock_upstream.py` | 一个快速、诚实的模型服务替身 |
-| `scripts/inflating_upstream.py` | 一个虚报用量的不诚实替身，演示用 |
-| `scripts/st_bench.py` | 对运行中的客户端做功能检查和压力测试 |
-| `scripts/upstream_proxy.py` | 放在多个模型服务前面的本机代理。它的配置里有 API key，不提交 |
-| `scripts/cli_test.sh`、`gui_shell_test.sh`、`gui_tray_test.sh` | 对已构建的包做的测试 |
+| `scripts/dev/demo-local.sh` | 在 127.0.0.1 上用 Ollama 的真实模型跑完整网络，其中包括一个作弊的卖家 |
+| `scripts/dev/mock_upstream.py` | 一个快速、诚实的模型服务替身 |
+| `scripts/dev/inflating_upstream.py` | 一个虚报用量的不诚实替身，演示用 |
+| `scripts/test/cli_test.sh`、`gui_shell_test.sh`、`gui_tray_test.sh` | 对已构建的包做的测试 |
 
 ## 4. 约定
 

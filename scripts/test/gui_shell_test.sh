@@ -4,7 +4,7 @@
 # reports the result and quits. No window is shown (hidden on macOS; a virtual
 # X display on Linux), and no account or network is involved.
 #
-#   scripts/gui_shell_test.sh <dev|prod> <dir with the programs of that build (sharetoken and sharetoken-gui, or sharetoken-dev and sharetoken-gui-dev)>
+#   scripts/test/gui_shell_test.sh <dev|prod> <dir with the programs of that build (sharetoken and sharetoken-gui, or sharetoken-dev and sharetoken-gui-dev)>
 set -euo pipefail
 ENV=$1
 BIN=$(cd "$2" && pwd)

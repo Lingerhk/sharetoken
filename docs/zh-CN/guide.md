@@ -203,7 +203,7 @@ GRANT ALL ON sharetoken.* TO 'sharetoken'@'10.0.0.%';
 - 门户和协调器启动时创建并升级表结构，谁先启动都行。它们的账号需要建表、改表的权限（`ALL ON sharetoken.*`）。表结构版本见 [versioning.md](versioning.md)。
 - 建议的服务器设置：`transaction_isolation = READ-COMMITTED`（程序也会在每个会话上设置）；`skip_name_resolve = ON`（否则每个新连接都可能因反向 DNS 卡住几秒）；`innodb_flush_log_at_trx_commit = 1`（账本要求提交即落盘）；`tmp_table_size = 256M`（账本回放按账户分组，默认的 16 MB 会落盘）；`innodb_buffer_pool_size` 要放得下 `jobs` 表（每个作业的数据加索引约 6 KB）。只允许门户和协调器所在的机器连接 3306 端口。
 - 一致性：每个写事务先锁住 `st_write_lock` 表里唯一的一行，门户和协调器的写入因此严格串行。余额是「读出、计算、写回」，并发写入会丢失更新。只读查询不受影响。写入方最多等锁 10 秒，超时按数据库忙处理（门户返回 503 `busy`；启动时两个程序都会重试一段时间）。
-- 测试：`scripts/test.sh` 在 Docker 里启动一个 MySQL 8，再对它运行 `go test`。要使用现成的服务器，设置 `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`；每个测试创建一个名为 `sttest_<时间>_<随机>` 的库，超过一小时的库由之后的测试删除。详见 [development.md](development.md)。
+- 测试：`scripts/test/test.sh` 在 Docker 里启动一个 MySQL 8，再对它运行 `go test`。要使用现成的服务器，设置 `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`；每个测试创建一个名为 `sttest_<时间>_<随机>` 的库，超过一小时的库由之后的测试删除。详见 [development.md](development.md)。
 
 ### 2.3 启动各个程序
 
@@ -430,7 +430,7 @@ portal -db mysql://sharetoken@127.0.0.1:3306/sharetoken mfa-reset <user>
 ## 5. 本机演示
 
 ```bash
-scripts/demo-local.sh     # 需要 Docker（用于 MySQL）、Ollama 和模型 gemma4:e4b；MODEL_UPSTREAM 可换成别的模型
+scripts/dev/demo-local.sh     # 需要 Docker（用于 MySQL）、Ollama 和模型 gemma4:e4b；MODEL_UPSTREAM 可换成别的模型
 ```
 
 脚本构建各个程序，并在 127.0.0.1 上启动两个中继、一个门户、一个协调器和三个用户：alice，诚实的卖家；carol，虚报用量的卖家；bob，买家。它演示验证码登录与设备绑定、中继选择、作弊被抓并按证据退款、抽检两个卖家、一个中继宕机后客户端切换、credit 在账户之间流动且账目平衡，以及日志里没有任何 prompt。脚本退出时停止所有进程。

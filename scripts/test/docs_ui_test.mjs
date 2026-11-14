@@ -3,12 +3,12 @@
 // Chrome with real mouse and keyboard input: a click lands wherever the coordinates
 // are, so a covered or off-screen control fails the test.
 //
-//   GUI_STACK_OFFSET=300 scripts/gui_stack.sh start DIR && . DIR/env
-//   NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/docs_ui_test.mjs "$PORTAL" DIR/downloads [shots-dir]
+//   GUI_STACK_OFFSET=300 scripts/test/gui_stack.sh start DIR && . DIR/env
+//   NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/test/docs_ui_test.mjs "$PORTAL" DIR/downloads [shots-dir]
 //
 // With a downloads directory the test lays out package sets of its own. Without
 // one it only reads, so it can run against a live portal:
-//   node scripts/docs_ui_test.mjs https://portal.example.com "" [shots-dir]
+//   node scripts/test/docs_ui_test.mjs https://portal.example.com "" [shots-dir]
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';

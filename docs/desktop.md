@@ -165,10 +165,10 @@ Common error codes: `bad_portal`, `insecure_portal`, `portal_unreachable`, `not_
 ## Building
 
 ```bash
-scripts/build-gui.sh dev                 # the build type is required; builds for this machine
-scripts/build-gui.sh prod macos arm64    # on a Mac, either architecture
-scripts/build-gui.sh prod windows amd64  # from any system
-scripts/build-gui-linux.sh prod arm64    # Linux package, from any system with Docker
+scripts/build/build-gui.sh dev                 # the build type is required; builds for this machine
+scripts/build/build-gui.sh prod macos arm64    # on a Mac, either architecture
+scripts/build/build-gui.sh prod windows amd64  # from any system
+scripts/build/build-gui-linux.sh prod arm64    # Linux package, from any system with Docker
 ```
 
 | System | Output in `dist/` (prod names; dev builds insert `-dev`) |
@@ -179,8 +179,8 @@ scripts/build-gui-linux.sh prod arm64    # Linux package, from any system with D
 
 `dist/SHA256SUMS-<version>` lists the installers.
 
-- The macOS and Linux shells need cgo and are built on the target system (a Linux build cannot be cross-compiled from macOS; `scripts/build-gui-linux.sh` builds it in a Docker container instead). The Windows shell needs no cgo and cross-compiles from anywhere. It needs the WebView2 Runtime to run, and is not code-signed. Its icon and manifest come from `gui/packaging/winres.json` (go-winres): Wails takes the window's icon from icon group 32512 and the notifications' from 3. Its installer is made with `makensis`, or in the Docker image of `scripts/build-gui-linux.sh` when that is not installed.
-- Linux build dependencies (Debian/Ubuntu 24.04 names): `build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev`. Wails v3 uses GTK 4 and WebKitGTK 6.0 and needs GTK 4.10 or later, so the Linux app runs on Ubuntu 24.04 and later and Debian 13 and later, not on Ubuntu 22.04 (GTK 4.6) or Debian 12 (4.8). The Docker builder is Ubuntu 24.04 (`scripts/gui-builder.Dockerfile`). The `.deb` (`Depends: libgtk-4-1 (>= 4.10), libwebkitgtk-6.0-4`) installs the programs into `/usr/bin` and adds an entry to the application menu.
+- The macOS and Linux shells need cgo and are built on the target system (a Linux build cannot be cross-compiled from macOS; `scripts/build/build-gui-linux.sh` builds it in a Docker container instead). The Windows shell needs no cgo and cross-compiles from anywhere. It needs the WebView2 Runtime to run, and is not code-signed. Its icon and manifest come from `gui/packaging/winres.json` (go-winres): Wails takes the window's icon from icon group 32512 and the notifications' from 3. Its installer is made with `makensis`, or in the Docker image of `scripts/build/build-gui-linux.sh` when that is not installed.
+- Linux build dependencies (Debian/Ubuntu 24.04 names): `build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev`. Wails v3 uses GTK 4 and WebKitGTK 6.0 and needs GTK 4.10 or later, so the Linux app runs on Ubuntu 24.04 and later and Debian 13 and later, not on Ubuntu 22.04 (GTK 4.6) or Debian 12 (4.8). The Docker builder is Ubuntu 24.04 (`scripts/build/gui-builder.Dockerfile`). The `.deb` (`Depends: libgtk-4-1 (>= 4.10), libwebkitgtk-6.0-4`) installs the programs into `/usr/bin` and adds an entry to the application menu.
 - **AppArmor:** WebKitGTK 6.0 always sandboxes its web processes with bubblewrap, which needs an unprivileged user namespace. Ubuntu 23.10 and later allow one only to programs whose AppArmor profile says so; without one the window aborts at start (`bwrap: setting up uid map: Permission denied`). The `.deb` installs `/etc/apparmor.d/sharetoken-gui` (`gui/packaging/apparmor-profile`: unconfined, `userns`, like Ubuntu's profile for its own browser) and loads it in `postinst`; `postrm` unloads it. A shell built and run outside the package needs a profile for its own path, or `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` for a test.
 - The macOS app carries only an ad-hoc signature. It runs on the machine that built it; distributing it needs a Developer ID signature and notarization, otherwise Gatekeeper blocks it.
 - Log: a daemon started by the window writes to `daemon.log` in the data directory (`~/.sharetoken` for prod, `~/.sharetoken-dev` for dev; under `%USERPROFILE%` on Windows).
@@ -190,33 +190,33 @@ scripts/build-gui-linux.sh prod arm64    # Linux package, from any system with D
 A package without the window is built for all three systems, for servers and for users who do not want the desktop app. The program is the same `sharetoken` (or `sharetoken-dev`) as in the desktop package, under the same name.
 
 ```bash
-scripts/build-cli.sh dev               # this machine's system
-scripts/build-cli.sh prod linux amd64  # macos, linux or windows; amd64 or arm64. No cgo, so any system builds any target
-scripts/build-cli.sh prod all          # all six packages
+scripts/build/build-cli.sh dev               # this machine's system
+scripts/build/build-cli.sh prod linux amd64  # macos, linux or windows; amd64 or arm64. No cgo, so any system builds any target
+scripts/build/build-cli.sh prod all          # all six packages
 ```
 
 The output is `dist/sharetoken-cli-<version>-<os>-<arch>.tar.gz` (`.zip` for Windows; dev builds are named `sharetoken-cli-dev-…`), listed in `dist/SHA256SUMS-<version>`. It holds the program and a `README.txt`. The macOS program carries only the linker's ad-hoc signature and the Windows program is not code-signed, so a downloaded copy triggers the same system warnings as the desktop app.
 
-A whole-session test (sign in by code, run, query, buy an answer over the network, stop, sign in, sign out) runs against the local network of `scripts/gui_stack.sh`. It needs a dev build, because a prod build ignores `SHARETOKEN_PORTAL`:
+A whole-session test (sign in by code, run, query, buy an answer over the network, stop, sign in, sign out) runs against the local network of `scripts/test/gui_stack.sh`. It needs a dev build, because a prod build ignores `SHARETOKEN_PORTAL`:
 
 ```bash
-scripts/gui_stack.sh start DIR && . DIR/env
-PORTAL=$PORTAL PIN=$PIN scripts/cli_test.sh <path to sharetoken-dev>
-scripts/gui_stack.sh stop DIR
+scripts/test/gui_stack.sh start DIR && . DIR/env
+PORTAL=$PORTAL PIN=$PIN scripts/test/cli_test.sh <path to sharetoken-dev>
+scripts/test/gui_stack.sh stop DIR
 ```
 
 The page can also be used without the window: run `sharetoken daemon` and open the address it prints, `http://127.0.0.1:9787/#key=…`, in a browser (dev: `sharetoken-dev daemon`, port 9887). The page keeps the key for the tab (`sessionStorage`) and takes it out of the address; the key changes at each start of the daemon.
 
 ## Tests
 
-See [development.md](development.md) for the general build and test setup. `scripts/test.sh` runs `go test` with the local MySQL server that the portal-backed tests need. The tests specific to the desktop client:
+See [development.md](development.md) for the general build and test setup. `scripts/test/test.sh` runs `go test` with the local MySQL server that the portal-backed tests need. The tests specific to the desktop client:
 
 | Layer | Command | Covers |
 |---|---|---|
-| Daemon API | `scripts/test.sh -race ./internal/client` | Sign-in by code (new and existing accounts) and sign-out, success and failure paths; certificate confirmation and pinning; MFA; token revocation; disabled users; switching accounts; concurrent sign-ins; request guards; no secrets in the log |
-| Account rules | `scripts/test.sh ./internal/accounts ./internal/portal` | Email validation and normalization; admin API URLs containing `@` and `+`. |
-| End-to-end API | `scripts/test.sh -race -run Daemon ./test/e2e` | On a real libp2p topology: sign-in, joining through a relay, buying from a model, accounting, recovery after a restart, sign-out, joining once the network comes back |
+| Daemon API | `scripts/test/test.sh -race ./internal/client` | Sign-in by code (new and existing accounts) and sign-out, success and failure paths; certificate confirmation and pinning; MFA; token revocation; disabled users; switching accounts; concurrent sign-ins; request guards; no secrets in the log |
+| Account rules | `scripts/test/test.sh ./internal/accounts ./internal/portal` | Email validation and normalization; admin API URLs containing `@` and `+`. |
+| End-to-end API | `scripts/test/test.sh -race -run Daemon ./test/e2e` | On a real libp2p topology: sign-in, joining through a relay, buying from a model, accounting, recovery after a restart, sign-out, joining once the network comes back |
 | Window shell | `cd gui && go test .` | Starting, connecting to and stopping the daemon; port conflicts; forwarding |
-| Page | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | Headless Chrome runs every flow of the page against real processes (relay, HTTPS portal, coordinator, seller, daemon). The Sharing view uses a `custom` provider pointed at a mock model server: add, pick a model, price, start, test, reprice, local models, turn off, remove. Account login is checked up to the sign-in address and a bad callback. Pairing: wrong and own codes, pairing with a seller that sells nothing (no models, requests refused) and with one that sells, creating and revoking a code, a buyer joining and being removed, private mode from the page and its effect on a buyer that is not paired. Share partners: an invite made in the window, another account joining with the CLI, a free request (cost 0) on the partner's node, the partner pausing sharing (the request is paid), partners only (the request fails), settings validation, and parting (paid again) |
-| Real WebView | `scripts/gui_shell_test.sh <dev\|prod> <program directory>` | Without showing a window, the system WebView loads the page and POSTs to a real daemon; checks that the daemon stops when the app quits |
-| Menu bar and tray | `scripts/gui_tray_test.sh <dev\|prod> <program directory>` (macOS, Linux) | The window and the icon show for about 15 seconds. Checks with the system that the icon is shown, then drives the menu items' actions and the real window: close, Open, minimise and restore, rapid minimise and Open, language following, a click on the icon (Windows, through the shell's message), Command-W (macOS), a second start, the daemon stopping after Quit. Wayland does not tell an app that its window is minimised, so on a Wayland session the minimise steps are skipped; `GDK_BACKEND=x11` runs them. On Windows the same self-test runs when the app is started with `SHARETOKEN_GUI_SELFTEST=tray` |
+| Page | `scripts/test/gui_stack.sh start DIR && node scripts/test/gui_ui_test.mjs DIR` | Headless Chrome runs every flow of the page against real processes (relay, HTTPS portal, coordinator, seller, daemon). The Sharing view uses a `custom` provider pointed at a mock model server: add, pick a model, price, start, test, reprice, local models, turn off, remove. Account login is checked up to the sign-in address and a bad callback. Pairing: wrong and own codes, pairing with a seller that sells nothing (no models, requests refused) and with one that sells, creating and revoking a code, a buyer joining and being removed, private mode from the page and its effect on a buyer that is not paired. Share partners: an invite made in the window, another account joining with the CLI, a free request (cost 0) on the partner's node, the partner pausing sharing (the request is paid), partners only (the request fails), settings validation, and parting (paid again) |
+| Real WebView | `scripts/test/gui_shell_test.sh <dev\|prod> <program directory>` | Without showing a window, the system WebView loads the page and POSTs to a real daemon; checks that the daemon stops when the app quits |
+| Menu bar and tray | `scripts/test/gui_tray_test.sh <dev\|prod> <program directory>` (macOS, Linux) | The window and the icon show for about 15 seconds. Checks with the system that the icon is shown, then drives the menu items' actions and the real window: close, Open, minimise and restore, rapid minimise and Open, language following, a click on the icon (Windows, through the shell's message), Command-W (macOS), a second start, the daemon stopping after Quit. Wayland does not tell an app that its window is minimised, so on a Wayland session the minimise steps are skipped; `GDK_BACKEND=x11` runs them. On Windows the same self-test runs when the app is started with `SHARETOKEN_GUI_SELFTEST=tray` |

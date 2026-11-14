@@ -65,10 +65,10 @@ bin/sharetoken up                       # 开发版的端点是 http://127.0.0.1
 bin/sharetoken status
 ```
 
-想看到一笔交易，就再启动一个用户，给它单独的状态目录（`SHARETOKEN_HOME`），一个共享模型，另一个调用。手头没有真实的模型服务时，可以用 `scripts/mock_upstream.py` 代替：
+想看到一笔交易，就再启动一个用户，给它单独的状态目录（`SHARETOKEN_HOME`），一个共享模型，另一个调用。手头没有真实的模型服务时，可以用 `scripts/dev/mock_upstream.py` 代替：
 
 ```bash
-python3 scripts/mock_upstream.py 18611 mock-model &
+python3 scripts/dev/mock_upstream.py 18611 mock-model &
 bin/sharetoken share upstream http://127.0.0.1:18611/v1
 bin/sharetoken share add mock-model
 ```

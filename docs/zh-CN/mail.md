@@ -107,8 +107,8 @@ mailserver -config mail.yaml send-test you@example.net   # 排入一封测试邮
 ## 测试
 
 ```bash
-scripts/test.sh -race ./internal/mailer ./internal/portal ./internal/client   # 真实 SMTP 往返、DKIM、限流、验证码、管理接口
-node scripts/mail_ui_test.mjs                                                 # 无头 Chrome + 真实进程：验证码登录、恶意邮件、后台全流程
+scripts/test/test.sh -race ./internal/mailer ./internal/portal ./internal/client   # 真实 SMTP 往返、DKIM、限流、验证码、管理接口
+node scripts/test/mail_ui_test.mjs                                                 # 无头 Chrome + 真实进程：验证码登录、恶意邮件、后台全流程
 ```
 
 测试的前置条件见 [development.md](development.md)。

@@ -79,11 +79,11 @@ bin/sharetoken status
 
 To see a trade, start a second user with its own state directory
 (`SHARETOKEN_HOME`), share a model from one and call it from the other.
-`scripts/mock_upstream.py` is a stand-in model server when no real one is at
+`scripts/dev/mock_upstream.py` is a stand-in model server when no real one is at
 hand:
 
 ```bash
-python3 scripts/mock_upstream.py 18611 mock-model &
+python3 scripts/dev/mock_upstream.py 18611 mock-model &
 bin/sharetoken share upstream http://127.0.0.1:18611/v1
 bin/sharetoken share add mock-model
 ```

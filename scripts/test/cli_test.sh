@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Runs a built command-line client through a whole session against the network
-# of scripts/gui_stack.sh: sign up with a mailed code, run, look around, buy an
+# of scripts/test/gui_stack.sh: sign up with a mailed code, run, look around, buy an
 # answer, stop, sign in again, log out. Everything stays in a temporary state
-# directory; codes come from the stack's outbox (scripts/gui_stack.sh code).
+# directory; codes come from the stack's outbox (scripts/test/gui_stack.sh code).
 #
-#   scripts/gui_stack.sh start DIR && . DIR/env
-#   STACK=DIR PORTAL=… PIN=… scripts/cli_test.sh <sharetoken-dev program>
+#   scripts/test/gui_stack.sh start DIR && . DIR/env
+#   STACK=DIR PORTAL=… PIN=… scripts/test/cli_test.sh <sharetoken-dev program>
 #
 # Only a dev build works here: a prod build ignores $SHARETOKEN_PORTAL.
 set -euo pipefail
@@ -16,11 +16,11 @@ API=http://127.0.0.1:$PORT
 HOME_DIR=$(mktemp -d)
 EMAIL=cli-$RANDOM$RANDOM@example.com
 export SHARETOKEN_PORTAL=$PORTAL
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 DB=$(sed 's|.*/||' "$STACK/dsn")
-code() { "$ROOT/scripts/gui_stack.sh" code "$STACK" "$EMAIL"; }
+code() { "$ROOT/scripts/test/gui_stack.sh" code "$STACK" "$EMAIL"; }
 # A minute between two code requests to one address is the portal's rule; the test skips the wait.
-no_cooldown() { "$ROOT/scripts/local-mysql.sh" sql "$DB" "UPDATE mail_codes SET created_at = created_at - 7200" > /dev/null; }
+no_cooldown() { "$ROOT/scripts/test/local-mysql.sh" sql "$DB" "UPDATE mail_codes SET created_at = created_at - 7200" > /dev/null; }
 UP=
 stop_up() { if [ -n "$UP" ]; then kill "$UP" 2>/dev/null || true; wait "$UP" 2>/dev/null || true; UP=; fi; }
 trap 'stop_up; rm -rf "$HOME_DIR"' EXIT

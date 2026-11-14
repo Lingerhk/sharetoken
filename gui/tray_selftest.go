@@ -22,7 +22,7 @@ type trayProbe struct {
 // trayTest drives the real app: the menu items' actions, the window's own close,
 // minimise and reload, a click on the icon (Windows) and Command-W (macOS)
 // through the platform's messages, and a second start of the program, checking
-// the result of each (scripts/gui_tray_test.sh). Whether the icon is on screen
+// the result of each (scripts/test/gui_tray_test.sh). Whether the icon is on screen
 // is asked of the platform. Every step reports, so a failure names itself.
 type trayTest struct {
 	ctx   context.Context

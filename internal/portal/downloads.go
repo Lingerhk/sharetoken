@@ -21,14 +21,14 @@ import (
 const downloadWriteTimeout = time.Hour
 
 var (
-	// The names scripts/build-cli.sh and scripts/build-gui.sh give their packages.
+	// The names scripts/build/build-cli.sh and scripts/build/build-gui.sh give their packages.
 	packageRe  = regexp.MustCompile(`^sharetoken(-cli)?(-dev)?-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-(macos|linux|windows)-(amd64|arm64)\.(?:tar\.gz|zip|dmg|exe|deb)$`)
 	checksumRe = regexp.MustCompile(`^SHA256SUMS-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?$`)
 	// The macOS app as one-click updates install it: the .app bundle in a zip,
 	// which the app swaps in for itself (not listed: people download the .dmg).
 	appZipRe = regexp.MustCompile(`^sharetoken(-dev)?-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-macos-(amd64|arm64)\.app\.zip$`)
 	// SIGNATURES-<version>: "<base64 Ed25519 signature>  <file>" lines, the
-	// release key's signature of each file's SHA-256 (scripts/sign-packages.go).
+	// release key's signature of each file's SHA-256 (scripts/release/sign-packages.go).
 	signaturesRe = regexp.MustCompile(`^SIGNATURES-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?$`)
 )
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Drives the desktop app's page in a headless Chrome (nothing appears on
-// screen), against the real daemon and network of scripts/gui_stack.sh, and
+// screen), against the real daemon and network of scripts/test/gui_stack.sh, and
 // checks the DOM after each step; saves screenshots. Node 22, no dependencies.
 //
-//   scripts/gui_stack.sh start /tmp/guitest
-//   node scripts/gui_ui_test.mjs /tmp/guitest /tmp/guitest/shots
-//   scripts/gui_stack.sh stop /tmp/guitest
+//   scripts/test/gui_stack.sh start /tmp/guitest
+//   node scripts/test/gui_ui_test.mjs /tmp/guitest /tmp/guitest/shots
+//   scripts/test/gui_stack.sh stop /tmp/guitest
 import { execFileSync, spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -74,7 +74,7 @@ async function errorIs(needle, what) { await waitFor(`${el('#error')}?.textConte
 
 const EMAIL = 'Desk.User+gui@Example.com', NORMAL = EMAIL.toLowerCase();
 
-// Mail: nothing delivers it, the portal's outbox keeps it (scripts/gui_stack.sh).
+// Mail: nothing delivers it, the portal's outbox keeps it (scripts/test/gui_stack.sh).
 // nextCode waits for a code newer than the last one read and lifts the
 // per-address cooldown, as a minute passing would.
 const db = readFileSync(dir + '/dsn', 'utf8').trim().replace(/.*\//, '');

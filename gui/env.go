@@ -6,13 +6,13 @@ import (
 	"strings"
 )
 
-// buildType is set at build time (scripts/build-gui.sh <dev|prod>), with -ldflags
+// buildType is set at build time (scripts/build/build-gui.sh <dev|prod>), with -ldflags
 // "-X main.buildType=sharetoken-build-type=prod". A build that does not say is
 // dev. The prefix lets the build script find the value in a finished binary.
 var buildType = buildTypePrefix + "dev"
 
 // version is this app's release, set like buildType with "-X main.version=1.2.3".
-// It must equal the daemon's: both come from one build (scripts/build-gui.sh).
+// It must equal the daemon's: both come from one build (scripts/build/build-gui.sh).
 var version = "dev"
 
 const buildTypePrefix = "sharetoken-build-type="

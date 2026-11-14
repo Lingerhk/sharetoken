@@ -110,10 +110,10 @@ func main() {
 	})
 
 	// $SHARETOKEN_GUI_SELFTEST=1: run a request through the window's whole path
-	// without showing it, report, and quit (scripts/gui_shell_test.sh).
-	// =tray: run through the tray and the window, which shows (scripts/gui_tray_test.sh).
+	// without showing it, report, and quit (scripts/test/gui_shell_test.sh).
+	// =tray: run through the tray and the window, which shows (scripts/test/gui_tray_test.sh).
 	// =update: install the offered update with the window hidden, as its button
-	// would (scripts/gui_update_test.sh).
+	// would (scripts/test/gui_update_test.sh).
 	mode := os.Getenv("SHARETOKEN_GUI_SELFTEST")
 	trayCheck := mode == "tray"
 	updateCheck := mode == "update"

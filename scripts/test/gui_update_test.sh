@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # One-click update of the macOS app, end to end, on a private network
-# (scripts/gui_stack.sh): builds an old copy A and a new copy B of the dev app,
+# (scripts/test/gui_stack.sh): builds an old copy A and a new copy B of the dev app,
 # publishes B signed with the release key, and lets A install it as the button
 # in its window would ($SHARETOKEN_GUI_SELFTEST=update, window hidden). Then:
 #   - A swapped its bundle for B's (Wails' updater) and B started and passed the
 #     window self-test (it reports to a file);
 #   - a package whose signature is not the release key's is refused, and the
 #     bundle stays as it was.
-#   scripts/gui_update_test.sh [work directory]
+#   scripts/test/gui_update_test.sh [work directory]
 # The release key is $ST_RELEASE_KEY or local/keys/release-signing.pem. B carries
 # LSEnvironment in its Info.plist so that the copy macOS starts after the swap
 # uses the test's state directory and portal, not the user's.
 set -euo pipefail
-ROOT=$(cd "$(dirname "$0")/.." && pwd); cd "$ROOT"
+ROOT=$(cd "$(dirname "$0")/../.." && pwd); cd "$ROOT"
 W=${1:-$(mktemp -d)}; mkdir -p "$W"; W=$(cd "$W" && pwd)
 KEY=${ST_RELEASE_KEY:-local/keys/release-signing.pem}
 ARCH=$(go env GOARCH)
@@ -21,11 +21,11 @@ GUI="$APP/Contents/MacOS/sharetoken-gui-dev"; EXE="$APP/Contents/MacOS/sharetoke
 fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
   pkill -f "$APPS/" 2>/dev/null || true
-  scripts/gui_stack.sh stop "$W/stack" >/dev/null 2>&1 || true
+  scripts/test/gui_stack.sh stop "$W/stack" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-scripts/gui_stack.sh start "$W/stack" > /dev/null
+scripts/test/gui_stack.sh start "$W/stack" > /dev/null
 # shellcheck disable=SC1091
 . "$W/stack/env"
 mkdir -p "$H"; chmod 700 "$H"
@@ -43,7 +43,7 @@ with_env() {
   codesign --force --deep --sign - "$1" 2>/dev/null
 }
 build() { # commit build-time → dist/ShareToken-dev.app and its zip
-  ST_VERSION=1.0.0 ST_COMMIT=$1 ST_BUILD_TIME=$2 ST_NO_DMG=1 scripts/build-gui.sh dev macos "$ARCH" > /dev/null
+  ST_VERSION=1.0.0 ST_COMMIT=$1 ST_BUILD_TIME=$2 ST_NO_DMG=1 scripts/build/build-gui.sh dev macos "$ARCH" > /dev/null
 }
 
 echo "building A (old) and B (new)"
@@ -67,9 +67,9 @@ run_a() { # → A's output in $W/a.log; its status
 
 echo "1. a package signed with another key is refused"
 install_a
-go run scripts/sign-packages.go genkey "$W/other.pem" > /dev/null 2>&1 || true
+go run scripts/release/sign-packages.go genkey "$W/other.pem" > /dev/null 2>&1 || true
 rm -f "$DOWNLOADS/SIGNATURES-1.0.0"
-go run scripts/sign-packages.go sign "$W/other.pem" "$DOWNLOADS/SIGNATURES-1.0.0" "$DOWNLOADS/$ZIP"
+go run scripts/release/sign-packages.go sign "$W/other.pem" "$DOWNLOADS/SIGNATURES-1.0.0" "$DOWNLOADS/$ZIP"
 if run_a; then cat "$W/a.log"; fail "A installed a package signed with another key"; fi
 grep -q "not the release key" "$W/a.log" || { cat "$W/a.log"; fail "A failed for another reason"; }
 "$EXE" version | grep -q aaaaaaa || fail "the bundle changed"
@@ -78,7 +78,7 @@ echo "   refused: $(grep -o 'selftest: failed.*' "$W/a.log")"
 echo "2. the signed package is installed, and the new copy starts"
 install_a
 rm -f "$DOWNLOADS/SIGNATURES-1.0.0"
-go run scripts/sign-packages.go sign "$KEY" "$DOWNLOADS/SIGNATURES-1.0.0" "$DOWNLOADS/$ZIP"
+go run scripts/release/sign-packages.go sign "$KEY" "$DOWNLOADS/SIGNATURES-1.0.0" "$DOWNLOADS/$ZIP"
 run_a || { cat "$W/a.log"; fail "A's update failed"; }
 cat "$W/a.log" | grep selftest
 for _ in $(seq 1 120); do [ -s "$W/after.txt" ] && break; sleep 1; done

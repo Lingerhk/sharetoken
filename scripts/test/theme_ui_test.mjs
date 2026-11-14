@@ -2,8 +2,8 @@
 // Browser test of the portal's frame in headless Chrome: light and dark mode, the
 // sidebar, the language menu, the icons, and every page at desktop and phone width.
 //
-//   scripts/gui_stack.sh start DIR && . DIR/env
-//   STACK=DIR node scripts/theme_ui_test.mjs $PORTAL [shots-dir]
+//   scripts/test/gui_stack.sh start DIR && . DIR/env
+//   STACK=DIR node scripts/test/theme_ui_test.mjs $PORTAL [shots-dir]
 //
 // Signs up a throwaway user and creates a throwaway admin in the stack, reading
 // their sign-in codes from its outbox; it needs open registration. Never point
@@ -18,7 +18,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const portal = process.argv[2];
 const STACK = process.env.STACK;
 if (!portal || !STACK) { console.error('usage: STACK=<gui_stack.sh directory> theme_ui_test.mjs <portal url> [shots-dir]'); process.exit(2); }
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = new URL('../..', import.meta.url).pathname;
 const quiet = (cmd, ...args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 const RUN = Date.now().toString(36);
 const ADMIN = `theme-admin-${RUN}@example.test`;
@@ -80,7 +80,7 @@ const fill = (sel, v) => ev(`(() => { const el = document.querySelector(${JSON.s
 async function signIn(email) {
   await fill('#login-email', email);
   await ev(`document.getElementById('send-code').click()`);
-  await fill('#login-code', quiet(ROOT + 'scripts/gui_stack.sh', 'code', STACK, email));
+  await fill('#login-code', quiet(ROOT + 'scripts/test/gui_stack.sh', 'code', STACK, email));
   await ev(`document.querySelector('.login form').requestSubmit()`);
 }
 

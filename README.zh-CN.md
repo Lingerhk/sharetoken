@@ -145,8 +145,8 @@ bin/sharetoken up
 
 ```bash
 go build -o bin/ ./cmd/...        # sharetoken、relay、coordinator、portal、mailserver
-scripts/test.sh ./...             # 在 Docker 里启动 MySQL 8，然后 go test
-scripts/demo-local.sh             # 在 127.0.0.1 上用真实模型跑完整网络（需要 Ollama）
+scripts/test/test.sh ./...             # 在 Docker 里启动 MySQL 8，然后 go test
+scripts/dev/demo-local.sh             # 在 127.0.0.1 上用真实模型跑完整网络（需要 Ollama）
 ```
 
 演示脚本启动两个中继、门户、协调器和三个用户，演示的内容有：虚报用量的卖家被抓并按证据退款，请求自动切换到诚实的卖家，抽检暂停作弊者，中继宕机后客户端自动切换。

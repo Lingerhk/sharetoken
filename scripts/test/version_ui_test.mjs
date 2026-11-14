@@ -2,9 +2,9 @@
 // Browser test of the version features: the admin console's version page and the
 // desktop client's upgrade notice, in a headless Chrome against scripts/gui_stack.sh.
 //
-//   scripts/gui_stack.sh start DIR
-//   node scripts/version_ui_test.mjs DIR
-//   scripts/gui_stack.sh stop DIR
+//   scripts/test/gui_stack.sh start DIR
+//   node scripts/test/version_ui_test.mjs DIR
+//   scripts/test/gui_stack.sh stop DIR
 import { execFileSync, spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -78,7 +78,7 @@ function totp(secret) {
 
 const DSN = readFileSync(dir + '/dsn', 'utf8').trim();
 const portalCmd = (args, extra = {}) => execFileSync(dir + '/bin/portal', ['-db', DSN, ...args], { cwd: dir, env: { ...process.env, SHARETOKEN_DB_PASSWORD: '', ...extra }, encoding: 'utf8' });
-// Sign-in codes: nothing delivers mail, scripts/gui_stack.sh reads them from the outbox.
+// Sign-in codes: nothing delivers mail, scripts/test/gui_stack.sh reads them from the outbox.
 const mailedCode = email => execFileSync(new URL('./gui_stack.sh', import.meta.url).pathname, ['code', dir, email], { encoding: 'utf8' }).trim();
 
 await connect();
@@ -115,7 +115,7 @@ ok(p.latest_client === '9.9.9' && p.download_url === 'https://example.com/downlo
 
 console.log('desktop client');
 // A build with a version number: one without has nothing to compare.
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = new URL('../..', import.meta.url).pathname;
 execFileSync('go', ['build', '-ldflags', '-X sharetoken/internal/version.Version=1.0.0', '-o', dir + '/bin/sharetoken-100', './cmd/sharetoken'], { cwd: ROOT, stdio: 'inherit' });
 const bin = dir + '/bin/sharetoken-100', home = dir + '/version-desktop', api = 'http://127.0.0.1:19795';
 const daemonEnv = { ...process.env, SHARETOKEN_PORTAL: env.PORTAL };

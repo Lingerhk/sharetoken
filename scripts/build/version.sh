@@ -3,7 +3,7 @@
 # changed, otherwise VERSION-dev.<commit>[.dirty]. $ST_VERSION overrides it, for
 # building from a copy without .git.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 [ -z "${ST_VERSION:-}" ] || { echo "$ST_VERSION"; exit 0; }
 V=$(tr -d ' \n' < VERSION)
 DIRTY=$(git status --porcelain --untracked-files=no 2>/dev/null | head -1)

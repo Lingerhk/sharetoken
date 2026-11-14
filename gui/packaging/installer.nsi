@@ -1,4 +1,4 @@
-; The Windows installer of the desktop app, built by scripts/build-gui.sh. It
+; The Windows installer of the desktop app, built by scripts/build/build-gui.sh. It
 ; installs for the current user: no administrator rights, nothing outside the
 ; user's profile. The account and its keys are in the data directory, which
 ; neither an upgrade nor an uninstall touches.

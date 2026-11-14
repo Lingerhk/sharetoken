@@ -1,4 +1,4 @@
-# dmgbuild settings for the macOS disk image (scripts/build-gui.sh). dmgbuild
+# dmgbuild settings for the macOS disk image (scripts/build/build-gui.sh). dmgbuild
 # writes the window layout (.DS_Store) itself and mounts the image hidden
 # (-nobrowse), so building never opens Finder windows on the desktop.
 #

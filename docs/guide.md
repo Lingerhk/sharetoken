@@ -203,7 +203,7 @@ GRANT ALL ON sharetoken.* TO 'sharetoken'@'10.0.0.%';
 - The portal and the coordinator create and upgrade the tables when they start, in either order. Their account needs the right to create and alter tables (`ALL ON sharetoken.*`). Schema versions are described in [versioning.md](versioning.md).
 - Recommended server settings: `transaction_isolation = READ-COMMITTED` (the programs also set it on every session); `skip_name_resolve = ON` (otherwise every new connection can stall for seconds on reverse DNS); `innodb_flush_log_at_trx_commit = 1` (the ledger needs commits on disk); `tmp_table_size = 256M` (the ledger replay groups by account, and the 16 MB default spills to disk); an `innodb_buffer_pool_size` that holds the `jobs` table (about 6 KB of data and indexes per job). Allow port 3306 only from the machines that run the portal and the coordinator.
 - Consistency: every write transaction first locks the single row of the table `st_write_lock`, so the writes of the portal and the coordinator are strictly serial. Balances are read, computed and written back, and concurrent writers would lose updates. Read-only queries are not affected. A writer waits at most 10 seconds for the lock; after that the database counts as busy (the portal answers 503 `busy`; at start both programs retry for a while).
-- Tests: `scripts/test.sh` starts a MySQL 8 in Docker and runs `go test` against it. To use an existing server, set `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`; each test creates a database named `sttest_<time>_<random>`, and later runs delete those older than an hour. More in [development.md](development.md).
+- Tests: `scripts/test/test.sh` starts a MySQL 8 in Docker and runs `go test` against it. To use an existing server, set `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`; each test creates a database named `sttest_<time>_<random>`, and later runs delete those older than an hour. More in [development.md](development.md).
 
 ### 2.3 Starting the programs
 
@@ -430,7 +430,7 @@ portal -db mysql://sharetoken@127.0.0.1:3306/sharetoken mfa-reset <user>
 ## 5. Local demo
 
 ```bash
-scripts/demo-local.sh     # needs Docker (for MySQL), Ollama and the model gemma4:e4b; MODEL_UPSTREAM selects another model
+scripts/dev/demo-local.sh     # needs Docker (for MySQL), Ollama and the model gemma4:e4b; MODEL_UPSTREAM selects another model
 ```
 
 The script builds the programs and starts two relays, a portal, a coordinator and three users on 127.0.0.1: alice, an honest seller; carol, a seller who overstates her usage; and bob, a buyer. It shows sign-in by code and device binding, relay selection, the cheat being caught and refunded on evidence, the auditor checking both sellers, the client switching relays when one dies, credits moving between accounts with the books balancing, and logs that contain no prompt. Everything is stopped when the script exits.

@@ -323,11 +323,11 @@ func TestDocsPackageNames(t *testing.T) {
 			t.Errorf("%s is not recognised as a package", name)
 		}
 	}
-	raw, err := os.ReadFile("../../scripts/build-cli.sh")
+	raw, err := os.ReadFile("../../scripts/build/build-cli.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(raw), "base=sharetoken-cli$SUFFIX-$VERSION-$os-$arch") {
-		t.Error("scripts/build-cli.sh names its packages differently now: update the guide and packageRe")
+		t.Error("scripts/build/build-cli.sh names its packages differently now: update the guide and packageRe")
 	}
 }

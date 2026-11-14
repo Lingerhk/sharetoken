@@ -107,8 +107,8 @@ Other notices: a message is sent when two-factor authentication is turned on or 
 ## Tests
 
 ```bash
-scripts/test.sh -race ./internal/mailer ./internal/portal ./internal/client   # real SMTP round trips, DKIM, rate limits, codes, the admin endpoints
-node scripts/mail_ui_test.mjs                                                 # headless Chrome against real processes: sign-in by code, hostile mail, the whole console
+scripts/test/test.sh -race ./internal/mailer ./internal/portal ./internal/client   # real SMTP round trips, DKIM, rate limits, codes, the admin endpoints
+node scripts/test/mail_ui_test.mjs                                                 # headless Chrome against real processes: sign-in by code, hostile mail, the whole console
 ```
 
 See [development.md](development.md) for what the tests need.

@@ -14,7 +14,8 @@ gui/         the desktop shell (Wails), a separate Go module with its own go.mod
 test/        end-to-end tests over real libp2p hosts (test/e2e, test/flow)
 configs/     example configuration files; the tests load them
 docker/      entry point of the container image
-scripts/     build, packaging, test and demo scripts
+scripts/     build/ (programs and packages), release/ (signing and publishing),
+             test/ (test runners and UI tests), dev/ (demo and mock model servers)
 docs/        documentation: English here, 简体中文 in docs/zh-CN
 ```
 
@@ -56,20 +57,20 @@ network by accident:
 For your own network, use a dev build and set `SHARETOKEN_PORTAL`
 ([self-hosting.md](self-hosting.md)).
 
-**Versions.** `VERSION` holds the release number. `scripts/version.sh` prints it
+**Versions.** `VERSION` holds the release number. `scripts/build/version.sh` prints it
 on the release tag and `<version>-dev.<commit>` anywhere else, and
-`scripts/ldflags.sh` stamps it into a program. The rules are in
+`scripts/build/ldflags.sh` stamps it into a program. The rules are in
 [versioning.md](versioning.md).
 
 | Script | Output |
 |---|---|
-| `scripts/build.sh portal coordinator relay mailserver` | server programs in `dist/`, named with version, system and architecture. `GOOS` and `GOARCH` cross-compile. Built with `-trimpath -ldflags "-s -w"`; `GOAMD64`/`GOARM64` above the baseline target a newer CPU and are named in the file (`GOAMD64=v3` → `portal-1.0.0-linux-amd64v3`) |
-| `scripts/build-cli.sh <dev\|prod> [system] [arch]` | command-line client archives |
-| `scripts/build-gui.sh <dev\|prod> [macos\|windows] [arch]` | the desktop app and its installer (`.dmg`, `.exe`). The `.dmg` is laid out by dmgbuild (pinned, installed into `~/.cache/sharetoken/` on first use; settings in `scripts/dmg_settings.py`), which never opens Finder |
-| `scripts/build-gui-linux.sh <dev\|prod> [arch]` | the Linux desktop package (`.deb`), built in Docker (`scripts/gui-builder.Dockerfile`) |
-| `scripts/publish-packages.sh <version> <user@host> <dir>` | builds every package of a release on a Mac, signs them and uploads them to a portal's downloads directory |
-| `scripts/release-files.sh <version>` | finishes a release from packages in `dist/`: checksums, signatures, `RELEASE` files |
-| `scripts/upload-release.sh <version> <user@host> <dir>` | checks a finished release and puts it into a portal's downloads directory |
+| `scripts/build/build.sh portal coordinator relay mailserver` | server programs in `dist/`, named with version, system and architecture. `GOOS` and `GOARCH` cross-compile. Built with `-trimpath -ldflags "-s -w"`; `GOAMD64`/`GOARM64` above the baseline target a newer CPU and are named in the file (`GOAMD64=v3` → `portal-1.0.0-linux-amd64v3`) |
+| `scripts/build/build-cli.sh <dev\|prod> [system] [arch]` | command-line client archives |
+| `scripts/build/build-gui.sh <dev\|prod> [macos\|windows] [arch]` | the desktop app and its installer (`.dmg`, `.exe`). The `.dmg` is laid out by dmgbuild (pinned, installed into `~/.cache/sharetoken/` on first use; settings in `scripts/build/dmg_settings.py`), which never opens Finder |
+| `scripts/build/build-gui-linux.sh <dev\|prod> [arch]` | the Linux desktop package (`.deb`), built in Docker (`scripts/build/gui-builder.Dockerfile`) |
+| `scripts/release/publish-packages.sh <version> <user@host> <dir>` | builds every package of a release on a Mac, signs them and uploads them to a portal's downloads directory |
+| `scripts/release/release-files.sh <version>` | finishes a release from packages in `dist/`: checksums, signatures, `RELEASE` files |
+| `scripts/release/upload-release.sh <version> <user@host> <dir>` | checks a finished release and puts it into a portal's downloads directory |
 | [`.github/workflows/release-client.yml`](../.github/workflows/release-client.yml) | the same on GitHub Actions, for a pushed tag `v<VERSION>`: builds, signs, makes the GitHub release, and optionally publishes to the portal ([versioning.md](versioning.md), "Publishing packages") |
 | `docker build -t sharetoken .` | the server image used by `docker-compose.yml` |
 
@@ -77,14 +78,14 @@ The desktop app is described in [desktop.md](desktop.md).
 
 ## 3. Test
 
-The code runs on MySQL 8 only, and so do the tests. `scripts/test.sh` starts a
-MySQL container (`scripts/local-mysql.sh`: loopback only, data in memory, kept
+The code runs on MySQL 8 only, and so do the tests. `scripts/test/test.sh` starts a
+MySQL container (`scripts/test/local-mysql.sh`: loopback only, data in memory, kept
 running between runs) and then runs `go test`:
 
 ```bash
-scripts/test.sh                        # go test ./...
-scripts/test.sh -race ./...
-scripts/test.sh ./internal/coordinator
+scripts/test/test.sh                        # go test ./...
+scripts/test/test.sh -race ./...
+scripts/test/test.sh ./internal/coordinator
 ```
 
 To use a server you already have, set `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`
@@ -105,13 +106,13 @@ The desktop module has its own tests:
 
 **Browser tests.** The web pages and the desktop app's page are driven in a
 headless Chrome over the DevTools protocol. They need Node 22 and Chrome, and no
-packages. `scripts/gui_stack.sh` starts a private network for them in a
+packages. `scripts/test/gui_stack.sh` starts a private network for them in a
 temporary directory:
 
 ```bash
-scripts/gui_stack.sh start /tmp/st && . /tmp/st/env
-node scripts/gui_ui_test.mjs /tmp/st /tmp/st/shots       # desktop app page
-scripts/gui_stack.sh stop /tmp/st
+scripts/test/gui_stack.sh start /tmp/st && . /tmp/st/env
+node scripts/test/gui_ui_test.mjs /tmp/st /tmp/st/shots       # desktop app page
+scripts/test/gui_stack.sh stop /tmp/st
 ```
 
 The others (`portal_ui_test.mjs`, `settings_ui_test.mjs`, `theme_ui_test.mjs`,
@@ -122,12 +123,10 @@ The others (`portal_ui_test.mjs`, `settings_ui_test.mjs`, `theme_ui_test.mjs`,
 
 | Script | Use |
 |---|---|
-| `scripts/demo-local.sh` | a whole network on 127.0.0.1 with a real model from Ollama, including a cheating seller |
-| `scripts/mock_upstream.py` | a fast, honest stand-in for a model server |
-| `scripts/inflating_upstream.py` | a dishonest one that inflates usage, for the demo |
-| `scripts/st_bench.py` | functional checks and load generation against a running client |
-| `scripts/upstream_proxy.py` | a local proxy in front of several model servers. Its configuration holds API keys and is not committed |
-| `scripts/cli_test.sh`, `gui_shell_test.sh`, `gui_tray_test.sh` | tests of built packages |
+| `scripts/dev/demo-local.sh` | a whole network on 127.0.0.1 with a real model from Ollama, including a cheating seller |
+| `scripts/dev/mock_upstream.py` | a fast, honest stand-in for a model server |
+| `scripts/dev/inflating_upstream.py` | a dishonest one that inflates usage, for the demo |
+| `scripts/test/cli_test.sh`, `gui_shell_test.sh`, `gui_tray_test.sh` | tests of built packages |
 
 ## 4. Conventions
 

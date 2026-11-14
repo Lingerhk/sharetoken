@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # A MySQL 8 in Docker for tests and local stacks: the code only runs on MySQL.
-#   scripts/local-mysql.sh server         # starts it if needed, prints mysql://root@127.0.0.1:33971/
-#   scripts/local-mysql.sh new-db <name>  # also (re)creates an empty database, prints its DSN
-#   scripts/local-mysql.sh sql <db> <query>  # runs a query, prints the rows tab-separated without a header
+#   scripts/test/local-mysql.sh server         # starts it if needed, prints mysql://root@127.0.0.1:33971/
+#   scripts/test/local-mysql.sh new-db <name>  # also (re)creates an empty database, prints its DSN
+#   scripts/test/local-mysql.sh sql <db> <query>  # runs a query, prints the rows tab-separated without a header
 # The container (st-test-mysql, loopback only, no password, data in tmpfs) stays
 # up between runs. Remove it with: docker rm -f st-test-mysql
 set -euo pipefail

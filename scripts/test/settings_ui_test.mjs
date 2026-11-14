@@ -2,14 +2,14 @@
 // Browser test of the system settings page, the audit log, invite codes and
 // paged listings: drives a headless Chrome over the DevTools protocol through
 // what an administrator and a user do. Works against a local stack
-// (scripts/gui_stack.sh) and against dev.
+// (scripts/test/gui_stack.sh) and against dev.
 //
-//   STACK=DIR ST_INSECURE=1 node scripts/settings_ui_test.mjs <portal url> <dir for screenshots>   # scripts/gui_stack.sh
-//   node scripts/settings_ui_test.mjs <portal url> <dir for screenshots>                            # elsewhere, with ST_MAIL_CMD
+//   STACK=DIR ST_INSECURE=1 node scripts/test/settings_ui_test.mjs <portal url> <dir for screenshots>   # scripts/test/gui_stack.sh
+//   node scripts/test/settings_ui_test.mjs <portal url> <dir for screenshots>                            # elsewhere, with ST_MAIL_CMD
 //
 // Signing in takes a code mailed to the address.
 // Environment:
-//   STACK                    a scripts/gui_stack.sh directory: codes come from its outbox, the admin is created there
+//   STACK                    a scripts/test/gui_stack.sh directory: codes come from its outbox, the admin is created there
 //   ST_ADMIN                 an administrator's email (a stored or new two-factor secret lives in the dir)
 //   ST_MAIL_CMD              without STACK: prints the newest queued mail to the address in $ST_MAIL_TO (subject and text)
 //   ST_MAIL_HOLD_CMD         stops the mail server, if there is one: a sent code is wiped from the outbox
@@ -28,9 +28,9 @@ if (!base) { console.error('usage: settings_ui_test.mjs <portal url> [dir]'); pr
 mkdirSync(shots, { recursive: true });
 const admin = process.env.ST_ADMIN || 'root@example.test';
 const STACK = process.env.STACK;
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = new URL('../..', import.meta.url).pathname;
 const runQuiet = (cmd, ...args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-const stackSQL = q => runQuiet(ROOT + 'scripts/local-mysql.sh', 'sql', readFileSync(STACK + '/dsn', 'utf8').trim().replace(/.*\//, ''), q);
+const stackSQL = q => runQuiet(ROOT + 'scripts/test/local-mysql.sh', 'sql', readFileSync(STACK + '/dsn', 'utf8').trim().replace(/.*\//, ''), q);
 if (STACK) { try { runQuiet(STACK + '/bin/portal', '-db', readFileSync(STACK + '/dsn', 'utf8').trim(), 'useradd', '-admin', admin); } catch (e) { /* there already */ } }
 const RUN = randomBytes(3).toString('hex');
 const chrome = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -116,7 +116,7 @@ async function sendCode(email) {
 }
 // readCode returns the code just mailed to the address.
 async function readCode(email) {
-  if (STACK) return runQuiet(ROOT + 'scripts/gui_stack.sh', 'code', STACK, email);
+  if (STACK) return runQuiet(ROOT + 'scripts/test/gui_stack.sh', 'code', STACK, email);
   return (await mailTo(email, /code: (\d{6})/))[1];
 }
 // loginForm signs in with a mailed code, up to any two-factor step.

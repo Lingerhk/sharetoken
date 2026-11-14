@@ -165,10 +165,10 @@ macOS 在菜单栏、Windows 在通知区、Linux 以状态通知项（StatusNot
 ## 构建
 
 ```bash
-scripts/build-gui.sh dev                 # 必须指定构建类型；为本机系统构建
-scripts/build-gui.sh prod macos arm64    # 在 Mac 上，两种架构都可以
-scripts/build-gui.sh prod windows amd64  # 任何系统上都能构建
-scripts/build-gui-linux.sh prod arm64    # Linux 包，任何装有 Docker 的系统上都能构建
+scripts/build/build-gui.sh dev                 # 必须指定构建类型；为本机系统构建
+scripts/build/build-gui.sh prod macos arm64    # 在 Mac 上，两种架构都可以
+scripts/build/build-gui.sh prod windows amd64  # 任何系统上都能构建
+scripts/build/build-gui-linux.sh prod arm64    # Linux 包，任何装有 Docker 的系统上都能构建
 ```
 
 | 系统 | `dist/` 里的产物（prod 的名字；dev 构建会带 `-dev`） |
@@ -179,8 +179,8 @@ scripts/build-gui-linux.sh prod arm64    # Linux 包，任何装有 Docker 的�
 
 `dist/SHA256SUMS-<版本>` 列出这些安装包。
 
-- macOS 和 Linux 的窗口壳需要 cgo，要在目标系统上构建（Linux 版不能从 macOS 交叉编译；`scripts/build-gui-linux.sh` 改为在 Docker 容器里构建）。Windows 的窗口壳不需要 cgo，可以在任何系统上交叉编译。它运行时需要 WebView2 Runtime，没有代码签名。图标和 manifest 来自 `gui/packaging/winres.json`（go-winres）：Wails 从 32512 号图标组取窗口图标，从 3 号取通知图标。安装程序用 `makensis` 制作；没有安装 `makensis` 时，在 `scripts/build-gui-linux.sh` 的 Docker 镜像里制作。
-- Linux 构建依赖（Debian/Ubuntu 24.04 的包名）：`build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev`。Wails v3 用 GTK 4 和 WebKitGTK 6.0，要求 GTK 4.10 以上，所以 Linux 版支持 Ubuntu 24.04、Debian 13 及以后的版本，不支持 Ubuntu 22.04（GTK 4.6）和 Debian 12（4.8）。Docker 构建镜像是 Ubuntu 24.04（`scripts/gui-builder.Dockerfile`）。`.deb`（`Depends: libgtk-4-1 (>= 4.10), libwebkitgtk-6.0-4`）把程序装到 `/usr/bin`，并添加应用菜单项。
+- macOS 和 Linux 的窗口壳需要 cgo，要在目标系统上构建（Linux 版不能从 macOS 交叉编译；`scripts/build/build-gui-linux.sh` 改为在 Docker 容器里构建）。Windows 的窗口壳不需要 cgo，可以在任何系统上交叉编译。它运行时需要 WebView2 Runtime，没有代码签名。图标和 manifest 来自 `gui/packaging/winres.json`（go-winres）：Wails 从 32512 号图标组取窗口图标，从 3 号取通知图标。安装程序用 `makensis` 制作；没有安装 `makensis` 时，在 `scripts/build/build-gui-linux.sh` 的 Docker 镜像里制作。
+- Linux 构建依赖（Debian/Ubuntu 24.04 的包名）：`build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev`。Wails v3 用 GTK 4 和 WebKitGTK 6.0，要求 GTK 4.10 以上，所以 Linux 版支持 Ubuntu 24.04、Debian 13 及以后的版本，不支持 Ubuntu 22.04（GTK 4.6）和 Debian 12（4.8）。Docker 构建镜像是 Ubuntu 24.04（`scripts/build/gui-builder.Dockerfile`）。`.deb`（`Depends: libgtk-4-1 (>= 4.10), libwebkitgtk-6.0-4`）把程序装到 `/usr/bin`，并添加应用菜单项。
 - **AppArmor：** WebKitGTK 6.0 总是用 bubblewrap 给网页进程开沙箱，需要非特权用户命名空间。Ubuntu 23.10 起只有 AppArmor 配置里允许的程序才能用；没有配置时窗口一启动就中止（`bwrap: setting up uid map: Permission denied`）。`.deb` 安装 `/etc/apparmor.d/sharetoken-gui`（`gui/packaging/apparmor-profile`：不加限制，只声明 `userns`，和 Ubuntu 给自带浏览器的配置一样），在 `postinst` 里加载，`postrm` 里卸载。不经安装包构建、运行的窗口壳需要给它自己的路径加配置，测试时也可以设 `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`。
 - macOS 应用只有 ad-hoc 签名。它能在构建它的机器上运行；分发给别人需要 Developer ID 签名和公证，否则会被 Gatekeeper 拦下。
 - 日志：窗口启动的 daemon 写到数据目录的 `daemon.log`（prod 是 `~/.sharetoken`，dev 是 `~/.sharetoken-dev`；Windows 上在 `%USERPROFILE%` 下）。
@@ -190,33 +190,33 @@ scripts/build-gui-linux.sh prod arm64    # Linux 包，任何装有 Docker 的�
 三个系统都有不带窗口的包，给服务器和不想装桌面应用的用户。里面的程序和桌面包里的 `sharetoken`（或 `sharetoken-dev`）是同一个，名字也相同。
 
 ```bash
-scripts/build-cli.sh dev               # 本机系统
-scripts/build-cli.sh prod linux amd64  # macos、linux 或 windows；amd64 或 arm64。不需要 cgo，任何系统都能构建任何目标
-scripts/build-cli.sh prod all          # 全部六个包
+scripts/build/build-cli.sh dev               # 本机系统
+scripts/build/build-cli.sh prod linux amd64  # macos、linux 或 windows；amd64 或 arm64。不需要 cgo，任何系统都能构建任何目标
+scripts/build/build-cli.sh prod all          # 全部六个包
 ```
 
 产物是 `dist/sharetoken-cli-<版本>-<系统>-<架构>.tar.gz`（Windows 是 `.zip`；dev 构建名为 `sharetoken-cli-dev-…`），列入 `dist/SHA256SUMS-<版本>`。包里有程序和 `README.txt`。macOS 程序只有链接器的 ad-hoc 签名，Windows 程序没有代码签名，所以下载后系统给出的提示和桌面应用相同。
 
-全流程测试（验证码登录、运行、查询、经网络购买一次推理、停止、登录、退出）对接 `scripts/gui_stack.sh` 的本机网络。它需要 dev 构建，因为 prod 构建忽略 `SHARETOKEN_PORTAL`：
+全流程测试（验证码登录、运行、查询、经网络购买一次推理、停止、登录、退出）对接 `scripts/test/gui_stack.sh` 的本机网络。它需要 dev 构建，因为 prod 构建忽略 `SHARETOKEN_PORTAL`：
 
 ```bash
-scripts/gui_stack.sh start DIR && . DIR/env
-PORTAL=$PORTAL PIN=$PIN scripts/cli_test.sh <sharetoken-dev 程序的路径>
-scripts/gui_stack.sh stop DIR
+scripts/test/gui_stack.sh start DIR && . DIR/env
+PORTAL=$PORTAL PIN=$PIN scripts/test/cli_test.sh <sharetoken-dev 程序的路径>
+scripts/test/gui_stack.sh stop DIR
 ```
 
 页面也可以不通过窗口使用：运行 `sharetoken daemon`，然后用浏览器打开它打印的地址 `http://127.0.0.1:9787/#key=…`（dev：`sharetoken-dev daemon`，端口 9887）。页面把 key 存在这个标签页里（`sessionStorage`），并从地址栏去掉；daemon 每次启动 key 都会变。
 
 ## 测试
 
-通用的构建和测试说明见 [development.md](development.md)。`scripts/test.sh` 带着本机的 MySQL 服务运行 `go test`，依赖门户的测试需要它。桌面客户端自己的测试：
+通用的构建和测试说明见 [development.md](development.md)。`scripts/test/test.sh` 带着本机的 MySQL 服务运行 `go test`，依赖门户的测试需要它。桌面客户端自己的测试：
 
 | 层 | 命令 | 覆盖 |
 |---|---|---|
-| Daemon API | `scripts/test.sh -race ./internal/client` | 验证码登录（新老账户）和退出的正常和失败路径；证书确认和固定；MFA；token 吊销；用户停用；换账号；并发登录；请求防护；日志不含密钥 |
-| 账号规则 | `scripts/test.sh ./internal/accounts ./internal/portal` | 邮箱校验和规范化；管理接口 URL 含 `@` 和 `+` |
-| 全链路 API | `scripts/test.sh -race -run Daemon ./test/e2e` | 在真实的 libp2p 拓扑上：登录、经中继接入、购买模型、记账、重启后恢复、退出、网络恢复后自动接入 |
+| Daemon API | `scripts/test/test.sh -race ./internal/client` | 验证码登录（新老账户）和退出的正常和失败路径；证书确认和固定；MFA；token 吊销；用户停用；换账号；并发登录；请求防护；日志不含密钥 |
+| 账号规则 | `scripts/test/test.sh ./internal/accounts ./internal/portal` | 邮箱校验和规范化；管理接口 URL 含 `@` 和 `+` |
+| 全链路 API | `scripts/test/test.sh -race -run Daemon ./test/e2e` | 在真实的 libp2p 拓扑上：登录、经中继接入、购买模型、记账、重启后恢复、退出、网络恢复后自动接入 |
 | 窗口壳 | `cd gui && go test .` | 启动、连接、停止 daemon；端口冲突；转发 |
-| 页面 | `scripts/gui_stack.sh start DIR && node scripts/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调。配对：错误的码和自己的码，和不卖任何模型的卖家配对（没有模型、请求被拒）以及和有模型的卖家配对，生成和撤销配对码，买家加入和被移除，在页面上开关私有模式及其对未配对买家的效果。共享伙伴：在窗口里生成邀请，另一个账户用命令行加入，在伙伴节点上的免费请求（费用 0），伙伴暂停共享（请求改为付费），只用伙伴（请求失败），设置校验，解除后再次付费 |
-| 真实 WebView | `scripts/gui_shell_test.sh <dev\|prod> <程序目录>` | 不显示窗口，用系统 WebView 加载页面并向真实 daemon 发 POST；检查应用退出时 daemon 一起停止 |
-| 菜单栏和托盘 | `scripts/gui_tray_test.sh <dev\|prod> <程序目录>`（macOS、Linux） | 窗口和图标会显示约 15 秒。先向系统确认图标已显示，再执行菜单项的动作、操作真实窗口：关闭、打开、最小化和恢复、快速最小化再打开、语言跟随、点击图标（Windows，走系统的托盘消息）、Command-W（macOS）、再次启动、退出后 daemon 停止。Wayland 不告诉应用窗口是否已最小化，所以 Wayland 会话上跳过最小化的步骤，`GDK_BACKEND=x11` 时会跑。Windows 上用 `SHARETOKEN_GUI_SELFTEST=tray` 启动应用即可运行同一套自检 |
+| 页面 | `scripts/test/gui_stack.sh start DIR && node scripts/test/gui_ui_test.mjs DIR` | 无头 Chrome 走完页面的全部流程，对接真实进程（中继、HTTPS 门户、协调器、卖家、daemon）。共享页用 `custom` 厂商指向 mock 模型服务：添加、选模型、定价、开启、测试、改价、本机模型、停用、移除。账号登录只验证到登录地址和错误的回调。配对：错误的码和自己的码，和不卖任何模型的卖家配对（没有模型、请求被拒）以及和有模型的卖家配对，生成和撤销配对码，买家加入和被移除，在页面上开关私有模式及其对未配对买家的效果。共享伙伴：在窗口里生成邀请，另一个账户用命令行加入，在伙伴节点上的免费请求（费用 0），伙伴暂停共享（请求改为付费），只用伙伴（请求失败），设置校验，解除后再次付费 |
+| 真实 WebView | `scripts/test/gui_shell_test.sh <dev\|prod> <程序目录>` | 不显示窗口，用系统 WebView 加载页面并向真实 daemon 发 POST；检查应用退出时 daemon 一起停止 |
+| 菜单栏和托盘 | `scripts/test/gui_tray_test.sh <dev\|prod> <程序目录>`（macOS、Linux） | 窗口和图标会显示约 15 秒。先向系统确认图标已显示，再执行菜单项的动作、操作真实窗口：关闭、打开、最小化和恢复、快速最小化再打开、语言跟随、点击图标（Windows，走系统的托盘消息）、Command-W（macOS）、再次启动、退出后 daemon 停止。Wayland 不告诉应用窗口是否已最小化，所以 Wayland 会话上跳过最小化的步骤，`GDK_BACKEND=x11` 时会跑。Windows 上用 `SHARETOKEN_GUI_SELFTEST=tray` 启动应用即可运行同一套自检 |

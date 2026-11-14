@@ -4,14 +4,14 @@
 # with a self-signed certificate, a coordinator, a seller with a mock model,
 # and the desktop daemon. Everything lives in a temp directory.
 #
-#   scripts/gui_stack.sh start DIR     # prints the variables the tests need to DIR/env
-#   scripts/gui_stack.sh stop  DIR
-#   scripts/gui_stack.sh code  DIR <email>   # the last sign-in code mailed to the address
+#   scripts/test/gui_stack.sh start DIR     # prints the variables the tests need to DIR/env
+#   scripts/test/gui_stack.sh stop  DIR
+#   scripts/test/gui_stack.sh code  DIR <email>   # the last sign-in code mailed to the address
 #
 # Nothing delivers mail: the portal's outbox keeps every message, and "code"
 # reads the sign-in code from its subject, as the recipient would.
 set -euo pipefail
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CMD=${1:?start, stop or code}; DIR=${2:?directory}
 # $GUI_STACK_OFFSET shifts the ports and names the database apart, so two of these
 # can run at once; the UI tests that assume the default ports need offset 0.
@@ -22,7 +22,7 @@ if [ "$CMD" = code ]; then
   EMAIL=${3:?email}
   DB=$(sed 's|.*/||' "$DIR/dsn")
   for _ in $(seq 1 50); do
-    SUBJECT=$("$ROOT/scripts/local-mysql.sh" sql "$DB" "SELECT subject FROM mail_outbox WHERE to_addr='$EMAIL' AND subject LIKE '%code:%' ORDER BY id DESC LIMIT 1")
+    SUBJECT=$("$ROOT/scripts/test/local-mysql.sh" sql "$DB" "SELECT subject FROM mail_outbox WHERE to_addr='$EMAIL' AND subject LIKE '%code:%' ORDER BY id DESC LIMIT 1")
     [ -n "$SUBJECT" ] && { echo "${SUBJECT##*: }"; exit 0; }
     sleep 0.2
   done
@@ -45,7 +45,7 @@ run() { local log=$1; shift; "$@" > "$log" 2>&1 & echo $! >> pids; }
 wait_for() { for _ in $(seq 1 150); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 0.2; done; echo "timed out waiting for $2 in $1" >&2; tail -5 "$1" >&2; exit 1; }
 
 export SHARETOKEN_DB_PASSWORD=
-DSN=$("$ROOT/scripts/local-mysql.sh" new-db "st_gui_stack${OFF#0}")
+DSN=$("$ROOT/scripts/test/local-mysql.sh" new-db "st_gui_stack${OFF#0}")
 echo "$DSN" > dsn
 COORD=(-key coord.key -db "$DSN")
 PASSKEY=$("$BIN/portal" -db "$DSN" pass-key)
@@ -87,13 +87,13 @@ wait_for coord.log "via relay"
 PORTAL=https://127.0.0.1:$PORTAL_PORT
 for _ in $(seq 1 100); do curl -sk $PORTAL/api/v1/network | grep -q '"ok":true' && break; sleep 0.2; done
 
-run mock.log python3 "$ROOT/scripts/mock_upstream.py" $MOCK_PORT
+run mock.log python3 "$ROOT/scripts/dev/mock_upstream.py" $MOCK_PORT
 for _ in $(seq 1 50); do curl -s http://127.0.0.1:$MOCK_PORT/v1/models > /dev/null && break; sleep 0.2; done
 
 # sign_in HOME EMAIL DEVICE: the CLI's two steps, mail a code, then redeem it.
 sign_in() {
   SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" -home "$1" login -email "$2" -portal-pin "$PIN" -send > /dev/null
-  SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" -home "$1" login -email "$2" -portal-pin "$PIN" -device "$3" -code "$("$ROOT/scripts/gui_stack.sh" code "$DIR" "$2")" > /dev/null
+  SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" -home "$1" login -email "$2" -portal-pin "$PIN" -device "$3" -code "$("$ROOT/scripts/test/gui_stack.sh" code "$DIR" "$2")" > /dev/null
 }
 ST="$BIN/sharetoken -home $DIR/seller"
 sign_in "$DIR/seller" seller@example.test seller-box
