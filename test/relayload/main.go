@@ -20,6 +20,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +59,9 @@ func runRelay(args []string) {
 	listen := fs.String("listen", "/ip4/0.0.0.0/tcp/4101,/ip4/0.0.0.0/udp/4101/quic-v1", "")
 	addrfile := fs.String("addrfile", "relay.addr", "")
 	_ = fs.Parse(args)
+	if m := p2p.MachineMemory(); m > 0 { // as cmd/relay does
+		debug.SetMemoryLimit(int64(m / 100 * 85))
+	}
 	k, _ := p2p.NewKeys()
 	r, err := relay.New(k, relay.Config{Listen: strings.Split(*listen, ","), MaxReservationsPerIP: 100000, MaxReservations: 100000})
 	if err != nil {
