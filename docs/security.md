@@ -146,6 +146,31 @@ cannot step around it.
   that an unknown peer is an audit, so audits of such a seller prove less.
 - Administrators see every pairing with both account names in full.
 
+### 2.7 Share partners
+
+Two users can pair up as share partners and use each other's nodes for free
+(`internal/accounts/sharing.go`). Like pairing, this is a matching and billing
+rule the coordinator applies on every request: it tries the partners' nodes
+first and marks such a ticket `Shared`, a signed field neither peer can change,
+so the job moves no credits. Nothing else about the job changes: the partner's
+node sees the prompt as any seller would, and receipts, hashes and audits work
+as usual.
+
+- An invite is a secret like a pairing code: 80 random bits, one day by
+  default and 7 days at most, admits one person, and can be withdrawn. Wrong
+  codes are throttled per account and per address, like failed logins. A
+  leaked invite lets a stranger use the inviter's nodes for free within its
+  limits; the inviter sees the partner and can end it.
+- Each side sees the other's account name masked, and the tokens each used of
+  the other in the last 24 hours. Administrators see every share group with
+  names in full.
+- What a user gives is bounded by its own settings: tokens per rolling 24 hours
+  (counted from settled jobs, so jobs in flight can pass it a little) and a
+  share of each node's concurrent slots (0 pauses). A user may have five
+  partners at most.
+- Partners are matched whatever the user's pairings, and a private seller still
+  serves its partners: private mode concerns paying buyers only.
+
 ## 3. Accounts, devices and the platform
 
 | Threat | Defence | Code |
@@ -201,6 +226,9 @@ them more than the list above.
 - **Pairing is a matching rule, not encryption.** It decides which sellers a
   buyer's requests are sent to. What a paired seller can see of a prompt is
   unchanged, and the platform, which keeps the pairings, could alter them.
+- **Share partners are a matching and billing rule too.** The platform keeps
+  the partnerships and the shared flag, and could alter them or charge for a
+  job it marked free.
 - **Relays see metadata.** They see who connects to whom, when and how much, not
   what.
 - **The platform is trusted with the accounting.** One coordinator and one portal

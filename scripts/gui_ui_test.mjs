@@ -15,6 +15,8 @@ const dir = process.argv[2];
 const shots = process.argv[3] || dir + '/shots';
 mkdirSync(shots, { recursive: true });
 const env = Object.fromEntries(readFileSync(dir + '/env', 'utf8').trim().split('\n').map(l => { const i = l.indexOf('='); return [l.slice(0, i), l.slice(i + 1)]; }));
+// The OpenAI endpoint's key and switch (internal/client/apikey.go), as the daemon keeps them.
+const apiKeyFile = () => JSON.parse(readFileSync(env.DESKTOP_HOME + '/apikey.json', 'utf8'));
 const chrome = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const port = 9334;
 const proc = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--remote-debugging-port=${port}`,
@@ -114,11 +116,16 @@ await cdp('Runtime.enable'); await cdp('Log.enable'); await cdp('Page.enable');
 const WINDOW = { width: 880, height: 568, deviceScaleFactor: 2, mobile: false };
 await cdp('Emulation.setDeviceMetricsOverride', WINDOW);
 await cdp('Page.addScriptToEvaluateOnNewDocument', { source: "try { localStorage.setItem('st_lang', 'zh-CN'); } catch (e) {}" }); // these checks read the Chinese source text
-await cdp('Page.navigate', { url: env.DAEMON + '/' });
+// The checks' own calls of the local API, with the key the page keeps.
+await cdp('Page.addScriptToEvaluateOnNewDocument', { source: "window.kfetch = (p, o = {}) => fetch(p, { ...o, headers: { ...(o.headers || {}), Authorization: 'Bearer ' + sessionStorage.getItem('st_local_key') } });" });
+// As `sharetoken daemon` prints it: the page takes the key from the fragment
+// and takes it out of the address.
+await cdp('Page.navigate', { url: env.DAEMON + '/#key=' + env.DAEMON_KEY });
 
 console.log('built-in portal');
 // The page never asks for an address: it connects by itself and lands on sign-in.
 await waitFor(el('#signin-form'));
+ok(await ev('location.hash') === '' && await ev(`sessionStorage.getItem('st_local_key')`) === env.DAEMON_KEY, 'the page keeps the key and takes it out of the address');
 ok((await text('#env-banner')).includes('DEV'), 'a dev build says so on the page');
 ok((await ev('document.title')).includes('DEV'), 'and in the title');
 ok(!(await has('#portal')), 'there is no portal address field');
@@ -185,7 +192,7 @@ await shot('06-dashboard');
 console.log('buying shows up');
 let chatStatus = 0;
 for (let i = 0; i < 20 && chatStatus !== 200; i++) {
-  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
+  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKeyFile().key }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
   chatStatus = r.status; await r.text();
   if (chatStatus !== 200) await sleep(1000);
 }
@@ -204,7 +211,7 @@ const portalApi = async (method, path, body, token = config.token) => {
   // The test talks to the self-signed portal directly.
   return fetch(env.PORTAL + path, { method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
 };
-const peer = (await ev(`fetch('/api/v1/session').then(r => r.json()).then(s => s.peer)`));
+const peer = (await ev(`kfetch('/api/v1/session').then(r => r.json()).then(s => s.peer)`));
 ok((await portalApi('PATCH', '/api/v1/devices/' + peer, { name: hostile })).ok, 'a device gets a hostile name');
 await waitFor(`${el('#devices-body')}.textContent.includes('<img')`, 25000);
 ok(!(await has('#devices-body img')) && !(await ev('window.__xss === 1')), 'it shows as text, nothing runs');
@@ -235,6 +242,31 @@ await sleep(200);
 await shot('09-dark');
 await cdp('Emulation.setEmulatedMedia', { features: [] });
 
+console.log('the endpoint\'s API key');
+const v1Status = async key => (await fetch(env.DAEMON + '/v1/models', { headers: key ? { Authorization: 'Bearer ' + key } : {} })).status;
+const key1 = apiKeyFile().key;
+ok(apiKeyFile().required && await v1Status('') === 401 && await v1Status(key1) === 200, 'the endpoint wants the API key from the start');
+await waitFor(el('#copy-apikey'));
+ok(!(await ev('document.documentElement.outerHTML')).includes(key1), 'the overview offers to copy the key without showing it');
+await click('#nav-settings');
+await waitFor(`${el('#apikey-required')}?.checked && !${el('#apikey-required')}.disabled`);
+ok((await text('#apikey-text')).endsWith(key1.slice(-4)) && !(await text('#apikey-text')).includes(key1), 'the settings show the end of the key only');
+await click('#apikey-required');
+await waitFor(`!${el('#apikey-required')}.checked && !${el('#apikey-required')}.disabled`);
+ok(!apiKeyFile().required && await v1Status('') === 200, 'turned off, any request gets in, at once');
+ok(await has('#apikey-note.warn-text'), 'and the settings warn about it');
+await click('#apikey-required');
+await waitFor(`${el('#apikey-required')}.checked && !${el('#apikey-required')}.disabled`);
+ok(apiKeyFile().required && await v1Status('') === 401, 'turned on again');
+await shot('09b-apikey');
+await click('#apikey-rotate'); await waitFor(el('#dlg-confirm'));
+await click('#confirm-ok'); await waitFor(`!${el('#dlg-confirm')}`);
+const key2 = apiKeyFile().key;
+ok(key2 !== key1 && await v1Status(key1) === 401 && await v1Status(key2) === 200, 'a new key replaces the old one');
+await waitFor(`${el('#apikey-text')}.textContent.endsWith(${q(key2.slice(-4))})`);
+ok(true, 'and the settings show it');
+await click('#nav-overview');
+
 console.log('feedback');
 ok(!(await has('#feedback-text')), 'the feedback form is not on the page until asked for');
 await click('#nav-feedback'); await waitFor(el('#dlg-feedback'));
@@ -245,7 +277,7 @@ await fill('#feedback-text', 'it works');
 await click('#feedback-send');
 await waitFor(`${el('#feedback-result')}.textContent.includes('已提交')`);
 ok(await ev(`${el('#feedback-text')}.value`) === '', 'feedback is sent and the box is cleared');
-const sent = await ev(`fetch('/api/v1/feedback/mine').then(r => r.json())`);
+const sent = await ev(`kfetch('/api/v1/feedback/mine').then(r => r.json())`);
 ok(sent.feedback[0].message === 'it works' && sent.feedback[0].source === 'client' && sent.feedback[0].os.includes('/'), 'the portal has it, marked as from the client');
 await shot('10b-feedback');
 await click('#dlg-feedback-close');
@@ -308,7 +340,7 @@ ok((await text('#prov-lab')).includes('0.3 / M') && (await text('#prov-lab')).in
 ok((await text('#share-hint')).includes('1'), 'the page says sharing is still off');
 const providersFile = () => JSON.parse(readFileSync(env.DESKTOP_HOME + '/providers.json', 'utf8'));
 ok(providersFile().providers[0].api_key === KEY && providersFile().providers[0].models[0].price_in === 300000, 'providers.json holds the key and the model');
-ok(!(await ev('document.documentElement.outerHTML')).includes(KEY) && !JSON.stringify(await ev(`fetch('/api/v1/status').then(r => r.json())`)).includes(KEY), 'the key is in neither the page nor the API');
+ok(!(await ev('document.documentElement.outerHTML')).includes(KEY) && !JSON.stringify(await ev(`kfetch('/api/v1/status').then(r => r.json())`)).includes(KEY), 'the key is in neither the page nor the API');
 
 console.log('sharing: on, test, edit');
 await shot('18b-share-provider');
@@ -406,13 +438,16 @@ console.log('pairing');
 const cli = (home, ...args) => execFileSync(`${dir}/bin/sharetoken`, ['-home', `${dir}/${home}`, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const codeOf = out => out.match(/[A-Z2-7]{4}(?:-[A-Z2-7]{4}){3}/)[0];
 const buyOnce = async () => {
-  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
+  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKeyFile().key }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
   return { status: r.status, body: await r.text() };
 };
 const clickRow = (panel, needle, button) => ev(`[...document.querySelectorAll(${q(panel + ' tbody tr')})].find(r => r.textContent.includes(${q(needle)})).querySelector(${q(button)}).click()`);
 await click('#nav-pairing');
+await waitFor(el('#partners-empty'));
+ok(await shown('#share-partners') && await shown('#share-settings') && !(await shown('#paired-sellers')), 'the pairing view opens on the share partners');
+await click('#tab-pairing-sellers');
 await waitFor(el('#pair-sellers-empty'));
-ok(await shown('#paired-sellers') && !(await shown('#pairing')), 'the pairing view opens on the sellers');
+ok(await shown('#paired-sellers') && !(await shown('#pairing')), 'the sellers tab shows the paired sellers');
 ok(!(await has('#pair-restricted')) && (await text('#paired-sellers-body')).includes('3'), 'an account that is not paired buys from everyone; it may pair with three sellers');
 await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
 await click('#pair-join-ok');
@@ -446,7 +481,7 @@ ok(await has('#pair-restricted') && (await text('#paired-sellers-body')).include
 
 await click('#tab-pairing-buyers'); await waitFor(el('#pair-new-code'));
 ok(await shown('#pairing') && await has('#pair-codes-empty') && await has('#pair-buyers-empty'), 'the buyers tab starts with no codes and no buyers');
-const isPrivate = async () => JSON.parse(await ev(`fetch('/api/v1/pairing').then(r => r.text())`)).private;
+const isPrivate = async () => JSON.parse(await ev(`kfetch('/api/v1/pairing').then(r => r.text())`)).private;
 ok(!(await ev(`${el('#pair-private')}.checked`)) && !(await isPrivate()), 'private mode is off at first');
 await click('#pair-private');
 await waitFor(`${el('#pair-private')}.checked && !${el('#pair-private')}.disabled`);
@@ -467,7 +502,7 @@ await shot('24-pair-code');
 await click('#pair-shown-done');
 const pairingText = () => text('#pairing-body');
 ok((await pairingText()).includes(ownCode) && (await pairingText()).includes('friends') && (await pairingText()).includes('0 / 2'), 'and listed with its label and uses');
-const days = (JSON.parse(await ev(`fetch('/api/v1/pairing').then(r => r.text())`)).codes[0].expires_at / 1e6 - Date.now()) / 86400e3;
+const days = (JSON.parse(await ev(`kfetch('/api/v1/pairing').then(r => r.text())`)).codes[0].expires_at / 1e6 - Date.now()) / 86400e3;
 ok(days > 6.9 && days < 7.1, 'it lasts the seven days chosen');
 await click('#tab-pairing-sellers'); await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
 await fill('#pair-code-input', ownCode); await click('#pair-join-ok');
@@ -507,6 +542,89 @@ ok((await buyOnce()).status !== 200, "a private seller's models are hidden from 
 cli('seller', 'pair', 'private', 'off');
 await waitFor(`${el('#models-body')}.textContent.includes('mock-fast')`, 40000);
 ok((await buyOnce()).status === 200, 'with private mode off the seller serves everyone again');
+
+console.log('share partners');
+// The seller account shares mock-fast; once this account is its partner, it
+// buys from it for free.
+const buyPaid = async () => {
+  const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKeyFile().key }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
+  await r.text();
+  return { status: r.status, cost: Number(r.headers.get('X-Sharetoken-Cost-Micros') || -1) };
+};
+const sharing = async () => JSON.parse(await ev(`kfetch('/api/v1/sharing').then(r => r.text())`));
+await click('#nav-pairing'); await click('#tab-pairing-partners');
+await waitFor(el('#partners-empty'));
+ok(await ev(`${el('#partner-pct')}.value`) === '100' && await ev(`${el('#partner-limit')}.value`) === '' && !(await ev(`${el('#partner-only')}.checked`)),
+  'by default partners get all of it, with no daily limit, and the market stays open');
+const before = await buyPaid();
+ok(before.status === 200 && before.cost > 0, `without partners a request is paid (${before.cost} micros)`);
+await click('#partner-invite'); await waitFor(el('#dlg-partner-invite'));
+ok(await ev(`[...${el('#partner-ttl')}.options].map(o => o.value).join()`) === '24,72,168', 'an invite lasts one, three or seven days');
+await click('#partner-invite-ok');
+await waitFor(el('#dlg-partner-shown'));
+const invite = await text('#partner-shown-code');
+ok(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){3}$/.test(invite), 'an invite code is shown');
+await shot('25-partner-invite');
+await click('#partner-shown-done');
+await waitFor(`${el('#share-partners-body')}.textContent.includes(${q(invite)})`);
+await click('#partner-join'); await waitFor(el('#dlg-partner-join'));
+await fill('#partner-code-input', invite); await click('#partner-join-ok');
+await waitFor(`${el('#partner-join-error')}.textContent.includes('自己的邀请码')`);
+ok(true, 'nobody joins their own invite');
+await click('#dlg-partner-join-close');
+ok(cli('seller', 'partner', 'join', invite).includes('now sharing with de***@example.com'), "the other account joins and sees this account's masked name");
+await waitFor(`${el('#share-partners-body')}.textContent.includes('se***')`, 40000);
+ok(!(await text('#share-partners-body')).includes(invite), 'the used invite is gone and the partner is listed');
+let reused = false;
+try { cli('idle', 'partner', 'join', invite); } catch (e) { reused = true; }
+ok(reused, 'an invite admits one person');
+await click('#nav-overview');
+await waitFor(el('#models-body .model-shared'), 40000);
+ok(true, "the partner's model is marked free on the overview");
+const free = await buyPaid();
+ok(free.status === 200 && free.cost === 0, 'a request served by a partner costs nothing');
+await waitFor(el('#jobs-body .job-shared'), 40000);
+ok(true, 'the job is listed as shared');
+await click('#nav-pairing'); await click('#tab-pairing-partners');
+const usedOf = async () => (await sharing()).partners[0].taken;
+for (let i = 0; i < 40 && !(await usedOf()); i++) await sleep(500);
+ok(await usedOf() > 0, 'the tokens used of the partner are counted');
+await waitFor(`${el('#share-partners-body')}.querySelector('tbody td:nth-child(4)')?.textContent !== '0'`, 40000);
+ok(true, 'and shown');
+await fullShot('25b-partners');
+
+// The partner pauses sharing: this account goes to the market and pays.
+ok(cli('seller', 'partner', 'set', '-share', '0').includes('paused'), 'the partner pauses sharing from the command line');
+const paused = await buyPaid();
+ok(paused.status === 200 && paused.cost > 0, 'with sharing paused, a request goes to the market and is paid');
+// Partners only: no market, so the request fails.
+await click('#partner-only'); await click('#partner-save');
+await waitFor(el('#partner-settings-flash'));
+ok((await sharing()).settings.only_partners, 'partners only is saved');
+ok((await buyPaid()).status !== 200, 'with partners only and the partner paused, a request fails instead of going to the market');
+cli('seller', 'partner', 'set', '-share', '100');
+ok((await buyPaid()).cost === 0, 'sharing again, the partner serves it for free');
+await click('#partner-only');
+await fill('#partner-limit', 'many'); await click('#partner-save');
+await waitFor(`${el('#partner-settings-error')}.textContent.includes('整数')`);
+await fill('#partner-limit', '5000'); await fill('#partner-pct', '101'); await click('#partner-save');
+await waitFor(`${el('#partner-settings-error')}.textContent.includes('0 到 100')`);
+await fill('#partner-pct', '0'); await click('#partner-save');
+await waitFor(el('#partner-paused'));
+const mine = (await sharing()).settings;
+ok(!mine.only_partners && mine.daily_limit_tokens === 5000 && mine.share_pct === 0, 'the limits are checked and saved');
+ok((await text('#share-settings-body')).includes('5,000') || (await text('#share-settings-body')).includes('5000'), 'the daily limit is shown with what was given');
+await fullShot('25c-partner-settings');
+await fill('#partner-limit', ''); await fill('#partner-pct', '100'); await click('#partner-save');
+await waitFor(`!${el('#partner-paused')}`);
+await cdp('Emulation.setDeviceMetricsOverride', { width: 760, height: 488, deviceScaleFactor: 2, mobile: false });
+await sleep(300);
+ok(await fits(), 'no scrolling of the window with partners at its smallest size');
+await cdp('Emulation.setDeviceMetricsOverride', WINDOW);
+await clickRow('#share-partners', 'se***', '.partner-leave'); await waitFor(el('#dlg-confirm'));
+await click('#confirm-ok');
+await waitFor(el('#partners-empty'));
+ok((await buyPaid()).cost > 0, 'after parting, requests are paid again');
 
 console.log('languages');
 await cdp('Page.navigate', { url: env.DAEMON + '/?lang=en' });
@@ -590,7 +708,7 @@ console.log('two-factor authentication');
 console.log('a newer build is published');
 ok(!(await has('#update-notice')), 'no update notice before a release');
 {
-  const s0 = await ev(`fetch('/api/v1/session').then(r => r.json())`);
+  const s0 = await ev(`kfetch('/api/v1/session').then(r => r.json())`);
   const sys = { darwin: 'macos', win32: 'windows', linux: 'linux' }[process.platform];
   const arch = process.arch === 'x64' ? 'amd64' : process.arch;
   const pkg = `sharetoken${s0.env === 'dev' ? '-dev' : ''}-1.0.0-${sys}-${arch}.${{ macos: 'dmg', windows: 'exe', linux: 'deb' }[sys]}`;
@@ -600,7 +718,7 @@ ok(!(await has('#update-notice')), 'no update notice before a release');
   // What the release says about itself: a line for the notice, a text for the dialog.
   writeFileSync(`${env.DOWNLOADS}/RELEASE-1.0.0.zh-CN.md`, '# 更小的窗口\n\n窗口更紧凑，**菜单栏**显示中继延迟。\n\n## 界面\n- 侧边栏导航\n- 延迟按快慢着色 `ms`\n\n## 其他\n- <img src=x onerror=window.__xss=3>\n');
   writeFileSync(`${env.DOWNLOADS}/RELEASE-1.0.0.en.md`, '# A smaller window\n\nA tighter window.\n');
-  const u = await ev(`fetch('/api/v1/update/check', { method: 'POST' }).then(r => r.json())`);
+  const u = await ev(`kfetch('/api/v1/update/check', { method: 'POST' }).then(r => r.json())`);
   ok(u.available && !u.required && u.key === '1.0.0+newbuild' && u.package?.url === env.PORTAL + '/downloads/' + pkg && u.package.sha256 === 'abcd', 'the daemon finds the newer build of its version and the package for this system');
   await waitFor(el('#update-notice'), 10000);
   ok((await text('#update-text')).includes('1.0.0'), 'the page shows the new version');
@@ -620,14 +738,45 @@ ok(!(await has('#update-notice')), 'no update notice before a release');
   await click('#update-close');
   await click('#update-skip');
   await waitFor(`!${el('#update-notice')}`, 10000);
-  const s1 = await ev(`fetch('/api/v1/session').then(r => r.json())`);
+  const s1 = await ev(`kfetch('/api/v1/session').then(r => r.json())`);
   ok(s1.update.skipped && JSON.parse(readFileSync(env.DESKTOP_HOME + '/update.json', 'utf8')).skipped === u.key, 'skipping hides it and is remembered');
   await cdp('Page.reload'); await waitFor(el('#tiles .tile')); await sleep(500);
   ok(!(await has('#update-notice')), 'and it stays hidden after a reload');
   await click('#nav-settings'); await click('#update-check'); await waitFor(el('#dlg-update'));
   ok(await has('#update-body') && !(await has('#update-notice')), 'checking by hand shows a skipped release again, without bringing the notice back');
   await click('#update-close'); await click('#nav-overview');
+
+  // One-click update: offered only for a file the release signed, and only in
+  // the desktop window, whose shell marks the page. No shell answers here, so
+  // the attempt fails and says so.
+  // macOS installs the app from a zip of its own; elsewhere the package is the installer.
+  const inst = sys === 'macos' ? pkg.replace(/\.dmg$/, '.app.zip') : pkg;
+  if (inst !== pkg) writeFileSync(`${env.DOWNLOADS}/${inst}`, 'app');
+  writeFileSync(`${env.DOWNLOADS}/SHA256SUMS-1.0.0`, `abcd  ${pkg}\nabcd  ${inst}\n`);
+  writeFileSync(`${env.DOWNLOADS}/SIGNATURES-1.0.0`, `c2ln  ${inst}\n`);
+  writeFileSync(`${env.DOWNLOADS}/RELEASE-1.0.0.json`, JSON.stringify({ version: '1.0.0', commit: 'newbuild2', build_time: new Date().toISOString().replace(/\.\d+Z$/, 'Z') }));
+  const u2 = await ev(`kfetch('/api/v1/update/check', { method: 'POST' }).then(r => r.json())`);
+  ok(u2.install?.signature === 'c2ln' && u2.install.url === env.PORTAL + '/downloads/' + inst, 'a signed package is offered for installing');
+  await cdp('Page.reload', {}); await waitFor(el('#update-notice'), 10000);
+  ok(!(await has('#update-install')), 'in a browser the notice has no install button');
+  await ev(`document.documentElement.dataset.shellUpdate = '1'`);
+  await click('#nav-settings'); await click('#update-check'); await waitFor(el('#update-now'));
+  await shot('13d-update-now');
+  await click('#update-now');
+  await waitFor(`${el('#update-progress')}?.textContent.includes('更新失败')`, 10000);
+  ok(!(await ev(`${el('#update-now')}.disabled`)), 'without a shell the update fails, says so, and can be tried again');
+  await click('#update-close'); await click('#nav-overview');
 }
+
+console.log('local API key');
+// Opened without the key, the page gets nothing of the user's and says how to open it.
+await ev(`sessionStorage.removeItem('st_local_key')`);
+await cdp('Page.navigate', { url: env.DAEMON + '/' });
+await waitFor(`${el('#boot-error')}?.textContent.includes('#key=')`);
+ok(!(await has('#tiles')), 'without the key the page shows nothing of the account');
+await cdp('Page.navigate', { url: env.DAEMON + '/#key=' + env.DAEMON_KEY });
+await waitFor(el('#tiles .tile'));
+ok(true, 'with it, the account again');
 
 console.log('portal goes away');
 process.kill(Number(env.PORTAL_PID));

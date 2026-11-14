@@ -39,8 +39,8 @@ type trayMenu struct {
 // the page is shown in. The native side is the set function, so this part is the
 // same on every platform and runs in plain tests.
 type trayController struct {
-	start func() error  // blocks until the daemon's address is settled
-	addr  func() string // valid once start has returned
+	start func() error    // blocks until the daemon's address is settled
+	api   func() endpoint // valid once start has returned
 	set   func(trayMenu)
 	every time.Duration
 	wake  chan struct{}
@@ -58,8 +58,8 @@ type trayController struct {
 	balanceOf string // the user it belongs to
 }
 
-func newTrayController(start func() error, addr func() string, set func(trayMenu)) *trayController {
-	return &trayController{start: start, addr: addr, set: set, every: trayPollEvery, wake: make(chan struct{}, 1), lang: "en"}
+func newTrayController(start func() error, api func() endpoint, set func(trayMenu)) *trayController {
+	return &trayController{start: start, api: api, set: set, every: trayPollEvery, wake: make(chan struct{}, 1), lang: "en"}
 }
 
 // setLang is called with the language of each page the window loads.
@@ -100,7 +100,7 @@ func (t *trayController) run(ctx context.Context) {
 	tick := time.NewTicker(t.every)
 	defer tick.Stop()
 	for {
-		st := fetchTrayState(ctx, t.addr())
+		st := fetchTrayState(ctx, t.api())
 		st.Balance = t.balanceFor(ctx, st)
 		t.show(st)
 		t.notifyUpdate(ctx, st.Update)
@@ -139,7 +139,7 @@ func (t *trayController) balanceFor(ctx context.Context, st trayState) *int64 {
 			Available *int64 `json:"available_micros"`
 		} `json:"balance"`
 	}
-	if trayGet(ctx, t.addr(), "/api/v1/account", &me) && me.Balance.Available != nil {
+	if trayGet(ctx, t.api(), "/api/v1/account", &me) && me.Balance.Available != nil {
 		t.balance = me.Balance.Available
 	}
 	return t.balance
@@ -174,7 +174,7 @@ func (t *trayController) notifyUpdate(ctx context.Context, u trayUpdate) {
 	data, _ := json.Marshal(map[string]string{"key": u.Key})
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+t.addr()+"/api/v1/update/notified", bytes.NewReader(data))
+	req, err := t.api().request(ctx, http.MethodPost, "/api/v1/update/notified", bytes.NewReader(data))
 	if err != nil {
 		return
 	}
@@ -283,10 +283,10 @@ func (u trayUpdate) summary(lang string) string {
 func (u trayUpdate) shown() bool { return u.Available && (u.Required || !u.Skipped) }
 
 // trayGet reads one answer of the daemon's local API into out.
-func trayGet(ctx context.Context, addr, path string, out any) bool {
+func trayGet(ctx context.Context, api endpoint, path string, out any) bool {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+path, nil)
+	req, err := api.request(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return false
 	}
@@ -298,14 +298,14 @@ func trayGet(ctx context.Context, addr, path string, out any) bool {
 	return resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(out) == nil
 }
 
-func fetchTrayState(ctx context.Context, addr string) trayState {
+func fetchTrayState(ctx context.Context, api endpoint) trayState {
 	var st trayState
-	if !trayGet(ctx, addr, "/api/v1/session", &st) || st.State == "" {
+	if !trayGet(ctx, api, "/api/v1/session", &st) || st.State == "" {
 		return trayState{Down: true}
 	}
 	if st.State == stateRunning {
 		var status trayStatus
-		if trayGet(ctx, addr, "/api/v1/status", &status) {
+		if trayGet(ctx, api, "/api/v1/status", &status) {
 			st.Net = status.net()
 		}
 	}

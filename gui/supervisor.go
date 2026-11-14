@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +24,7 @@ import (
 type supervisor struct {
 	home   string
 	addr   string
+	key    string // the daemon's local API key, once it proved it holds it
 	binary string // daemon executable; "" means look it up
 	logTo  string
 	// spare holds the addresses to use if addr belongs to another program. Only
@@ -53,19 +58,25 @@ func spareAddrs() []string {
 	return addrs
 }
 
-// runningClient returns the address of a client that is running on home now,
-// from the file it records itself in. The file outlives a client that was
-// killed, so the process has to be alive too.
-func runningClient(home string) (string, bool) {
-	var ri struct {
-		API string `json:"api"`
-		PID int    `json:"pid"`
-	}
+// runInfo is the file a running client records itself in (internal/client
+// RunFile): where its local API is, and its key (internal/client/localauth.go).
+type runInfo struct {
+	API string `json:"api"`
+	PID int    `json:"pid"`
+	Key string `json:"key"`
+}
+
+// runningClient returns the client that is running on home now, from the file
+// it records itself in. The file outlives a client that was killed, so the
+// process has to be alive too. Only this user can write the file (the
+// directory is 0700), so its key is the client's.
+func runningClient(home string) (runInfo, bool) {
+	var ri runInfo
 	data, err := os.ReadFile(filepath.Join(home, "run.json"))
 	if err != nil || json.Unmarshal(data, &ri) != nil || ri.API == "" || !processAlive(ri.PID) {
-		return "", false
+		return runInfo{}, false
 	}
-	return ri.API, true
+	return ri, true
 }
 
 func homeDir() string {
@@ -125,20 +136,26 @@ type probeState int
 
 const (
 	probeNothing      probeState = iota // nobody listens
-	probeDaemon                         // a sharetoken daemon of this build type
-	probeOther                          // something else, a client without the app's API, or the other build type's daemon
+	probeDaemon                         // this user's sharetoken daemon of this build type: it proved it holds the key
+	probeOther                          // something else: another program, `sharetoken up`, another user's client, or one that cannot prove the key
 	probeOtherVersion                   // a sharetoken daemon of this build type, but another release
 )
 
-func probe(ctx context.Context, addr string) probeState {
-	st, _ := probeVersion(ctx, addr)
+// probe says whether anyone listens at addr, and if so, whether it is this
+// user's daemon with key.
+func probe(ctx context.Context, addr, key string) probeState {
+	st, _ := probeVersion(ctx, addr, key)
 	return st
 }
 
 // probeVersion says who answers at addr and, for a daemon, which release it is.
 // The app's pages come from the daemon, so a daemon of another release would
 // show this app another release's pages.
-func probeVersion(ctx context.Context, addr string) (probeState, string) {
+//
+// A daemon is this user's only if it proves it holds key (from run.json) by
+// answering a fresh nonce with LocalProof (internal/client/localauth.go). The
+// key itself is not sent: whatever holds the port may be another user's program.
+func probeVersion(ctx context.Context, addr, key string) (probeState, string) {
 	c, err := net.DialTimeout("tcp", addr, time.Second)
 	if err != nil {
 		return probeNothing, ""
@@ -146,28 +163,73 @@ func probeVersion(ctx context.Context, addr string) (probeState, string) {
 	c.Close()
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/v1/session", nil)
-	if err != nil {
+	nonce := make([]byte, 32)
+	_, _ = rand.Read(nonce)
+	n := hex.EncodeToString(nonce)
+	var h struct {
+		Env     string `json:"env"`
+		Version string `json:"version"`
+		Proof   string `json:"proof"`
+	}
+	if !getJSON(ctx, "http://"+addr+"/api/v1/hello?nonce="+n, &h) || h.Env == "" {
+		// A daemon of a release before the hello still says what it is here.
+		var s struct {
+			Env     string `json:"env"`
+			State   string `json:"state"`
+			Version string `json:"version"`
+		}
+		if getJSON(ctx, "http://"+addr+"/api/v1/session", &s) && s.State != "" && s.Env == Env && s.Version != version {
+			return probeOtherVersion, s.Version
+		}
 		return probeOther, ""
+	}
+	if h.Env != Env {
+		return probeOther, ""
+	}
+	if h.Version != version {
+		return probeOtherVersion, h.Version
+	}
+	if key == "" || !hmac.Equal([]byte(h.Proof), []byte(localProof(key, addr, n))) {
+		return probeOther, ""
+	}
+	return probeDaemon, h.Version
+}
+
+// localProof repeats internal/client.LocalProof, which this module cannot import.
+func localProof(key, addr, nonce string) string {
+	m := hmac.New(sha256.New, []byte(key))
+	m.Write([]byte("sharetoken-local-api-hello\n" + addr + "\n" + nonce))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// getJSON reads a 200 answer to a GET of url into out.
+func getJSON(ctx context.Context, url string, out any) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return probeOther, ""
+		return false
 	}
 	defer resp.Body.Close()
-	var s struct {
-		Env     string `json:"env"`
-		State   string `json:"state"`
-		Version string `json:"version"`
-	}
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&s) != nil || s.State == "" || s.Env != Env {
-		return probeOther, ""
-	}
-	if s.Version != version {
-		return probeOtherVersion, s.Version
-	}
-	return probeDaemon, s.Version
+	return resp.StatusCode == http.StatusOK && json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(out) == nil
 }
+
+// endpoint is where the daemon answers and the key its API wants.
+type endpoint struct{ addr, key string }
+
+// request makes a request of the daemon's local API, with its key.
+func (e endpoint) request(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+e.addr+path, body)
+	if err == nil && e.key != "" {
+		req.Header.Set("Authorization", "Bearer "+e.key)
+	}
+	return req, err
+}
+
+// endpoint is valid once start has returned without an error.
+func (s *supervisor) endpoint() endpoint { return endpoint{s.addr, s.key} }
 
 // otherVersionError explains a daemon left running by an earlier release. One
 // this app starts ends with it, so this one was started by hand.
@@ -180,23 +242,23 @@ func otherVersionError(addr, running string) error {
 func (s *supervisor) start(ctx context.Context) error {
 	// A client on this home comes first, wherever it listens: a second one would
 	// put the same device key on the network twice.
-	if addr, ok := runningClient(s.home); ok {
-		switch st, running := probeVersion(ctx, addr); st {
+	if ri, ok := runningClient(s.home); ok {
+		switch st, running := probeVersion(ctx, ri.API, ri.Key); st {
 		case probeDaemon:
-			s.addr = addr
+			s.addr, s.key = ri.API, ri.Key
 			return nil
 		case probeOtherVersion:
-			return otherVersionError(addr, running)
+			return otherVersionError(ri.API, running)
 		case probeOther:
-			return fmt.Errorf("`sharetoken up` is running on this data directory (%s, at %s). Stop it and reopen this app", s.home, addr)
+			return fmt.Errorf("`sharetoken up` is running on this data directory (%s, at %s), or a program that is not this user's sharetoken service holds its port. Stop it and reopen this app", s.home, ri.API)
 		}
 	}
-	switch st, running := probeVersion(ctx, s.addr); st {
-	case probeDaemon:
-		return nil
+	// Without run.json there is no key to check a daemon against: whatever
+	// answers at the address is not used.
+	switch st, running := probeVersion(ctx, s.addr, ""); st {
 	case probeOtherVersion:
 		return otherVersionError(s.addr, running)
-	case probeOther:
+	case probeOther, probeDaemon:
 		free, ok := firstFree(ctx, s.spare)
 		if !ok {
 			return fmt.Errorf("port %s is in use by another program. If it is `sharetoken up`, stop it and reopen this app", s.addr)
@@ -240,7 +302,10 @@ func (s *supervisor) start(ctx context.Context) error {
 	}()
 	deadline := time.After(20 * time.Second)
 	for {
-		if probe(ctx, s.addr) == probeDaemon {
+		// The daemon records its key in run.json once it listens; only the one
+		// this process started counts.
+		if ri, ok := runningClient(s.home); ok && ri.PID == cmd.Process.Pid && ri.API == s.addr && probe(ctx, s.addr, ri.Key) == probeDaemon {
+			s.key = ri.Key
 			return nil
 		}
 		select {
@@ -256,7 +321,7 @@ func (s *supervisor) start(ctx context.Context) error {
 // firstFree returns the first address that nobody listens on.
 func firstFree(ctx context.Context, addrs []string) (string, bool) {
 	for _, addr := range addrs {
-		if probe(ctx, addr) == probeNothing {
+		if probe(ctx, addr, "") == probeNothing {
 			return addr, true
 		}
 	}

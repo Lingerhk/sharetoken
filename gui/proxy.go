@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -22,6 +23,8 @@ type proxy struct {
 	start  func() error // waits for the daemon; its error is shown instead of the pages
 	result chan<- string
 	onLang func(string)
+	// update answers shellUpdatePath (update.go); nil: not offered.
+	update http.Handler
 	// boot is the shell's script for the page (shellBootJS), served at bootPath
 	// and loaded by a tag the proxy adds to the page's head.
 	boot string
@@ -69,6 +72,11 @@ func newProxy(sup *supervisor, start func() error, result chan<- string, onLang 
 			r.Out.Host = sup.addr
 			r.Out.Header.Del("Origin")
 			r.Out.Header.Del("Referer")
+			// The management API wants the daemon's key; the OpenAI endpoint keeps
+			// whatever the page sent (internal/client/localauth.go).
+			if p := r.In.URL.Path; p != "/v1" && !strings.HasPrefix(p, "/v1/") {
+				r.Out.Header.Set("Authorization", "Bearer "+sup.key)
+			}
 			if r.In.URL.Path == "/" { // the page is changed on its way back: always take it whole
 				for _, h := range []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match", "Accept-Encoding"} {
 					r.Out.Header.Del(h)
@@ -136,6 +144,18 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == shellLangPath {
 		p.onLang(r.URL.Query().Get("l"))
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.URL.Path == shellUpdatePath {
+		if p.update == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if err := p.start(); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		p.update.ServeHTTP(w, r)
 		return
 	}
 	if err := p.start(); err != nil {

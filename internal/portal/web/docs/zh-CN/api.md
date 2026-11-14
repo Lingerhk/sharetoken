@@ -2,7 +2,7 @@
 
 运行中的客户端在 `http://127.0.0.1:{{port}}` 上提供两组接口：`/v1/` 是 OpenAI 兼容接口，`/api/v1/` 用来查询和管理客户端。
 
-只接受本机请求。带非本机 `Origin` 的请求返回 403。错误统一为 `{"error":{"code","message"}}`。
+只接受本机请求。带非本机 `Origin` 的请求返回 403。管理接口还需要 key（见 [Key](#key)）。错误统一为 `{"error":{"code","message"}}`。
 
 ## OpenAI 兼容接口 {#openai}
 
@@ -34,26 +34,37 @@
 | `POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}` | 卖家：生成配对码（`label`、`ttl_hours`、`max_uses`），或撤销一个 |
 | `DELETE /api/v1/pairing/buyers/{id}` | 卖家：移除一个买家 |
 | `PUT /api/v1/pairing/private` | 卖家：开启或关闭私有模式。请求体：`{"enabled": true}` |
+| `GET /api/v1/sharing` | 你的共享伙伴及最近 24 小时双方互相用了多少 tokens、未使用的邀请码和你的共享设置 |
+| `POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}` | 生成一个只能一人使用的邀请码（`ttl_hours`，最长 168），或撤销一个 |
+| `POST /api/v1/sharing/join` | 成为邀请码生成者的共享伙伴。请求体：`{"code": "…"}` |
+| `DELETE /api/v1/sharing/partners/{id}` | 停止和某个伙伴共享 |
+| `PUT /api/v1/sharing/settings` | 只用伙伴、每日上限和并发比例。请求体：`{"only_partners": false, "daily_limit_tokens": 0, "share_pct": 100}` |
+
+## Key {#key}
+
+客户端每次启动都会生成新的 key，写进数据目录下只有你能读的 `run.json`（字段 `key`）。访问 `/api/v1/` 的每个请求都要带上 `Authorization: Bearer <key>`，否则返回 401 `local_auth`。`{{exe}}` 命令和桌面应用会自己读取。`/v1/` 用的是另一把不随启动变化的 API key（`{{exe}} apikey`；`GET /api/v1/apikey`、带 `{"required": bool}` 的 `PUT /api/v1/apikey`、`POST /api/v1/apikey/rotate`）。
 
 ## 示例 {#examples}
 
 ::: macos linux
 ```bash
-curl -s http://127.0.0.1:{{port}}/api/v1/status
-curl -s http://127.0.0.1:{{port}}/api/v1/account
-curl -s -X POST http://127.0.0.1:{{port}}/api/v1/share/stop
+KEY=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("{{home}}/run.json")))["key"])')
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:{{port}}/api/v1/status
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:{{port}}/api/v1/account
+curl -s -H "Authorization: Bearer $KEY" -X POST http://127.0.0.1:{{port}}/api/v1/share/stop
 ```
 :::
 
 ::: windows
 ```powershell
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/status | ConvertTo-Json -Depth 6
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/account | ConvertTo-Json -Depth 6
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/share/stop -Method Post
+$h = @{ Authorization = "Bearer " + (Get-Content "{{homewin}}\run.json" | ConvertFrom-Json).key }
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/status -Headers $h | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/account -Headers $h | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/share/stop -Method Post -Headers $h
 ```
 :::
 
 ## 安全 {#security}
 
 > [!WARNING]
-> 这些接口对本机其他进程没有认证。多用户机器上，别的用户可以调用 `/v1` 花你的 credit，也可以修改共享设置。请不要把 `http` 改成非本机地址，也不要把端口转发出去。
+> `/v1/` 需要客户端的 API key（见[调用模型](/docs/use-models#endpoint)），`/api/v1/` 需要 `run.json` 里的 key。如果关掉 API key（`{{exe}} apikey off`），本机别的用户就能调用 `/v1/` 花你的 credit。请不要把 `http` 改成非本机地址，也不要把端口转发出去。

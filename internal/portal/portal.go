@@ -452,6 +452,7 @@ func (s *Server) Handler() http.Handler {
 	s.mailRoutes(mux)
 	s.feedbackRoutes(mux)
 	s.pairingRoutes(mux)
+	s.sharingRoutes(mux)
 	s.settingsRoutes(mux)
 	return withLimits(mux)
 }

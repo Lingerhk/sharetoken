@@ -37,6 +37,7 @@ type JobInfo struct {
 	DisputeOutcome   string `json:"dispute_outcome,omitempty"`
 	CreatedAt        int64  `json:"created_at"`
 	DoneAt           int64  `json:"done_at,omitempty"`
+	Shared           bool   `json:"shared,omitempty"` // between share partners: free
 }
 
 // Job roles.
@@ -65,7 +66,7 @@ func (f JobQuery) to() int64 {
 }
 
 const accountJobCols = `job_id, buyer_acct, model, status, buyer, node, prompt_tokens, completion_tokens, cost, fee,
-	dispute_outcome, created_at, done_at`
+	dispute_outcome, created_at, done_at, shared`
 
 // accountJobsSQL walks the index of each side in created_at order and stops
 // after the page: an OR of the two columns would sort the account's whole
@@ -129,12 +130,14 @@ func AccountJobs(db *sql.DB, acct string, f JobQuery) ([]JobInfo, error) {
 			j             JobInfo
 			buyerAcct     string
 			pt, ct, c, fe int64
+			shared        int64
 		)
 		if err := rows.Scan(&j.JobID, &buyerAcct, &j.Model, &j.Status, &j.Buyer, &j.Node, &pt, &ct, &c, &fe,
-			&j.DisputeOutcome, &j.CreatedAt, &j.DoneAt); err != nil {
+			&j.DisputeOutcome, &j.CreatedAt, &j.DoneAt, &shared); err != nil {
 			return nil, err
 		}
 		j.PromptTokens, j.CompletionTokens, j.CostMicros, j.FeeMicros = uint64(pt), uint64(ct), uint64(c), uint64(fe)
+		j.Shared = shared != 0
 		if j.Status == StatusRefunded || j.Status == StatusReleased {
 			j.CostMicros, j.FeeMicros = 0, 0 // nothing was charged
 		}
@@ -241,6 +244,7 @@ type AdminJob struct {
 	CreatedAt        int64  `json:"created_at"`
 	StartedAt        int64  `json:"started_at,omitempty"`
 	DoneAt           int64  `json:"done_at,omitempty"`
+	Shared           bool   `json:"shared,omitempty"`
 }
 
 // QueryJobs lists jobs newest first, narrowed by f.
@@ -254,11 +258,12 @@ func QueryJobs(q Querier, f JobQuery) ([]AdminJob, error) {
 	out := []AdminJob{}
 	for rows.Next() {
 		var j AdminJob
-		var pt, ct, c, fe int64
+		var pt, ct, c, fe, shared int64
 		if err := rows.Scan(&j.JobID, &j.Model, &j.Status, &j.Buyer, &j.Node, &j.BuyerAcct, &j.NodeAcct, &pt, &ct, &c, &fe,
-			&j.DisputeReason, &j.DisputeOutcome, &j.DisputeDetail, &j.CreatedAt, &j.StartedAt, &j.DoneAt); err != nil {
+			&j.DisputeReason, &j.DisputeOutcome, &j.DisputeDetail, &j.CreatedAt, &j.StartedAt, &j.DoneAt, &shared); err != nil {
 			return nil, err
 		}
+		j.Shared = shared != 0
 		j.PromptTokens, j.CompletionTokens, j.CostMicros, j.FeeMicros = uint64(pt), uint64(ct), uint64(c), uint64(fe)
 		if j.Status == StatusRefunded || j.Status == StatusReleased {
 			j.CostMicros, j.FeeMicros = 0, 0
@@ -273,7 +278,7 @@ func QueryJobs(q Querier, f JobQuery) ([]AdminJob, error) {
 // table (TestQueryJobsUsesIndexes checks the plans).
 func queryJobsSQL(f JobQuery) (string, []any) {
 	const cols = `job_id, model, status, buyer, node, buyer_acct, node_acct, prompt_tokens, completion_tokens,
-		cost, fee, dispute_reason, dispute_outcome, dispute_detail, created_at, started_at, done_at`
+		cost, fee, dispute_reason, dispute_outcome, dispute_detail, created_at, started_at, done_at, shared`
 	var statusWhere string
 	var statusArgs []any
 	if f.Status != "" {

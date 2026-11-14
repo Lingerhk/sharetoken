@@ -24,6 +24,12 @@ var (
 	// The names scripts/build-cli.sh and scripts/build-gui.sh give their packages.
 	packageRe  = regexp.MustCompile(`^sharetoken(-cli)?(-dev)?-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-(macos|linux|windows)-(amd64|arm64)\.(?:tar\.gz|zip|dmg|exe|deb)$`)
 	checksumRe = regexp.MustCompile(`^SHA256SUMS-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?$`)
+	// The macOS app as one-click updates install it: the .app bundle in a zip,
+	// which the app swaps in for itself (not listed: people download the .dmg).
+	appZipRe = regexp.MustCompile(`^sharetoken(-dev)?-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-macos-(amd64|arm64)\.app\.zip$`)
+	// SIGNATURES-<version>: "<base64 Ed25519 signature>  <file>" lines, the
+	// release key's signature of each file's SHA-256 (scripts/sign-packages.go).
+	signaturesRe = regexp.MustCompile(`^SIGNATURES-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?$`)
 )
 
 // Package is one downloadable archive.
@@ -36,6 +42,9 @@ type Package struct {
 	URL     string `json:"url"`
 	Size    int64  `json:"size"`
 	SHA256  string `json:"sha256,omitempty"`
+	// Signature is the release key's Ed25519 signature of the file's SHA-256,
+	// base64: what a client checks before it installs the file itself.
+	Signature string `json:"signature,omitempty"`
 }
 
 // Downloads is the answer of GET /api/v1/downloads.
@@ -120,7 +129,7 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 // that may be in the directory.
 func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("file")
-	if s.cfg.DownloadsDir == "" || (!packageRe.MatchString(name) && !checksumRe.MatchString(name)) {
+	if s.cfg.DownloadsDir == "" || (!packageRe.MatchString(name) && !checksumRe.MatchString(name) && !appZipRe.MatchString(name) && !signaturesRe.MatchString(name)) {
 		http.NotFound(w, r)
 		return
 	}

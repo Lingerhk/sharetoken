@@ -29,10 +29,27 @@ I18N.ready.then(() => {
     constructor(status, code, message) { super(message); this.status = status; this.code = code; }
   }
 
+  // The local API's key, for this page opened in a browser from the address
+  // `sharetoken daemon` prints (…/#key=…). In the desktop window the shell adds
+  // the key itself. sessionStorage keeps it to this tab and this port.
+  const keyInAddress = () => {
+    const m = /(?:^#|&)key=([0-9a-f]{16,128})(?:&|$)/.exec(location.hash);
+    if (!m) return '';
+    try { sessionStorage.setItem('st_local_key', m[1]); } catch (e) { /* this page only */ }
+    history.replaceState(null, '', location.pathname + location.search);
+    return m[1];
+  };
+  const localKey = keyInAddress() || (() => { try { return sessionStorage.getItem('st_local_key') || ''; } catch (e) { return ''; } })();
+  // The address pasted into a tab already on the page changes only the
+  // fragment, which loads nothing: start again with the key.
+  addEventListener('hashchange', () => { if (keyInAddress()) location.reload(); });
+
   async function api(method, path, body) {
     let resp;
+    const headers = body ? { 'Content-Type': 'application/json' } : {};
+    if (localKey) headers.Authorization = 'Bearer ' + localKey;
     try {
-      resp = await fetch(path, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+      resp = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
     } catch (e) {
       throw new ApiError(0, 'daemon_down', tr('后台服务没有响应，请重新打开应用'));
     }
@@ -48,6 +65,8 @@ I18N.ready.then(() => {
   // Messages for the codes the daemon and the portal report.
   const MESSAGES = {
     upgrade_required: tr('这个版本已不再受支持，请升级到最新版本后继续使用'),
+    apikey: tr('无法读写 API key 文件（apikey.json），请检查数据目录的权限'),
+    local_auth: tr('请用 sharetoken daemon 启动时打印的地址（带 #key=）打开这个页面'),
     bad_portal: tr('门户地址格式不对'),
     insecure_portal: tr('拒绝使用其他机器上的明文 HTTP 门户：验证码会以明文传输。请使用 https:// 地址'),
     portal_outdated: tr('ShareToken 服务器版本过旧，暂时无法登录'),
@@ -348,7 +367,7 @@ I18N.ready.then(() => {
     return { el, set(key, ...nodes) { const k = JSON.stringify(key); if (k !== last) { last = k; body.replaceChildren(...nodes.flat().filter(Boolean)); } } };
   }
 
-  function copyButton(getText, id = 'copy-endpoint') {
+  function copyButton(getText, id = 'copy-endpoint', label = tr('复制')) {
     const b = h('button', { type: 'button', class: 'small', id, onclick: async () => {
       const text = getText();
       try {
@@ -360,8 +379,8 @@ I18N.ready.then(() => {
         t.remove();
       }
       b.textContent = tr('已复制');
-      setTimeout(() => { b.textContent = tr('复制'); }, 1500);
-    } }, tr('复制'));
+      setTimeout(() => { b.textContent = label; }, 1500);
+    } }, label);
     return b;
   }
 
@@ -612,7 +631,7 @@ I18N.ready.then(() => {
         { title: tr('模型'), get: j => j.model },
         { title: tr('状态'), get: j => JOB_STATUS[j.status] || j.status },
         { title: 'Tokens', num: true, get: j => num(j.prompt_tokens + j.completion_tokens) },
-        { title: 'Credit', num: true, get: j => '+' + credit(j.earned_micros, 6) },
+        { title: 'Credit', num: true, get: j => j.shared ? h('span', { class: 'pill ok job-shared' }, tr('伙伴共享')) : '+' + credit(j.earned_micros, 6) },
       ], sold));
     }
 
@@ -1021,6 +1040,159 @@ I18N.ready.then(() => {
     return { sellers: sellers.el, buyers: buyers.el, reload };
   }
 
+  // ---- share partners ----
+
+  // Share partners use each other's nodes for free, before the market. One
+  // makes an invite, the other enters it. Each limits what it gives: tokens per
+  // 24 hours and a part of each node's concurrent jobs. The portal keeps it all;
+  // the daemon passes the requests on. Two panels: partners and invites, and
+  // the settings.
+  function partnersView() {
+    let view = null, error = '', flash = null, settingsFlash = null, dirty = false;
+    const partners = section('share-partners', tr('共享伙伴'), { fill: true,
+      hint: tr('和伙伴配对后，双方优先使用对方的节点，不扣费。伙伴的节点不可用时，再到网络上付费购买。'),
+      actions: [
+        h('button', { type: 'button', id: 'partner-join', onclick: () => joinDialog() }, tr('输入邀请码')),
+        h('button', { type: 'button', class: 'primary', id: 'partner-invite', onclick: () => inviteDialog() }, tr('邀请伙伴')),
+      ] });
+    const settings = section('share-settings', tr('共享设置'), {
+      hint: tr('限制你的节点给伙伴用多少，对所有伙伴合计生效。每日上限按最近 24 小时计，不填表示不限；并发比例 100 表示不限，0 表示暂停共享。打开「只用伙伴的节点」后，不再到网络上付费购买，伙伴的节点不可用时请求会失败。') });
+
+    function partnerError(e) {
+      if (e.code === 'bad_code') return tr('邀请码不对，或者已经过期、被撤销或用过了');
+      if (e.code === 'own_code') return tr('这是你自己的邀请码，请把它发给要共享的伙伴');
+      if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
+      if (e.code === 'not_found') return tr('这一项已经不存在了');
+      if (e.code === 'not_logged_in') return tr('请先登录');
+      return message(e);
+    }
+
+    async function reload() {
+      try { view = await api('GET', '/api/v1/sharing'); error = ''; }
+      catch (e) { error = partnerError(e); }
+      render();
+    }
+
+    const failed = () => error ? h('div', { class: 'notice warn small partner-error' }, tr('暂时获取不到共享伙伴信息：{error}', { error })) : null;
+    const flashLine = (f, id) => f ? h('div', { class: 'notice ' + f.cls, id }, f.text) : null;
+    const who = u => [u.username, u.disabled ? h('span', { class: 'pill bad partner-off' }, tr('已停用')) : null];
+
+    // The settings form keeps what is typed until saved; a reload does not
+    // overwrite it.
+    const onlyBox = h('input', { type: 'checkbox', id: 'partner-only', onchange: () => { dirty = true; } });
+    const limitInput = h('input', { type: 'text', id: 'partner-limit', class: 'narrow', inputmode: 'numeric', placeholder: tr('不限'), 'aria-label': tr('每天最多给伙伴的 tokens'), oninput: () => { dirty = true; } });
+    const pctInput = h('input', { type: 'text', id: 'partner-pct', class: 'narrow short', inputmode: 'numeric', 'aria-label': tr('伙伴最多占用每个节点并发的百分比'), oninput: () => { dirty = true; } });
+    const servedText = h('span', { class: 'v muted', id: 'partner-served' });
+    const saveBtn = h('button', { type: 'submit', class: 'primary', id: 'partner-save' }, tr('保存'));
+    const settingsErr = errorBox('partner-settings-error');
+    const settingsForm = h('form', { novalidate: true, id: 'partner-settings', onsubmit: e => { e.preventDefault(); run(saveBtn, settingsErr, async () => {
+      const lim = limitInput.value.trim().replace(/[,\s]/g, '');
+      const limit = lim === '' ? 0 : Number(lim);
+      if (!Number.isInteger(limit) || limit < 0) throw new Error(tr('每日上限需要是不小于 0 的整数，不填表示不限'));
+      const pct = Number(pctInput.value);
+      if (!Number.isInteger(pct) || pct < 0 || pct > 100) throw new Error(tr('并发比例需要是 0 到 100 的整数'));
+      await api('PUT', '/api/v1/sharing/settings', { only_partners: onlyBox.checked, daily_limit_tokens: limit, share_pct: pct });
+      dirty = false;
+      settingsFlash = { cls: 'ok', text: tr('已保存') };
+      await reload();
+    }, partnerError); } },
+      h('div', { class: 'rows' },
+        h('span', { class: 'k' }, tr('使用')), h('label', { class: 'v check' }, onlyBox, h('span', null, tr('只用伙伴的节点，不到网络上购买'))), h('span'),
+        h('span', { class: 'k' }, tr('每日上限')), h('span', { class: 'v' }, limitInput, ' ', h('span', { class: 'muted small' }, tr('tokens / 24 小时，所有伙伴合计'))), h('span'),
+        h('span', { class: 'k' }, tr('并发比例')), h('span', { class: 'v' }, pctInput, ' ', h('span', { class: 'muted small' }, tr('% 每个节点的并发，0 暂停共享'))), h('span'),
+        h('span', { class: 'k' }, tr('已给出')), servedText, saveBtn),
+      settingsErr.el);
+
+    function fillSettings(st) {
+      if (dirty) return;
+      onlyBox.checked = !!st.only_partners;
+      limitInput.value = st.daily_limit_tokens ? String(st.daily_limit_tokens) : '';
+      pctInput.value = String(st.share_pct);
+    }
+
+    function render() {
+      const v = view || { partners: [], invites: [], settings: { only_partners: false, daily_limit_tokens: 0, share_pct: 100 }, served: 0, window_hours: 24, max_partners: 0 };
+      partners.set([v.partners, v.invites, error, flash, !view],
+        failed(),
+        flashLine(flash, 'partner-flash'),
+        v.max_partners ? h('p', { class: 'small muted', id: 'partner-max' }, tr('最多同时和 {n} 个伙伴共享。下表是最近 {h} 小时的用量。', { n: num(v.max_partners), h: num(v.window_hours) })) : null,
+        v.partners.length === 0 ? h('div', { class: 'empty', id: 'partners-empty' }, tr('还没有共享伙伴')) : table([
+          { title: tr('伙伴'), get: u => who(u) },
+          { title: tr('配对时间'), get: u => time(u.since) },
+          { title: tr('我给出'), num: true, get: u => num(u.given || 0) },
+          { title: tr('我使用'), num: true, get: u => num(u.taken || 0) },
+          { title: '', get: u => h('button', { type: 'button', class: 'mini danger partner-leave', 'data-id': String(u.id), onclick: () => leave(u) }, tr('解除')) },
+        ], v.partners),
+        v.invites.length === 0 ? null : [
+          h('h3', { class: 'sub-title' }, tr('未使用的邀请码')),
+          table([
+            { title: tr('邀请码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'partner-copy-' + c.id)) },
+            { title: tr('到期时间'), get: c => time(c.expires_at) },
+            { title: '', get: c => h('button', { type: 'button', class: 'mini danger partner-revoke', 'data-id': String(c.id), onclick: () => revoke(c) }, tr('撤销')) },
+          ], v.invites)]);
+      if (view) fillSettings(v.settings);
+      saveBtn.disabled = !view;
+      const st = v.settings;
+      servedText.textContent = st.daily_limit_tokens > 0
+        ? tr('最近 {h} 小时已给出 {used} / {limit} tokens', { h: num(v.window_hours), used: num(v.served), limit: num(st.daily_limit_tokens) })
+        : tr('最近 {h} 小时已给出 {used} tokens', { h: num(v.window_hours), used: num(v.served) });
+      settings.set([st, error, settingsFlash, !view],
+        failed(),
+        flashLine(settingsFlash, 'partner-settings-flash'),
+        st.share_pct === 0 ? h('div', { class: 'notice warn small', id: 'partner-paused' }, tr('共享已暂停：伙伴现在不能使用你的节点。')) : null,
+        settingsForm);
+    }
+
+    function joinDialog() {
+      const code = h('input', { type: 'text', id: 'partner-code-input', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', maxlength: '64', placeholder: 'XXXX-XXXX-XXXX-XXXX', class: 'mono' });
+      const err = errorBox('partner-join-error');
+      const okBtn = h('button', { class: 'primary', type: 'submit', id: 'partner-join-ok' }, tr('配对'));
+      modal('dlg-partner-join', tr('输入邀请码'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
+        if (!code.value.trim()) throw new Error(tr('请输入邀请码'));
+        const p = await api('POST', '/api/v1/sharing/join', { code: code.value.trim() });
+        closeModal();
+        flash = { cls: 'ok', text: tr('已和 {name} 成为共享伙伴', { name: p.username }) };
+        await reload();
+      }, partnerError); } },
+        field(tr('邀请码'), code, tr('配对后，你们双方的所有设备都优先使用对方的节点，不扣费。随时可以解除。')),
+        err.el, okBtn));
+    }
+
+    const TTLS = [[24, tr('1 天')], [72, tr('3 天')], [168, tr('7 天')]];
+    function inviteDialog() {
+      const ttl = h('select', { id: 'partner-ttl' }, TTLS.map(([hours, text]) => h('option', { value: String(hours), selected: hours === 24 }, text)));
+      const err = errorBox('partner-invite-error');
+      const okBtn = h('button', { class: 'primary', type: 'submit', id: 'partner-invite-ok' }, tr('生成'));
+      modal('dlg-partner-invite', tr('邀请伙伴'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
+        const c = await api('POST', '/api/v1/sharing/invites', { ttl_hours: Number(ttl.value) });
+        flash = null;
+        await reload();
+        shownInvite(c);
+      }, partnerError); } },
+        field(tr('有效期'), ttl, tr('邀请码只能用一次，到期后失效。')),
+        err.el, okBtn));
+    }
+    function shownInvite(c) {
+      modal('dlg-partner-shown', tr('邀请码已生成'),
+        h('p', { class: 'small muted' }, tr('把它发给要共享的伙伴。对方输入后，你们就能免费使用对方的节点。')),
+        h('div', { class: 'endpoint' }, h('code', { id: 'partner-shown-code', class: 'pair-code big' }, c.code), copyButton(() => c.code, 'partner-shown-copy')),
+        h('p', { class: 'small muted', id: 'partner-shown-meta' }, tr('到期时间：{time}', { time: time(c.expires_at) })),
+        h('div', { class: 'modal-actions' }, h('button', { type: 'button', class: 'primary', id: 'partner-shown-done', onclick: () => closeModal() }, tr('完成'))));
+    }
+
+    function leave(u) {
+      confirmBox(tr('解除和 {name} 的共享？之后双方不能再免费使用对方的节点，除非重新配对。', { name: u.username }), tr('解除'),
+        () => api('DELETE', '/api/v1/sharing/partners/' + u.id), async () => { flash = null; await reload(); }, partnerError);
+    }
+    function revoke(c) {
+      confirmBox(tr('撤销邀请码 {code}？', { code: c.code }), tr('撤销'),
+        () => api('DELETE', '/api/v1/sharing/invites/' + c.id), async () => { flash = null; await reload(); }, partnerError);
+    }
+
+    render();
+    return { partners: partners.el, settings: settings.el, reload };
+  }
+
   // subTabs puts panels of one view behind a row of tabs: one shows at a time,
   // the first at the start. items: [name, label, panels].
   function subTabs(view, items) {
@@ -1063,21 +1235,60 @@ I18N.ready.then(() => {
     const versionText = h('span', { id: 'settings-version' });
     const checkResult = h('span', { class: 'small muted', id: 'update-check-result', role: 'status' });
     const checkBtn = h('button', { type: 'button', id: 'update-check', onclick: checkUpdate }, tr('检查更新'));
+    // The endpoint's API key (internal/client/apikey.go): switched and made
+    // anew in the settings, copied from the overview. It is fetched with the
+    // account data, so a change made with `sharetoken apikey` shows up too.
+    let apiKey = null, apiURL = '';
+    const apiKeyBox = h('input', { type: 'checkbox', id: 'apikey-required', disabled: true, onchange: async () => {
+      apiKeyBox.disabled = true;
+      try { apiKey = await api('PUT', '/api/v1/apikey', { required: apiKeyBox.checked }); setBanner(''); }
+      catch (e) { setBanner(message(e)); }
+      apiKeyBox.disabled = false;
+      drawAPIKey();
+    } });
+    const apiKeyText = h('code', { id: 'apikey-text' });
+    const apiKeyNote = h('span', { class: 'small muted', id: 'apikey-note' });
+    const apiKeyCopy = copyButton(() => apiKey ? apiKey.key : '', 'apikey-copy', tr('复制 key'));
+    const rotateBtn = h('button', { type: 'button', id: 'apikey-rotate', onclick: () => confirmBox(
+      tr('旧 key 会立即失效，用到它的工具要换成新 key。'), tr('重新生成'),
+      async () => { apiKey = await api('POST', '/api/v1/apikey/rotate'); }, async () => drawAPIKey()) }, tr('重新生成'));
+    function drawAPIKey() {
+      if (!apiKey) return;
+      apiKeyBox.checked = apiKey.required;
+      apiKeyBox.disabled = false;
+      apiKeyText.textContent = apiKey.key.slice(0, 6) + '…' + apiKey.key.slice(-4);
+      apiKeyNote.textContent = apiKey.required ? tr('工具把它填作 OpenAI API key') : tr('未开启：本机任何程序都能用这个接口花你的 credit');
+      apiKeyNote.className = 'small ' + (apiKey.required ? 'muted' : 'warn-text');
+      drawEndpoint();
+    }
+    function drawEndpoint() {
+      if (!apiURL) return;
+      const req = !!(apiKey && apiKey.required);
+      endpoint.set([apiURL, req, req && apiKey.key], h('div', { class: 'endpoint' }, h('code', { id: 'endpoint-url' }, apiURL), copyButton(() => apiURL),
+        req ? copyButton(() => apiKey.key, 'copy-apikey', tr('复制 API key')) : null));
+    }
+    async function loadAPIKey() {
+      try { apiKey = await api('GET', '/api/v1/apikey'); drawAPIKey(); } catch (e) { /* shown again at the next try */ }
+    }
+
     const settings = h('section', { class: 'panel', id: 'settings' }, h('div', { class: 'rows' },
       h('span', { class: 'k' }, tr('账户')), accountName, logoutBtn,
+      h('span', { class: 'k' }, tr('API key')), h('label', { class: 'v check' }, apiKeyBox, h('span', null, tr('调用本地 OpenAI 接口需要 API key'))), apiKeyCopy,
+      h('span', { class: 'k' }), h('span', { class: 'v' }, apiKeyText, ' ', apiKeyNote), rotateBtn,
       h('span', { class: 'k' }, tr('语言')), h('span', { class: 'v' }), I18N.picker() || h('span'),
       h('span', { class: 'k' }, tr('版本')), h('span', { class: 'v' }, versionText, ' ', checkResult), checkBtn,
       h('span', { class: 'k' }, tr('反馈')), h('span', { class: 'v muted' }, tr('告诉我们你遇到的问题或建议。')),
       h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈'))));
     let market = [];
     const pairing = pairingView();
+    const partners = partnersView();
     const share = shareView(() => market);
 
     // name, label, panels, or tabs of panels.
     const VIEWS = [
       ['overview', tr('概览'), [tiles, endpoint.el, h('div', { class: 'cols' }, network.el, models.el)]],
       ['share', tr('共享'), null, [['state', tr('状态'), share.panes.state], ['providers', tr('厂商 API'), share.panes.providers], ['local', tr('本机模型'), share.panes.local]]],
-      ['pairing', tr('配对'), null, [['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
+      ['pairing', tr('配对'), null, [['partners', tr('共享伙伴'), [partners.partners, partners.settings]], ['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
       ['activity', tr('记录'), null, [['all', tr('全部'), [jobs.el]], ['sold', tr('卖出'), [share.sold]]]],
       ['settings', tr('设置'), [settings, devices.el]],
     ];
@@ -1196,7 +1407,7 @@ I18N.ready.then(() => {
       market = ms || [];
       models.set(ms, !ms || ms.length === 0 ? h('div', { class: 'empty', id: 'models-empty' }, tr('网络上暂时没有在线的模型')) : table([
         { title: tr('模型'), get: m => m.model },
-        { title: tr('节点'), num: true, get: m => num(m.nodes) },
+        { title: tr('节点'), num: true, get: m => m.shared_nodes ? [num(m.nodes), ' ', h('span', { class: 'pill ok model-shared', title: tr('伙伴的节点：免费') }, tr('伙伴 {n}', { n: num(m.shared_nodes) }))] : num(m.nodes) },
         { title: tr('最低输入价'), num: true, get: m => pricePerM(m.min_price_in) },
         { title: tr('最低输出价'), num: true, get: m => pricePerM(m.min_price_out) },
       ], ms));
@@ -1209,7 +1420,7 @@ I18N.ready.then(() => {
         { title: tr('模型'), get: j => j.model },
         { title: tr('状态'), get: j => JOB_STATUS[j.status] || j.status },
         { title: 'Tokens', num: true, get: j => num(j.prompt_tokens + j.completion_tokens) },
-        { title: 'Credit', num: true, get: j => j.role === 'sell' ? '+' + credit(j.earned_micros, 6) : '-' + credit(j.cost_micros, 6) },
+        { title: 'Credit', num: true, get: j => j.shared ? h('span', { class: 'pill ok job-shared' }, tr('伙伴共享')) : j.role === 'sell' ? '+' + credit(j.earned_micros, 6) : '-' + credit(j.cost_micros, 6) },
       ], js));
     }
 
@@ -1221,7 +1432,8 @@ I18N.ready.then(() => {
       const [cls, label] = STATE[s.state] || ['', s.state];
       pill.className = 'pill ' + cls;
       pill.textContent = label;
-      endpoint.set(s.api, h('div', { class: 'endpoint' }, h('code', { id: 'endpoint-url' }, s.api), copyButton(() => s.api)));
+      apiURL = s.api;
+      drawEndpoint();
     }
 
     // What a new release means for this client: one line over the views (the
@@ -1247,6 +1459,7 @@ I18N.ready.then(() => {
       updateBox.replaceChildren(h('div', { class: 'notice strip ' + (u.required ? 'bad' : 'warn'), id: 'update-notice' },
         h('span', { class: 'strip-text' }, h('strong', { id: 'update-text' }, updateTitle(u)),
           n && n.summary ? [' · ', h('span', { id: 'update-summary', title: n.summary, dir: 'auto' }, n.summary)] : null),
+        canInstall(u) ? h('button', { type: 'button', class: 'mini accent', id: 'update-install', onclick: () => updateDialog(u, true) }, tr('立即更新')) : null,
         h('button', { type: 'button', class: 'mini', id: 'update-open', onclick: () => updateDialog(u) }, tr('查看详情')),
         !u.required && u.key ? h('button', { type: 'button', class: 'link small', id: 'update-skip', onclick: async () => {
           try {
@@ -1256,17 +1469,59 @@ I18N.ready.then(() => {
         } }, tr('跳过此版本')) : null));
     }
 
-    function updateDialog(u) {
+    // The desktop window installs a signed package by itself (gui/update.go):
+    // its shell says so on the page, and the release offers the file.
+    const canInstall = u => document.documentElement.dataset.shellUpdate === '1' && !!(u && u.install && u.key);
+
+    function updateDialog(u, start) {
       const n = notesOf(u);
       const dl = (u.package && web(u.package.url)) || web(u.download_url), notes = web(u.notes_url);
+      const progress = h('div', { class: 'small', id: 'update-progress', role: 'status' });
+      const installBtn = canInstall(u) ? h('button', { type: 'button', class: 'accent', id: 'update-now', onclick: () => installUpdate(u, installBtn, progress) }, tr('立即更新并重启')) : null;
       modal('dlg-update', u.required ? tr('需要升级') : tr('新版本 {version}', { version: u.latest || '' }),
         u.required ? h('div', { class: 'notice bad', id: 'update-required' }, tr('升级前不能调用模型或接单，已有作业照常结算。')) : null,
         n && n.body ? richText(n.body, 'update-body') : h('p', { class: 'muted', id: 'update-no-notes' }, updateTitle(u)),
         dl ? h('div', { class: 'update-link' }, h('span', { class: 'muted' }, tr('下载')), h('a', { id: 'update-link', href: dl, target: '_blank', rel: 'noopener' }, dl), copyButton(() => dl, 'update-copy')) : null,
+        progress,
         h('div', { class: 'modal-actions' },
           notes ? h('a', { id: 'update-notes', href: notes, target: '_blank', rel: 'noopener' }, tr('更新内容')) : null,
           h('span', { class: 'spacer' }),
-          h('button', { type: 'button', id: 'update-close', onclick: () => closeModal() }, tr('关闭'))));
+          h('button', { type: 'button', id: 'update-close', onclick: () => closeModal() }, tr('关闭')),
+          installBtn));
+      if (start && installBtn) installUpdate(u, installBtn, progress);
+    }
+
+    // installUpdate asks the window's shell to fetch, check and install the
+    // offered build, and follows it until the app restarts or it fails.
+    async function installUpdate(u, btn, progress) {
+      btn.disabled = true;
+      progress.className = 'small';
+      progress.textContent = tr('正在准备更新…');
+      try {
+        await api('POST', '/__shell/update', { key: u.key });
+      } catch (e) {
+        progress.className = 'small bad';
+        progress.textContent = tr('更新失败：{error}', { error: message(e) });
+        btn.disabled = false;
+        return;
+      }
+      for (;;) {
+        await new Promise(r => setTimeout(r, 400));
+        let st;
+        try { st = await api('GET', '/__shell/update'); } catch (e) { continue; } // the service stops before the restart
+        if (st.state === 'downloading') {
+          progress.textContent = st.total > 0 ? tr('正在下载 {pct}%', { pct: Math.floor(st.written * 100 / st.total) }) : tr('正在下载…');
+        } else if (st.state === 'installing') {
+          progress.textContent = tr('已校验签名，正在安装…');
+        } else if (st.state === 'restarting') {
+          progress.textContent = tr('正在重启…');
+        } else if (st.state === 'failed') {
+          progress.className = 'small bad';
+          progress.textContent = tr('更新失败：{error}', { error: st.error || '' });
+          btn.disabled = false;
+          return;
+        }
+      }
     }
 
     async function checkUpdate() {
@@ -1298,6 +1553,7 @@ I18N.ready.then(() => {
         renderSession(s);
         // Account data: every third tick; the state: every tick.
         if (tick++ % 3 === 0) {
+          loadAPIKey();
           try {
             const [me, j, sj] = await Promise.all([api('GET', '/api/v1/account'), api('GET', '/api/v1/jobs?limit=10'), api('GET', '/api/v1/jobs?role=sell&limit=10')]);
             if (stopped) return;
@@ -1306,6 +1562,7 @@ I18N.ready.then(() => {
             share.account(me, sj.jobs);
             setBanner('');
             await pairing.reload();
+            await partners.reload();
           } catch (e) {
             if (e.status === 401) { boot(); return; }
             setBanner(tr('暂时连不上门户，下面是上次获取的账户信息（{error}）', { error: message(e) }));

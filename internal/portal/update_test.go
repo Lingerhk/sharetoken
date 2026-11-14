@@ -96,6 +96,80 @@ func TestUpdateInfo(t *testing.T) {
 	}
 }
 
+// A client is offered a file to install by itself only when the release has
+// signed it: the installer, the .app in a zip on macOS, the CLI archive.
+func TestUpdateInstall(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := downloadsServer(t, dir)
+	files := []string{
+		"sharetoken-1.0.0-macos-arm64.dmg", "sharetoken-1.0.0-macos-arm64.app.zip",
+		"sharetoken-dev-1.0.0-macos-arm64.dmg", "sharetoken-dev-1.0.0-macos-arm64.app.zip",
+		"sharetoken-1.0.0-windows-amd64.exe", "sharetoken-1.0.0-linux-arm64.deb",
+		"sharetoken-cli-1.0.0-linux-amd64.tar.gz", "sharetoken-1.0.0-macos-amd64.dmg", "sharetoken-1.0.0-macos-amd64.app.zip",
+	}
+	sums, sigs := "", ""
+	for _, f := range files {
+		write(f, "x")
+		sums += "aa  " + f + "\n"
+		if f != "sharetoken-1.0.0-macos-amd64.app.zip" { // published unsigned
+			sigs += "c2ln  " + f + "\n"
+		}
+	}
+	write("SHA256SUMS-1.0.0", sums)
+	write("SIGNATURES-1.0.0", sigs)
+	write("RELEASE-1.0.0.json", `{"version":"1.0.0","commit":"abc1234","build_time":"2026-11-10T08:00:00Z"}`)
+	for q, want := range map[string]string{
+		"kind=desktop&channel=prod&os=macos&arch=arm64":   "sharetoken-1.0.0-macos-arm64.app.zip",
+		"kind=desktop&channel=dev&os=macos&arch=arm64":    "sharetoken-dev-1.0.0-macos-arm64.app.zip",
+		"kind=desktop&channel=prod&os=macos&arch=amd64":   "",
+		"kind=desktop&channel=prod&os=windows&arch=amd64": "sharetoken-1.0.0-windows-amd64.exe",
+		"kind=desktop&channel=prod&os=linux&arch=arm64":   "sharetoken-1.0.0-linux-arm64.deb",
+		"kind=cli&channel=prod&os=linux&arch=amd64":       "sharetoken-cli-1.0.0-linux-amd64.tar.gz",
+		"kind=cli&channel=prod&os=macos&arch=arm64":       "",
+	} {
+		u := getUpdate(t, srv.URL, q)
+		got := ""
+		if p := u.Install; p != nil {
+			got = p.File
+			if p.Signature != "c2ln" || p.SHA256 != "aa" || p.URL != "/downloads/"+p.File {
+				t.Errorf("%s: install %+v", q, p)
+			}
+		}
+		if got != want {
+			t.Errorf("%s: install %q, want %q", q, got, want)
+		}
+	}
+	// The zip and the signatures are served; the zip is not listed.
+	for _, f := range []string{"sharetoken-1.0.0-macos-arm64.app.zip", "SIGNATURES-1.0.0"} {
+		resp, err := http.Get(srv.URL + "/downloads/" + f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Errorf("%s: status %d", f, resp.StatusCode)
+		}
+	}
+	resp, err := http.Get(srv.URL + "/api/v1/downloads")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var d Downloads
+	_ = json.NewDecoder(resp.Body).Decode(&d)
+	for _, p := range d.Packages {
+		if strings.HasSuffix(p.File, ".app.zip") {
+			t.Errorf("listed %s", p.File)
+		}
+	}
+}
+
 // The policy's versions come first; a policy naming a version beyond the
 // published one sends clients to the download page, with no package.
 func TestUpdateInfoPolicy(t *testing.T) {

@@ -23,7 +23,7 @@ The examples below write `sharetoken`; use the command above if `sharetoken` is 
 ## Ground rules
 
 - **Credits are money.** Requests through the endpoint spend the user's credits. Do not send large batches, loops or long generations without the user's go-ahead, and set `max_tokens` on requests.
-- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `share`, `provider`, `pair`, `config`) is always fine.
+- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private`, `partner invite/join/rm/revoke/set`, `apikey on/off/rotate`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `share`, `provider`, `pair`, `partner`, `config`) is always fine.
 - **Never put secrets on a command line.** A provider API key goes in through standard input or `$SHARETOKEN_PROVIDER_KEY`, never as an argument. Never print the `token` from `config.json` or `providers.json`; `sharetoken config` masks it.
 - **Sign-in needs the user.** `login` mails a six-digit code to the user's address. Ask the user for the address and then for the code; do not guess them.
 - **`up` runs until stopped.** Start it in the background (or ask the user to run it in a terminal); never wait on it in the foreground.
@@ -54,16 +54,18 @@ Two steps, because the code arrives by mail. An address without an account gets 
 sharetoken models          # model IDs on the network, nodes, lowest prices
 ```
 
-Any OpenAI-compatible tool works with base URL `http://@HTTP@/v1` and any API key:
+Any OpenAI-compatible tool works with base URL `http://@HTTP@/v1` and the client's API key, which `@CMD@ apikey -q` prints (it stays the same until `@CMD@ apikey rotate`; `@CMD@ apikey` says whether it is required). Pass it straight on; do not print it or write it into files or messages:
 
 ```bash
-curl -s http://@HTTP@/v1/chat/completions -H 'Content-Type: application/json' \
+curl -s http://@HTTP@/v1/chat/completions -H "Authorization: Bearer $(@CMD@ apikey -q)" -H 'Content-Type: application/json' \
   -d '{"model":"MODEL_ID","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://@HTTP@/v1", api_key="sharetoken")
+import subprocess
+key = subprocess.run(["@CMD@", "apikey", "-q"], capture_output=True, text=True, check=True).stdout.strip()
+client = OpenAI(base_url="http://@HTTP@/v1", api_key=key)
 r = client.chat.completions.create(model="MODEL_ID", max_tokens=256,
                                    messages=[{"role": "user", "content": "Hello"}])
 ```
@@ -83,6 +85,7 @@ sharetoken balance                     # available and held credits, tokens boug
 sharetoken jobs [-role buy|sell] [-n 20]
 sharetoken relays [-measure]           # relay round-trip times; the link quality of the current relay
 sharetoken version --check             # is a newer client released?
+sharetoken upgrade                      # install it (asks first; checks the release signature). Only when the user asks
 ```
 
 ## Sell: share a model
@@ -124,10 +127,22 @@ sharetoken pair leave SELLER_ID | pair rm BUYER_ID | pair revoke CODE_ID
 sharetoken pair private on | off
 ```
 
+## Share partners
+
+Two users who pair as partners use each other's nodes first and free (no credits move); when no partner node can take a request it goes to the network and is paid, unless `-only on`. Each limits what it gives.
+
+```bash
+sharetoken partner                                # partners, tokens given/used in 24h, open invites, settings
+sharetoken partner invite [-ttl 24h]              # a one-person invite code
+sharetoken partner join CODE
+sharetoken partner rm USER_ID | partner revoke INVITE_ID
+sharetoken partner set [-only on|off] [-limit TOKENS_PER_24H] [-share PERCENT]
+```
+
 ## Local management API
 
-While the client runs, `http://@HTTP@/api/v1/…` serves JSON for scripts: `GET status`, `GET models`, `GET account`, `GET jobs?role=buy&limit=20`, `GET share`, `GET pairing`. Prefer the commands above unless JSON is needed.
+While the client runs, `http://@HTTP@/api/v1/…` serves JSON for scripts: `GET status`, `GET models`, `GET account`, `GET jobs?role=buy&limit=20`, `GET share`, `GET pairing`, `GET sharing`. Each request needs the key the client writes to `@HOME@/run.json` at each start (field `key`), as `Authorization: Bearer <key>`; without it the answer is 401 `local_auth`. Never print the key or put it in files or messages. Prefer the commands above unless JSON is needed.
 
 ## More
 
-`sharetoken` with no arguments prints every command and flag. The user guide is at the portal's `/docs/`.
+`sharetoken` with no arguments prints every command and flag. The user guide is at <@PORTAL@/docs/>.

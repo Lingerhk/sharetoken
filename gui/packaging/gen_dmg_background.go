@@ -5,9 +5,10 @@
 //
 //	go run packaging/gen_dmg_background.go
 //
-// It writes packaging/dmg-background.png (600x400) and dmg-background@2x.png
-// (1200x800); build-gui.sh joins them into one TIFF for Retina screens. The
-// icons sit at (150,190) and (450,190) in the 600x400 window.
+// It writes packaging/dmg-background.png (660x420) and dmg-background@2x.png
+// (1320x840); build-gui.sh joins them into one TIFF for Retina screens. The
+// 160-point icons sit at (165,200) and (495,200) in the 660x420 window
+// (scripts/dmg_settings.py).
 package main
 
 import (
@@ -26,7 +27,7 @@ func segment(x, y, ax, ay, bx, by, width float64) bool {
 }
 
 func draw(scale int, name string) {
-	w, h := 600*scale, 400*scale
+	w, h := 660*scale, 420*scale
 	s := float64(scale)
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	const ss = 3 // samples per axis, for smooth edges
@@ -38,9 +39,9 @@ func draw(scale int, name string) {
 				for j := range ss {
 					x := (float64(px) + (float64(i)+.5)/ss) / s
 					y := (float64(py) + (float64(j)+.5)/ss) / s
-					if segment(x, y, 245, 190, 345, 190, 7) ||
-						segment(x, y, 345, 190, 322, 168, 7) ||
-						segment(x, y, 345, 190, 322, 212, 7) {
+					if segment(x, y, 282, 200, 378, 200, 7) ||
+						segment(x, y, 378, 200, 355, 178, 7) ||
+						segment(x, y, 378, 200, 355, 222, 7) {
 						hit++
 					}
 				}

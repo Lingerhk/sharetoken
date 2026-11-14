@@ -6,7 +6,8 @@
 #   scripts/build-gui.sh <dev|prod> windows [amd64|arm64]  from any system, no cgo
 #   scripts/build-gui-linux.sh <dev|prod> [amd64|arm64]    Linux, from any system with Docker
 #
-#   macOS:   dist/ShareToken.app (not signed or notarized), and sharetoken-<version>-macos-<arch>.dmg
+#   macOS:   dist/ShareToken.app (not signed or notarized), sharetoken-<version>-macos-<arch>.dmg,
+#            and the app zipped for one-click updates, sharetoken-<version>-macos-<arch>.app.zip
 #   Linux:   dist/sharetoken-<version>-linux-<arch>/, and sharetoken-<version>-linux-<arch>.deb
 #   Windows: dist/sharetoken-<version>-windows-<arch>/ (not code-signed), and sharetoken-<version>-windows-<arch>.exe,
 #            made with makensis, or in the Docker image of scripts/build-gui-linux.sh if it is not installed
@@ -90,55 +91,45 @@ build_macos() { # architecture
   # a Gatekeeper warning.
   codesign --force --deep --sign - "$app" 2>/dev/null
   # The disk image opens as a small window: the app, an arrow, the Applications
-  # link. Finder keeps the layout in the volume's .DS_Store, so the image is made
-  # writable, laid out through Finder, and then compressed.
+  # link (scripts/dmg_settings.py).
   dmg=sharetoken$SUFFIX-$VERSION-macos-$arch.dmg
   stage=$(mktemp -d)
   ditto "$app" "$stage/$NAME.app"
-  ln -s /Applications "$stage/Applications"
-  mkdir "$stage/.background"
-  tiffutil -cathidpicheck gui/packaging/dmg-background.png gui/packaging/dmg-background@2x.png -out "$stage/.background/background.tiff" 2>/dev/null
-  rm -f "$OUT/$dmg" "$stage.rw.dmg"
-  hdiutil create -quiet -volname "$NAME" -srcfolder "$stage" -fs HFS+ -format UDRW "$stage.rw.dmg"
-  local mnt
-  mnt=$(hdiutil attach -readwrite -noverify -noautoopen "$stage.rw.dmg" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -1)
-  # Finder may not know a volume yet just after it was attached: wait for it, and try twice.
-  local tries=0
-  until osascript <<OSA; do
-tell application "Finder"
-  repeat 20 times
-    if exists disk "$(basename "$mnt")" then exit repeat
-    delay 0.5
-  end repeat
-  tell disk "$(basename "$mnt")"
-    open
-    set current view of container window to icon view
-    set toolbar visible of container window to false
-    set statusbar visible of container window to false
-    set the bounds of container window to {200, 120, 800, 520}
-    set opts to the icon view options of container window
-    set arrangement of opts to not arranged
-    set icon size of opts to 112
-    set text size of opts to 13
-    set background picture of opts to file ".background:background.tiff"
-    set position of item "$NAME.app" of container window to {150, 190}
-    set position of item "Applications" of container window to {450, 190}
-    update without registering applications
-    delay 2
-    close
-  end tell
-end tell
-OSA
-    tries=$((tries + 1))
-    [ "$tries" -lt 2 ] || { echo "warning: Finder could not lay out the disk image; it opens as a plain folder" >&2; break; }
-    sleep 3
-  done
-  sync
-  hdiutil detach -quiet "$mnt" || { sleep 3; hdiutil detach -quiet -force "$mnt"; }
-  hdiutil convert -quiet "$stage.rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$OUT/$dmg"
-  rm -rf "$stage" "$stage.rw.dmg"
+  local zip=sharetoken$SUFFIX-$VERSION-macos-$arch.app.zip
+  # The app alone, zipped: what the one-click update installs (gui/update_darwin.go
+  # swaps the bundle for it). The portal serves it but does not list it.
+  rm -f "$OUT/$zip"
+  # No resource forks or extended attributes: they would go in as ._* files, which
+  # the updater's unzip keeps as files, breaking the code signature.
+  ditto -c -k --norsrc --noextattr --noacl --keepParent "$stage/$NAME.app" "$OUT/$zip"
+  sums "$zip"
+  # $ST_NO_DMG=1 (tests) stops here, before the disk image.
+  if [ -n "${ST_NO_DMG:-}" ]; then
+    rm -rf "$stage"
+    echo "built $OUT/$zip"
+    return
+  fi
+  # The layout (icon size and places, the background) goes into the image's
+  # .DS_Store through dmgbuild, which mounts the image hidden: no Finder window
+  # opens on the desktop while building, and nothing waits on Finder.
+  tiffutil -cathidpicheck gui/packaging/dmg-background.png gui/packaging/dmg-background@2x.png -out "$stage/background.tiff" 2>/dev/null
+  rm -f "$OUT/$dmg"
+  "$(dmgbuild_bin)" -s scripts/dmg_settings.py -D app="$stage/$NAME.app" -D background="$stage/background.tiff" "$NAME" "$OUT/$dmg" >/dev/null
+  rm -rf "$stage"
   sums "$dmg"
   echo "built $OUT/$dmg"
+}
+
+# dmgbuild_bin prints the dmgbuild program, installing the pinned version into
+# a virtual environment under ~/.cache the first time.
+DMGBUILD_VERSION=1.6.7
+dmgbuild_bin() {
+  local venv=${XDG_CACHE_HOME:-$HOME/.cache}/sharetoken/dmgbuild-$DMGBUILD_VERSION
+  if [ ! -x "$venv/bin/dmgbuild" ]; then
+    python3 -m venv "$venv" >&2
+    "$venv/bin/pip" install -q --disable-pip-version-check "dmgbuild==$DMGBUILD_VERSION" >&2
+  fi
+  echo "$venv/bin/dmgbuild"
 }
 
 nsis() { # makensis arguments; paths in them are relative to dist/

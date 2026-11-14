@@ -366,7 +366,7 @@ func TestSchemaHasNoPasswords(t *testing.T) {
 	}
 	// Binaries that still write passwords refuse such a database.
 	var need int
-	if err := s.db.QueryRow(`SELECT MAX(min_reader) FROM schema_migrations WHERE component = 'core'`).Scan(&need); err != nil || need != 5 {
+	if err := s.db.QueryRow(`SELECT min_reader FROM schema_migrations WHERE component = 'core' AND version = 5`).Scan(&need); err != nil || need != 5 {
 		t.Fatalf("min reader %d %v", need, err)
 	}
 }

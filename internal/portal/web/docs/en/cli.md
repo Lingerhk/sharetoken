@@ -76,6 +76,17 @@ List the models on the network, the node count, the TEE node count and the lowes
 
 Show the latency of each relay. `-measure` measures again right away. The client must be running.
 
+### apikey {#apikey}
+
+The local endpoint's API key (see [Call models](/docs/use-models#endpoint)). A running client follows a change at once.
+
+| Command | Meaning |
+|---|---|
+| `apikey` | The endpoint, the key, and whether it is required |
+| `apikey -q` | The key only, for scripts: `export OPENAI_API_KEY=$({{exe}} apikey -q)` |
+| `apikey on` / `apikey off` | Require the key (the default), or let any request in |
+| `apikey rotate` | Make a new key. The old one stops working at once |
+
 ## Share {#share}
 
 | Command | What it does |
@@ -110,6 +121,27 @@ A seller hands out a pairing code. A buyer that joins with it buys only from the
 
 The ids are the ones `pair` lists. See [Pair with your buyers](/docs/share#pairing).
 
+## Share partners {#partners}
+
+Two users who pair up as partners use each other's nodes first, for free; when no partner node can take a request, it goes to the network and is paid.
+
+| Command | What it does |
+|---|---|
+| `partner` | Show your partners, the tokens you gave and used in the last 24 hours, open invites and your settings |
+| `partner invite [-ttl 24h]` | Make an invite for one person. It lasts 24 hours unless you pass `-ttl` (168 hours at most) |
+| `partner join <code>` | Become the partner of whoever made the invite |
+| `partner rm <user id>` | Stop sharing with a partner |
+| `partner revoke <invite id>` | Withdraw an open invite |
+| `partner set [-only on\|off] [-limit N] [-share P]` | `-only`: use partners' nodes only; `-limit`: tokens your nodes give all partners per 24 hours (0: no limit); `-share`: percent of each of your nodes' concurrent jobs partners may take (0 pauses) |
+
+```bash
+{{exe}} partner invite
+{{exe}} partner join ABCD-EFGH-IJKL-MNOP
+{{exe}} partner set -limit 200000 -share 50
+```
+
+See [Share with partners](/docs/share#partners).
+
 ## Coding agents {#agents}
 
 `skill install` teaches Claude Code and Codex on this computer to use the client: check its status and balance, call models through the local endpoint, share a model. It writes `skills/sharetoken/SKILL.md` under `~/.claude` and `~/.codex` (`%USERPROFILE%` on Windows; `CLAUDE_CONFIG_DIR` and `CODEX_HOME` move them). The skill asks the agent to check with you before it changes settings or spends many credits.
@@ -134,6 +166,7 @@ A file of the same name that the client did not write is left alone unless you a
 |---|---|
 | `config` | Show the configuration file path and contents. Only the start of the token is shown |
 | `version` | Show the version, network, portal, state directory and local API address. Writes no files |
+| `upgrade [-y]` | Install the newest release: fetch its package, check the release signature, install it the way this copy was installed. See [One-click update](/docs/update#one-click) |
 
 ## Environment variables {#env}
 

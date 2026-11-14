@@ -55,7 +55,7 @@ func (t *trayTest) waitFor(what string, ok func(trayProbe) bool) error {
 }
 
 func (t *trayTest) daemonAnswers(what string) error {
-	if st := fetchTrayState(t.ctx, t.sup.addr); st.Down {
+	if st := fetchTrayState(t.ctx, t.sup.endpoint()); st.Down {
 		return fmt.Errorf("%s: the daemon does not answer", what)
 	}
 	return nil

@@ -39,7 +39,8 @@
 | `config.json` | 设置和登录 token。只有你自己能读 |
 | `device.key` | 设备私钥。只有你自己能读，换一台机器就是一台新设备 |
 | `network.json` | 中继列表的缓存，删除后会自动重新获取 |
-| `run.json` | 运行中客户端的 API 地址 |
+| `run.json` | 运行中客户端的 API 地址和管理接口的 key |
+| `apikey.json` | OpenAI 端点的 API key 以及是否需要它（`{{exe}} apikey`） |
 | `daemon.log` | 桌面应用启动的服务的日志 |
 
 > [!WARNING]

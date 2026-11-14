@@ -47,6 +47,9 @@ type Daemon struct {
 	log  *slog.Logger
 	srv  *http.Server
 	addr string
+	key  string // the local API's key (localauth.go)
+
+	apiKeys *apiKeyGate // the OpenAI endpoint's key (apikey.go)
 
 	authMu sync.Mutex // serializes what changes who is logged in
 	bg     sync.WaitGroup
@@ -142,14 +145,18 @@ func (d *Daemon) Start() error {
 		return fmt.Errorf("local API on %s: %w", d.HTTP, err)
 	}
 	d.addr = ln.Addr().String()
+	d.key = newLocalKey()
+	if d.apiKeys, err = newAPIKeyGate(d.home); err != nil {
+		ln.Close()
+		return err
+	}
 	d.srv = &http.Server{Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := d.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			d.log.Error("local API stopped", "err", err)
 		}
 	}()
-	data, _ := json.Marshal(RunInfo{API: d.addr, PID: os.Getpid()})
-	_ = os.WriteFile(filepath.Join(d.home, RunFile), data, 0o600)
+	writeRunInfo(d.home, d.addr, d.key)
 
 	d.mu.Lock()
 	d.cfg = cfg
@@ -187,6 +194,9 @@ func (d *Daemon) Close() {
 
 // Addr is the local API's address (host:port).
 func (d *Daemon) Addr() string { return d.addr }
+
+// Key is what the local API wants in Authorization (localauth.go).
+func (d *Daemon) Key() string { return d.key }
 
 // portalAddr is the portal the user signed in to, or last used.
 func (d *Daemon) portalAddr() (base, pin string) {
@@ -755,6 +765,14 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("GET /ui/i18n/client/{file}", func(w http.ResponseWriter, r *http.Request) {
 		page("i18n/client/"+r.PathValue("file"))(w, r)
 	})
+	mux.HandleFunc("GET /api/v1/hello", func(w http.ResponseWriter, r *http.Request) {
+		nonce := r.URL.Query().Get("nonce")
+		if !validNonce(nonce) {
+			writeErrorCode(w, http.StatusBadRequest, "bad_request", "nonce: 16 to 64 random bytes in hex")
+			return
+		}
+		writeJSON(w, http.StatusOK, Hello{Env: Env, Version: version.Version, APIVersion: version.API, Proof: LocalProof(d.key, d.addr, nonce)})
+	})
 	mux.HandleFunc("GET /api/v1/session", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.Session()) })
 	mux.HandleFunc("POST /api/v1/portal/probe", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
 		Portal string `json:"portal"`
@@ -818,6 +836,9 @@ func (d *Daemon) Handler() http.Handler {
 			if err := do(req.Key); errors.Is(err, errNotOffered) {
 				writeErrorCode(w, http.StatusConflict, "not_offered", err.Error())
 				return
+			} else if errors.Is(err, errNoInstall) {
+				writeErrorCode(w, http.StatusConflict, "no_install", err.Error())
+				return
 			} else if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
@@ -827,6 +848,9 @@ func (d *Daemon) Handler() http.Handler {
 	}
 	mux.HandleFunc("POST /api/v1/update/skip", updateAction(func(k string) error { return d.updates.Skip(k) }))
 	mux.HandleFunc("POST /api/v1/update/notified", updateAction(func(k string) error { return d.updates.MarkNotified(k) }))
+	// Fetches and checks the offered build's package (one-click update); the
+	// desktop app's shell installs it. The session's update.download says how it goes.
+	mux.HandleFunc("POST /api/v1/update/download", updateAction(func(k string) error { return d.updates.StartDownload(k) }))
 	// The account pages work without the agent: the portal may be up while
 	// the relays or the coordinator are not.
 	mux.HandleFunc("POST /api/v1/feedback", jsonBody(func(w http.ResponseWriter, r *http.Request, req portal.FeedbackRequest) {
@@ -857,7 +881,8 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/ledger", d.fromPortal("/api/v1/ledger"))
 	mux.HandleFunc("/api/v1/", d.toAgent)
 	mux.HandleFunc("/v1/", d.toAgent)
-	return guardHost(guardAPIOrigin(guardOrigin(mux)))
+	apiKeyRoutes(mux, d.home)
+	return guardHost(guardAPIOrigin(guardOrigin(requireLocalKey(d.key, daemonOpen, d.apiKeys, mux))))
 }
 
 // guardAPIOrigin keeps the management API, which handles logins, to the app:

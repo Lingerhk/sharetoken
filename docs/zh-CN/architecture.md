@@ -151,6 +151,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 安全措施：
 
 - 只绑定回环地址。客户端把实际地址写进状态目录里的 `run.json`，CLI 据此找到正在运行的客户端。
+- **管理 API 需要 key。** 回环地址对本机所有程序和用户开放。客户端每次启动生成一个 key，写进 `run.json`（权限 0600，在 0700 的状态目录里）；`/api/v1/` 要求 `Authorization: Bearer <key>`（`client.requireLocalKey`）。桌面应用使用 daemon 之前先确认它持有这个 key：`GET /api/v1/hello?nonce=…` 返回 HMAC-SHA256(key, 地址, nonce)（`client.LocalProof`），所以占住端口的其他用户的程序既拿不到页面里的登录验证码，也拿不到 key。OpenAI 端点 `/v1/` 用另一把 key，存在 `apikey.json`（0600），不随启动变化，因为工具会把它存进自己的设置；用户可以关掉它（`client.apiKeyGate`）。
 - **拒绝网页的跨域请求。** 带 `Origin`、且来源不是 localhost、回环地址或应用自定义 scheme（`tauri://`、`wails://`）的请求一律 403（`client.guardOrigin`），防止任意网页借用户的浏览器花用户的 credit。监听回环地址时还检查 `Host` 头，防 DNS rebinding。
 - `config.json`（含门户 token）和设备私钥 `device.key` 的权限是 0600。状态目录见 [configuration.md](configuration.md)。
 
@@ -180,6 +181,17 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 
 配对发生在账户之间：买家的所有设备都受它约束，卖家的所有设备都为它服务。门户只给双方看对方账户名的打码形式，因为配对码可能传到卖家意料之外的人手里。输错配对码和登录失败一样会被限流。
 
+### 2.14 共享伙伴：免费使用彼此的节点
+
+除了买卖，还有第二种共享方式：两个用户结成共享伙伴，各自免费使用对方的节点（`internal/accounts/sharing.go`、`internal/coordinator/sharing.go`）。一方生成邀请，邀请码的形式和配对码相同，默认有效一天，最长 7 天，只能让一个人加入；另一方在门户用它加入。一个用户最多有 5 个伙伴、10 个未用的邀请。
+
+- **数据模型。** 伙伴关系以共享组保存：`share_groups`（带 `max_members`）、`share_members` 和 `share_invites`。目前每个邀请建一个两人组，和用户同在一个组里的人都是它的伙伴。表结构已经能容纳更多成员的共享池：组有自己的人数上限，邀请可以指向已有的组（`share_invites.group_id`），所以以后加共享池不需要迁移。`share_settings` 保存每个用户的设置；从没改过设置的用户全部共享，并在伙伴不可用时回到市场。
+- **撮合顺序。** 有伙伴的用户请求模型时，`IssueTicket` 先在伙伴的在线节点里找。有节点能接，Ticket 就标为 `Shared`。只有都接不了（伙伴没提供这个模型、都离线或忙、或超出了他们共享的额度）时，请求才进入市场，照常付费；如果用户开启了"只用伙伴"，则请求失败，返回无供给或容量不足。不论用户有没有配对，伙伴都会参与撮合；私有模式只针对付费买家。模型列表在 `ModelSummary.SharedNodes` 里统计伙伴节点数；开启"只用伙伴"时只列出伙伴和用户自己的模型。
+- **免费结算。** `Ticket.Shared` 是签名字段，双方都改不了。共享任务不冻结、不扣费、不收平台费；它的预留只用来限制输出长度，`protocol.TicketCost` 对它返回 0，任务记录标为 `jobs.shared`。回执、哈希和抽检和其他任务一样。`JobInfo` 和管理端的任务列表带 `Shared`。共享任务不改动节点的记录（成功、失败、败诉次数和信誉）：它们不花钱，否则同一个人的两个账户可以借它刷市场信誉，伙伴也可以零成本拉低它。
+- **额度。** 每个用户限定自己给出的部分，所有伙伴合计。`daily_limit_tokens` 限制它的节点在滚动 24 小时内为伙伴处理的 token 数（提示词加输出），按已结算的共享任务计，所以达到额度时还在运行的任务会让它略微超出。`share_pct` 是每个节点 `MaxConcurrency` 并发槽位中伙伴任务可以占用的比例，至少一个槽位；0 表示暂停共享。超出任一额度后，伙伴到市场购买，可能仍被撮合到同样的节点，按其价格付费。
+
+和配对一样，执行规则的是协调器，每次请求都从数据库读伙伴和设置。门户给双方看对方账户名的打码形式，以及过去 24 小时双方互相使用的 token 数；输错邀请码和输错配对码一样会被限流。任何一方都可以随时结束伙伴关系。管理后台可以查看共享组（`GET /api/v1/admin/share-groups`）。
+
 ## 3. 数据库
 
 门户、协调器和邮件服务共用一个 MySQL 8（InnoDB）数据库（`internal/mysqldb`）。用 `-db mysql://user@host:port/db`（`database.dsn`）指定，可以放在另一台机器上。
@@ -188,9 +200,10 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 |---|---|---|
 | `users`、`api_tokens`、`devices` | 门户 | 协调器（用 `devices` 解析账户）、门户 |
 | `pairing_codes`、`pairings`、`pairing_private` | 门户 | 协调器（用 `pairings` 和 `pairing_private` 撮合）、门户 |
+| `share_groups`、`share_members`、`share_invites`、`share_settings` | 门户 | 协调器（用 `share_members` 和 `share_settings` 撮合）、门户 |
 | `relays` | 门户（登记）、协调器（可达状态） | 门户、协调器 |
 | `ledger_accounts`、`ledger_holds`、`ledger_entries` | 门户（发放与扣减）、协调器（冻结、结算、退款） | 两边 |
-| `jobs`、`nodes`、`audits`、`peers`、`meta` | 协调器 | 门户（账单、用量、协调器 ID） |
+| `jobs`（`shared` 标记共享伙伴之间的任务）、`nodes`、`audits`、`peers`、`meta` | 协调器 | 门户（账单、用量、协调器 ID） |
 | `portal_settings`、`admin_audit_log`、`invite_codes`、`relay_samples`、`feedback` | 门户 | 门户 |
 | `mail_outbox`、`mail_inbox`、`mail_codes`、`mail_status` | 门户、邮件服务 | 门户、邮件服务（[mail.md](mail.md)） |
 | `schema_migrations` | 执行迁移的那个进程 | 所有进程 |
@@ -214,6 +227,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 | token 被盗 | token 可以随时吊销；客户端 token 60 天、浏览器会话 15 天过期；只存它的 SHA-256 | `internal/accounts`、`internal/portal` |
 | 猜登录验证码 | 没有密码。6 位验证码 10 分钟有效、每个可试 5 次，一个邮箱每小时 5 个；错误的验证码按 IP 和按邮箱限流（5 分钟 8 次，之后 429）。邮箱就是账户的钥匙，两步验证再加一道保护 | `internal/mailer/codes.go`、`portal.Server.throttled` |
 | 恶意网页调用本地端点 | Origin 检查 | `client.guardOrigin` |
+| 本机其他程序或用户调用本地管理 API，或冒充 daemon | `run.json`（0600）里的 key；桌面应用使用 daemon 前先核对它的 HMAC 证明 | `client.requireLocalKey`、`client.LocalProof`、`gui/supervisor.go` |
 | 拿了 Ticket 不来连，占满节点名额 | 未开始的单在 Ticket 过期 30 秒后释放；账户有 5 张闲置票时不再发新票 | `coordinator.Engine.MarkStarted`、`coordinator.Engine.Tick` |
 | 陌生人占用中继的预约名额 | 预约需要门户签发的短期凭证；按用户限制设备数 | `internal/relaypass`、`internal/relay/admission.go` |
 | 窃听或篡改门户通信（登录验证码、token） | 默认 HTTPS；客户端 pin 自签名证书的指纹；拒绝把机密明文发往远端 | `internal/portal/tls.go`、`client.NewPortalClient` |

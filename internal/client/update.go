@@ -34,6 +34,10 @@ type Update struct {
 	DownloadURL string         `json:"download_url,omitempty"`
 	Package     *UpdatePackage `json:"package,omitempty"`
 	NotesURL    string         `json:"notes_url,omitempty"`
+	// Install is the signed file this client installs by itself (one-click
+	// update), when the release has one for it; Download is how fetching it goes.
+	Install  *UpdatePackage  `json:"install,omitempty"`
+	Download *UpdateDownload `json:"download,omitempty"`
 	// Notes is what the release says about itself, by language: a one-line
 	// summary and a text in the release-notes markup (portal.ReleaseNotes).
 	Notes map[string]portal.ReleaseNotes `json:"notes,omitempty"`
@@ -52,6 +56,18 @@ type UpdatePackage struct {
 	URL    string `json:"url"`
 	Size   int64  `json:"size,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
+	// Signature: the release key's signature of the SHA-256 (upgrade.go).
+	Signature string `json:"signature,omitempty"`
+}
+
+// UpdateDownload is the fetching of the offered build's Install file.
+type UpdateDownload struct {
+	Key     string `json:"key"`
+	State   string `json:"state"` // downloading, ready (fetched and checked), failed
+	Written int64  `json:"written"`
+	Total   int64  `json:"total,omitempty"`
+	Path    string `json:"path,omitempty"` // when ready
+	Error   string `json:"error,omitempty"`
 }
 
 // updateFor compares a build against what the portal reports; base is the
@@ -64,7 +80,10 @@ func updateFor(cur version.Info, info portal.UpdateInfo, base string) Update {
 		u.NotesURL = absURL(base, r.NotesURL)
 		u.Notes = r.Notes
 		if p := info.Package; p != nil {
-			u.Package = &UpdatePackage{File: p.File, URL: absURL(base, p.URL), Size: p.Size, SHA256: p.SHA256}
+			u.Package = &UpdatePackage{File: p.File, URL: absURL(base, p.URL), Size: p.Size, SHA256: p.SHA256, Signature: p.Signature}
+		}
+		if p := info.Install; p != nil && p.Signature != "" {
+			u.Install = &UpdatePackage{File: p.File, URL: absURL(base, p.URL), Size: p.Size, SHA256: p.SHA256, Signature: p.Signature}
 		}
 	}
 	if !version.Valid(cur.Version) {
@@ -91,7 +110,7 @@ func updateFor(cur version.Info, info portal.UpdateInfo, base string) Update {
 // about a build it cannot get.
 func rebuilt(cur version.Info, info portal.UpdateInfo) bool {
 	r := info.Release
-	if r == nil || info.Package == nil || r.Commit == "" || cur.Commit == "" || r.Commit == cur.Commit || !version.Valid(r.Version) {
+	if r == nil || (info.Package == nil && info.Install == nil) || r.Commit == "" || cur.Commit == "" || r.Commit == cur.Commit || !version.Valid(r.Version) {
 		return false
 	}
 	if version.Compare(version.Core(r.Version), version.Core(cur.Version)) != 0 {
@@ -179,6 +198,7 @@ type UpdateWatcher struct {
 	cur    Update
 	state  updateState
 	logged string // key last written to the log
+	dl     *UpdateDownload
 }
 
 // NewUpdateWatcher prepares a watcher; portal says which portal to ask.
@@ -243,8 +263,69 @@ func (w *UpdateWatcher) Current() Update {
 	if u.Available {
 		u.Skipped = !u.Required && u.Key == w.state.Skipped
 		u.Notified = u.Key == w.state.Notified
+		if w.dl != nil && w.dl.Key == u.Key {
+			d := *w.dl
+			u.Download = &d
+		}
 	}
 	return u
+}
+
+// downloadTimeout bounds fetching one package.
+const downloadTimeout = 30 * time.Minute
+
+// StartDownload fetches the Install file of the build named key into the
+// state directory and checks it, in the background; Current reports how it
+// goes. A download of it that runs or has finished is kept.
+func (w *UpdateWatcher) StartDownload(key string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.cur.Available || key != w.cur.Key {
+		return errNotOffered
+	}
+	if w.cur.Install == nil {
+		return errNoInstall
+	}
+	if d := w.dl; d != nil && d.Key == key && (d.State == "downloading" || d.State == "ready" && fileExists(d.Path)) {
+		return nil
+	}
+	pkg := *w.cur.Install
+	w.dl = &UpdateDownload{Key: key, State: "downloading", Total: pkg.Size}
+	base, pin := w.portal()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
+		defer cancel()
+		hc := NewPortalClient(base, "", pin).HTTP
+		hc.Timeout = 0 // a large package on a slow line: the context bounds it
+		path, err := DownloadPackage(ctx, hc, &pkg, filepath.Join(w.home, UpdateDir), func(written, total int64) {
+			w.mu.Lock()
+			if w.dl != nil && w.dl.Key == key {
+				w.dl.Written, w.dl.Total = written, total
+			}
+			w.mu.Unlock()
+		})
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.dl == nil || w.dl.Key != key {
+			return
+		}
+		if err != nil {
+			w.dl.State, w.dl.Error = "failed", err.Error()
+			w.log.Warn("fetching the update failed", "file", pkg.File, "err", err)
+			return
+		}
+		w.dl.State, w.dl.Path = "ready", path
+		w.log.Info("update fetched and checked", "file", pkg.File)
+	}()
+	return nil
+}
+
+// errNoInstall: the release has no signed file this client can install by itself.
+var errNoInstall = errors.New("this release has no package this client can install by itself")
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 // errNotOffered: the key is not the build on offer (the page is out of date).

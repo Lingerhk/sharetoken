@@ -169,7 +169,7 @@ func TestTrayNotifiesOncePerBuild(t *testing.T) {
 	defer daemon.Close()
 	var sent []string
 	deliver := true
-	tc := newTrayController(func() error { return nil }, func() string { return strings.TrimPrefix(daemon.URL, "http://") }, func(trayMenu) {})
+	tc := newTrayController(func() error { return nil }, func() endpoint { return endpoint{addr: strings.TrimPrefix(daemon.URL, "http://")} }, func(trayMenu) {})
 	tc.notify = func(title, body string) bool {
 		sent = append(sent, title+": "+body)
 		return deliver
@@ -281,7 +281,7 @@ func TestTrayFollowsDaemonAndLanguage(t *testing.T) {
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	rec := &menuRecorder{seen: make(chan trayMenu, 64)}
 	release := make(chan struct{})
-	tc := newTrayController(func() error { <-release; return nil }, func() string { return addr }, rec.set)
+	tc := newTrayController(func() error { <-release; return nil }, func() endpoint { return endpoint{addr: addr} }, rec.set)
 	tc.every = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -323,7 +323,7 @@ func TestTrayFollowsDaemonAndLanguage(t *testing.T) {
 
 func TestTrayWhenDaemonCouldNotStart(t *testing.T) {
 	rec := &menuRecorder{seen: make(chan trayMenu, 64)}
-	tc := newTrayController(func() error { return errors.New("port in use") }, func() string { return "127.0.0.1:1" }, rec.set)
+	tc := newTrayController(func() error { return errors.New("port in use") }, func() endpoint { return endpoint{addr: "127.0.0.1:1"} }, rec.set)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go tc.run(ctx)
@@ -363,5 +363,17 @@ func TestProxyWaitsForStartAndUsesSettledAddress(t *testing.T) {
 	<-done
 	if w.Body.String() != "from-daemon" {
 		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+// The tray's calls carry the daemon's key: without it the daemon answers
+// nothing, and the menu would say the service is down.
+func TestTrayStateSendsKey(t *testing.T) {
+	addr := serveFakeDaemon(t, "k1")
+	if st := fetchTrayState(context.Background(), endpoint{addr: addr, key: "k1"}); st.Down || st.State != stateLoggedOut {
+		t.Fatalf("with the key: %+v", st)
+	}
+	if st := fetchTrayState(context.Background(), endpoint{addr: addr}); !st.Down {
+		t.Fatalf("without it: %+v", st)
 	}
 }

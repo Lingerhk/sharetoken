@@ -60,6 +60,7 @@ func (u *daemonUser) call(method, path string, body any, out any) int {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set("Authorization", "Bearer "+u.d.Key())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		u.t.Fatal(err)
@@ -143,7 +144,7 @@ func TestDaemonFullFlow(t *testing.T) {
 	}
 
 	// Buy through the daemon's OpenAI endpoint.
-	resp, err := http.Post(u.base+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	resp, err := postV1(u.base+"/v1/chat/completions", u.d.APIKey(), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,8 +179,8 @@ func TestDaemonFullFlow(t *testing.T) {
 		t.Fatalf("share: %d", code)
 	}
 
-	// The CLI finds the daemon through the run file.
-	if addr := client.APIAddr(home, client.Config{}); addr != u.d.Addr() {
+	// The CLI finds the daemon, and its key, through the run file.
+	if addr, key := client.LocalAPI(home, client.Config{}); addr != u.d.Addr() || key != u.d.Key() {
 		t.Fatalf("run file: %s, want %s", addr, u.d.Addr())
 	}
 
@@ -195,7 +196,7 @@ func TestDaemonFullFlow(t *testing.T) {
 	if code := u.call("POST", "/api/v1/logout", struct{}{}, &s); code != 200 || s.LoggedIn {
 		t.Fatalf("logout: %d %+v", code, s)
 	}
-	resp, err = http.Post(u.base+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	resp, err = postV1(u.base+"/v1/chat/completions", u.d.APIKey(), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +219,7 @@ func TestDaemonFullFlow(t *testing.T) {
 		t.Fatalf("after login: %+v", s)
 	}
 	waitFor(t, 20*time.Second, "buying again", func() bool {
-		resp, err := http.Post(u.base+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		resp, err := postV1(u.base+"/v1/chat/completions", u.d.APIKey(), body)
 		if err != nil {
 			return false
 		}

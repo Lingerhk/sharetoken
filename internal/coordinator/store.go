@@ -21,6 +21,8 @@ var Migrations = []mysqldb.Migration{
 	{Version: 4, Name: "pairing", SQL: accounts.PairingSchema},
 	// Sign-in is by mailed code; older binaries still write pass_hash.
 	{Version: 5, Name: "no passwords", MinReader: 5, SQL: accounts.NoPasswords},
+	// Older binaries would charge for shared jobs: they may not run on it.
+	{Version: 6, Name: "share partners", MinReader: 6, SQL: accounts.SharingSchema + sharedJobsSchema},
 }
 
 // Migrate brings the shared database up to date. The portal and the coordinator
@@ -159,10 +161,14 @@ func insertJob(tx *sql.Tx, j *job) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO jobs (job_id, buyer, node, buyer_acct, node_acct, model, status, ticket, dispute_reason, created_at, release_at, ticket_expires)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	shared := 0
+	if j.ticket.Shared {
+		shared = 1
+	}
+	_, err = tx.Exec(`INSERT INTO jobs (job_id, buyer, node, buyer_acct, node_acct, model, status, ticket, dispute_reason, created_at, release_at, ticket_expires, shared)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ticket.JobID, j.ticket.Buyer, j.ticket.Node, j.buyerAcct, j.nodeAcct, j.ticket.Model, string(j.status), ticket,
-		j.disputeReason, j.createdAt, j.releaseAt, j.ticket.ExpiresAt)
+		j.disputeReason, j.createdAt, j.releaseAt, j.ticket.ExpiresAt, shared)
 	return err
 }
 
@@ -253,27 +259,31 @@ func updateStats(tx *sql.Tx, node string, fn func(s *NodeStats)) (*NodeStats, er
 }
 
 // busyNodes counts each node's jobs that are ticketed but not yet settled,
+// all of them and, apart, the shared ones (between share partners),
 // except unstarted ones whose ticket expired before staleBefore (UnixNano):
 // those are past their start grace and only kept, not released, because
 // their node reconnected and a start report may still arrive; they must not
 // keep its slots (a node that restarted lost them for good).
-func busyNodes(tx *sql.Tx, staleBefore int64) (map[string]uint32, error) {
-	rows, err := tx.Query(`SELECT node, COUNT(*) FROM jobs WHERE status = 'held'
-		AND (started_at != 0 OR ticket_expires = 0 OR ticket_expires > ?) GROUP BY node`, staleBefore)
+func busyNodes(tx *sql.Tx, staleBefore int64) (all, shared map[string]uint32, err error) {
+	rows, err := tx.Query(`SELECT node, shared, COUNT(*) FROM jobs WHERE status = 'held'
+		AND (started_at != 0 OR ticket_expires = 0 OR ticket_expires > ?) GROUP BY node, shared`, staleBefore)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
-	out := make(map[string]uint32)
+	all, shared = make(map[string]uint32), make(map[string]uint32)
 	for rows.Next() {
 		var node string
-		var n int64
-		if err := rows.Scan(&node, &n); err != nil {
-			return nil, err
+		var sh, n int64
+		if err := rows.Scan(&node, &sh, &n); err != nil {
+			return nil, nil, err
 		}
-		out[node] = uint32(n)
+		all[node] += uint32(n)
+		if sh != 0 {
+			shared[node] += uint32(n)
+		}
 	}
-	return out, rows.Err()
+	return all, shared, rows.Err()
 }
 
 func queryStrings(tx *sql.Tx, query string, args ...any) ([]string, error) {

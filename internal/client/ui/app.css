@@ -221,6 +221,8 @@ pre.reply { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; o
 .update-link > span { flex: none; white-space: nowrap; }
 .modal-actions { align-items: center; }
 .update-link a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; -webkit-user-select: text; user-select: text; }
+#update-progress { margin-bottom: 8px; min-height: 1.2em; }
+#update-progress.bad { color: var(--bad); }
 
 /* Pairing: codes are read aloud and typed, so they are spaced and never wrap. */
 .sub-title { font-size: 12px; margin: 12px 0 6px; color: var(--muted); font-weight: 600; }
@@ -244,3 +246,10 @@ html.i18n-pending body { visibility: hidden; }
 .os-darwin .auth-main { padding-top: 48px; }
 .os-darwin :is(.head, .side, .auth-side, .env-banner) { --wails-draggable: drag; }
 .os-darwin :is(.head, .side, .auth-side) :is(button, a, input, select) { --wails-draggable: no-drag; }
+.warn-text { color: var(--warn); }
+.rows > .check { margin-top: 0; align-items: center; }
+.rows > .check input { margin-top: 0; }
+/* Share partners: short inputs inside a settings row. */
+.rows input.narrow { width: 10em; padding: 4px 8px; }
+.rows input.narrow.short { width: 4.5em; }
+#partner-settings .rows { margin-bottom: 4px; }

@@ -113,6 +113,7 @@ ok(await ev(`!!document.querySelector('main h1 .chip svg')`), 'the page title ca
 ok((await ev(`document.querySelector('.crumb').textContent`)).includes('总览'), 'the top bar names the current module');
 ok(await ev(`document.querySelectorAll('.tile .chip svg').length`) === await ev(`document.querySelectorAll('.tile').length`), 'every tile has an icon');
 ok((await ev(`document.getElementById('top-balance').textContent`)).includes('credit'), 'the top bar shows the balance');
+ok(await ev(`(() => { const a = document.querySelector('.topbar a.gh-link'); return !!a && a.href === 'https://github.com/Lingerhk/sharetoken' && a.target === '_blank' && !!a.querySelector('svg'); })()`), 'the top bar links to GitHub');
 ok(await ev(`document.querySelector('.drop').hidden`), 'the user menu starts closed');
 await ev(`document.getElementById('user-menu').click()`);
 ok(await ev(`!document.querySelector('.drop').hidden && document.querySelector('.drop').textContent.includes('退出')`), 'the user menu opens with sign-out');
@@ -182,6 +183,7 @@ async function wholePage(name) {
 const fillOf = sel => bg(sel);
 await ev(`document.getElementById('lang-select').click()`); // closes the menu opened above
 ok(await ev(`!!document.getElementById('theme-toggle')`), 'it has the theme control');
+ok(await ev(`(() => { const a = document.querySelector('.nav a.gh-link'); return !!a && a.href === 'https://github.com/Lingerhk/sharetoken' && a.getBoundingClientRect().width > 0; })()`), 'the landing page links to GitHub');
 ok(await theme() === 'dark', 'it takes the choice made in the portal');
 const darkPage = await bg('body'), darkButton = await fillOf('.btn.primary');
 await wholePage('site-dark');
@@ -307,7 +309,8 @@ await ev(`localStorage.setItem('st_lang', 'zh-CN')`);
   await fill('#mfa-code', totp(secret));
   await ev(`document.querySelector('.login form').requestSubmit()`);
   await waitFor(`document.querySelector('.sidenav a.active') && document.querySelector('main h1')`);
-  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 15, 'all fifteen admin modules have icons');
+  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 16, 'all sixteen admin modules have icons');
+  ok(await ev(`document.querySelector('.topbar a.gh-link')?.href`) === 'https://github.com/Lingerhk/sharetoken', 'the admin top bar links to GitHub');
   await pages('/admin/', ['overview', 'users', 'relays', 'versions', 'jobs', 'nodes', 'audits', 'disputes', 'pairings', 'ledger', 'mail', 'feedback'], 'admin');
   await size(1440, 900);
   await ev(`location.hash = '#/users/' + encodeURIComponent(${JSON.stringify(name)})`);

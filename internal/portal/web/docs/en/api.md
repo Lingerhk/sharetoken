@@ -2,7 +2,7 @@
 
 The running client serves two groups of endpoints on `http://127.0.0.1:{{port}}`: `/v1/` is the OpenAI-compatible interface, and `/api/v1/` is for querying and managing the client.
 
-Only requests from your machine are accepted. Requests with a non-local `Origin` get 403. Errors always have the form `{"error":{"code","message"}}`.
+Only requests from your machine are accepted. Requests with a non-local `Origin` get 403. The management endpoints also want a key (see [Key](#key)). Errors always have the form `{"error":{"code","message"}}`.
 
 ## OpenAI-compatible endpoints {#openai}
 
@@ -34,26 +34,37 @@ For usage, see [Call models](/docs/use-models).
 | `POST /api/v1/pairing/codes`, `DELETE /api/v1/pairing/codes/{id}` | Seller: make a pairing code (`label`, `ttl_hours`, `max_uses`), or revoke one |
 | `DELETE /api/v1/pairing/buyers/{id}` | Seller: remove one of your buyers |
 | `PUT /api/v1/pairing/private` | Seller: turn private mode on or off. Body: `{"enabled": true}` |
+| `GET /api/v1/sharing` | Your share partners with the tokens used each way in the last 24 hours, your open invites and your sharing settings |
+| `POST /api/v1/sharing/invites`, `DELETE /api/v1/sharing/invites/{id}` | Make a one-person invite (`ttl_hours`, 168 at most), or withdraw one |
+| `POST /api/v1/sharing/join` | Become the share partner of whoever made the invite. Body: `{"code": "…"}` |
+| `DELETE /api/v1/sharing/partners/{id}` | Stop sharing with a partner |
+| `PUT /api/v1/sharing/settings` | Partners only, the daily limit and the share. Body: `{"only_partners": false, "daily_limit_tokens": 0, "share_pct": 100}` |
+
+## Key {#key}
+
+Each time the client starts, it makes a new key and writes it to `run.json` in its data directory (field `key`), which only you can read. Send it with every request to `/api/v1/` as `Authorization: Bearer <key>`; without it the answer is 401 `local_auth`. The `{{exe}}` commands and the desktop app read it themselves. `/v1/` wants the API key instead, which does not change at each start (`{{exe}} apikey`; `GET /api/v1/apikey`, `PUT /api/v1/apikey` with `{"required": bool}`, `POST /api/v1/apikey/rotate`).
 
 ## Examples {#examples}
 
 ::: macos linux
 ```bash
-curl -s http://127.0.0.1:{{port}}/api/v1/status
-curl -s http://127.0.0.1:{{port}}/api/v1/account
-curl -s -X POST http://127.0.0.1:{{port}}/api/v1/share/stop
+KEY=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("{{home}}/run.json")))["key"])')
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:{{port}}/api/v1/status
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:{{port}}/api/v1/account
+curl -s -H "Authorization: Bearer $KEY" -X POST http://127.0.0.1:{{port}}/api/v1/share/stop
 ```
 :::
 
 ::: windows
 ```powershell
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/status | ConvertTo-Json -Depth 6
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/account | ConvertTo-Json -Depth 6
-Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/share/stop -Method Post
+$h = @{ Authorization = "Bearer " + (Get-Content "{{homewin}}\run.json" | ConvertFrom-Json).key }
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/status -Headers $h | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/account -Headers $h | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://127.0.0.1:{{port}}/api/v1/share/stop -Method Post -Headers $h
 ```
 :::
 
 ## Security {#security}
 
 > [!WARNING]
-> These endpoints have no authentication for other processes on the machine. On a multi-user machine, other users can call `/v1` and spend your credit, and they can change the sharing settings. Do not change `http` to a non-local address, and do not forward the port.
+> `/v1/` wants the client's API key (see [Call models](/docs/use-models#endpoint)), and `/api/v1/` the key in `run.json`. If you turn the API key off (`{{exe}} apikey off`), other users of the machine can call `/v1/` and spend your credit. Do not change `http` to a non-local address, and do not forward the port.

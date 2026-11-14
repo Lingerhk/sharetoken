@@ -86,6 +86,8 @@ Prices are in credit per million tokens. API keys and login tokens are stored on
 
 To buy only from sellers you know, use "My sellers" under "Pairing": click "Enter pairing code" and type the code a seller gave you. See [Buy only from sellers you know](/docs/use-models#pairing).
 
+To share with partners for free, use "Share partners", the first tab under "Pairing". Click "Invite partner", choose how long the code lasts (1, 3 or 7 days) and send it to your partner; they click "Enter invite code". The list shows your partners and the tokens you gave and used in the last 24 hours, and "Unpair" ends a partnership. Under "Sharing settings" you can use partners' nodes only, set a daily limit (tokens per 24 hours, all partners together) and the share of each node's concurrent jobs partners may take (0 pauses sharing). Available models marks the models your partners offer, and Activity shows "Partner (free)" for jobs between partners. See [Share with partners for free](/docs/share#partners).
+
 ## Graphical interface without the app {#browser-ui}
 
 The command-line edition includes the same interface. Run:
@@ -94,7 +96,7 @@ The command-line edition includes the same interface. Run:
 {{exe}} daemon
 ```
 
-Then open `http://127.0.0.1:{{port}}/` in a browser to sign in on the page. The difference from `up` is that `daemon` can run while signed out, and it joins the network only after you sign in.
+Then open the address it prints, `http://127.0.0.1:{{port}}/#key=…`, in a browser to sign in on the page. The `#key=` part is what lets the page use the client; it changes each time `daemon` starts. The difference from `up` is that `daemon` can run while signed out, and it joins the network only after you sign in.
 
 ## Use with the command line {#with-cli}
 

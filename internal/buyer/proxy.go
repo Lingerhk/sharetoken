@@ -155,6 +155,7 @@ func (p *Proxy) models(w http.ResponseWriter, r *http.Request) {
 		data = append(data, map[string]any{
 			"id": m.Model, "object": "model", "owned_by": "sharetoken",
 			"nodes": m.Nodes, "min_price_in": m.MinPriceIn, "min_price_out": m.MinPriceOut,
+			"shared_nodes": m.SharedNodes,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
