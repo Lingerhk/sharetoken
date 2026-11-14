@@ -146,11 +146,10 @@ The workflow needs these settings on GitHub (Settings, Environments; and Setting
 | Where | Name | Value |
 |---|---|---|
 | Environment `release` | secret `RELEASE_SIGNING_KEY` | the release key's PEM file (`local/keys/release-signing.pem`) |
-| Environment `portal` | secret `PORTAL_SSH_KEY` | a private SSH key of the account that installs the files on the portal's server |
+| Environment `portal` | secret `PORTAL_SSH_KEY` | a private SSH key of the account that installs the files on the portal's server; it moves them into place with sudo, owned by the portal's service user `st-portal` (fixed in the workflow) |
 | | variable `PORTAL_SSH_TARGET` | `user@host` |
 | | variable `PORTAL_DOWNLOADS_DIR` | the portal's `downloads.dir` |
 | | variable `PORTAL_SSH_KNOWN_HOSTS` | the server's `known_hosts` line (for example from `ssh-keyscan -t ed25519 <host>`, compared by hand with the server's key); the host key is checked strictly |
-| | variable `PORTAL_OWNER` (optional) | the portal's service user, as `--owner` |
 | Repository | variable `RELEASE_PUBLISH_PORTAL` | `true`: a pushed tag also publishes to the portal; otherwise only "Run workflow" does |
 | | variable `RELEASE_WITH_DEV_CLI` | `true`: every run adds the dev command-line archives |
 
