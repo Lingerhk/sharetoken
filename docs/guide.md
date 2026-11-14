@@ -367,7 +367,7 @@ Lists take `limit` (default 50, at most 500), `page` or `offset`, `from` and `to
 | `POST /api/v1/relay-pass` | yes | `{peer}` → a relay pass, only for a device bound to the caller. The client calls it by itself. |
 | `GET /api/v1/jobs?role=&limit=&before=` | yes | Jobs: role, model, status, token counts, cost, earnings. |
 | `GET /api/v1/usage` | yes | Totals bought and sold. |
-| `POST /api/v1/feedback`, `GET /api/v1/feedback` | yes | Send feedback; list one's own. |
+| `POST /api/v1/feedback`, `GET /api/v1/feedback` | yes | Send feedback (at most 10 per account and 30 per client address an hour; more get 429 `throttled`); list one's own. |
 | `GET /api/v1/pairing` | yes | The caller's pairings: `sellers[]` and `buyers[]` (`id`, masked `username`, `label`, `since`), its live `codes[]` (`id`, `code`, `label`, `max_uses`, `used`, `expires_at`) `restricted` (true when it buys only from `sellers`), `private` (true when it sells only to `buyers`) and `max_sellers`. |
 | `POST /api/v1/pairing/codes`, `DELETE /api/v1/pairing/codes/{id}` | yes | Make a code (`label`, `ttl_hours` up to 720, `max_uses`; zero means one day and no limit) and revoke one. Pairings made with a revoked code stay. 409 `limit` at 20 live codes. |
 | `POST /api/v1/pairing/redeem` | yes | `{code}`: pair the caller, as a buyer, with the code's seller. 404 `bad_code` (wrong, expired, revoked or used up; counted like a failed login, then 429 `throttled`), 409 `own_code`, 409 `limit`. |

@@ -19,12 +19,41 @@ type job struct {
 	t       protocol.Ticket
 	nodeKey ed25519.PrivateKey
 	jobKey  *box.Identity
+	nodeBox *box.Identity
 	request []byte   // sealed request
-	chunks  [][]byte // sealed chunks
+	chunks  [][]byte // sealed response frames
 	receipt *receipt.SignedReceipt
 }
 
 const body = `{"messages":[{"role":"user","content":"Please greet the whole wide world politely"}]}`
+
+// sealFrames is the node's side: one frame per payload, the last one final,
+// each sealed under key(i).
+func sealFrames(t *testing.T, j *job, payloads []string, key func(i int) *box.Stream) [][]byte {
+	t.Helper()
+	enc := protocol.NewResponseEncoder()
+	var out [][]byte
+	for i, p := range payloads {
+		if err := enc.Write([]byte(p)); err != nil {
+			t.Fatal(err)
+		}
+		plain, err := enc.Frame(i == len(payloads)-1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, key(i).Seal(uint64(i), plain, protocol.ChunkAAD(&j.t, uint64(i))))
+	}
+	return out
+}
+
+// streamKey is the node's response key for j.
+func (j *job) streamKey(t *testing.T) *box.Stream {
+	k, err := j.nodeBox.NewStream(j.jobKey.Public(), protocol.ResponseKeyInfo(&j.t, j.jobKey.Public()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
 
 func newJob(t *testing.T, completionTokens uint64, mutate func(payloads []string, jobPub []byte, j *job) [][]byte) *job {
 	t.Helper()
@@ -38,9 +67,13 @@ func newJob(t *testing.T, completionTokens uint64, mutate func(payloads []string
 		},
 		nodeKey: nodePriv,
 		jobKey:  jobKey,
+		nodeBox: nodeBox,
 	}
-	var err error
-	if j.request, err = box.SealFrom(jobKey, nodeBox.Public(), []byte(body), protocol.RequestAAD(&j.t)); err != nil {
+	encoded, err := protocol.EncodeRequest([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.request, err = box.SealFrom(jobKey, nodeBox.Public(), encoded, protocol.RequestAAD(&j.t)); err != nil {
 		t.Fatal(err)
 	}
 	payloads := []string{
@@ -51,13 +84,8 @@ func newJob(t *testing.T, completionTokens uint64, mutate func(payloads []string
 	if mutate != nil {
 		j.chunks = mutate(payloads, jobKey.Public(), j)
 	} else {
-		for i, p := range payloads {
-			c, err := box.Seal(jobKey.Public(), []byte(p), protocol.ChunkAAD(&j.t, uint64(i)))
-			if err != nil {
-				t.Fatal(err)
-			}
-			j.chunks = append(j.chunks, c)
-		}
+		key := j.streamKey(t)
+		j.chunks = sealFrames(t, j, payloads, func(int) *box.Stream { return key })
 	}
 	j.receipt = j.sign(t, 20, completionTokens)
 	return j
@@ -80,12 +108,12 @@ func (j *job) sign(t *testing.T, pt, ct uint64) *receipt.SignedReceipt {
 }
 
 func (j *job) evidence() *protocol.Evidence {
-	return &protocol.Evidence{JobID: j.t.JobID, JobSecret: j.jobKey.Secret(), Request: j.request, Receipt: j.receipt, Chunks: uint64(len(j.chunks))}
+	return &protocol.Evidence{JobID: j.t.JobID, JobSecret: j.jobKey.Secret(), Receipt: j.receipt, Chunks: uint64(len(j.chunks))}
 }
 
 func judge(t *testing.T, j *job, settled *receipt.SignedReceipt, ev *protocol.Evidence, chunks [][]byte, c tokens.Counter) Verdict {
 	t.Helper()
-	jd, err := New(&j.t, settled, ev.Receipt, ev)
+	jd, err := New(&j.t, settled, ev.Receipt, ev, j.request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,21 +164,33 @@ func TestExactCountsCatchModestInflationTheHeuristicAllows(t *testing.T) {
 
 func TestUnreadableChunkIsUpheld(t *testing.T) {
 	j := newJob(t, 5, func(payloads []string, jobPub []byte, j *job) [][]byte {
-		var out [][]byte
+		key := j.streamKey(t)
 		stranger, _ := box.GenerateIdentity()
-		for i, p := range payloads {
-			to := jobPub
+		wrong, _ := j.nodeBox.NewStream(stranger.Public(), protocol.ResponseKeyInfo(&j.t, stranger.Public()))
+		return sealFrames(t, j, payloads, func(i int) *box.Stream {
 			if i == 1 {
-				to = stranger.Public() // sealed to a key the buyer does not hold
+				return wrong // a key the buyer cannot derive
 			}
-			c, _ := box.Seal(to, []byte(p), protocol.ChunkAAD(&j.t, uint64(i)))
-			out = append(out, c)
-		}
+			return key
+		})
+	})
+	v := judge(t, j, j.receipt, j.evidence(), j.chunks, tokens.Heuristic{})
+	if v.Outcome != Upheld || !strings.Contains(v.Detail, "frame 1 does not open") {
+		t.Fatalf("want upheld for frame 1, got %+v", v)
+	}
+}
+
+func TestUndecodableFrameIsUpheld(t *testing.T) {
+	j := newJob(t, 5, func(payloads []string, jobPub []byte, j *job) [][]byte {
+		key := j.streamKey(t)
+		out := sealFrames(t, j, payloads, func(int) *box.Stream { return key })
+		// Frame 1 opens but its plaintext is not the response stream.
+		out[1] = key.Seal(1, []byte{5, 0xde, 0xad, 0xbe, 0xef, 0x77, 0, 0}, protocol.ChunkAAD(&j.t, 1))
 		return out
 	})
 	v := judge(t, j, j.receipt, j.evidence(), j.chunks, tokens.Heuristic{})
-	if v.Outcome != Upheld || !strings.Contains(v.Detail, "chunk 1") {
-		t.Fatalf("want upheld for chunk 1, got %+v", v)
+	if v.Outcome != Upheld || !strings.Contains(v.Detail, "frame 1 does not decode") {
+		t.Fatalf("want upheld for frame 1, got %+v", v)
 	}
 }
 
@@ -159,7 +199,7 @@ func TestBuyerCannotFabricateOrSwapKeys(t *testing.T) {
 
 	// Fabricated chunks do not hash to the receipt: unverifiable, not upheld.
 	forged := append([][]byte{}, j.chunks...)
-	forged[0], _ = box.Seal(j.jobKey.Public(), []byte(`{"choices":[{"delta":{"content":"garbage"}}]}`), protocol.ChunkAAD(&j.t, 0))
+	forged[0] = sealFrames(t, j, []string{`{"choices":[{"delta":{"content":"garbage"}}]}`}, func(int) *box.Stream { return j.streamKey(t) })[0]
 	if v := judge(t, j, j.receipt, j.evidence(), forged, tokens.Heuristic{}); v.Outcome != Unverifiable {
 		t.Fatalf("fabricated chunks: want unverifiable, got %+v", v)
 	}
@@ -175,8 +215,10 @@ func TestBuyerCannotFabricateOrSwapKeys(t *testing.T) {
 
 	// A different request than the one signed for proves nothing.
 	ev = j.evidence()
-	ev.Request, _ = box.SealFrom(j.jobKey, j.t.NodeBoxPub, []byte(`{"messages":[]}`), protocol.RequestAAD(&j.t))
-	if v := judge(t, j, j.receipt, ev, j.chunks, tokens.Heuristic{}); v.Outcome != Unverifiable {
+	other2 := *j
+	enc, _ := protocol.EncodeRequest([]byte(`{"messages":[]}`))
+	other2.request, _ = box.SealFrom(j.jobKey, j.t.NodeBoxPub, enc, protocol.RequestAAD(&j.t))
+	if v := judge(t, &other2, j.receipt, ev, j.chunks, tokens.Heuristic{}); v.Outcome != Unverifiable {
 		t.Fatalf("other request: want unverifiable, got %+v", v)
 	}
 }
@@ -194,17 +236,17 @@ func TestReceiptRequirementsAndOrdering(t *testing.T) {
 	j := newJob(t, 5, nil)
 	ev := j.evidence()
 	ev.Receipt = nil
-	if _, err := New(&j.t, nil, nil, ev); !errors.Is(err, ErrNoReceipt) {
+	if _, err := New(&j.t, nil, nil, ev, j.request); !errors.Is(err, ErrNoReceipt) {
 		t.Fatalf("want ErrNoReceipt, got %v", err)
 	}
 	// A presented receipt signed by someone else is refused outright.
 	_, mallory, _ := ed25519.GenerateKey(nil)
 	forged := *j.receipt
 	forged.Sig = ed25519.Sign(mallory, []byte("x"))
-	if _, err := New(&j.t, nil, &forged, j.evidence()); err == nil {
+	if _, err := New(&j.t, nil, &forged, j.evidence(), j.request); err == nil {
 		t.Fatal("accepted a receipt the node did not sign")
 	}
-	jd, _ := New(&j.t, j.receipt, nil, j.evidence())
+	jd, _ := New(&j.t, j.receipt, nil, j.evidence(), j.request)
 	if err := jd.Add(1, j.chunks[1]); err == nil {
 		t.Fatal("accepted chunks out of order")
 	}

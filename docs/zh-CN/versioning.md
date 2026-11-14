@@ -11,7 +11,7 @@
 - **注入：** [`scripts/build/ldflags.sh`](../../scripts/build/ldflags.sh) 把版本、提交和构建时间写入 `sharetoken/internal/version`。桌面窗口壳是独立的 module，用 `main.version`。
 - **查看：** `portal|coordinator|mailserver|relay|sharetoken version`，每个程序日志的第一行，门户的 `GET /api/v1/version`，以及管理后台的“版本”页。
 
-**从 1.0.1（2026-11-14）起，发布会升版本号。** 在此之前每次发布都是 1.0.0，靠移动 tag `v1.0.0`，所以各个 1.0.0 构建并不相同，`commit` 才能区分它们（`GET /api/v1/version`、管理后台“版本”页）；客户端靠比较提交和构建时间来发现同一版本的更新构建（见“升级提醒”）。协议 ID 和签名域在首次公开发布前仍沿用 1.0.0 / v1 的名字，格式变化仍然原地修改。
+**从 1.0.1（2026-11-14）起，发布会升版本号。** 在此之前每次发布都是 1.0.0，靠移动 tag `v1.0.0`，所以各个 1.0.0 构建并不相同，`commit` 才能区分它们（`GET /api/v1/version`、管理后台“版本”页）；客户端靠比较提交和构建时间来发现同一版本的更新构建（见“升级提醒”）。从 1.0.2 起，libp2p 协议 ID 带上最后改动它的发布号（三个协议现在都是 1.0.2，1.0.1 及更早的客户端不能再和它们工作）；签名域在首次公开发布前仍沿用 v1 的名字，格式变化仍然原地修改。
 
 发版步骤：修改 `VERSION`；在更新日志页（[`internal/portal/web/changelog.html`](../../internal/portal/web/changelog.html)，网址 `/changelog/`）最上面加上这个版本及其功能，并补齐翻译；提交；`git tag v1.2.3`；然后构建。
 
@@ -21,9 +21,9 @@
 |---|---|---|
 | 门户 HTTP API | 路径 | `/api/v1` |
 | 客户端本地 API | 路径 | `/api/v1`（OpenAI 接口仍是 `/v1`） |
-| 控制面（客户端 ↔ 协调器） | libp2p 协议 ID | `/sharetoken/ctrl/1.0.0` |
-| 数据面（买家 ↔ 节点） | libp2p 协议 ID，加上每单协商的 `infer_version` | `/sharetoken/infer/1.0.0`，版本 1 |
-| 中继凭证 | libp2p 协议 ID，加上签名域 | `/sharetoken/relay-pass/1.0.0`，`sharetoken/relay-pass/v1`（签名覆盖整段 body，所以新增字段不需要新版本） |
+| 控制面（客户端 ↔ 协调器） | libp2p 协议 ID | `/sharetoken/ctrl/1.0.2` |
+| 数据面（买家 ↔ 节点） | libp2p 协议 ID，加上每单协商的 `infer_version` | `/sharetoken/infer/1.0.2`，版本 1 |
+| 中继凭证 | libp2p 协议 ID，加上签名域 | `/sharetoken/relay-pass/1.0.2`，`sharetoken/relay-pass/v1`（签名覆盖整段 body，所以新增字段不需要新版本） |
 | 签名消息 | 签名域 | `sharetoken/offer/v1`、`sharetoken/ticket/v1`、`sharetoken/receipt/v1`、`sharetoken/ack/v1` |
 | 数据库 | `schema_migrations`，按组件编号 | `core` 3，`mail` 1，`portal` 2 |
 | 服务端配置 | YAML 文件里的 `version` | 1 |

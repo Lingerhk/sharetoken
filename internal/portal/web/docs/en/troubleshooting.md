@@ -190,7 +190,7 @@ The reasoning of a thinking model also counts toward `max_tokens`, and the limit
 
 ### The request fails after a long time {#stalled}
 
-The node was too slow and was judged stuck. Raise `first_byte_seconds` and `idle_seconds` in the configuration. See [Configuration](/docs/config#buy).
+The node stopped sending anything (not even the progress frames it sends while the model is thinking), or its model produced nothing for 5 minutes, and was judged stuck. If the node or its network is merely slow, raise `first_byte_seconds` and `idle_seconds` in the configuration. See [Configuration](/docs/config#buy).
 
 ## Sharing models {#sharing}
 

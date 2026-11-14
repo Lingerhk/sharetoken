@@ -262,7 +262,7 @@ func postJSON(ctx context.Context, url string, header http.Header, in, out any) 
 	}
 	req.Header = header.Clone()
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := httpClient.Do(req)
+	resp, err := clientForContext(ctx).Do(req)
 	if err != nil {
 		return err
 	}

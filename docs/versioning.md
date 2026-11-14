@@ -11,7 +11,7 @@ The release version says which code a program is. The interface versions decide 
 - **Stamping:** [`scripts/build/ldflags.sh`](../scripts/build/ldflags.sh) writes the version, commit and build time into `sharetoken/internal/version`. The desktop shell is a separate module and takes `main.version`.
 - **Where to see it:** `portal|coordinator|mailserver|relay|sharetoken version`, the first line of each program's log, the portal's `GET /api/v1/version`, and the Versions page of the admin console.
 
-**Releases raise the number since 1.0.1** (2026-11-14). Before that, every release was 1.0.0 and moved the tag `v1.0.0`, so the 1.0.0 builds differ: the `commit` names them (`GET /api/v1/version`, the admin Versions page), and clients compare the commit and build time to notice a newer build of the same version (see "Update notices"). Protocol IDs and signing domains keep their 1.0.0 / v1 names until the first public release; formats still change in place before then.
+**Releases raise the number since 1.0.1** (2026-11-14). Before that, every release was 1.0.0 and moved the tag `v1.0.0`, so the 1.0.0 builds differ: the `commit` names them (`GET /api/v1/version`, the admin Versions page), and clients compare the commit and build time to notice a newer build of the same version (see "Update notices"). Since 1.0.2 the libp2p protocol IDs carry the release number that last changed them (1.0.2 for all three, with which clients of 1.0.1 and older can no longer work); signing domains keep their v1 names until the first public release, and formats still change in place before then.
 
 To cut a release: change `VERSION`; add the release and its features at the top of the changelog page ([`internal/portal/web/changelog.html`](../internal/portal/web/changelog.html), served at `/changelog/`) with its translations; commit; `git tag v1.2.3`; then build.
 
@@ -21,9 +21,9 @@ To cut a release: change `VERSION`; add the release and its features at the top 
 |---|---|---|
 | Portal HTTP API | path | `/api/v1` |
 | Client local API | path | `/api/v1` (the OpenAI endpoint stays `/v1`) |
-| Control plane (client ↔ coordinator) | libp2p protocol ID | `/sharetoken/ctrl/1.0.0` |
-| Data plane (buyer ↔ node) | libp2p protocol ID, plus an `infer_version` agreed per job | `/sharetoken/infer/1.0.0`, version 1 |
-| Relay pass | libp2p protocol ID, plus the signing domain | `/sharetoken/relay-pass/1.0.0`, `sharetoken/relay-pass/v1` (the signature covers the whole body, so a new field needs no new version) |
+| Control plane (client ↔ coordinator) | libp2p protocol ID | `/sharetoken/ctrl/1.0.2` |
+| Data plane (buyer ↔ node) | libp2p protocol ID, plus an `infer_version` agreed per job | `/sharetoken/infer/1.0.2`, version 1 |
+| Relay pass | libp2p protocol ID, plus the signing domain | `/sharetoken/relay-pass/1.0.2`, `sharetoken/relay-pass/v1` (the signature covers the whole body, so a new field needs no new version) |
 | Signed messages | signing domain | `sharetoken/offer/v1`, `sharetoken/ticket/v1`, `sharetoken/receipt/v1`, `sharetoken/ack/v1` |
 | Database | `schema_migrations`, numbered per component | `core` 3, `mail` 1, `portal` 2 |
 | Server configuration | `version` in the YAML file | 1 |

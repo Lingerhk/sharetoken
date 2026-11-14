@@ -594,11 +594,13 @@ I18N.ready.then(() => {
             h('span', { class: 'row-actions' },
               h('button', { type: 'button', class: 'mini prov-add-model', onclick: () => modelDialog(p, null) }, tr('添加模型')),
               h('button', { type: 'button', class: 'mini prov-toggle', onclick: e => enableProvider(e.target, p) }, p.enabled ? tr('停用') : tr('启用')),
+              h('button', { type: 'button', class: 'mini prov-options', onclick: () => providerSettings(p) }, tr('连接设置')),
               h('button', { type: 'button', class: 'mini prov-renew', onclick: () => providerDialog(p) }, tr('更换凭据')),
               h('button', { type: 'button', class: 'mini danger prov-remove', onclick: () => removeProvider(p) }, tr('删除')))),
           h('div', { class: 'kv small prov-meta' },
             h('span', { class: 'mono' }, p.base_url),
-            p.token_expires ? h('span', null, tr('令牌有效期至 {time}（会自动续期）', { time: clock(p.token_expires) })) : null,
+            p.token_expires ? h('span', null, p.can_refresh ? tr('令牌有效期至 {time}（会自动续期）', { time: clock(p.token_expires) }) : tr('令牌有效期至 {time}（需重新登录续期）', { time: clock(p.token_expires) })) : null,
+            p.runtime?.retry_at && new Date(p.runtime.retry_at) > new Date() ? h('span', null, tr('上游限流，{time} 后恢复', { time: clock(p.runtime.retry_at) })) : null,
             p.headers && p.headers.length ? h('span', null, tr('附加请求头：{names}', { names: p.headers.join(', ') })) : null),
           p.models.length === 0 ? h('div', { class: 'empty prov-empty' }, tr('还没有要出售的模型')) : modelTable(p, p.models, serving))));
 
@@ -782,6 +784,55 @@ I18N.ready.then(() => {
       }, e => { if (box.isConnected) out.replaceChildren(h('div', { class: 'notice bad', id: 'test-error', role: 'alert' }, shareError(e))); });
     }
 
+    function providerOptions(old) {
+      const proxyMode = h('select', { id: 'pv-proxy-mode' }, [
+        ...(old ? [h('option', { value: 'keep' }, tr('保留现有代理设置'))] : []),
+        h('option', { value: 'environment' }, tr('使用环境代理')),
+        h('option', { value: 'direct' }, tr('直接连接')),
+        h('option', { value: 'custom' }, tr('指定代理'))]);
+      const proxyURL = h('input', { type: 'password', id: 'pv-proxy-url', autocomplete: 'off', placeholder: old?.proxy_address || 'http://127.0.0.1:8080' });
+      const profile = h('select', { id: 'pv-profile' }, h('option', { value: 'standard' }, tr('标准请求')), h('option', { value: 'claude-code' }, tr('Claude Code OAuth 兼容请求')));
+      const tlsProfile = h('select', { id: 'pv-tls' }, h('option', { value: 'native' }, tr('原生 TLS')), h('option', { value: 'chrome' }, tr('浏览器 TLS')));
+      const tokenTLS = h('select', { id: 'pv-token-tls' }, h('option', { value: 'native' }, tr('原生 TLS')), h('option', { value: 'chrome' }, tr('浏览器 TLS')));
+      tlsProfile.value = old?.tls_profile || 'native';
+      tokenTLS.value = old?.token_tls_profile || 'native';
+      const sampling = h('select', { id: 'pv-sampling' }, h('option', { value: 'strict' }, tr('拒绝不支持的采样参数')), h('option', { value: 'default' }, tr('使用模型默认采样')));
+      profile.value = old?.anthropic?.profile || 'standard';
+      sampling.value = old?.anthropic?.sampling || 'strict';
+      const proxyField = field(tr('代理地址（可含认证信息）'), proxyURL);
+      const profileField = field(tr('Anthropic 请求方式'), profile);
+      const samplingField = field(tr('采样参数处理'), sampling);
+      const tokenTLSField = field(tr('登录与续期 TLS'), tokenTLS);
+      const el = h('div', { class: 'provider-options' }, field(tr('上游连接'), proxyMode), proxyField, field(tr('推理连接 TLS'), tlsProfile), tokenTLSField, profileField, samplingField);
+      const refreshProxy = () => { proxyField.hidden = proxyMode.value !== 'custom'; };
+      proxyMode.addEventListener('change', refreshProxy); refreshProxy();
+      return { el, show(kind, auth) {
+        profileField.hidden = kind !== 'anthropic' || auth !== 'oauth';
+        tokenTLSField.hidden = auth !== 'oauth';
+        samplingField.hidden = kind !== 'anthropic';
+      }, read(kind, auth) {
+        const out = {};
+        if (proxyMode.value !== 'keep') out.transport = { proxy_mode: proxyMode.value, proxy_url: proxyMode.value === 'custom' ? proxyURL.value.trim() : '' };
+        out.transport = { ...out.transport, tls_profile: tlsProfile.value, token_tls_profile: tokenTLS.value };
+        if (kind === 'anthropic') out.anthropic = { profile: auth === 'oauth' ? profile.value : 'standard', sampling: sampling.value };
+        return out;
+      }};
+    }
+
+    function providerSettings(p) {
+      const options = providerOptions(p), err = errorBox('pv-settings-error');
+      options.show(p.type, p.auth);
+      const save = h('button', { type: 'submit', class: 'primary', id: 'pv-settings-save' }, tr('保存'));
+      modal('dlg-provider-settings', tr('连接设置'), h('form', { onsubmit: e => {
+        e.preventDefault();
+        run(save, err, async () => {
+          const req = options.read(p.type, p.auth);
+          if (Object.keys(req).length) await api('PATCH', providerPath(p.name), req);
+          closeModal(); await reload();
+        });
+      } }, options.el, err.el, save));
+    }
+
     // old: the provider whose credentials are replaced (null: a new provider).
     async function providerDialog(old) {
       let ks;
@@ -797,6 +848,12 @@ I18N.ready.then(() => {
       const project = h('input', { type: 'text', id: 'pv-project', autocapitalize: 'off', spellcheck: 'false' });
       const code = h('textarea', { id: 'pv-code', rows: '3', autocapitalize: 'off', spellcheck: 'false' });
       const advanced = h('details', { id: 'pv-advanced' });
+      const options = providerOptions(old);
+      const loginMode = h('select', { id: 'pv-login-mode' }, h('option', { value: 'full' }, tr('完整授权')), h('option', { value: 'inference' }, tr('仅推理授权')));
+      loginMode.value = old?.login_mode || 'full';
+      const loginMethod = h('select', { id: 'pv-login-method' }, h('option', { value: 'browser' }, tr('浏览器授权')), h('option', { value: 'session' }, tr('sessionKey 登录')));
+      const sessionKey = h('input', { type: 'password', id: 'pv-session-key', autocomplete: 'off' });
+      const organization = h('select', { id: 'pv-organization' });
       const err = errorBox('pv-error');
       const body = h('div');
       let auth = old ? old.auth : '', login = null;
@@ -810,7 +867,7 @@ I18N.ready.then(() => {
       async function added(out) {
         closeModal();
         const c = out.check || {};
-        ui.flash = c.unusable ? { cls: 'warn', text: tr('凭据有效，但账户余额不足，暂时无法完成请求') }
+        ui.flash = c.warning ? { cls: 'warn', text: c.warning } : c.unusable ? { cls: 'warn', text: tr('凭据有效，但账户余额不足，暂时无法完成请求') }
           : { cls: 'ok', text: (old ? tr('已更换 {name} 的凭据', { name: out.provider.name }) : tr('已添加 {name}', { name: out.provider.name })) + (c.balance ? ' · ' + tr('余额：{balance}', { balance: c.balance }) : '') };
         await reload();
         if (out.provider.models.length === 0) modelDialog(out.provider, null, c.models && c.models.length ? c.models : undefined);
@@ -822,7 +879,7 @@ I18N.ready.then(() => {
       const saveKey = () => run(saveBtn, err, async () => {
         const k = kind();
         check();
-        const req = { type: k.id, name: chosenName(), api_key: key.value.trim(), base_url: url.value.trim(), no_check: noCheck.checked };
+        const req = { type: k.id, name: chosenName(), api_key: key.value.trim(), base_url: url.value.trim(), no_check: noCheck.checked, ...options.read(k.id, 'apikey') };
         if (!req.api_key && !k.key_optional) throw new Error(tr('请填写 API key'));
         if (k.needs_url && !req.base_url) throw new Error(tr('请填写 API 地址'));
         const hv = header.value.trim();
@@ -837,20 +894,28 @@ I18N.ready.then(() => {
       });
       const startLogin = () => run(startBtn, err, async () => {
         check();
-        login = await api('POST', '/api/v1/providers/oauth/start', { type: type.value, project: project.value.trim() });
+        const req = { type: type.value, name: chosenName(), project: project.value.trim(), mode: type.value === 'anthropic' ? loginMode.value : '', ...options.read(type.value, 'oauth') };
+        if (type.value === 'anthropic' && loginMethod.value === 'session') {
+          if (!sessionKey.value.trim()) throw new Error(tr('请填写 sessionKey'));
+          login = { ...await api('POST', '/api/v1/providers/oauth/session/start', { ...req, session_key: sessionKey.value.trim() }), session: true };
+          organization.replaceChildren(...login.organizations.map(o => h('option', { value: o.uuid }, o.name + ' (' + o.uuid + ')')));
+        } else login = await api('POST', '/api/v1/providers/oauth/start', req);
         draw();
-        code.focus();
+        (login.session ? organization : code).focus();
       });
       const finishLogin = () => run(finishBtn, err, async () => {
-        if (!code.value.trim()) throw new Error(tr('请粘贴授权码或页面地址'));
-        const out = await api('POST', '/api/v1/providers/oauth/finish', { id: login.id, code: code.value.trim(), name: chosenName() });
-        code.value = '';
+        if (!login.session && !code.value.trim()) throw new Error(tr('请粘贴授权码或页面地址'));
+        const out = login.session
+          ? await api('POST', '/api/v1/providers/oauth/session/finish', { id: login.id, session_key: sessionKey.value.trim(), organization: organization.value, name: chosenName() })
+          : await api('POST', '/api/v1/providers/oauth/finish', { id: login.id, code: code.value.trim(), name: chosenName() });
+        code.value = ''; sessionKey.value = '';
         await added(out);
       });
 
       function draw() {
         const k = kind();
         if (!(auth === 'apikey' && k.apikey) && !(auth === 'oauth' && k.oauth)) auth = k.apikey ? 'apikey' : 'oauth';
+        options.show(k.id, auth);
         name.setAttribute('placeholder', k.id);
         url.setAttribute('placeholder', k.base_url || 'https://');
         const tab = (mode, label) => h('button', { type: 'button', role: 'tab', id: 'pv-auth-' + mode, 'aria-selected': auth === mode ? 'true' : 'false',
@@ -866,10 +931,12 @@ I18N.ready.then(() => {
           auth === 'apikey' ? [
             field(k.key_optional ? tr('API key（没有可不填）') : 'API key', key, keyPage ? I18N.parts('在 {link} 创建', { link: keyPage }) : null),
             k.needs_url ? urlField : null,
-            advanced,
+            advanced, options.el,
           ] : [
             h('div', { class: 'notice warn small', id: 'pv-oauth-risk' }, tr('这是用厂商官方客户端的方式登录你的订阅账号。把订阅额度提供给他人使用可能违反厂商条款，账号有被封的风险，请先确认条款允许。')),
-            !login ? (k.id === 'gemini' || k.id === 'antigravity' ? field(tr('Google Cloud 项目 ID（一般不用填）'), project) : null) : [
+            !login ? options.el : null,
+            !login && k.id === 'anthropic' ? [field(tr('登录方式'), loginMethod), field(tr('授权范围'), loginMode), loginMethod.value === 'session' ? field('sessionKey', sessionKey) : null] : null,
+            !login ? (k.id === 'gemini' || k.id === 'antigravity' ? field(tr('Google Cloud 项目 ID（一般不用填）'), project) : null) : login.session ? field(tr('选择使用的组织'), organization) : [
               h('p', { class: 'small' }, tr('1. 在浏览器中打开这个地址并登录：')),
               h('div', { class: 'login-url' }, h('a', { href: login.url, target: '_blank', rel: 'noopener', id: 'pv-login-url' }, login.url)),
               h('div', { class: 'modal-actions start' }, copyButton(() => login.url, 'pv-login-copy')),
@@ -880,7 +947,8 @@ I18N.ready.then(() => {
         actions.replaceChildren(auth === 'apikey' ? saveBtn : login ? finishBtn : startBtn);
       }
       const actions = h('div');
-      type.addEventListener('change', () => { login = null; err.say(''); draw(); });
+      loginMethod.addEventListener('change', () => { login = null; err.say(''); draw(); });
+      type.addEventListener('change', () => { login = null; sessionKey.value = ''; err.say(''); draw(); });
       modal('dlg-provider', old ? tr('更换凭据') : tr('添加厂商'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); (auth === 'apikey' ? saveKey : login ? finishLogin : startLogin)(); } },
         field(tr('厂商'), type),
         field(tr('名称（区分同一厂商的多个账号，可不填）'), name),

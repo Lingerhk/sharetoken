@@ -35,7 +35,7 @@ import (
 )
 
 // Protocol is the libp2p protocol a device presents its pass on.
-const Protocol = "/sharetoken/relay-pass/1.0.0"
+const Protocol = "/sharetoken/relay-pass/1.0.2"
 
 // Frame types on Protocol.
 const (

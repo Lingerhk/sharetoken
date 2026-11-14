@@ -162,7 +162,8 @@ $env:OPENAI_API_KEY = ({{exe}} apikey -q)
 - **按实际 token 结算：** 价格由节点报出，你按收据上的 token 数付费。
 - **冻结：** 发请求时先冻结一笔钱，结束后退回没用完的部分。请求带了 `max_tokens` 时只按最坏情况冻结，不带时冻结整个预算（默认 0.2 credit）。
 - **建议总是设置 `max_tokens`**，尤其是批量或高并发调用，否则容易因为冻结额过大而返回 `insufficient_funds`。
-- **中途断开：** 流式请求中途断开时，只按已送达的部分计费。
+- **中途停止：** 你的程序中途断开流式请求（比如点了停止），节点会立即停止生成，只按已送达的部分计费。
+- **网络中断：** 中继重启、切换网络等原因导致连接中断时，客户端会在 60 秒内自动接上，回答从断开的地方继续，不需要重发请求。
 
 预算和价格上限在[配置文件](/docs/config#buy)里调整。
 
@@ -176,8 +177,16 @@ $env:OPENAI_API_KEY = ({{exe}} apikey -q)
 | `X-Sharetoken-Job` | 作业 ID，查账和反馈时使用 |
 | `X-Sharetoken-Node` | 服务这次请求的节点 |
 | `X-Sharetoken-Cost-Micros` | 这次的费用，单位 micro-credit |
+| `X-Sharetoken-Timing` | 耗时和流量：`ticket_ms`（撮合）、`dial_ms`（连接节点）、`first_byte_ms`（首字节）、`relayed`（是否经中继）、`preferred`（是否回到了上次的节点）、`frames`、`up_bytes`、`down_bytes` |
+
+流式响应没有这些响应头，同样的信息在结尾的注释行 `: sharetoken job=… node=… verified=true …` 里，另外还有 `resumes`（中途接上了几次）。
 
 节点虚报用量时，客户端拒签，并交出这一单的密钥作为证据，裁决后自动退款。这个行为由配置项 `buy.evidence` 控制，默认开启。
+
+## 长对话和大请求 {#sessions}
+
+- **回到同一个节点：** 同一段对话的后续请求，会优先交给上次服务它的节点。连接已经建好，模型服务器的 prompt 缓存也更容易命中，首字更快、费用可能更低。客户端按请求里的 `session_id` 识别对话；没有时，按模型和开头两条消息识别。那个节点满载或下线时，照常换别的节点。
+- **请求大小：** 一个请求最大 32 MB（和多数云平台的 Claude 接口一致），可以带截图等图片。请求先压缩再发送，长对话历史通常压缩到原来的 1/3 到 1/5。
 
 ## 只用 TEE 节点 {#tee}
 
@@ -223,12 +232,12 @@ $env:OPENAI_API_KEY = ({{exe}} apikey -q)
 | `capacity` | 503 | 所有节点都满载，等待 30 秒后仍无空位。按 `Retry-After` 重试 |
 | `insufficient_funds` | 402 | 余额不够冻结。设置更小的 `max_tokens`，或者赚一些 credit |
 | `budget` | 400 | 这次请求的费用可能超出 `buy.budget_micros`。调小 `max_tokens` 或调大预算 |
-| `bad_request` | 400 | 请求无效，消息里有原因 |
+| `bad_request` | 400 | 请求无效，消息里有原因。请求超过 32 MB 时返回 413 |
 | `upstream_error`、`receipt_rejected` | 502 | 节点出错，或者收据没有通过验证。可以重试 |
 | `unauthorized`、`forbidden` | 403 | 登录失效或账户被禁用。重新 `login` |
 | `upgrade_required` | 426 | 客户端版本过低，见[升级](/docs/update#upgrade) |
 | `not_connected` | 503 | 客户端还没连上网络，稍等或查看 `status` |
 
-慢模型处理长 prompt 时可能被判定为卡死。超时设置见[配置文件](/docs/config#buy)。
+模型思考期间节点每 10 秒发一次心跳，所以长时间思考不会被判定为卡死；连续 5 分钟没有任何输出才会放弃。超时设置见[配置文件](/docs/config#buy)。
 
 思考型模型的推理过程也计入 `max_tokens`。`max_tokens` 太小时 `content` 可能为空，只有 `reasoning_content`。

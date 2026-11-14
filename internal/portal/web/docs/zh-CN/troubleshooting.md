@@ -190,7 +190,7 @@ Get-NetTCPConnection -LocalPort {{port}} -State Listen | Select-Object OwningPro
 
 ### 请求很久后失败 {#stalled}
 
-节点太慢被判定为卡死。调大配置里的 `first_byte_seconds` 和 `idle_seconds`，见[配置](/docs/config#buy)。
+节点什么都没再发（模型思考期间节点会发进度帧，连这个也没有），或者它的模型连续 5 分钟没有输出，于是被判定为卡死。如果只是节点或网络比较慢，调大配置里的 `first_byte_seconds` 和 `idle_seconds`，见[配置](/docs/config#buy)。
 
 ## 共享模型 {#sharing}
 

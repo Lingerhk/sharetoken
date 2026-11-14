@@ -38,6 +38,12 @@ type Config struct {
 	BufferSize           int           // per-circuit buffer; default 16 KiB
 	ReservationTTL       time.Duration // default 1h
 	MaxConns             int           // connection-manager high watermark; default 8192
+	// Memory caps what all peers may reserve with the resource manager
+	// (default: three quarters of the machine's memory). A relay forwards and
+	// buffers little: yamux reserves 256 KiB for every stream, and a circuit is
+	// two of them, while an idle circuit holds about 30 KiB. A quarter of a
+	// 453 MB machine let only about 170 TCP circuits open.
+	Memory int64
 	// Announce replaces the addresses the relay advertises, e.g. the public
 	// address of a cloud VM whose interface only has a private IP.
 	Announce []string
@@ -49,6 +55,9 @@ type Config struct {
 }
 
 func (c *Config) setDefaults() {
+	if c.Memory == 0 {
+		c.Memory = int64(p2p.MachineMemory() / 4 * 3)
+	}
 	if c.MaxReservations == 0 {
 		c.MaxReservations = 4096
 	}
@@ -174,6 +183,7 @@ func New(keys *p2p.Keys, cfg Config) (*Relay, error) {
 		Program:  "relay",
 		Listen:   cfg.Listen,
 		MaxConns: cfg.MaxConns,
+		Memory:   cfg.Memory,
 		Options: append(opts,
 			// A relay is public by definition; the relay service only runs
 			// once the host believes it is publicly reachable.

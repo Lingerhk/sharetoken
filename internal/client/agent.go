@@ -926,7 +926,7 @@ func (a *Agent) shareModelsLocked(sc ShareConfig) ([]node.ModelConfig, error) {
 		}
 		add(localSource, &node.OpenAICompat{BaseURL: sc.Upstream, APIKey: apiKey}, sc.Models)
 	}
-	file, err := provider.Load(a.home)
+	file, err := provider.LoadReady(a.home)
 	if err != nil {
 		a.warn("source:providers", "providers are not sold: "+err.Error())
 		file = &provider.File{}
@@ -957,6 +957,13 @@ type watchedUpstream struct {
 	up     node.Upstream
 }
 
+func (w *watchedUpstream) ReadyAt() time.Time {
+	if up, ok := w.up.(interface{ ReadyAt() time.Time }); ok {
+		return up.ReadyAt()
+	}
+	return time.Time{}
+}
+
 func (w *watchedUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
 	err := w.up.Stream(ctx, body, emit)
 	msg := ""
@@ -967,6 +974,8 @@ func (w *watchedUpstream) Stream(ctx context.Context, body []byte, emit func([]b
 			msg = fmt.Sprintf("%s refused its credentials (HTTP %d): jobs fail until they are replaced", w.source, se.Status)
 		case http.StatusPaymentRequired:
 			msg = w.source + " is out of balance (HTTP 402): jobs fail until the account is topped up"
+		case http.StatusTooManyRequests:
+			msg = w.source + " is temporarily rate limited (HTTP 429)"
 		}
 	}
 	if err != nil && msg == "" {
@@ -974,6 +983,9 @@ func (w *watchedUpstream) Stream(ctx context.Context, body []byte, emit func([]b
 	}
 	w.a.mu.Lock()
 	w.a.warn("source:"+w.source+":credentials", msg)
+	if se != nil && se.Status == http.StatusTooManyRequests && w.a.share != nil {
+		w.a.share.node.Announce()
+	}
 	w.a.mu.Unlock()
 	return err
 }

@@ -225,5 +225,17 @@
   "本机的管理接口需要密钥才能访问；桌面应用连接后台程序前，会先确认对方的身份。": "Die lokale Verwaltungs-API verlangt einen Schlüssel, und die Desktop-App prüft die Identität des Hintergrundprogramms, bevor sie sich verbindet.",
   "本地 OpenAI 兼容端点默认需要 API key（sk-st-…）。可以在设置里或用 sharetoken apikey 查看、更换或关闭。": "Der lokale OpenAI-kompatible Endpunkt verlangt standardmäßig einen API key (sk-st-…). Anzeigen, ändern oder ausschalten in den Einstellungen oder mit sharetoken apikey.",
   "sharetoken skill install：让 Claude Code 和 Codex 学会使用 ShareToken 客户端。文档里新增了「在编程助手中使用」一页。": "sharetoken skill install: bringt Claude Code und Codex bei, den ShareToken-Client zu nutzen. Die Anleitung hat eine neue Seite „Mit Coding-Agenten nutzen“.",
-  "以 MIT 许可证开源。网站和用户页面右上角加了 GitHub 链接。": "Open Source unter der MIT-Lizenz. Website und Benutzerseiten verlinken oben rechts auf GitHub."
+  "以 MIT 许可证开源。网站和用户页面右上角加了 GitHub 链接。": "Open Source unter der MIT-Lizenz. Website und Benutzerseiten verlinken oben rechts auf GitHub.",
+  "最新版本": "Neueste Version",
+  "回答改用压缩后的二进制帧传输，经中继的流量降到原来的约 1/8；模型出字越快，省得越多。": "Antworten werden in komprimierten Binär-Frames übertragen: Der Verkehr über Relays sinkt auf etwa 1/8, und je schneller ein Modell schreibt, desto mehr wird gespart.",
+  "请求先压缩再发送，长对话历史的上传量降到约 1/4，大请求的首字更快。": "Anfragen werden vor dem Senden komprimiert: Ein langer Gesprächsverlauf braucht beim Hochladen etwa 1/4 des Verkehrs, und große Anfragen erhalten das erste Token früher.",
+  "请求上限从 4 MB 提高到 32 MB，可以带截图等图片。": "Die Grenze für Anfragen steigt von 4 MB auf 32 MB, sodass Anfragen Bilder wie Screenshots enthalten können.",
+  "同一段对话的后续请求优先回到上次的节点：连接已经建好，模型服务器的 prompt 缓存也更容易命中。": "Spätere Anfragen eines Gesprächs gehen bevorzugt an den Knoten, der es zuletzt bedient hat: Die Verbindung steht bereits, und der Prompt-Cache des Modellservers trifft eher.",
+  "中继重启或网络切换时，正在输出的回答会在 60 秒内自动接上，不需要重发请求。": "Startet ein Relay neu oder wechselt das Netzwerk, wird eine laufende Antwort innerhalb von 60 Sekunden automatisch fortgesetzt, ohne die Anfrage erneut zu senden.",
+  "模型长时间思考时，节点每 10 秒发一次心跳，不再被误判为卡死；买家的超时默认值改为 30 秒。": "Denkt ein Modell lange nach, sendet der Knoten alle 10 Sekunden ein Lebenszeichen, sodass der Auftrag nicht mehr für hängend gehalten wird. Die Zeitlimits des Käufers betragen jetzt standardmäßig 30 Sekunden.",
+  "点停止后，节点立即停止生成，只按已送达的部分计费。": "Nach dem Stoppen hört der Knoten sofort auf zu generieren, und Sie zahlen nur für den gelieferten Teil.",
+  "回答合并发送并补齐长度，请求按区间补齐，中继无法再从数据包大小推测每个 token 的长度。": "Antworten werden in zusammengefassten, aufgefüllten Frames gesendet und Anfragen auf Größenstufen aufgefüllt, sodass Relays die Länge einzelner Tokens nicht mehr aus Paketgrößen ableiten können.",
+  "性能提升": "Leistung",
+  "稳定性提升": "Zuverlässigkeit",
+  "安全性": "Sicherheit"
 }

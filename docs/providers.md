@@ -107,19 +107,25 @@ The file is `providers.json` in the client's state directory, mode 0600, written
 | `base_url` | Overrides the kind's own address; required for `custom` |
 | `api_key` | The key |
 | `headers` | Headers sent with every request, for example `anthropic-workspace-id` |
-| `oauth` | The token from a login. `account_id` is the account the token acts for (ChatGPT account, Anthropic organization); `project_id` is used by Gemini and Antigravity; `plan` and `extra` depend on the kind |
+| `id`, `anthropic_identity` | Stable local identity; the Anthropic device ID and session derivation key are omitted from public views |
+| `transport` | `proxy_mode`, `proxy_url`, `tls_profile`, `token_tls_profile`; views never contain proxy passwords |
+| `anthropic` | `profile=standard/claude-code`, `sampling=strict/default` |
+| `oauth` | `account_uuid` separately identifies the Anthropic user; `scope` and `login_mode` record authorization scope. The token from a login. `account_id` is the account the token acts for (ChatGPT account, Anthropic organization); `project_id` is used by Gemini and Antigravity; `plan` and `extra` depend on the kind |
 | `models` | The models this provider sells: network ID, the vendor's model name, prices, `max_output` |
 
 A model entry has the same fields as a local model in `config.json` (`node.ModelConfig`).
 
-Every change goes through `provider.Update`, which re-reads the file, applies the change and writes it back (serialized within a process), so a token renewed by the running client and a setting changed by a command do not undo each other.
+Every change goes through `provider.Update`, which re-reads the file, applies the change and writes it back (serialized across CLI and daemon processes with OS file locks), so a token renewed by the running client and a setting changed by a command do not undo each other.
 
 ## 5. Command line
 
 ```bash
 sharetoken provider                               # kinds that can be added, and the configured providers
 sharetoken provider add <kind> [-name N] [-url URL] [-header K=V] [-no-check]
-sharetoken provider login <kind> [-name N] [-project ID]
+sharetoken provider login <kind> [-name N] [-project ID] [-mode full|inference]
+sharetoken provider configure <name> [-proxy-mode environment|direct|custom] [-proxy URL]
+                         [-profile standard|claude-code] [-sampling strict|default]
+                         [-tls-profile native|chrome] [-token-tls-profile native|chrome]
 sharetoken provider models <name>                 # models these credentials may use
 sharetoken provider test <name> [-model M] [-prompt TEXT]
 sharetoken provider on|off <name>
@@ -149,14 +155,16 @@ The routes are in [`internal/client/providers.go`](../internal/client/providers.
 |---|---|---|
 | GET | `/api/v1/providers` | The kinds that can be added (with `needs_url` and `key_optional`, which tell the page which inputs to show) and the configured providers |
 | POST | `/api/v1/providers` | Add one with an API key (`provider.AddRequest`) |
-| PATCH | `/api/v1/providers/{name}` | `{"enabled": bool}` |
+| PATCH | `/api/v1/providers/{name}` | Update `enabled`, `transport`, or `anthropic` settings |
 | DELETE | `/api/v1/providers/{name}` | Remove it |
-| GET | `/api/v1/providers/{name}/models` | Models the credentials may use |
+| GET | `/api/v1/providers/{name}/models` | `models`, `source`, `verification`, and optional `warning`; fallback IDs do not verify inference access |
 | PUT | `/api/v1/providers/{name}/models` | Add a model or change its price (`node.ModelConfig`) |
 | DELETE | `/api/v1/providers/{name}/models/{id}` | Remove one model |
 | POST | `/api/v1/providers/{name}/test` | `{"model", "prompt"}`: send one request through it |
-| POST | `/api/v1/providers/oauth/start` | `{"type", "project"}` → the sign-in address |
+| POST | `/api/v1/providers/oauth/start` | `{"type", "name", "project", "mode", "transport", "anthropic"}` → the sign-in address |
 | POST | `/api/v1/providers/oauth/finish` | `{"id", "code", "name"}` |
+| POST | `/api/v1/providers/oauth/session/start` | `{"name", "session_key", "mode", "transport", "anthropic"}` → login ID and organizations |
+| POST | `/api/v1/providers/oauth/session/finish` | `{"id", "name", "session_key", "organization"}` → saved login; the cookie is not persisted |
 
 - An answer never contains a key or a token, only the masked form.
 - A request with an `Origin` other than `http://<local host>` gets 403 `bad_origin`. Keys enter here, so no web page may call it.
@@ -171,7 +179,7 @@ Each provider ends up as a `node.Upstream`: it takes the body of the buyer's cha
 |---|---|
 | OpenAI-compatible (deepseek, grok, custom, gemini with a key, openai with a key) | Mostly passed through, with the model name replaced. OpenAI's own API gets `max_completion_tokens` instead of `max_tokens` |
 | Anthropic Messages | System messages move to the top level; tool definitions, tool calls and tool results become `tool_use` / `tool_result` blocks; `x-api-key` plus `anthropic-version: 2023-06-01`; stream events are turned back into chunks |
-| Anthropic Messages with a login | As above, with a bearer token and the `anthropic-beta: oauth-2025-04-20` header instead of `x-api-key`. The API serves such a token to Claude Code only, so the request's system prompt leads with Claude Code's identity line. The short names `claude-sonnet-4-5`, `claude-opus-4-5` and `claude-haiku-4-5` are sent as their dated IDs |
+| Anthropic Messages with a login | The default `standard` profile is as above, with a bearer token and the `anthropic-beta: oauth-2025-04-20` header instead of `x-api-key`. The API serves such a token to Claude Code only, so the request's system prompt leads with Claude Code's identity line. The short names `claude-sonnet-4-5`, `claude-opus-4-5` and `claude-haiku-4-5` are sent as their dated IDs. See section 11 for the complete `claude-code` profile |
 | Responses (Codex backend) | Messages become `input` items. The backend takes no output limit, so the stream is cut at the buyer's `max_tokens`. A tool named `python` is renamed `python__st` on the way out and restored on the way back |
 | Native Gemini | Messages become `contents` / `systemInstruction`, tools become `functionDeclarations`, and `cleanSchema` drops the schema fields Gemini does not accept |
 | Antigravity | The native Gemini request wrapped in another envelope (`requestId`, `userAgent`, `requestType`, project ID) with an identity system prompt; the production or the daily host is chosen by plan |
@@ -218,7 +226,11 @@ Token upkeep (`Tokens` / `TokenSource`):
 
 ### Refused credentials
 
-When the upstream answers 401 or 403 (credentials refused) or 402 (out of balance), `watchedUpstream` raises the warning `source:<name>:credentials` for the seller. It shows in `sharetoken status` and in the API. Until it is fixed, every job through that provider fails. Other errors do not raise this warning.
+When the upstream answers 401 or 403 (credentials refused) or 402 (out of balance), `watchedUpstream` raises the warning `source:<name>:credentials` for the seller. It shows in `sharetoken status` and in the API. Until it is fixed, every job through that provider fails. HTTP 429 raises a status warning too (below); other errors do not.
+
+### Rate limits
+
+This applies to every provider, whether signed in or using an API key. When the upstream answers HTTP 429, the provider cools down until `Retry-After`, or for one minute when the header is missing. The node announces a new offer at once: the cooling provider's models are left out, and if every provider is cooling down the node withdraws its offer. The models come back with the first offer after the cooldown ends (within `OfferInterval`, 15 s by default). A ticket issued against an older offer gets `busy` without another upstream call and without blaming the buyer. Provider views report the last upstream HTTP status, request ID and cooldown deadline. This state lives in the daemon only and resets at restart.
 
 ## 9. What is verified
 
@@ -242,3 +254,40 @@ Run the automated tests with `scripts/test/test.sh ./...` (see [development.md](
 - The Codex backend has no dependable model list endpoint. When it cannot be read, a built-in list is used, and new models need a code change. The same holds for the built-in lists of the other logins.
 - Two providers cannot sell the same network model ID: the one loaded later is skipped with a warning, and `share add` asks for another ID with `-id`.
 - Hidden reasoning tokens are not billed (section 7).
+
+
+## 11. Anthropic OAuth compatibility profile
+
+The default `standard` profile retains the original OAuth request format. The new `claude-code` profile follows the non-Claude-Code conversion path in sub2api `530c5e3a4`: nine betas, CLI/Stainless headers, request IDs, JSON-encoded metadata, billing attribution and system blocks are generated together. Its CLI baseline is `2.1.321`. The general expansion text is independently written for this adapter and omitted for Fable; it is not a byte-for-byte copy of the full Claude Code prompt.
+
+```bash
+sharetoken provider login anthropic -name claude -profile claude-code -token-tls-profile chrome
+sharetoken provider login anthropic -name claude -mode inference -profile claude-code
+# Hidden cookie prompt; select the organization when there is more than one
+sharetoken provider login anthropic -name claude -session-key -profile claude-code
+
+sharetoken provider configure claude -proxy-mode custom -proxy http://127.0.0.1:8080
+# For a URL containing a password, set SHARETOKEN_PROVIDER_PROXY and omit -proxy
+sharetoken provider configure claude -proxy-mode direct
+sharetoken provider configure claude -tls-profile chrome -token-tls-profile chrome
+sharetoken provider configure claude -profile standard -tls-profile native -token-tls-profile native
+sharetoken provider test claude -model claude-sonnet-4-6
+```
+
+The desktop connection settings expose the same options. Partial `transport` updates preserve omitted settings. Direct mode ignores environment proxies; environment mode restores Go's normal proxy rules. Token and inference connections have separate pools and TLS profiles. Browser TLS uses the reference project's `imroc/req/v3 v3.59.0`; selecting it does not select the request profile or add model capabilities.
+
+**Identity and login.** `oauth.account_id` remains the organization UUID; `oauth.account_uuid` is the user UUID. An old login missing the latter needs a refresh or a new sign-in before using the compatibility profile. Refreshes, restarts and signing back into the same account preserve device identity. Duplicate providers for the same Anthropic account are rejected. Cookie login selects an organization explicitly and uses the cookie only for authorization; the cookie is never stored or sent to token or Messages endpoints. Inference-only authorization uses the returned expiry and refresh token, not an assumed unlimited lifetime.
+
+**Models and parameters.** The fallback catalogue includes Fable 5.2 and Mythos 5.2 and is marked `source=fallback`. Listing models verifies model-list access only. HTTP 401/403 are preserved; an inference-only credential without listing permission can still be saved and tested against an explicitly named model. Sonnet 5.5, Haiku 5.5 and Fable/Mythos 5.2 validate explicit sampling settings; `sampling=default` omits temperature/top_p for those models. Forced tool choices on Opus/Sonnet 5.5 and Fable/Mythos 5.2 fail explicitly instead of silently becoming auto. API keys share these parameter rules.
+
+**Sessions.** Buyers may supply a top-level OpenAI `session_id` of at most 256 bytes. It travels inside the encrypted request and reaches the adapter through local context, without being forwarded as a normal OpenAI upstream field. The derived identity is scoped to the seller's provider, authenticated buyer and conversation. Without an explicit ID, the first user text is an approximation: two conversations from one buyer with the same opening can share a session. The actual buyer peer ID is not sent to Anthropic.
+
+**Caching and tool history.** Text/image content blocks and tool entries accept ephemeral `cache_control` with 5m/1h TTL. At most four explicit breakpoints survive normalization, with valid TTL order. Streaming replies include complete signed thinking blocks in `delta.anthropic_thinking`; non-streaming replies assemble them in `message.anthropic_thinking`. Clients must preserve those blocks unchanged in the next assistant message for models requiring signed history. The signature payload is not billed a second time as output. Clients that discard extension fields cannot rely on this feature for tool continuations.
+
+**Input billing.** The compatibility profile moves the original system/developer instructions into messages and injects adapter instructions, changing the instruction role. Billable input is `min(upstream total input, original OpenAI input estimate)`. The seller pays the additional prompt cost, while `prompt_tokens_reported` preserves upstream accounting. Usage totals and receipts use the same billable figures, without increasing marketplace tolerances or output budgets. Verify output-format and agent behavior with the actual model.
+
+**Rate limits and diagnostics.** HTTP 429 cooldown applies to every provider and is described in section 8 (Rate limits).
+
+Mock tests cover TLS verification, cookie organization selection, identity/proxy isolation, concurrent renewal, request construction, caching, signed history and input accounting. Real Anthropic login, tool continuations and quota classification still require account-holder verification. Native buyer `/v1/messages` and a local pool of interchangeable accounts remain separate features.
+
+Completed checks, environment requirements and remaining acceptance scenarios are collected in the [Anthropic OAuth test handoff (Chinese)](zh-CN/anthropic-oauth-testing.md).

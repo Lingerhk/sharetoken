@@ -812,6 +812,17 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			return protocol.Errorf(protocol.CodeNoOffers, "%s currently offers %q within the price limits", what, req.Model)
 		}
 		best := e.pick(cands)
+		// A session's previous node, while it is a candidate: its connection
+		// to the buyer is warm and its model server holds the session's
+		// prompt cache, worth more than a slightly better score.
+		if req.PreferNode != "" {
+			for _, c := range cands {
+				if c.offer.Node == req.PreferNode {
+					best = c
+					break
+				}
+			}
+		}
 
 		jobID, err := newJobID()
 		if err != nil {

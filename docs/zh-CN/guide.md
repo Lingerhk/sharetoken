@@ -367,7 +367,7 @@ OpenAI 兼容端点 `/v1/` 用的是 `apikey.json` 里的 API key（除非用 `s
 | `POST /api/v1/relay-pass` | 是 | `{peer}` → 中继凭证，只发给调用者已绑定的设备。客户端自动调用。 |
 | `GET /api/v1/jobs?role=&limit=&before=` | 是 | 作业：角色、模型、状态、token 数、费用、收入。 |
 | `GET /api/v1/usage` | 是 | 买入和卖出汇总。 |
-| `POST /api/v1/feedback`、`GET /api/v1/feedback` | 是 | 提交反馈；列出自己的反馈。 |
+| `POST /api/v1/feedback`、`GET /api/v1/feedback` | 是 | 提交反馈（每小时每个账户最多 10 条、每个客户端地址最多 30 条，超出返回 429 `throttled`）；列出自己的反馈。 |
 | `GET /api/v1/pairing` | 是 | 调用者的配对：`sellers[]` 和 `buyers[]`（`id`、打码的 `username`、`label`、`since`），有效的 `codes[]`（`id`、`code`、`label`、`max_uses`、`used`、`expires_at`），`restricted`（为 true 时只向 `sellers` 购买）、`private`（为 true 时只卖给 `buyers`）和 `max_sellers`。 |
 | `POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}` | 是 | 生成配对码（`label`、`ttl_hours` 最大 720、`max_uses`；0 表示一天、不限人数）和撤销配对码。用被撤销的码建立的配对保留。有效配对码达到 20 个时 409 `limit`。 |
 | `POST /api/v1/pairing/redeem` | 是 | `{code}`：调用者作为买家和配对码的卖家配对。404 `bad_code`（错误、过期、已撤销或已用完；和登录失败一样计数，之后 429 `throttled`），409 `own_code`，409 `limit`。 |

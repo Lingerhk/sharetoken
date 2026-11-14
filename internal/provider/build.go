@@ -42,6 +42,10 @@ func (e *Entry) Upstream(ts TokenSource) (node.Upstream, error) {
 	if err := e.Validate(); err != nil {
 		return nil, err
 	}
+	client, err := e.httpClient()
+	if err != nil {
+		return nil, err
+	}
 	if e.Auth == AuthOAuth {
 		if ts == nil {
 			return nil, fmt.Errorf("provider %s: no token source", e.Name)
@@ -50,18 +54,18 @@ func (e *Entry) Upstream(ts TokenSource) (node.Upstream, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &billable{up: up}, nil
+		return &outboundUpstream{up: &billable{up: up, estimatePrompt: e.claudeProfile()}, client: client, owner: e.ID}, nil
 	}
 	var up node.Upstream
 	switch e.Type {
 	case KindAnthropic:
-		up = &anthropicUpstream{base: e.URL(), limits: outputLimits{set: e.caps()}, header: e.keyHeader()}
+		up = &anthropicUpstream{base: e.URL(), limits: outputLimits{set: e.caps()}, header: e.keyHeader(), entry: e}
 	case KindOpenAI:
 		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}, tokensField: "max_completion_tokens"}
 	default:
 		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}}
 	}
-	return &billable{up: up}, nil
+	return &outboundUpstream{up: &billable{up: up}, client: client, owner: e.ID}, nil
 }
 
 // billable keeps the token counts a provider reports within what a buyer
@@ -71,10 +75,17 @@ func (e *Entry) Upstream(ts TokenSource) (node.Upstream, error) {
 // buyer never saw: those cannot be billed, and claiming them would lose the
 // job. The count the provider gave stays in the chunk as
 // completion_tokens_reported.
-type billable struct{ up node.Upstream }
+type billable struct {
+	up             node.Upstream
+	estimatePrompt bool // seller pays for extra OAuth system instructions
+}
 
 func (b *billable) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
 	var seen strings.Builder
+	promptEstimate, err := protocol.EstimatePromptTokens(body)
+	if err != nil {
+		return err
+	}
 	return b.up.Stream(ctx, body, func(payload []byte) error {
 		info, err := protocol.ParseChunk(payload)
 		if err != nil {
@@ -85,7 +96,9 @@ func (b *billable) Stream(ctx context.Context, body []byte, emit func([]byte) er
 			return emit(payload)
 		}
 		limit := 2*protocol.EstimateTokens(seen.String()) + 64
-		if info.Usage.CompletionTokens <= limit {
+		adjustPrompt := b.estimatePrompt && info.Usage.PromptTokens > promptEstimate
+		adjustOutput := info.Usage.CompletionTokens > limit
+		if !adjustPrompt && !adjustOutput {
 			return emit(payload)
 		}
 		var chunk map[string]json.RawMessage
@@ -93,9 +106,18 @@ func (b *billable) Stream(ctx context.Context, body []byte, emit func([]byte) er
 		if json.Unmarshal(payload, &chunk) != nil || json.Unmarshal(chunk["usage"], &usage) != nil {
 			return emit(payload)
 		}
-		usage["completion_tokens_reported"] = usage["completion_tokens"]
-		usage["completion_tokens"], _ = json.Marshal(limit)
-		usage["total_tokens"], _ = json.Marshal(info.Usage.PromptTokens + limit)
+		pt, ct := info.Usage.PromptTokens, info.Usage.CompletionTokens
+		if adjustOutput {
+			usage["completion_tokens_reported"] = usage["completion_tokens"]
+			ct = limit
+			usage["completion_tokens"], _ = json.Marshal(ct)
+		}
+		if adjustPrompt {
+			usage["prompt_tokens_reported"] = usage["prompt_tokens"]
+			pt = promptEstimate
+			usage["prompt_tokens"], _ = json.Marshal(pt)
+		}
+		usage["total_tokens"], _ = json.Marshal(pt + ct)
 		chunk["usage"], _ = json.Marshal(usage)
 		out, err := json.Marshal(chunk)
 		if err != nil {
@@ -115,9 +137,14 @@ func (e *Entry) keyHeader() http.Header {
 	return bearer(e.APIKey, e.Headers)
 }
 
-// ListModels asks the provider which models the credentials may use. Logins
-// that have no such list get the models known to work with them.
+// ListModels returns the catalogue. DiscoverModels also distinguishes an
+// upstream response from a fallback list that has not verified model access.
 func (e *Entry) ListModels(ctx context.Context, ts TokenSource) ([]string, error) {
+	r, err := e.DiscoverModels(ctx, ts)
+	return r.Models, err
+}
+
+func (e *Entry) listModels(ctx context.Context, ts TokenSource) ([]string, error) {
 	var (
 		ms  []string
 		err error
@@ -139,23 +166,55 @@ func (e *Entry) ListModels(ctx context.Context, ts TokenSource) ([]string, error
 
 // CheckResult is what Check found out.
 type CheckResult struct {
-	Models  []string `json:"models"`
-	Balance string   `json:"balance,omitempty"` // the account's balance in words, where the provider tells
+	Models       []string `json:"models"`
+	Source       string   `json:"source"`
+	Verification string   `json:"verification"`
+	Warning      string   `json:"warning,omitempty"`
+	Balance      string   `json:"balance,omitempty"` // the account's balance in words, where the provider tells
 	// Unusable: the credentials are right, but the account cannot pay for requests.
 	Unusable bool `json:"unusable,omitempty"`
+}
+
+// DiscoverModels keeps a usable catalogue without presenting fallback IDs as
+// evidence that the upstream accepted the credentials or a Messages request.
+func (e *Entry) DiscoverModels(ctx context.Context, ts TokenSource) (CheckResult, error) {
+	r := CheckResult{Models: []string{}, Source: "upstream", Verification: "unverified"}
+	client, err := e.httpClient()
+	if err != nil {
+		return r, err
+	}
+	ms, err := e.listModels(withHTTPClient(ctx, client), ts)
+	if err == nil && len(ms) > 0 {
+		r.Models = ms
+		r.Verification = "credentials"
+		return r, nil
+	}
+	if e.Type != KindAnthropic || e.Auth != AuthOAuth {
+		return r, err
+	}
+	if errors.Is(err, ErrKeyRefused) || ctx.Err() != nil {
+		r.Verification = "failed"
+		return r, err
+	}
+	r.Models = append([]string(nil), claudeOAuthModels...)
+	r.Source = "fallback"
+	r.Warning = "Model access has not been verified; run a provider test."
+	if err != nil {
+		r.Warning += " " + clip(err.Error(), 200)
+	}
+	return r, nil
 }
 
 // Check asks the provider whether it accepts the credentials, by listing the
 // models, and reads the balance where there is one to read.
 func (e *Entry) Check(ctx context.Context, ts TokenSource) (CheckResult, error) {
-	var r CheckResult
-	ms, err := e.ListModels(ctx, ts)
+	r, err := e.DiscoverModels(ctx, ts)
 	if err != nil {
 		return r, err
 	}
-	r.Models = ms
 	if e.Type == KindDeepSeek && e.Auth == AuthAPIKey {
-		if text, usable, err := deepseekBalance(ctx, e.URL(), e.keyHeader()); err == nil {
+		client, _ := e.httpClient()
+		if text, usable, err := deepseekBalance(withHTTPClient(ctx, client), e.URL(), e.keyHeader()); err == nil {
 			r.Balance, r.Unusable = text, !usable
 		}
 	}
@@ -192,8 +251,9 @@ type ProbeResult struct {
 	CompletionTokens uint64 `json:"completion_tokens"`
 	// Reported is the completion count the provider gave when it is more than
 	// can be billed: the model produced output the buyer does not get to see.
-	Reported uint64 `json:"completion_tokens_reported,omitempty"`
-	Chunks   int    `json:"chunks"`
+	Reported       uint64 `json:"completion_tokens_reported,omitempty"`
+	PromptReported uint64 `json:"prompt_tokens_reported,omitempty"`
+	Chunks         int    `json:"chunks"`
 }
 
 // Probe sends one small request through up, the way a job would, and reads
@@ -223,11 +283,13 @@ func Probe(ctx context.Context, up node.Upstream, model, prompt string) (ProbeRe
 			r.PromptTokens, r.CompletionTokens = info.Usage.PromptTokens, info.Usage.CompletionTokens
 			var raw struct {
 				Usage struct {
-					Reported uint64 `json:"completion_tokens_reported"`
+					Reported       uint64 `json:"completion_tokens_reported"`
+					PromptReported uint64 `json:"prompt_tokens_reported"`
 				} `json:"usage"`
 			}
 			_ = json.Unmarshal(payload, &raw)
 			r.Reported = raw.Usage.Reported
+			r.PromptReported = raw.Usage.PromptReported
 		}
 		return nil
 	})

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"runtime"
+	"strings"
 	"testing"
 
 	"sharetoken/internal/protocol"
@@ -33,14 +34,14 @@ func TestRecvAllocatesOnlyWhatArrives(t *testing.T) {
 
 func TestRecvLimitRefusesFramesAboveTheHandlersLimit(t *testing.T) {
 	var buf bytes.Buffer
-	big := protocol.Chunk{Seq: 1, Sealed: bytes.Repeat([]byte{1}, protocol.MaxSmallFrame)}
-	if err := protocol.Send(&buf, protocol.TypeChunk, big); err != nil {
+	big := protocol.Reject{Reason: strings.Repeat("x", protocol.MaxSmallFrame)}
+	if err := protocol.Send(&buf, protocol.TypeReject, big); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := protocol.RecvLimit(bytes.NewReader(buf.Bytes()), protocol.MaxSmallFrame); err == nil {
 		t.Fatal("a frame above the handler's limit was accepted")
 	}
-	if env, err := protocol.Recv(bytes.NewReader(buf.Bytes())); err != nil || env.Type != protocol.TypeChunk {
+	if env, err := protocol.Recv(bytes.NewReader(buf.Bytes())); err != nil || env.Type != protocol.TypeReject {
 		t.Fatalf("the same frame under the default limit: %v", err)
 	}
 
@@ -57,16 +58,43 @@ func TestRecvLimitRefusesFramesAboveTheHandlersLimit(t *testing.T) {
 func TestRecvReassemblesLargeFrames(t *testing.T) {
 	var buf bytes.Buffer
 	want := bytes.Repeat([]byte{7}, 3<<20)
-	if err := protocol.Send(&buf, protocol.TypeChunk, protocol.Chunk{Seq: 9, Sealed: want}); err != nil {
+	if err := protocol.SendData(&buf, 9, want); err != nil {
 		t.Fatal(err)
 	}
-	env, err := protocol.Recv(iotest(&buf))
+	f, err := protocol.ReadFrame(iotest(&buf), protocol.MaxFrameSize)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var c protocol.Chunk
-	if err := env.Decode(protocol.TypeChunk, &c); err != nil || c.Seq != 9 || !bytes.Equal(c.Sealed, want) {
-		t.Fatalf("decode: %v seq=%d len=%d", err, c.Seq, len(c.Sealed))
+	seq, sealed, err := protocol.DecodeData(f.Payload)
+	if err != nil || f.Env != nil || f.Kind != protocol.BinData || seq != 9 || !bytes.Equal(sealed, want) {
+		t.Fatalf("decode: %v seq=%d len=%d", err, seq, len(sealed))
+	}
+}
+
+// A binary frame is not a JSON one: Recv refuses it, ReadFrame returns both.
+func TestBinaryAndJSONFramesShareAStream(t *testing.T) {
+	var buf bytes.Buffer
+	_ = protocol.SendBinary(&buf, protocol.BinProgress)
+	_ = protocol.Send(&buf, protocol.TypeAck, protocol.Ack{Sig: []byte{1}})
+	_ = protocol.SendBinary(&buf, protocol.BinRequest, []byte("sealed"))
+	if _, err := protocol.Recv(bytes.NewReader(buf.Bytes())); err == nil {
+		t.Fatal("Recv accepted a binary frame")
+	}
+	r := bytes.NewReader(buf.Bytes())
+	for i, want := range []byte{protocol.BinProgress, 0, protocol.BinRequest} {
+		f, err := protocol.ReadFrame(r, protocol.MaxFrameSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want == 0 {
+			if f.Env == nil || f.Env.Type != protocol.TypeAck {
+				t.Fatalf("frame %d: want the ack", i)
+			}
+			continue
+		}
+		if f.Env != nil || f.Kind != want {
+			t.Fatalf("frame %d: kind %d, want %d", i, f.Kind, want)
+		}
 	}
 }
 

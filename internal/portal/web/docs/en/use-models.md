@@ -162,7 +162,8 @@ To have Claude Code or Codex check the client, call models and manage sharing fo
 - **Billed by actual tokens:** The node sets the price, and you pay for the token counts on the receipt.
 - **Hold:** When you send a request, an amount is put on hold first, and whatever is not used is returned afterward. If the request has `max_tokens`, only the worst case is held. If not, the whole budget is held (0.2 credit by default).
 - **Always set `max_tokens`**, especially for batch or high-concurrency calls. Otherwise a large hold can easily cause `insufficient_funds`.
-- **Disconnect midway:** If a streaming request disconnects midway, you are billed only for the part that was delivered.
+- **Stopping midway:** If your program drops a streaming request midway (for example, the user pressed stop), the node stops generating at once and you are billed only for the part that was delivered.
+- **Network breaks:** If the connection breaks because a relay restarted or your network changed, the client reconnects within 60 seconds and the answer continues where it stopped. You do not need to send the request again.
 
 You can change the budget and price limits in the [configuration file](/docs/config#buy).
 
@@ -176,8 +177,16 @@ A non-streaming response is handed to you only after its receipt passes verifica
 | `X-Sharetoken-Job` | The job ID, for looking up bills and giving feedback |
 | `X-Sharetoken-Node` | The node that served this request |
 | `X-Sharetoken-Cost-Micros` | The cost of this request, in micro-credit |
+| `X-Sharetoken-Timing` | Time and traffic: `ticket_ms` (matching), `dial_ms` (connecting to the node), `first_byte_ms` (first byte), `relayed` (whether it went through a relay), `preferred` (whether it went back to the previous node), `frames`, `up_bytes`, `down_bytes` |
+
+A streaming response has no such headers. The same information is in the closing comment line `: sharetoken job=… node=… verified=true …`, together with `resumes` (how many times the stream was picked up again after a break).
 
 If a node overstates usage, the client refuses to sign and hands over the key for that job as evidence. After the ruling, the refund is automatic. The config option `buy.evidence` controls this behavior, and it is on by default.
+
+## Long conversations and large requests {#sessions}
+
+- **Back to the same node:** Later requests of one conversation go to the node that served it last, when it can take them. The connection is already open and the model server's prompt cache is more likely to hit, so the first token comes sooner and the cost may be lower. The client recognizes a conversation by the request's `session_id`, or else by the model and the first two messages. If that node is busy or offline, another node is used as usual.
+- **Request size:** A request can be up to 32 MB (the limit of most cloud Claude APIs), so it can carry images such as screenshots. Requests are compressed before they are sent; a long conversation history usually shrinks to a third to a fifth.
 
 ## Use only TEE nodes {#tee}
 
@@ -223,12 +232,12 @@ Errors always have the form `{"error":{"code","message"}}`.
 | `capacity` | 503 | All nodes are full, and there was still no free slot after waiting 30 seconds. Retry after `Retry-After` |
 | `insufficient_funds` | 402 | The balance is not enough for the hold. Set a smaller `max_tokens`, or earn some credit |
 | `budget` | 400 | The cost of this request may exceed `buy.budget_micros`. Lower `max_tokens` or raise the budget |
-| `bad_request` | 400 | The request is invalid. The message gives the reason |
+| `bad_request` | 400 | The request is invalid. The message gives the reason. A request over 32 MB gets 413 |
 | `upstream_error`, `receipt_rejected` | 502 | The node failed, or the receipt did not pass verification. You can retry |
 | `unauthorized`, `forbidden` | 403 | The sign-in expired or the account is disabled. Run `login` again |
 | `upgrade_required` | 426 | The client version is too old. See [Update](/docs/update#upgrade) |
 | `not_connected` | 503 | The client is not connected to the network yet. Wait a moment or check `status` |
 
-A slow model working on a long prompt may be judged stuck. For timeout settings, see the [configuration file](/docs/config#buy).
+While a model is thinking, the node sends a heartbeat every 10 seconds, so a long think is not judged stuck; only 5 minutes without any output is. For timeout settings, see the [configuration file](/docs/config#buy).
 
 The reasoning of a thinking model also counts toward `max_tokens`. If `max_tokens` is too small, `content` may be empty and only `reasoning_content` is present.
