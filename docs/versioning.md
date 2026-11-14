@@ -22,7 +22,7 @@ To cut a release: change `VERSION`; add the release and its features at the top 
 | Portal HTTP API | path | `/api/v1` |
 | Client local API | path | `/api/v1` (the OpenAI endpoint stays `/v1`) |
 | Control plane (client ↔ coordinator) | libp2p protocol ID | `/sharetoken/ctrl/1.0.0` |
-| Data plane (buyer ↔ node) | libp2p protocol ID, plus an `infer_version` agreed per job | `/sharetoken/infer/1.0.0`, version 1 |
+| Data plane (buyer ↔ node) | libp2p protocol ID, plus an `infer_version` agreed per job | `/sharetoken/infer/1.0.2`, version 1 |
 | Relay pass | libp2p protocol ID, plus the signing domain | `/sharetoken/relay-pass/1.0.0`, `sharetoken/relay-pass/v1` (the signature covers the whole body, so a new field needs no new version) |
 | Signed messages | signing domain | `sharetoken/offer/v1`, `sharetoken/ticket/v1`, `sharetoken/receipt/v1`, `sharetoken/ack/v1` |
 | Database | `schema_migrations`, numbered per component | `core` 3, `mail` 1, `portal` 2 |

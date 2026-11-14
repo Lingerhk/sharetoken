@@ -316,7 +316,16 @@ func (s *Service) handleEvidence(st network.Stream, remote string, env *protocol
 		s.sendError(st, env.Type, err)
 		return
 	}
-	judge, err := evidence.New(t, settledReceipt, ev.Receipt, &ev)
+	rf, err := protocol.ReadStreamFrame(st, protocol.MaxFrameSize)
+	if err != nil {
+		_ = st.Reset()
+		return
+	}
+	if rf.Env != nil || rf.Kind != protocol.BinRequest {
+		s.sendError(st, env.Type, protocol.Errorf(protocol.CodeBadRequest, "expected the sealed request"))
+		return
+	}
+	judge, err := evidence.New(t, settledReceipt, ev.Receipt, &ev, rf.Payload)
 	if errors.Is(err, evidence.ErrNoReceipt) {
 		// Nothing was signed yet, so there is nothing to judge: record the
 		// dispute so that a later settlement goes to arbitration.
@@ -333,17 +342,21 @@ func (s *Service) handleEvidence(st network.Stream, remote string, env *protocol
 		return
 	}
 	for i := uint64(0); i < ev.Chunks; i++ {
-		cenv, err := protocol.RecvStream(st, protocol.MaxFrameSize)
+		f, err := protocol.ReadStreamFrame(st, protocol.MaxFrameSize)
 		if err != nil {
 			_ = st.Reset()
 			return
 		}
-		var ch protocol.Chunk
-		if err := cenv.Decode(protocol.TypeChunk, &ch); err != nil {
-			s.sendError(st, env.Type, protocol.Errorf(protocol.CodeBadRequest, "malformed evidence chunk"))
+		if f.Env != nil || f.Kind != protocol.BinData {
+			s.sendError(st, env.Type, protocol.Errorf(protocol.CodeBadRequest, "malformed evidence frame"))
 			return
 		}
-		if err := judge.Add(ch.Seq, ch.Sealed); err != nil {
+		seq, sealed, err := protocol.DecodeData(f.Payload)
+		if err != nil {
+			s.sendError(st, env.Type, protocol.Errorf(protocol.CodeBadRequest, "malformed evidence frame"))
+			return
+		}
+		if err := judge.Add(seq, sealed); err != nil {
 			s.sendError(st, env.Type, protocol.Errorf(protocol.CodeBadRequest, "%v", err))
 			return
 		}

@@ -190,7 +190,7 @@ The directory is created with mode 0700. Files in it:
 | `buy.evidence` | true | Disclose a provably bad job's key for an automatic refund |
 | `buy.require_tee`, `buy.tee_policy`, `buy.tee_online` | off | Buy only from attested TEE nodes; allow-list file of trusted images; online revocation check |
 | `buy.queue_seconds` | 30 | How long a request waits for a free node when all are busy; negative: fail at once |
-| `buy.first_byte_seconds`, `buy.idle_seconds` | 120, 60 | How long a job may wait for the node's first frame, and between frames |
+| `buy.first_byte_seconds`, `buy.idle_seconds` | 30, 30 | How long a job may wait for the node's first frame, and between frames. Nodes send a progress frame every 10 seconds while the model is silent |
 | `share.enabled` | false | Sharing on or off |
 | `share.upstream`, `share.upstream_key_env` | `http://127.0.0.1:11434/v1`, empty | OpenAI-compatible base URL of the local model server, and the environment variable holding its API key |
 | `share.concurrency` | 2 | Concurrent jobs |

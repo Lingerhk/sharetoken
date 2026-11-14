@@ -189,7 +189,8 @@ func TestRequireTEEUsesOnlyAttestedNodes(t *testing.T) {
 	if err != nil || res.Ticket.Node != teeNode.ID() || res.Attested != "node image v1" || !res.Verified {
 		t.Fatalf("require_tee: %+v %v", res, err)
 	}
-	res, err = cl.Chat(m.ctx, buyer.ChatRequest{Model: model, Body: []byte(body), BudgetMicros: 1_000_000}, nil)
+	// Another conversation (the same one would stay on its node).
+	res, err = cl.Chat(m.ctx, buyer.ChatRequest{Model: model, Body: []byte(body), BudgetMicros: 1_000_000, Session: "another"}, nil)
 	if err != nil || res.Ticket.Node != plainNode.ID() {
 		t.Fatalf("without require_tee the cheaper node should win: %+v %v", res, err)
 	}

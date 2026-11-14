@@ -135,6 +135,12 @@ func (m *market) addNode(upstreamURL string, pin, pout uint64) (host.Host, *p2p.
 // addNodeWith starts a node; attestor, if set, makes it a (mock) TEE node.
 func (m *market) addNodeWith(upstreamURL string, pin, pout uint64, attestor attest.Attestor) (host.Host, *p2p.Keys) {
 	m.t.Helper()
+	return m.addNodeCfg(upstreamURL, pin, pout, attestor, nil)
+}
+
+// addNodeCfg is addNodeWith with edit adjusting the node's configuration.
+func (m *market) addNodeCfg(upstreamURL string, pin, pout uint64, attestor attest.Attestor, edit func(*node.Config)) (host.Host, *p2p.Keys) {
+	m.t.Helper()
 	h, k := newHost(m.t)
 	var quote *attest.Quote
 	if attestor != nil {
@@ -144,13 +150,17 @@ func (m *market) addNodeWith(upstreamURL string, pin, pout uint64, attestor atte
 		}
 		quote = q
 	}
-	svc, err := node.NewService(m.ctx, h, k, node.Config{
+	cfg := node.Config{
 		Coordinator:   m.info,
 		Models:        []node.ModelConfig{{ID: model, UpstreamModel: "mock-7b", PriceInMicros: pin, PriceOutMicros: pout}},
 		Upstream:      &node.OpenAICompat{BaseURL: upstreamURL + "/v1"},
 		OfferInterval: 200 * time.Millisecond,
 		Quote:         quote,
-	})
+	}
+	if edit != nil {
+		edit(&cfg)
+	}
+	svc, err := node.NewService(m.ctx, h, k, cfg)
 	if err != nil {
 		m.t.Fatal(err)
 	}
@@ -410,15 +420,22 @@ func sendInfer(t *testing.T, h host.Host, tk protocol.Ticket) error {
 	}
 	defer st.Close()
 	jobKey, _ := box.GenerateIdentity()
-	sealed, _ := box.SealFrom(jobKey, tk.NodeBoxPub, []byte(body), protocol.RequestAAD(&tk))
-	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: tk, BuyerBoxPub: jobKey.Public(), Sealed: sealed}); err != nil {
+	encoded, _ := protocol.EncodeRequest([]byte(body))
+	sealed, _ := box.SealFrom(jobKey, tk.NodeBoxPub, encoded, protocol.RequestAAD(&tk))
+	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: tk, BuyerBoxPub: jobKey.Public()}); err != nil {
 		return err
 	}
-	env, err := protocol.Recv(st)
+	if err := protocol.SendBinary(st, protocol.BinRequest, sealed); err != nil {
+		return err
+	}
+	f, err := protocol.ReadFrame(st, protocol.MaxFrameSize)
 	if err != nil {
 		return err
 	}
-	return env.Decode(protocol.TypeChunk, nil)
+	if f.Env == nil {
+		return nil // response data or progress: the node took the job
+	}
+	return f.Env.Decode("data", nil)
 }
 
 func TestNodeRejectsReplayedAndStolenTickets(t *testing.T) {

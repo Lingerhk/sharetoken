@@ -73,10 +73,16 @@ type Client struct {
 	// 0 fails at once with CodeCapacity).
 	QueueWait time.Duration
 	// FirstByteTimeout and IdleTimeout bound how long a job may wait for the
-	// node's first frame and between frames (defaults 120s and 60s). A node
-	// that stalls (a lossy path, a hung model server) is abandoned: a request
-	// that has delivered nothing to the caller yet fails over to another node.
+	// node's first frame and between frames (defaults 30s each). The node
+	// sends a progress frame every node.HeartbeatInterval while its model is
+	// silent, so only a node (or path) that stopped working runs into them.
+	// It is abandoned: a request that has delivered nothing to the caller yet
+	// fails over to another node.
 	FirstByteTimeout, IdleTimeout time.Duration
+	// MaxSilence bounds how long a job may go without response data while
+	// the node keeps sending progress frames (default 5 minutes): long
+	// enough for a reasoning model, short enough for a hung model server.
+	MaxSilence time.Duration
 	// Attestation verifies nodes' TEE quotes; required for RequireTEE.
 	Attestation *Attestation
 	// OnCoordinatorUnreachable, if set, is called when a call to the
@@ -86,6 +92,7 @@ type Client struct {
 	OnCoordinatorUnreachable func()
 	log                      *slog.Logger
 	bg                       sync.WaitGroup // disputes being delivered in the background
+	sticky                   stickyNodes
 }
 
 // Attestation is the buyer's TEE trust configuration.
@@ -98,7 +105,7 @@ type Attestation struct {
 func New(h host.Host, keys *p2p.Keys, coordinator peer.AddrInfo) *Client {
 	h.Peerstore().AddAddrs(coordinator.ID, coordinator.Addrs, peerstore.PermanentAddrTTL)
 	return &Client{h: h, keys: keys, coordinator: coordinator, Retries: 2, Evidence: true, QueueWait: DefaultQueueWait,
-		FirstByteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second, log: slog.Default().With("component", "buyer")}
+		FirstByteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxSilence: 5 * time.Minute, log: slog.Default().With("component", "buyer")}
 }
 
 // ChatRequest is one chat-completions call.
@@ -113,6 +120,12 @@ type ChatRequest struct {
 	MaxPriceOut uint64
 	RequireTEE  bool   // only nodes whose quote passes the client's attestation policy
 	Node        string // optional: only this node
+	// Session names the conversation the request belongs to (default: its
+	// session_id, else its first messages). The node that served the
+	// session last is asked for again while it is available.
+	Session string
+	// PreferNode is set by Chat from the session; callers leave it empty.
+	PreferNode string
 }
 
 // Result is a completed, verified job.
@@ -128,6 +141,28 @@ type Result struct {
 	CostMicros        uint64
 	Verified          bool   // receipt passed every check and was acknowledged
 	Attested          string // allow-list label of the node's verified TEE image, if any
+	Timing            Timing // where the time and the bytes of the last attempt went
+}
+
+// Timing breaks one job down: time spent per step, the path to the node, and
+// the bytes on the infer stream (frames as sent, before the transport's own
+// encryption and multiplexing).
+type Timing struct {
+	TicketMs    float64 `json:"ticket_ms"`     // coordinator round trips, all attempts
+	DialMs      float64 `json:"dial_ms"`       // opening the stream to the node
+	UploadMs    float64 `json:"upload_ms"`     // writing the sealed request
+	FirstByteMs float64 `json:"first_byte_ms"` // request written -> first response frame
+	TotalMs     float64 `json:"total_ms"`      // Chat called -> receipt checked
+	Reused      bool    `json:"reused"`        // a connection to the node existed already
+	Relayed     bool    `json:"relayed"`       // the stream ran through a relay
+	Via         string  `json:"via,omitempty"` // that relay's peer ID
+	Preferred   bool    `json:"preferred"`     // the session's previous node served it again
+	Attempts    int     `json:"attempts"`
+	Frames      int     `json:"frames"`   // response data frames
+	Progress    int     `json:"progress"` // progress frames (the model was silent)
+	Chunks      int     `json:"chunks"`   // upstream payloads delivered
+	UpBytes     int64   `json:"up_bytes"`
+	DownBytes   int64   `json:"down_bytes"`
 }
 
 // Chat runs one request. onChunk, if set, receives each decrypted chunk
@@ -148,9 +183,28 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 		lastErr  error
 		lastRes  *Result
 		rejected int // nodes that refused the request as invalid
+		timing   Timing
 	)
+	start := time.Now()
+	// Compress the request while the coordinator picks a node: sealing needs
+	// the ticket, compressing does not.
+	encoded := make(chan encodedRequest, 1)
+	go func() {
+		b, err := protocol.EncodeRequest(req.Body)
+		encoded <- encodedRequest{b, err}
+	}()
+	enc := sync.OnceValue(func() encodedRequest { return <-encoded })
+	session := sessionKey(req)
+	prefer := c.sticky.get(session)
 	for attempt := 0; attempt <= c.Retries; attempt++ {
-		tr, err := c.requestTicket(ctx, req, exclude)
+		timing.Attempts++
+		treq := req
+		if !slices.Contains(exclude, prefer) {
+			treq.PreferNode = prefer
+		}
+		t0 := time.Now()
+		tr, err := c.requestTicket(ctx, treq, exclude)
+		timing.TicketMs += ms(time.Since(t0))
 		if err != nil {
 			if lastErr != nil && protocol.CodeOf(err) == protocol.CodeNoOffers {
 				if protocol.CodeOf(lastErr) == protocol.CodeBadRequest {
@@ -171,10 +225,23 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 		if err != nil {
 			return nil, fmt.Errorf("buyer: coordinator returned an invalid ticket: %w", err)
 		}
-		res, delivered, err := c.runJob(ctx, &tr.Ticket, req.Body, onChunk)
+		e := enc()
+		if e.err != nil {
+			return nil, e.err
+		}
+		res, delivered, err := c.runJob(ctx, &tr.Ticket, e.plain, req.Body, onChunk, &timing)
+		timing.Preferred = prefer != "" && tr.Ticket.Node == prefer
+		if delivered || err == nil {
+			c.sticky.put(session, tr.Ticket.Node)
+		} else if tr.Ticket.Node == prefer {
+			c.sticky.drop(session)
+		}
 		if res != nil {
 			res.Attested = label
+			timing.TotalMs = ms(time.Since(start))
+			res.Timing = timing
 		}
+		c.logJob(&tr.Ticket, &timing, err)
 		if err == nil || delivered || ctx.Err() != nil {
 			return res, err
 		}
@@ -293,6 +360,7 @@ func (c *Client) requestTicketOnce(ctx context.Context, req ChatRequest, exclude
 			MaxPriceOut:   req.MaxPriceOut,
 			Exclude:       exclude,
 			Node:          req.Node,
+			PreferNode:    req.PreferNode,
 			RequireTEE:    req.RequireTEE,
 		}, protocol.TypeTicket, &tr)
 	return &tr, err
@@ -357,14 +425,20 @@ func (c *Client) verifyTicket(tr *protocol.TicketResponse, req ChatRequest) (str
 type transcript struct {
 	jobKey  *box.Identity
 	request []byte   // sealed request
-	chunks  [][]byte // sealed response chunks, in arrival order
+	chunks  [][]byte // sealed response frames, in arrival order
 	hasher  *receipt.StreamHasher
-	corrupt error // first chunk that failed to open or arrived out of order
+	corrupt error // first frame that failed to open, decode or arrived out of order
+}
+
+// encodedRequest is a request compressed and padded for sealing.
+type encodedRequest struct {
+	plain []byte
+	err   error
 }
 
 // runJob executes one ticket. delivered reports whether any output reached
 // onChunk, after which failing over is no longer possible.
-func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, body []byte, onChunk func([]byte) error) (res *Result, delivered bool, err error) {
+func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body []byte, onChunk func([]byte) error, tm *Timing) (res *Result, delivered bool, err error) {
 	nodeID, err := peer.Decode(t.Node)
 	if err != nil {
 		return nil, false, err
@@ -382,27 +456,51 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, body []byte, on
 		ctx, cancel = context.WithTimeout(ctx, jobTimeout)
 		defer cancel()
 	}
-	st, err := c.h.NewStream(network.WithAllowLimitedConn(ctx, "sharetoken-infer"), nodeID, lproto.ID(protocol.InferProtocol))
+	tm.Reused = c.h.Network().Connectedness(nodeID) == network.Connected
+	t0 := time.Now()
+	raw, err := c.h.NewStream(network.WithAllowLimitedConn(ctx, "sharetoken-infer"), nodeID, lproto.ID(protocol.InferProtocol))
+	tm.DialMs = ms(time.Since(t0))
 	if err != nil {
 		return nil, false, err
 	}
+	st := &countingStream{Stream: raw}
+	defer func() { tm.UpBytes, tm.DownBytes = st.out, st.in }()
 	defer st.Close()
+	tm.Relayed = p2p.IsRelayed(raw.Conn())
+	tm.Via = ""
+	if tm.Relayed {
+		if v, err := raw.Conn().RemoteMultiaddr().ValueForProtocol(ma.P_P2P); err == nil {
+			tm.Via = v
+		}
+	}
 	if dl, ok := ctx.Deadline(); ok {
 		_ = st.SetDeadline(dl)
 	}
 
-	// One fresh key per job: the request is sealed from it and the response to
-	// it. Disclosing it later opens this job and no other.
+	// One fresh key per job: the request is sealed from it, and the response
+	// stream key derives from it. Disclosing it later opens this job and no
+	// other.
 	tr := &transcript{hasher: receipt.NewStreamHasher()}
 	if tr.jobKey, err = box.GenerateIdentity(); err != nil {
 		return nil, false, err
 	}
-	if tr.request, err = box.SealFrom(tr.jobKey, t.NodeBoxPub, body, protocol.RequestAAD(t)); err != nil {
+	if tr.request, err = box.SealFrom(tr.jobKey, t.NodeBoxPub, encoded, protocol.RequestAAD(t)); err != nil {
 		return nil, false, err
 	}
-	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: tr.jobKey.Public(), Sealed: tr.request}); err != nil {
+	key, err := tr.jobKey.NewStream(t.NodeBoxPub, protocol.ResponseKeyInfo(t, tr.jobKey.Public()))
+	if err != nil {
 		return nil, false, err
 	}
+	t0 = time.Now()
+	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: tr.jobKey.Public()}); err != nil {
+		return nil, false, err
+	}
+	if err := protocol.SendBinary(st, protocol.BinRequest, tr.request); err != nil {
+		return nil, false, err
+	}
+	sent := time.Now()
+	tm.UploadMs = ms(sent.Sub(t0))
+	tm.Frames, tm.Progress, tm.Chunks = 0, 0, 0
 
 	var (
 		content, reasoning, all strings.Builder
@@ -411,7 +509,9 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, body []byte, on
 		finish                  string
 		sr                      receipt.SignedReceipt
 	)
+	dec := protocol.NewResponseDecoder()
 	frames := 0
+	lastData := sent
 recv:
 	for {
 		wait := c.IdleTimeout
@@ -425,7 +525,7 @@ recv:
 			}
 			_ = st.SetReadDeadline(dl)
 		}
-		env, err := protocol.Recv(st)
+		f, err := protocol.ReadStreamFrame(st, protocol.MaxFrameSize)
 		if err != nil {
 			if wait > 0 && isTimeout(err) && ctx.Err() == nil {
 				_ = st.Reset()
@@ -434,53 +534,77 @@ recv:
 			return nil, delivered, err
 		}
 		frames++
-		switch env.Type {
-		case protocol.TypeChunk:
-			var ch protocol.Chunk
-			if err := env.Decode(protocol.TypeChunk, &ch); err != nil {
+		switch {
+		case f.Env == nil && f.Kind == protocol.BinProgress:
+			tm.Progress++
+			if c.MaxSilence > 0 && time.Since(lastData) > c.MaxSilence {
+				_ = st.Reset()
+				return nil, delivered, fmt.Errorf("node stalled: no response data for %v", c.MaxSilence.Round(time.Second))
+			}
+		case f.Env == nil && f.Kind == protocol.BinData:
+			seq, sealed, err := protocol.DecodeData(f.Payload)
+			if err != nil {
 				return nil, delivered, err
 			}
 			if len(tr.chunks) >= protocol.MaxEvidenceChunks {
-				return nil, delivered, errors.New("node sent too many chunks")
+				return nil, delivered, errors.New("node sent too many frames")
 			}
+			if tm.Frames == 0 {
+				tm.FirstByteMs = ms(time.Since(sent))
+			}
+			lastData = time.Now()
+			tm.Frames++
 			pos := uint64(len(tr.chunks))
-			tr.chunks = append(tr.chunks, ch.Sealed)
-			tr.hasher.WriteChunk(ch.Sealed)
+			tr.chunks = append(tr.chunks, sealed)
+			tr.hasher.WriteChunk(sealed)
 			if tr.corrupt != nil {
 				continue // keep the transcript complete; deliver nothing more
 			}
-			plain, err := tr.jobKey.Open(ch.Sealed, protocol.ChunkAAD(t, pos))
-			if ch.Seq != pos || err != nil {
-				tr.corrupt = fmt.Errorf("chunk %d failed authentication", pos)
+			plain, err := key.Open(pos, sealed, protocol.ChunkAAD(t, pos))
+			if seq != pos || err != nil {
+				tr.corrupt = fmt.Errorf("frame %d failed authentication", pos)
 				continue
 			}
-			if info, err := protocol.ParseChunk(plain); err == nil {
-				content.WriteString(info.Content)
-				reasoning.WriteString(info.Reasoning)
-				all.WriteString(info.Text())
-				tools.Add(info.ToolCalls)
-				thinking = append(thinking, info.AnthropicThinking...)
-				if info.FinishReason != "" {
-					finish = info.FinishReason
+			recs, err := dec.Frame(plain)
+			if err != nil {
+				tr.corrupt = fmt.Errorf("frame %d does not decode: %v", pos, err)
+				continue
+			}
+			for _, payload := range recs {
+				tm.Chunks++
+				if info, err := protocol.ParseChunk(payload); err == nil {
+					content.WriteString(info.Content)
+					reasoning.WriteString(info.Reasoning)
+					all.WriteString(info.Text())
+					tools.Add(info.ToolCalls)
+					thinking = append(thinking, info.AnthropicThinking...)
+					if info.FinishReason != "" {
+						finish = info.FinishReason
+					}
+				}
+				if onChunk != nil {
+					delivered = true
+					if err := onChunk(payload); err != nil {
+						_ = st.Reset()
+						return nil, true, err
+					}
 				}
 			}
-			if onChunk != nil {
-				delivered = true
-				if err := onChunk(plain); err != nil {
-					_ = st.Reset()
-					return nil, true, err
-				}
-			}
-		case protocol.TypeReceipt:
-			if err := env.Decode(protocol.TypeReceipt, &sr); err != nil {
+		case f.Env != nil && f.Env.Type == protocol.TypeReceipt:
+			if err := f.Env.Decode(protocol.TypeReceipt, &sr); err != nil {
 				return nil, delivered, err
 			}
 			break recv
-		default:
+		case f.Env != nil:
 			// An error frame decodes to *protocol.Error; anything else is a
 			// protocol violation.
-			return nil, delivered, env.Decode(protocol.TypeReceipt, nil)
+			return nil, delivered, f.Env.Decode(protocol.TypeReceipt, nil)
+		default:
+			return nil, delivered, fmt.Errorf("unexpected frame of kind %d", f.Kind)
 		}
+	}
+	if tr.corrupt == nil && !dec.Done() {
+		tr.corrupt = errors.New("the response ended without its final frame")
 	}
 
 	res = &Result{Ticket: *t, Receipt: sr, Content: content.String(), Reasoning: reasoning.String(), Text: all.String(), ToolCalls: tools.Calls(), FinishReason: finish}
@@ -499,6 +623,38 @@ recv:
 	res.CostMicros = protocol.TicketCost(t, sr.Receipt.PromptTokens, sr.Receipt.CompletionTokens)
 	res.Verified = true
 	return res, delivered, nil
+}
+
+// countingStream counts the bytes of a stream's frames.
+type countingStream struct {
+	network.Stream
+	in, out int64
+}
+
+func (s *countingStream) Read(p []byte) (int, error) {
+	n, err := s.Stream.Read(p)
+	s.in += int64(n)
+	return n, err
+}
+
+func (s *countingStream) Write(p []byte) (int, error) {
+	n, err := s.Stream.Write(p)
+	s.out += int64(n)
+	return n, err
+}
+
+func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+
+// logJob records one attempt's timing.
+func (c *Client) logJob(t *protocol.Ticket, tm *Timing, err error) {
+	args := []any{"job", t.JobID, "node", t.Node, "ticket_ms", tm.TicketMs, "dial_ms", tm.DialMs, "upload_ms", tm.UploadMs,
+		"first_byte_ms", tm.FirstByteMs, "reused", tm.Reused, "relayed", tm.Relayed, "preferred", tm.Preferred,
+		"frames", tm.Frames, "progress", tm.Progress, "chunks", tm.Chunks, "up_bytes", tm.UpBytes, "down_bytes", tm.DownBytes}
+	if err != nil {
+		c.log.Info("job attempt failed", append(args, "err", err)...)
+		return
+	}
+	c.log.Info("job done", args...)
 }
 
 // checkReceipt is the buyer-side gate. On failure it disputes the job: with
@@ -534,15 +690,14 @@ func (c *Client) disputeWithEvidence(t *protocol.Ticket, sr *receipt.SignedRecei
 		JobID:     t.JobID,
 		Reason:    reason,
 		JobSecret: tr.jobKey.Secret(),
-		Request:   tr.request,
 		Receipt:   sr,
 		Chunks:    uint64(len(tr.chunks)),
 	}
-	chunks := tr.chunks
+	request, chunks := tr.request, tr.chunks
 	c.background(func() {
 		for attempt := 0; attempt < 3; attempt++ {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			v, err := c.SubmitEvidence(ctx, &ev, chunks)
+			v, err := c.SubmitEvidence(ctx, &ev, request, chunks)
 			cancel()
 			if err == nil {
 				c.log.Warn("dispute decided on evidence", "job", t.JobID, "outcome", v.Outcome, "status", v.Status, "detail", v.Detail)
@@ -558,9 +713,9 @@ func (c *Client) disputeWithEvidence(t *protocol.Ticket, sr *receipt.SignedRecei
 	})
 }
 
-// SubmitEvidence discloses one job's key and transcript to the coordinator
-// and returns its verdict.
-func (c *Client) SubmitEvidence(ctx context.Context, ev *protocol.Evidence, chunks [][]byte) (*protocol.Verdict, error) {
+// SubmitEvidence discloses one job's key and transcript (the sealed request
+// and the sealed response frames) to the coordinator and returns its verdict.
+func (c *Client) SubmitEvidence(ctx context.Context, ev *protocol.Evidence, request []byte, chunks [][]byte) (*protocol.Verdict, error) {
 	st, err := c.h.NewStream(network.WithAllowLimitedConn(ctx, "sharetoken-evidence"), c.coordinator.ID, lproto.ID(protocol.CtrlProtocol))
 	if err != nil {
 		c.noteCoordinatorErr(ctx, err)
@@ -574,8 +729,12 @@ func (c *Client) SubmitEvidence(ctx context.Context, ev *protocol.Evidence, chun
 		_ = st.Reset()
 		return nil, err
 	}
+	if err := protocol.SendBinary(st, protocol.BinRequest, request); err != nil {
+		_ = st.Reset()
+		return nil, err
+	}
 	for i, ch := range chunks {
-		if err := protocol.Send(st, protocol.TypeChunk, protocol.Chunk{Seq: uint64(i), Sealed: ch}); err != nil {
+		if err := protocol.SendData(st, uint64(i), ch); err != nil {
 			_ = st.Reset()
 			return nil, err
 		}

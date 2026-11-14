@@ -190,7 +190,7 @@
 | `buy.evidence` | true | 对可以证明有问题的单披露密钥，换取自动退款 |
 | `buy.require_tee`、`buy.tee_policy`、`buy.tee_online` | 关闭 | 只从经过证明的 TEE 节点购买；可信镜像的白名单文件；联网查询吊销状态 |
 | `buy.queue_seconds` | 30 | 所有节点都忙时，请求等待空闲节点多久；负数：立即失败 |
-| `buy.first_byte_seconds`、`buy.idle_seconds` | 120、60 | 一单等待节点第一帧的时间上限，以及两帧之间的时间上限 |
+| `buy.first_byte_seconds`、`buy.idle_seconds` | 30、30 | 一单等待节点第一帧的时间上限，以及两帧之间的时间上限。模型不出声时，节点每 10 秒发一个进度帧 |
 | `share.enabled` | false | 共享的开关 |
 | `share.upstream`、`share.upstream_key_env` | `http://127.0.0.1:11434/v1`、空 | 本机模型服务的 OpenAI 兼容 base URL，以及存放其 API key 的环境变量 |
 | `share.concurrency` | 2 | 并发作业数 |

@@ -119,29 +119,29 @@ func TestAADBindsJobParties(t *testing.T) {
 
 func TestFrameRoundTripAndErrors(t *testing.T) {
 	var buf bytes.Buffer
-	if err := protocol.Send(&buf, protocol.TypeChunk, protocol.Chunk{Seq: 7, Sealed: []byte{1, 2, 3}}); err != nil {
+	if err := protocol.Send(&buf, protocol.TypeReject, protocol.Reject{Reason: "r"}); err != nil {
 		t.Fatal(err)
 	}
 	env, err := protocol.Recv(&buf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var c protocol.Chunk
-	if err := env.Decode(protocol.TypeChunk, &c); err != nil || c.Seq != 7 {
+	var c protocol.Reject
+	if err := env.Decode(protocol.TypeReject, &c); err != nil || c.Reason != "r" {
 		t.Fatalf("decode: %v %+v", err, c)
 	}
 
 	buf.Reset()
 	_ = protocol.SendError(&buf, protocol.Errorf(protocol.CodeBusy, "full"))
 	env, _ = protocol.Recv(&buf)
-	if err := env.Decode(protocol.TypeChunk, &c); protocol.CodeOf(err) != protocol.CodeBusy {
+	if err := env.Decode(protocol.TypeReject, &c); protocol.CodeOf(err) != protocol.CodeBusy {
 		t.Fatalf("want busy error, got %v", err)
 	}
 
 	buf.Reset()
 	_ = protocol.SendError(&buf, errors.New("open /home/op/secret.key: denied"))
 	env, _ = protocol.Recv(&buf)
-	if err := env.Decode(protocol.TypeChunk, &c); err == nil || strings.Contains(err.Error(), "secret") {
+	if err := env.Decode(protocol.TypeReject, &c); err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("internal error details leaked to the peer: %v", err)
 	}
 }

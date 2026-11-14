@@ -22,7 +22,7 @@
 | 门户 HTTP API | 路径 | `/api/v1` |
 | 客户端本地 API | 路径 | `/api/v1`（OpenAI 接口仍是 `/v1`） |
 | 控制面（客户端 ↔ 协调器） | libp2p 协议 ID | `/sharetoken/ctrl/1.0.0` |
-| 数据面（买家 ↔ 节点） | libp2p 协议 ID，加上每单协商的 `infer_version` | `/sharetoken/infer/1.0.0`，版本 1 |
+| 数据面（买家 ↔ 节点） | libp2p 协议 ID，加上每单协商的 `infer_version` | `/sharetoken/infer/1.0.2`，版本 1 |
 | 中继凭证 | libp2p 协议 ID，加上签名域 | `/sharetoken/relay-pass/1.0.0`，`sharetoken/relay-pass/v1`（签名覆盖整段 body，所以新增字段不需要新版本） |
 | 签名消息 | 签名域 | `sharetoken/offer/v1`、`sharetoken/ticket/v1`、`sharetoken/receipt/v1`、`sharetoken/ack/v1` |
 | 数据库 | `schema_migrations`，按组件编号 | `core` 3，`mail` 1，`portal` 2 |

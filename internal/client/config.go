@@ -61,7 +61,8 @@ type BuyConfig struct {
 	QueueSeconds int `json:"queue_seconds,omitempty"`
 	// FirstByteSeconds / IdleSeconds: how long a job may wait for the node's
 	// first frame / between frames before the node counts as stalled
-	// (0: defaults 120 / 60; raise them for slow models with long prompts).
+	// (0: defaults 30 / 30). Nodes send a progress frame every 10 seconds
+	// while the model is silent, so slow models need no higher values.
 	FirstByteSeconds int `json:"first_byte_seconds,omitempty"`
 	IdleSeconds      int `json:"idle_seconds,omitempty"`
 }

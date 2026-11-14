@@ -27,7 +27,7 @@ import (
 
 // libp2p protocol IDs.
 const (
-	InferProtocol = "/sharetoken/infer/1.0.0"
+	InferProtocol = "/sharetoken/infer/1.0.2"
 	CtrlProtocol  = "/sharetoken/ctrl/1.0.0"
 )
 
@@ -74,7 +74,6 @@ const (
 	TypeDispute       = "dispute"
 	TypeOK            = "ok"
 	TypeInfer         = "infer"
-	TypeChunk         = "chunk"
 	TypeReceipt       = "receipt"
 	TypeAck           = "ack"
 	TypeReject        = "reject"
@@ -297,9 +296,14 @@ type TicketRequest struct {
 	BudgetMicros  uint64   `json:"budget"`
 	MaxPriceIn    uint64   `json:"max_price_in,omitempty"` // 0 = no limit
 	MaxPriceOut   uint64   `json:"max_price_out,omitempty"`
-	Exclude       []string `json:"exclude,omitempty"`     // nodes to skip after a failover
-	Node          string   `json:"node,omitempty"`        // only this node (audits, pinned nodes)
-	RequireTEE    bool     `json:"require_tee,omitempty"` // only nodes whose quote the coordinator verified
+	Exclude       []string `json:"exclude,omitempty"` // nodes to skip after a failover
+	Node          string   `json:"node,omitempty"`    // only this node (audits, pinned nodes)
+	// PreferNode asks for this node when it is a candidate (online, not at
+	// capacity, within the price limits), and for the usual choice otherwise:
+	// the node that served a session's previous turn keeps the connection
+	// warm and the model server's prompt cache.
+	PreferNode string `json:"prefer_node,omitempty"`
+	RequireTEE bool   `json:"require_tee,omitempty"` // only nodes whose quote the coordinator verified
 	// Optional: the buyer's prompt estimate (EstimatePromptTokens) and the
 	// request's max_tokens. With both set, the hold is sized to the worst-case
 	// cost at the matched node's price instead of the whole budget, so a
@@ -317,23 +321,23 @@ type TicketResponse struct {
 	Offer  Offer  `json:"offer"`
 }
 
-// InferRequest opens a job on the node.
+// InferRequest opens a job on the node. A BinRequest frame follows it with
+// the sealed request: box.SealFrom(jobKey, NodeBoxPub, EncodeRequest(JSON),
+// RequestAAD), which begins with BuyerBoxPub.
 //
-// The buyer seals the request FROM a fresh per-job key (box.SealFrom), and the
-// response is sealed TO that same key, so Sealed begins with BuyerBoxPub. The
-// node refuses requests where they differ. Because the receipt signs
-// SHA-256(Sealed), it thereby commits to the response key, and disclosing
-// that one private key later opens exactly this job for a dispute judge.
+// The node answers with BinData frames: the response stream (see codec.go),
+// sealed under the key both derive from the agreement of the per-job key and
+// the node's box key (ResponseKeyInfo), each frame's sequence number its
+// nonce and in its AAD (ChunkAAD). BinProgress frames keep a silent job
+// alive. A receipt (or an error) ends the response.
+//
+// The node refuses requests whose sealed bytes do not begin with
+// BuyerBoxPub. Because the receipt signs SHA-256 of the sealed request, it
+// thereby commits to the response key, and disclosing that one private key
+// later opens exactly this job for a dispute judge.
 type InferRequest struct {
 	Ticket      Ticket `json:"ticket"`
-	BuyerBoxPub []byte `json:"buyer_box_pub"` // per-job X25519 key; equals Sealed[:32]
-	Sealed      []byte `json:"sealed"`        // box.SealFrom(jobKey, NodeBoxPub, chat-completions JSON, RequestAAD)
-}
-
-// Chunk is one sealed upstream SSE payload.
-type Chunk struct {
-	Seq    uint64 `json:"seq"`
-	Sealed []byte `json:"sealed"`
+	BuyerBoxPub []byte `json:"buyer_box_pub"` // per-job X25519 key; begins the sealed request
 }
 
 // Ack is the buyer's signature over AckBytes(receipt).
@@ -420,9 +424,10 @@ type DisputeRequest struct {
 }
 
 // Evidence opens a dispute that the coordinator can decide on the facts. It is
-// followed on the same stream by exactly Chunks frames of type TypeChunk (the
-// sealed response chunks as received, in order), then the coordinator answers
-// with a TypeVerdict frame.
+// followed on the same stream by a BinRequest frame (the sealed request
+// exactly as sent) and exactly Chunks BinData frames (the sealed response
+// frames as received, in order), then the coordinator answers with a
+// TypeVerdict frame.
 //
 // Disclosing JobSecret reveals this one job's prompt and response to the
 // coordinator, and nothing else: every job uses a fresh key.
@@ -430,12 +435,11 @@ type Evidence struct {
 	JobID     string                 `json:"job_id"`
 	Reason    string                 `json:"reason"`
 	JobSecret []byte                 `json:"job_secret"`        // the per-job X25519 private key
-	Request   []byte                 `json:"request"`           // InferRequest.Sealed exactly as sent
 	Receipt   *receipt.SignedReceipt `json:"receipt,omitempty"` // as received from the node
 	Chunks    uint64                 `json:"chunks"`
 }
 
-// MaxEvidenceChunks bounds the chunk frames that may follow an Evidence frame.
+// MaxEvidenceChunks bounds the response frames that may follow an Evidence frame.
 const MaxEvidenceChunks = 1 << 18
 
 // Verdict is the coordinator's decision on a dispute.

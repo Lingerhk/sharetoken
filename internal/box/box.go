@@ -37,6 +37,7 @@ import (
 	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 )
@@ -196,4 +197,73 @@ func newAEAD(shared, ephPub, recipientPub []byte) (cipher.AEAD, error) {
 		return nil, err
 	}
 	return cipher.NewGCM(block)
+}
+
+// StreamOverhead is the number of bytes Stream.Seal adds to a plaintext (the
+// GCM tag): the key and the nonce are not sent.
+const StreamOverhead = 16
+
+// Stream encrypts a numbered sequence of messages under one key derived from
+// the X25519 agreement of two parties, with the message number as the nonce.
+//
+// A buyer seals its request from a fresh per-job key to the node's box key
+// (SealFrom); the node then seals the whole response stream under a key both
+// derive from that same agreement. Whoever holds the per-job secret (the
+// buyer, or a dispute judge it was disclosed to) can derive the stream key
+// and open every message; so can the node. Integrity against either party
+// does not rest on this key but on the node's receipt, which signs a hash of
+// the exact ciphertexts.
+//
+// Use a Stream for one direction of one job only: info must name both, and
+// sequence numbers must never repeat.
+type Stream struct {
+	aead cipher.AEAD
+}
+
+// NewStream derives the stream key shared by id and peerPub. info binds the
+// key to its job, direction and both public keys; the caller builds it the
+// same way on both ends.
+func (id *Identity) NewStream(peerPub, info []byte) (*Stream, error) {
+	pub, err := ecdh.X25519().NewPublicKey(peerPub)
+	if err != nil {
+		return nil, fmt.Errorf("box: bad peer key: %w", err)
+	}
+	shared, err := id.priv.ECDH(pub)
+	if err != nil {
+		return nil, err
+	}
+	key, err := hkdf.Key(sha256.New, shared, nil, streamInfo+string(info), keyLen)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return &Stream{aead: aead}, nil
+}
+
+const streamInfo = "sharetoken/box/stream/v1"
+
+func streamNonce(seq uint64) []byte {
+	n := make([]byte, nonceLen)
+	binary.BigEndian.PutUint64(n[nonceLen-8:], seq)
+	return n
+}
+
+// Seal encrypts message number seq.
+func (s *Stream) Seal(seq uint64, plaintext, aad []byte) []byte {
+	return s.aead.Seal(make([]byte, 0, len(plaintext)+StreamOverhead), streamNonce(seq), plaintext, aad)
+}
+
+// Open decrypts message number seq.
+func (s *Stream) Open(seq uint64, sealed, aad []byte) ([]byte, error) {
+	if len(sealed) < StreamOverhead {
+		return nil, errors.New("box: sealed message too short")
+	}
+	return s.aead.Open(nil, streamNonce(seq), sealed, aad)
 }

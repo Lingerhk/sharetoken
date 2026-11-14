@@ -192,6 +192,16 @@ Next to buying and selling there is a second way to share: two users pair up as 
 
 As with pairing, the coordinator enforces it and reads partners and settings from the database on each request. The portal shows each side a masked form of the other's account name and the tokens moved each way in the last 24 hours; wrong invite codes are throttled like wrong pairing codes. Either side can end a partnership at any time. The admin console lists the share groups (`GET /api/v1/admin/share-groups`).
 
+### 2.15 A job on the data plane
+
+The buyer and the node speak `/sharetoken/infer/1.0.2` (`internal/protocol`: `frame.go`, `codec.go`; `internal/node/stream.go`; `internal/buyer`).
+
+- **Request.** A JSON `infer` frame carries the ticket and the buyer's per-job key; a binary frame follows with the sealed request. The buyer compresses the request (DEFLATE with a preset dictionary) while the coordinator is still choosing a node, and pads it to a size bucket; sealing waits for the ticket. Requests of up to 16 MiB of JSON are accepted (the local API's limit); compressed, they must fit an 8 MiB frame.
+- **Response.** Binary data frames carry one compressed stream holding the model server's SSE payloads. The node cuts a frame at most every 20 ms (`node.FrameInterval`): the first payload goes out at once, payloads that arrive close together share a frame. Each frame is padded and sealed under the job's response stream key with its sequence number. JSON frames remain for the receipt, the ack, rejections and errors. A one-token payload of an OpenAI-style server takes about 55 bytes on the stream instead of about 455 with JSON, base64 and a fresh key per chunk.
+- **Silence.** While the model says nothing the node sends a progress frame every 10 seconds (`node.Config.Heartbeat`), so the buyer's timeouts (30 seconds for the first frame and between frames) catch only a node or path that stopped working, not a reasoning model that thinks for minutes. Progress frames do not keep a hung model server alive forever: after 5 minutes without data (`buyer.Client.MaxSilence`) the buyer gives up, and fails over if nothing reached the caller yet.
+- **Session affinity.** The buyer remembers, per conversation (the request's `session_id`, else its model and first two messages), the node that served it last, for 30 minutes, and asks for it again (`prefer_node` in the ticket request). The coordinator honours it whenever that node is a candidate (online, not at capacity, within the buyer's price limits), even if another node scores better: the connection is warm (often direct by then) and the model server's prompt cache holds the conversation. The preference never leaves the buyer's machine except as that one field.
+- **Timing.** Every job records its ticket, dial, upload and first-byte times, whether the stream was relayed (and through which relay), whether the connection was reused, the frames and the bytes (`buyer.Timing`). The client logs it, the local API returns it in `X-Sharetoken-Timing` and in the closing comment of a stream.
+
 ## 3. Database
 
 The portal, the coordinator and the mail server share one MySQL 8 (InnoDB) database (`internal/mysqldb`). It is named with `-db mysql://user@host:port/db` (`database.dsn`) and can run on a separate machine.

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -74,7 +73,10 @@ type Config struct {
 	OfferInterval  time.Duration
 	OfferTTL       time.Duration
 	JobTimeout     time.Duration
-	Quote          *attest.Quote // optional TEE quote binding the receipt and box keys
+	// Heartbeat is how long a job's stream may stay silent before the node
+	// sends a progress frame (default HeartbeatInterval).
+	Heartbeat time.Duration
+	Quote     *attest.Quote // optional TEE quote binding the receipt and box keys
 	// Addrs returns the addresses to advertise (default: the host's own).
 	// A node behind NAT adds its relay circuit addresses here.
 	Addrs func() []string
@@ -97,6 +99,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.JobTimeout == 0 {
 		c.JobTimeout = 10 * time.Minute
+	}
+	if c.Heartbeat == 0 {
+		c.Heartbeat = HeartbeatInterval
 	}
 	if c.Now == nil {
 		c.Now = time.Now
@@ -289,7 +294,7 @@ func (s *Service) handleInfer(st network.Stream) {
 	remote := st.Conn().RemotePeer().String()
 	_ = st.SetDeadline(time.Now().Add(requestTimeout))
 
-	env, err := protocol.RecvStream(st, protocol.MaxFrameSize)
+	env, err := protocol.RecvStream(st, protocol.MaxSmallFrame)
 	if err != nil {
 		_ = st.Reset()
 		return
@@ -309,11 +314,23 @@ func (s *Service) handleInfer(st network.Stream) {
 		fail(st, err)
 		return
 	}
-	// The response is sealed to the key the request was sealed from, so the
-	// signed request hash commits to it: that is what lets the buyer prove
-	// this job's transcript to a dispute judge by disclosing one key.
-	if len(req.BuyerBoxPub) != box.PublicKeySize || len(req.Sealed) < box.Overhead ||
-		!bytes.Equal(req.BuyerBoxPub, req.Sealed[:box.PublicKeySize]) {
+	// The sealed request follows the header in a binary frame.
+	rf, err := protocol.ReadStreamFrame(st, protocol.MaxFrameSize)
+	if err != nil {
+		_ = st.Reset()
+		return
+	}
+	if rf.Env != nil || rf.Kind != protocol.BinRequest {
+		fail(st, protocol.Errorf(protocol.CodeBadRequest, "expected the sealed request"))
+		return
+	}
+	sealedReq := rf.Payload
+	// The response is sealed under a key derived from the key the request was
+	// sealed from, so the signed request hash commits to it: that is what lets
+	// the buyer prove this job's transcript to a dispute judge by disclosing
+	// one key.
+	if len(req.BuyerBoxPub) != box.PublicKeySize || len(sealedReq) < box.Overhead ||
+		!bytes.Equal(req.BuyerBoxPub, sealedReq[:box.PublicKeySize]) {
 		fail(st, protocol.Errorf(protocol.CodeBadRequest, "the response key must be the key the request was sealed from"))
 		return
 	}
@@ -332,10 +349,22 @@ func (s *Service) handleInfer(st network.Stream) {
 
 	// The plaintext request exists only in memory for the life of this job; it
 	// is never logged or written anywhere.
-	plain, err := s.keys.Box.Open(req.Sealed, protocol.RequestAAD(t))
+	opened, err := s.keys.Box.Open(sealedReq, protocol.RequestAAD(t))
 	if err != nil {
 		fail(st, protocol.Errorf(protocol.CodeBadRequest, "cannot open sealed request"))
 		go s.abandonNoFault(*t, "unreadable request")
+		return
+	}
+	plain, err := protocol.DecodeRequest(opened)
+	if err != nil {
+		fail(st, protocol.Errorf(protocol.CodeBadRequest, "cannot decode the request: %v", err))
+		go s.abandonNoFault(*t, "undecodable request")
+		return
+	}
+	key, err := s.keys.Box.NewStream(req.BuyerBoxPub, protocol.ResponseKeyInfo(t, req.BuyerBoxPub))
+	if err != nil {
+		fail(st, protocol.Errorf(protocol.CodeBadRequest, "bad response key"))
+		go s.abandonNoFault(*t, "bad response key")
 		return
 	}
 	body, estPrompt, err := UpstreamRequest(t, plain, mc.UpstreamModel)
@@ -368,37 +397,22 @@ func (s *Service) handleInfer(st network.Stream) {
 	// starting in time, nobody will pay for it: stop.
 	go s.reportStarted(*t, cancel)
 
-	hasher := receipt.NewStreamHasher()
-	var (
-		seq   uint64
-		usage *protocol.Usage
-		text  strings.Builder
-	)
-	err = mc.Upstream.Stream(ctx, body, func(payload []byte) error {
-		info, perr := protocol.ParseChunk(payload)
-		sealed, err := box.Seal(req.BuyerBoxPub, payload, protocol.ChunkAAD(t, seq))
-		if err != nil {
-			return err
-		}
-		if err := protocol.Send(st, protocol.TypeChunk, protocol.Chunk{Seq: seq, Sealed: sealed}); err != nil {
-			return fmt.Errorf("%w: %v", errBuyerGone, err)
-		}
-		// Only what reached the buyer's stream counts.
-		hasher.WriteChunk(sealed)
-		if perr == nil {
-			text.WriteString(info.Text())
-			if info.Usage != nil {
-				usage = info.Usage
-			}
-		}
-		seq++
-		return nil
-	})
-	if err == nil && seq == 0 {
+	// From here on the response writer is the only writer on the stream
+	// until it is closed; it also sends progress frames while the model is
+	// silent.
+	rw := newRespWriter(st, t, key, s.cfg.Heartbeat)
+	err = mc.Upstream.Stream(ctx, body, rw.Write)
+	if err == nil && rw.written() == 0 {
 		err = errors.New("upstream returned an empty stream")
 	}
+	if cerr := rw.Close(err == nil); err == nil && cerr != nil {
+		err = cerr
+	} else if err != nil && cerr != nil && !errors.Is(err, errBuyerGone) {
+		err = fmt.Errorf("%w: %v", errBuyerGone, err)
+	}
+	delivered, frames, text := rw.Delivered()
 	if errors.Is(err, errBuyerGone) {
-		if seq == 0 {
+		if delivered == 0 {
 			// Gone before any output: nothing to bill, and not this node's fault.
 			s.log.Info("buyer left before the first chunk", "job", t.JobID)
 			go s.abandonNoFault(*t, "buyer left before any output")
@@ -406,11 +420,11 @@ func (s *Service) handleInfer(st network.Stream) {
 		}
 		// The buyer stopped reading mid-stream (a user pressing "stop"). The
 		// output it received was produced and delivered: bill exactly the
-		// chunks sent, settled without an ack, so the payout waits out the
+		// frames sent, settled without an ack, so the payout waits out the
 		// dispute window like any unacknowledged job. Not a node failure.
-		s.log.Info("buyer cancelled mid-stream; billing the delivered part", "job", t.JobID, "chunks", seq)
+		s.log.Info("buyer cancelled mid-stream; billing the delivered part", "job", t.JobID, "chunks", delivered, "frames", frames)
 		cancel()
-		sr, serr := s.signReceipt(t, req.Sealed, hasher.Sum(), estPrompt, protocol.EstimateTokens(text.String()))
+		sr, serr := s.signReceipt(t, sealedReq, rw.hasher.Sum(), estPrompt, protocol.EstimateTokens(text))
 		if serr == nil {
 			go s.settle(*t, *sr, nil)
 		}
@@ -419,7 +433,7 @@ func (s *Service) handleInfer(st network.Stream) {
 	if err != nil {
 		// No receipt, no settlement: a failed job is never billed.
 		var se *StatusError
-		if seq == 0 && errors.As(err, &se) && se.RequestRejected() {
+		if delivered == 0 && errors.As(err, &se) && se.RequestRejected() {
 			// The buyer's request is invalid: tell it why (the message goes to
 			// the buyer only, over the end-to-end encrypted stream) and release
 			// the job without counting it against this node.
@@ -435,11 +449,12 @@ func (s *Service) handleInfer(st network.Stream) {
 		return
 	}
 
-	pt, ct := estPrompt, protocol.EstimateTokens(text.String())
-	if usage != nil {
+	pt, ct := estPrompt, protocol.EstimateTokens(text)
+	if usage := rw.usage; usage != nil {
 		pt, ct = usage.PromptTokens, usage.CompletionTokens
 	}
-	sr, err := s.signReceipt(t, req.Sealed, hasher.Sum(), pt, ct)
+	s.log.Debug("job streamed", "job", t.JobID, "chunks", delivered, "frames", frames, "progress_frames", rw.beats, "wire_bytes", rw.wireBytes)
+	sr, err := s.signReceipt(t, sealedReq, rw.hasher.Sum(), pt, ct)
 	if err != nil {
 		fail(st, err)
 		return

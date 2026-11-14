@@ -35,11 +35,30 @@ by two layers:
 - **Transport.** Every libp2p connection uses Noise, end to end between the two
   peers, including when the connection is carried by a relay. The relay
   forwards ciphertext.
-- **Sealed box** (`internal/box`). Each message is encrypted to the recipient's
-  X25519 key with a fresh ephemeral key: X25519 ECDH, HKDF-SHA256, AES-256-GCM.
-  The additional data binds every ciphertext to its job, and every response
-  chunk to its sequence number, so ciphertexts cannot be moved to another job or
-  reordered.
+- **Sealed box** (`internal/box`). The buyer seals the request from a fresh
+  per-job X25519 key to the seller's box key: X25519 ECDH, HKDF-SHA256,
+  AES-256-GCM. The seller seals the response as a numbered stream under one key
+  that both derive from the same agreement, bound to the job, the direction and
+  both public keys; the frame number is the nonce. The additional data binds
+  every ciphertext to its job, and every response frame to its sequence number,
+  so ciphertexts cannot be moved to another job or reordered.
+
+  The buyer can derive the response key too, so it could produce frames that
+  open. That gives it nothing: what the seller delivered is fixed by the
+  receipt, which signs a hash of the exact ciphertexts (2.2); before the stream
+  key, anyone could seal a chunk to the buyer's public key in the same way.
+
+- **Lengths and timing** (`protocol/codec.go`). Before sealing, the request is
+  compressed and padded to a size bucket (steps of a quarter), so a relay sees
+  its size only within 25%. The response is one compressed stream; the seller
+  cuts it into frames at most every 20 ms, so tokens that arrive together share
+  a frame, and pads each frame to 32-byte steps (256-byte steps above 1 KiB). A
+  relay therefore cannot read the length of single tokens off the frame sizes,
+  the way published attacks on streamed answers do. Compression alone would
+  make that worse (a compressed size reflects how repetitive the text is),
+  which is why padding comes with it. What remains visible: the time at which
+  frames are sent, and so the rhythm of the answer at 20 ms resolution, and its
+  total size.
 
 The second layer exists because of what the first cannot do: the box key can
 live inside a TEE while the host's network stack terminates Noise, and receipts
@@ -51,12 +70,12 @@ through the relay, so relays do not see it either.
 ### 2.2 Integrity of the answer
 
 The seller signs a receipt (`internal/receipt`) that says: for the request whose
-sealed bytes hash to this value, I returned the response whose sealed chunks hash
+sealed bytes hash to this value, I returned the response whose sealed frames hash
 to that value, using this model and this many tokens. The buyer's client
 recomputes both hashes from the bytes it actually sent and received and verifies
-every chunk's authentication tag and order as it arrives. A seller cannot sign
+every frame's authentication tag and order as it arrives. A seller cannot sign
 one transcript and deliver another, and nobody in between can alter, drop or
-reorder chunks without the check failing.
+reorder frames without the check failing.
 
 Non-streaming responses are returned to the caller only after the receipt has
 been verified (`X-Sharetoken-Verified: true`). Streaming responses are forwarded
@@ -67,13 +86,13 @@ as they arrive and end with a comment line stating the result.
 A receipt also carries token counts, and the buyer's client estimates them from
 the transcript. When they are implausible it rejects the receipt and opens a
 dispute with evidence (`internal/evidence`): the private key of that one job, the
-sealed request and the sealed chunks. Because the request was sealed from a
-per-job key and the seller sealed every chunk to that same key, the coordinator
-can check without trusting the buyer:
+sealed request and the sealed response frames. Because the request was sealed
+from a per-job key and the seller sealed every frame under a key derived from
+that same key, the coordinator can check without trusting the buyer:
 
-- the request and the chunks are exactly what the seller signed for;
+- the request and the frames are exactly what the seller signed for;
 - the disclosed key is the one the request committed to;
-- whether every chunk opens under that key;
+- whether every frame opens under the derived key and decodes;
 - how many tokens the transcript really contains, counted with a reference
   tokenizer when the coordinator has a reference copy of the model
   (`internal/tokens`).

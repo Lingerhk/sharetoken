@@ -28,7 +28,7 @@ type Proxy struct {
 	RequireTEE   bool // only nodes whose TEE quote passes the client's policy
 }
 
-const maxProxyBody = 4 << 20
+const maxProxyBody = protocol.MaxRequestBody
 
 // Handler returns the HTTP handler.
 func (p *Proxy) Handler() http.Handler {
@@ -138,8 +138,9 @@ func (p *Proxy) stream(w http.ResponseWriter, r *http.Request, req ChatRequest) 
 		// Streamed content cannot be recalled; flag the failed verification.
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", errorJSON(err.Error(), codeFor(err)))
 	} else {
-		_, _ = fmt.Fprintf(w, ": sharetoken job=%s node=%s verified=true cost_micros=%d tee=%q\n\n",
-			res.Ticket.JobID, res.Ticket.Node, res.CostMicros, res.Attested)
+		tm := &res.Timing
+		_, _ = fmt.Fprintf(w, ": sharetoken job=%s node=%s verified=true cost_micros=%d tee=%q ticket_ms=%.1f dial_ms=%.1f first_byte_ms=%.1f relayed=%t preferred=%t frames=%d up_bytes=%d down_bytes=%d\n\n",
+			res.Ticket.JobID, res.Ticket.Node, res.CostMicros, res.Attested, tm.TicketMs, tm.DialMs, tm.FirstByteMs, tm.Relayed, tm.Preferred, tm.Frames, tm.UpBytes, tm.DownBytes)
 	}
 	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	if flusher != nil {
@@ -170,6 +171,9 @@ func setJobHeaders(h http.Header, res *Result) {
 	h.Set("X-Sharetoken-Node", res.Ticket.Node)
 	h.Set("X-Sharetoken-Verified", strconv.FormatBool(res.Verified))
 	h.Set("X-Sharetoken-Cost-Micros", strconv.FormatUint(res.CostMicros, 10))
+	tm := &res.Timing
+	h.Set("X-Sharetoken-Timing", fmt.Sprintf("ticket_ms=%.1f dial_ms=%.1f upload_ms=%.1f first_byte_ms=%.1f total_ms=%.1f relayed=%t preferred=%t frames=%d up_bytes=%d down_bytes=%d",
+		tm.TicketMs, tm.DialMs, tm.UploadMs, tm.FirstByteMs, tm.TotalMs, tm.Relayed, tm.Preferred, tm.Frames, tm.UpBytes, tm.DownBytes))
 	if res.Attested != "" {
 		h.Set("X-Sharetoken-TEE", res.Attested)
 	}
