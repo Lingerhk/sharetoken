@@ -225,5 +225,17 @@
   "本机的管理接口需要密钥才能访问；桌面应用连接后台程序前，会先确认对方的身份。": "A API de gerenciamento local exige uma chave, e o aplicativo desktop confirma a identidade do programa em segundo plano antes de se conectar.",
   "本地 OpenAI 兼容端点默认需要 API key（sk-st-…）。可以在设置里或用 sharetoken apikey 查看、更换或关闭。": "O endpoint local compatível com OpenAI exige por padrão uma API key (sk-st-…). Veja, troque ou desative em Configurações ou com sharetoken apikey.",
   "sharetoken skill install：让 Claude Code 和 Codex 学会使用 ShareToken 客户端。文档里新增了「在编程助手中使用」一页。": "sharetoken skill install: ensina o Claude Code e o Codex a usar o cliente ShareToken. O guia tem uma nova página, \"Usar com agentes de programação\".",
-  "以 MIT 许可证开源。网站和用户页面右上角加了 GitHub 链接。": "Código aberto sob a licença MIT. O site e as páginas de usuário têm um link para o GitHub no canto superior direito."
+  "以 MIT 许可证开源。网站和用户页面右上角加了 GitHub 链接。": "Código aberto sob a licença MIT. O site e as páginas de usuário têm um link para o GitHub no canto superior direito.",
+  "最新版本": "Versão mais recente",
+  "回答改用压缩后的二进制帧传输，经中继的流量降到原来的约 1/8；模型出字越快，省得越多。": "As respostas trafegam em quadros binários comprimidos: o tráfego pelos relays cai para cerca de 1/8, e quanto mais rápido o modelo escreve, mais se economiza.",
+  "请求先压缩再发送，长对话历史的上传量降到约 1/4，大请求的首字更快。": "As solicitações são comprimidas antes do envio: enviar um histórico longo de conversa usa cerca de 1/4 do tráfego, e solicitações grandes recebem o primeiro token mais cedo.",
+  "请求上限从 4 MB 提高到 32 MB，可以带截图等图片。": "O limite das solicitações sobe de 4 MB para 32 MB, então elas podem levar imagens como capturas de tela.",
+  "同一段对话的后续请求优先回到上次的节点：连接已经建好，模型服务器的 prompt 缓存也更容易命中。": "As próximas solicitações de uma conversa voltam ao nó que a atendeu por último: a conexão já está aberta e o cache de prompt do servidor do modelo tem mais chance de acertar.",
+  "中继重启或网络切换时，正在输出的回答会在 60 秒内自动接上，不需要重发请求。": "Quando um relay reinicia ou a rede muda, uma resposta em andamento é retomada automaticamente em até 60 segundos, sem reenviar a solicitação.",
+  "模型长时间思考时，节点每 10 秒发一次心跳，不再被误判为卡死；买家的超时默认值改为 30 秒。": "Enquanto um modelo pensa por muito tempo, o nó envia um sinal a cada 10 segundos, então o trabalho não é mais confundido com travado. Os tempos limite do comprador passam a ser 30 segundos por padrão.",
+  "点停止后，节点立即停止生成，只按已送达的部分计费。": "Ao parar, o nó deixa de gerar na hora e você paga só pela parte entregue.",
+  "回答合并发送并补齐长度，请求按区间补齐，中继无法再从数据包大小推测每个 token 的长度。": "As respostas são enviadas em quadros agrupados e preenchidos, e as solicitações são preenchidas em faixas de tamanho, então um relay não consegue mais deduzir o tamanho de cada token pelo tamanho dos pacotes.",
+  "性能提升": "Desempenho",
+  "稳定性提升": "Confiabilidade",
+  "安全性": "Segurança"
 }

@@ -225,5 +225,17 @@
   "本机的管理接口需要密钥才能访问；桌面应用连接后台程序前，会先确认对方的身份。": "The local management API needs a key, and the desktop app confirms the background program's identity before connecting to it.",
   "本地 OpenAI 兼容端点默认需要 API key（sk-st-…）。可以在设置里或用 sharetoken apikey 查看、更换或关闭。": "The local OpenAI-compatible endpoint needs an API key by default (sk-st-…). View, change or turn it off in Settings or with sharetoken apikey.",
   "sharetoken skill install：让 Claude Code 和 Codex 学会使用 ShareToken 客户端。文档里新增了「在编程助手中使用」一页。": "sharetoken skill install: teaches Claude Code and Codex to use the ShareToken client. The guide has a new page, \"Use with coding agents\".",
-  "以 MIT 许可证开源。网站和用户页面右上角加了 GitHub 链接。": "Open source under the MIT license. The website and the user pages link to GitHub at the top right."
+  "以 MIT 许可证开源。网站和用户页面右上角加了 GitHub 链接。": "Open source under the MIT license. The website and the user pages link to GitHub at the top right.",
+  "最新版本": "Latest release",
+  "回答改用压缩后的二进制帧传输，经中继的流量降到原来的约 1/8；模型出字越快，省得越多。": "Answers travel in compressed binary frames: traffic through relays drops to about 1/8, and the faster a model writes, the more it saves.",
+  "请求先压缩再发送，长对话历史的上传量降到约 1/4，大请求的首字更快。": "Requests are compressed before they are sent: uploading a long conversation history takes about 1/4 of the traffic, and large requests get their first token sooner.",
+  "请求上限从 4 MB 提高到 32 MB，可以带截图等图片。": "The request limit rises from 4 MB to 32 MB, so requests can carry images such as screenshots.",
+  "同一段对话的后续请求优先回到上次的节点：连接已经建好，模型服务器的 prompt 缓存也更容易命中。": "Later requests of one conversation go back to the node that served it last: the connection is already open and the model server's prompt cache is more likely to hit.",
+  "中继重启或网络切换时，正在输出的回答会在 60 秒内自动接上，不需要重发请求。": "When a relay restarts or the network changes, an answer that is being written resumes automatically within 60 seconds, without sending the request again.",
+  "模型长时间思考时，节点每 10 秒发一次心跳，不再被误判为卡死；买家的超时默认值改为 30 秒。": "While a model thinks for a long time, the node sends a heartbeat every 10 seconds, so the job is no longer mistaken for stuck. The buyer's timeouts now default to 30 seconds.",
+  "点停止后，节点立即停止生成，只按已送达的部分计费。": "After you press stop, the node stops generating at once, and you pay only for the part delivered.",
+  "回答合并发送并补齐长度，请求按区间补齐，中继无法再从数据包大小推测每个 token 的长度。": "Answers are sent in merged, padded frames and requests are padded to size buckets, so relays can no longer infer the length of each token from packet sizes.",
+  "性能提升": "Performance",
+  "稳定性提升": "Reliability",
+  "安全性": "Security"
 }
