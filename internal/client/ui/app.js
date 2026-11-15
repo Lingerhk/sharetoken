@@ -1293,7 +1293,7 @@ I18N.ready.then(() => {
     const accountName = h('span', { class: 'v', id: 'account-name' });
     const banner = h('div', { id: 'banner' });
     const tiles = h('div', { class: 'tiles', id: 'tiles' });
-    const endpoint = section('endpoint', tr('本地 OpenAI 接口'), { row: true, hint: tr('在支持 OpenAI 协议的工具里把 base URL 改成这个地址即可使用。') });
+    const endpoint = section('endpoint', tr('本地模型接口'), { row: true, hint: tr('OpenAI 工具、Claude Code 和 Codex 都可以把 base URL 改成这个地址使用（Claude Code 用不带 /v1 的地址）。') });
     const network = section('network', tr('网络'), { fill: true });
     const models = section('models', tr('可用模型'), { fill: true });
     const devices = section('devices', tr('我的设备'), { fill: true });
@@ -1325,7 +1325,7 @@ I18N.ready.then(() => {
       apiKeyBox.checked = apiKey.required;
       apiKeyBox.disabled = false;
       apiKeyText.textContent = apiKey.key.slice(0, 6) + '…' + apiKey.key.slice(-4);
-      apiKeyNote.textContent = apiKey.required ? tr('工具把它填作 OpenAI API key') : tr('未开启：本机任何程序都能用这个接口花你的 credit');
+      apiKeyNote.textContent = apiKey.required ? tr('工具把它填作 API key') : tr('未开启：本机任何程序都能用这个接口花你的 credit');
       apiKeyNote.className = 'small ' + (apiKey.required ? 'muted' : 'warn-text');
       drawEndpoint();
     }
@@ -1337,16 +1337,59 @@ I18N.ready.then(() => {
     }
     async function loadAPIKey() {
       try { apiKey = await api('GET', '/api/v1/apikey'); drawAPIKey(); } catch (e) { /* shown again at the next try */ }
+      loadBuy();
+    }
+
+    // Buying settings (PUT /api/v1/buy): applied to the running endpoint at
+    // once and saved in config.json.
+    let buyDirty = false;
+    const nativeBox = h('input', { type: 'checkbox', id: 'buy-native', disabled: true, onchange: () => saveBuy(nativeBox) });
+    const budgetInput = h('input', { type: 'text', id: 'buy-budget', class: 'narrow short', inputmode: 'decimal', 'aria-label': tr('每个请求的预算'),
+      oninput: () => { buyDirty = true; }, onkeydown: e => { if (e.key === 'Enter') saveBuy(budgetSave); } });
+    const budgetSave = h('button', { type: 'button', id: 'buy-budget-save', onclick: () => saveBuy(budgetSave) }, tr('保存'));
+    const buyNote = h('span', { class: 'small', id: 'buy-note', role: 'status' });
+    function drawBuy(b) {
+      nativeBox.checked = !!b.require_native;
+      nativeBox.disabled = false;
+      if (!buyDirty && document.activeElement !== budgetInput) budgetInput.value = String(b.budget_micros / 1e6);
+    }
+    async function loadBuy() {
+      try { drawBuy(await api('GET', '/api/v1/buy')); } catch (e) { /* shown again at the next try */ }
+    }
+    async function saveBuy(el) {
+      const credits = Number(budgetInput.value.trim());
+      if (!Number.isFinite(credits) || credits < 0.01 || credits > 1000) {
+        buyNote.className = 'small warn-text';
+        buyNote.textContent = tr('预算需要在 0.01 到 1000 credit 之间');
+        return;
+      }
+      el.disabled = true;
+      try {
+        drawBuy(await api('PUT', '/api/v1/buy', { budget_micros: Math.round(credits * 1e6), require_native: nativeBox.checked }));
+        buyDirty = false;
+        buyNote.className = 'small ok';
+        buyNote.textContent = tr('已保存');
+      } catch (e) {
+        buyNote.className = 'small warn-text';
+        buyNote.textContent = message(e);
+      }
+      el.disabled = false;
     }
 
     const settings = h('section', { class: 'panel', id: 'settings' }, h('div', { class: 'rows' },
       h('span', { class: 'k' }, tr('账户')), accountName, logoutBtn,
-      h('span', { class: 'k' }, tr('API key')), h('label', { class: 'v check' }, apiKeyBox, h('span', null, tr('调用本地 OpenAI 接口需要 API key'))), apiKeyCopy,
+      h('span', { class: 'k' }, tr('API key')), h('label', { class: 'v check' }, apiKeyBox, h('span', null, tr('调用本地模型接口需要 API key'))), apiKeyCopy,
       h('span', { class: 'k' }), h('span', { class: 'v' }, apiKeyText, ' ', apiKeyNote), rotateBtn,
       h('span', { class: 'k' }, tr('语言')), h('span', { class: 'v' }), I18N.picker() || h('span'),
       h('span', { class: 'k' }, tr('版本')), h('span', { class: 'v' }, versionText, ' ', checkResult), checkBtn,
       h('span', { class: 'k' }, tr('反馈')), h('span', { class: 'v muted' }, tr('告诉我们你遇到的问题或建议。')),
       h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈'))));
+    // How requests are bought (PUT /api/v1/buy).
+    const buyPanel = h('section', { class: 'panel', id: 'buy-settings' }, h('div', { class: 'rows' },
+      h('span', { class: 'k' }, tr('原生卖家')), h('label', { class: 'v check' }, nativeBox, h('span', null, tr('只用原生支持请求接口的卖家'))), h('span'),
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'buy-native-hint' }, tr('卖家的模型服务器原生支持请求所用的接口时（如 Claude Code 用 Anthropic Messages，Codex 用 OpenAI Responses）原样转发，不做转换。不勾选时优先选这类卖家，没有空闲的就由其他卖家转换后提供；勾选后没有这类卖家时请求直接失败。')),
+      h('span', { class: 'k' }, tr('每个请求的预算')), h('span', { class: 'v' }, budgetInput, ' ', h('span', { class: 'muted small' }, 'credit'), ' ', buyNote), budgetSave,
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'buy-budget-hint' }, tr('每个请求先冻结这么多，结束后按实际用量扣费，多余的退回。编程助手的 prompt 很长，预算太小会返回 budget 错误。'))));
     let market = [];
     const pairing = pairingView();
     const partners = partnersView();
@@ -1358,7 +1401,7 @@ I18N.ready.then(() => {
       ['share', tr('共享'), null, [['state', tr('状态'), share.panes.state], ['providers', tr('厂商 API'), share.panes.providers], ['local', tr('本机模型'), share.panes.local]]],
       ['pairing', tr('配对'), null, [['partners', tr('共享伙伴'), [partners.partners, partners.settings]], ['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
       ['activity', tr('记录'), null, [['all', tr('全部'), [jobs.el]], ['sold', tr('卖出'), [share.sold]]]],
-      ['settings', tr('设置'), [settings, devices.el]],
+      ['settings', tr('设置'), null, [['general', tr('通用'), [settings]], ['buy', tr('调用'), [buyPanel]], ['devices', tr('我的设备'), [devices.el]]]],
     ];
     const views = {}, navButtons = {}, tabs = {}, labels = {};
     const title = h('h1', { id: 'view-title' });

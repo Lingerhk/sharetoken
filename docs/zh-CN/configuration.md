@@ -186,7 +186,7 @@
 | `listen` | IPv4 和 IPv6 上的 TCP 与 QUIC，端口任意 | libp2p 监听地址 |
 | `nat` | true | UPnP/NAT-PMP 和打洞 |
 | `relays` | 空 | 覆盖门户给出的中继列表 |
-| `buy.budget_micros` | 200000 | 每个请求冻结的额度；没用完的部分退回 |
+| `buy.budget_micros` | 2000000 | 每个请求冻结的额度；没用完的部分退回 |
 | `buy.max_price_in`、`buy.max_price_out` | 0（不限） | 每百万 prompt token 和 completion token 的价格上限 |
 | `buy.evidence` | true | 对可以证明有问题的单披露密钥，换取自动退款 |
 | `buy.require_tee`、`buy.tee_policy`、`buy.tee_online` | 关闭 | 只从经过证明的 TEE 节点购买；可信镜像的白名单文件；联网查询吊销状态 |

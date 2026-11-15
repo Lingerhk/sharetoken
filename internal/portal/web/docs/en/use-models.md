@@ -182,7 +182,7 @@ claude
 Tool use, thinking and prompt caching work as with Anthropic. Any model on the network can be used, not only Claude: a node whose model server does not speak the Messages API converts the request (see [Native and converted](#native)). For a model ID it does not know, Claude Code warns that it assumes a context window of 1M tokens. `/v1/messages/count_tokens` is answered on your machine with an estimate.
 
 > [!TIP]
-> Coding agents send long prompts: tens of thousands of tokens with every request. If requests fail with `budget`, the per-request hold does not cover the prompt at the model's price; raise `buy.budget_micros` in the [configuration file](/docs/config#buy), for example to `2000000` (2 credits). Only what a request uses is charged.
+> Coding agents send long prompts: tens of thousands of tokens with every request. If requests fail with `budget`, the per-request hold does not cover the prompt at the model's price; raise `buy.budget_micros` in the [configuration file](/docs/config#buy) (default `2000000`, 2 credits), or in the desktop app under "Settings > Requests > Budget per request". Only what a request uses is charged.
 
 ## Use with Codex {#codex}
 
@@ -233,7 +233,7 @@ Every node serves all three APIs. A node whose model server speaks the API of yo
 | Gemini, Grok, other OpenAI-compatible servers | chat completions |
 
 - **Native first:** the network matches a node that speaks your request's API natively whenever one is free, even if a converting one is cheaper. `/v1/models` lists the native APIs of each model in `apis`.
-- **Only native:** set `buy.require_native` in the [configuration file](/docs/config#buy), or send the header `X-Sharetoken-Require-Native: true` with a request. With no such node the request fails with `no_offers` instead of being converted.
+- **Only native:** tick "Only sellers that speak the request's API natively" in the desktop app under "Settings > Requests", set `buy.require_native` in the [configuration file](/docs/config#buy), or send the header `X-Sharetoken-Require-Native: true` with a request. With no such node the request fails with `no_offers` instead of being converted.
 - **What a conversion loses:** encrypted reasoning and thinking signatures only work with the model that made them, so they are dropped when a conversation moves to another kind of model; server-side tools (web search, code execution) are not offered by any node.
 - **One node only:** the header `X-Sharetoken-Node: <node ID>` sends a request to that node, for trying a seller.
 
@@ -244,7 +244,7 @@ If an answer fails before anything arrived, the client tries other nodes as usua
 - **Billed by actual tokens:** The node sets the price, and you pay for the token counts on the receipt.
 - **Prompt cache:** input tokens the model server reads from its prompt cache cost the node's cache read price (by default a tenth of its input price), and tokens it writes to the cache its cache write price (by default 1.25 times the input price for Anthropic models, the input price otherwise). The receipt counts both; the job list on the portal marks such jobs with `*`.
 - **Reasoning you do not see:** some models reason without showing all of it (encrypted, summarized or omitted thinking). When the answer shows that the model reasoned, you pay the output tokens the model server reported, up to the request's output limit (`max_tokens`, `max_output_tokens`) or what the hold covers. Otherwise output is checked against the text you received.
-- **Hold:** When you send a request, an amount is put on hold first, and whatever is not used is returned afterward. If the request has `max_tokens`, only the worst case is held. If not, the whole budget is held (0.2 credit by default).
+- **Hold:** When you send a request, an amount is put on hold first, and whatever is not used is returned afterward. If the request has `max_tokens`, only the worst case is held. If not, the whole budget is held (2 credits by default); when your balance is smaller, what there is is held, as long as it covers the prompt and a short answer.
 - **Always set `max_tokens`**, especially for batch or high-concurrency calls. Otherwise a large hold can easily cause `insufficient_funds`.
 - **Stopping midway:** If your program drops a streaming request midway (for example, the user pressed stop), the node stops generating at once and you are billed only for the part that was delivered.
 - **Network breaks:** If the connection breaks because a relay restarted or your network changed, the client reconnects within 60 seconds and the answer continues where it stopped. You do not need to send the request again.

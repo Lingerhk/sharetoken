@@ -61,7 +61,7 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 ```json
 {
   "buy": {
-    "budget_micros": 200000,
+    "budget_micros": 2000000,
     "max_price_in": 0,
     "max_price_out": 0,
     "evidence": true,
@@ -76,7 +76,7 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 
 | Field | Meaning | Default |
 |---|---|---|
-| `budget_micros` | The most to hold for each request, in micro-credit. Whatever is unused is returned | `200000` (0.2 credit) |
+| `budget_micros` | The most to hold for each request, in micro-credit. Whatever is unused is returned | `2000000` (2 credits) |
 | `max_price_in` | The most you will pay per million input tokens. `0` means no limit | `0` |
 | `max_price_out` | The most you will pay per million output tokens. `0` means no limit | `0` |
 | `evidence` | If a node overstates usage, hand over the key for that job to get an automatic refund | `true` |

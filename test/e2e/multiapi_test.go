@@ -852,3 +852,29 @@ func TestReplayedSubscriptionSellers(t *testing.T) {
 		}
 	}
 }
+
+// A request without an output limit holds the whole budget; a balance below
+// it is held instead when it pays for the prompt and a short answer.
+func TestSmallBalanceHoldsWhatThereIs(t *testing.T) {
+	m := newAPIMarket(t, protocol.APIChat)
+	for _, c := range []struct {
+		balance uint64
+		status  int
+	}{{300_000, http.StatusOK}, {200, http.StatusPaymentRequired}} {
+		cl, _, keys := m.addBuyer(c.balance)
+		proxy := httptest.NewServer((&buyer.Proxy{Client: cl, BudgetMicros: 2_000_000}).Handler())
+		m.endpoint, m.buyerKeys = proxy.URL, keys
+		req := firstTurn(protocol.APIResponses, false) // Codex sends no output limit
+		r := m.call(t, protocol.APIResponses, "/v1/responses", req, nil)
+		proxy.Close()
+		if r.status != c.status {
+			t.Fatalf("balance %d: %d %v", c.balance, r.status, r.body)
+		}
+		if c.status == http.StatusOK {
+			tk, _ := m.settled(t, r.job())
+			if tk.ReservedMicros != c.balance {
+				t.Fatalf("held %d of a balance of %d", tk.ReservedMicros, c.balance)
+			}
+		}
+	}
+}

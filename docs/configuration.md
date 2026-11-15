@@ -186,7 +186,7 @@ The directory is created with mode 0700. Files in it:
 | `listen` | TCP and QUIC on IPv4 and IPv6, any port | libp2p listen addresses |
 | `nat` | true | UPnP/NAT-PMP and hole punching |
 | `relays` | empty | Overrides the relays the portal lists |
-| `buy.budget_micros` | 200000 | Credit reserved per request; the unused part is refunded |
+| `buy.budget_micros` | 2000000 | Credit reserved per request; the unused part is refunded |
 | `buy.max_price_in`, `buy.max_price_out` | 0 (no limit) | Price limits per million prompt and completion tokens |
 | `buy.evidence` | true | Disclose a provably bad job's key for an automatic refund |
 | `buy.require_tee`, `buy.tee_policy`, `buy.tee_online` | off | Buy only from attested TEE nodes; allow-list file of trusted images; online revocation check |

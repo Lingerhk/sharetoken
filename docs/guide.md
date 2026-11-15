@@ -129,7 +129,7 @@ Notes:
   "nat": true,
   "relays": [],
   "buy": {
-    "budget_micros": 200000,
+    "budget_micros": 2000000,
     "max_price_in": 0,
     "max_price_out": 0,
     "evidence": true,

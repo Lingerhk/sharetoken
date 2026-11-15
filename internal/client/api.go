@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -138,6 +139,8 @@ func (a *Agent) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/v1/share", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, a.Status().Share) })
 	mux.HandleFunc("PUT /api/v1/share", a.handleSetShare)
+	mux.HandleFunc("GET /api/v1/buy", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, a.BuySettings()) })
+	mux.HandleFunc("PUT /api/v1/buy", a.handleSetBuy)
 	mux.HandleFunc("POST /api/v1/share/start", a.handleToggleShare(true))
 	mux.HandleFunc("POST /api/v1/share/stop", a.handleToggleShare(false))
 	mux.HandleFunc("POST /api/v1/share/reload", func(w http.ResponseWriter, r *http.Request) {
@@ -246,6 +249,69 @@ func (a *Agent) handleSetShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a.Status().Share)
+}
+
+// BuySettingsView is what the settings page changes of the buying side.
+type BuySettingsView struct {
+	BudgetMicros  uint64 `json:"budget_micros"`
+	RequireNative bool   `json:"require_native"`
+}
+
+// BuySettings reports the buying settings the settings page changes.
+func (a *Agent) BuySettings() BuySettingsView {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return BuySettingsView{BudgetMicros: a.cfg.Buy.BudgetMicros, RequireNative: a.cfg.Buy.RequireNative}
+}
+
+// SetBuySettings applies them to the running endpoint at once and saves them.
+func (a *Agent) SetBuySettings(v BuySettingsView) error {
+	if err := v.validate(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := saveBuySettings(a.home, v); err != nil {
+		return err
+	}
+	a.cfg.Buy.BudgetMicros, a.cfg.Buy.RequireNative = v.BudgetMicros, v.RequireNative
+	if a.proxy != nil {
+		a.proxy.SetBuy(v.BudgetMicros, v.RequireNative)
+	}
+	return nil
+}
+
+func (v BuySettingsView) validate() error {
+	if v.BudgetMicros < MinBudgetMicros || v.BudgetMicros > MaxBudgetMicros {
+		return fmt.Errorf("the budget must be between %d and %d micro-credits", MinBudgetMicros, MaxBudgetMicros)
+	}
+	return nil
+}
+
+// saveBuySettings writes them to config.json, keeping its other fields.
+func saveBuySettings(home string, v BuySettingsView) error {
+	if err := v.validate(); err != nil {
+		return err
+	}
+	disk, err := LoadConfig(home)
+	if err != nil {
+		return err
+	}
+	disk.Buy.BudgetMicros, disk.Buy.RequireNative = v.BudgetMicros, v.RequireNative
+	return SaveConfig(home, disk)
+}
+
+func (a *Agent) handleSetBuy(w http.ResponseWriter, r *http.Request) {
+	var v BuySettingsView
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&v); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed JSON: "+err.Error())
+		return
+	}
+	if err := a.SetBuySettings(v); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, a.BuySettings())
 }
 
 func (a *Agent) handleToggleShare(on bool) http.HandlerFunc {

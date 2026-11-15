@@ -354,8 +354,9 @@ type TicketRequest struct {
 	// Optional: the buyer's prompt estimate (EstimatePromptTokens) and the
 	// request's max_tokens. With both set, the hold is sized to the worst-case
 	// cost at the matched node's price instead of the whole budget, so a
-	// balance supports many more requests in flight. Understating them only
-	// truncates the buyer's own output.
+	// balance supports many more requests in flight. With a balance below the
+	// hold, the balance is held when it pays for the prompt and a short
+	// answer. Understating them only truncates the buyer's own output.
 	PromptTokens uint64 `json:"prompt_tokens,omitempty"`
 	MaxTokens    uint64 `json:"max_tokens,omitempty"`
 }

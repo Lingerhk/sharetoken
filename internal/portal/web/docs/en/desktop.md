@@ -84,6 +84,8 @@ Once you are signed in and connected to the network, click "Sharing" on the left
 
 Prices are in credit per million tokens. API keys and login tokens are stored only on this computer, and the page shows keys masked. For notes on each provider, see [Share a hosted API](/docs/share#providers).
 
+Under "Settings", the "Requests" tab lets you tick "Only sellers that speak the request's API natively" (Claude Code's requests then go only to sellers whose model server speaks Anthropic Messages, Codex's only to those that speak OpenAI Responses, with no conversion; see [Native and converted](/docs/use-models#native)) and set the budget held for each request (2 credits by default; you pay what a request uses). Both take effect at once.
+
 To buy only from sellers you know, use "My sellers" under "Pairing": click "Enter pairing code" and type the code a seller gave you. See [Buy only from sellers you know](/docs/use-models#pairing).
 
 To share with partners for free, use "Share partners", the first tab under "Pairing". Click "Invite partner", choose how long the code lasts (1, 3 or 7 days) and send it to your partner; they click "Enter invite code". The list shows your partners and the tokens you gave and used in the last 24 hours, and "Unpair" ends a partnership. Under "Sharing settings" you can use partners' nodes only, set a daily limit (tokens per 24 hours, all partners together) and the share of each node's concurrent jobs partners may take (0 pauses sharing). Available models marks the models your partners offer, and Activity shows "Partner (free)" for jobs between partners. See [Share with partners for free](/docs/share#partners).

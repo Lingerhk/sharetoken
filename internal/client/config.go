@@ -87,8 +87,16 @@ type ShareConfig struct {
 
 // Defaults.
 const (
-	DefaultUpstream      = "http://127.0.0.1:11434/v1"
-	DefaultBudgetMicros  = 200_000
+	DefaultUpstream = "http://127.0.0.1:11434/v1"
+	// DefaultBudgetMicros is 2 credits: coding agents send prompts of tens of
+	// thousands of tokens. Only what a request uses is charged.
+	DefaultBudgetMicros = 2_000_000
+	// oldDefaultBudgetMicros was the default before; a configuration that
+	// still has it gets the new one.
+	oldDefaultBudgetMicros = 200_000
+	// The range the settings page accepts: 0.01 to 1000 credits.
+	MinBudgetMicros      = 10_000
+	MaxBudgetMicros      = 1_000_000_000
 	DefaultPriceInMicros = 100_000
 	DefaultPriceOut      = 200_000
 )
@@ -131,7 +139,7 @@ func (c *Config) fill() {
 	if len(c.Listen) == 0 {
 		c.Listen = d.Listen
 	}
-	if c.Buy.BudgetMicros == 0 {
+	if c.Buy.BudgetMicros == 0 || c.Buy.BudgetMicros == oldDefaultBudgetMicros {
 		c.Buy.BudgetMicros = d.Buy.BudgetMicros
 	}
 	if c.Share.Upstream == "" {

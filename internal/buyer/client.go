@@ -941,11 +941,10 @@ func (c *Client) Balance(ctx context.Context) (protocol.BalanceResponse, error) 
 	return resp, err
 }
 
-// promptEst is the prompt estimate sent with a capped request (0 otherwise).
+// promptEst is the prompt estimate sent with a request: with MaxTokens it
+// sizes the hold, and without it it tells whether a balance smaller than the
+// budget still pays for the prompt.
 func promptEst(req ChatRequest) uint64 {
-	if req.MaxTokens == 0 {
-		return 0
-	}
 	n, err := protocol.EstimatePromptTokens(req.API, req.Body)
 	if err != nil {
 		return 0

@@ -1273,3 +1273,25 @@ func TestDaemonFeedback(t *testing.T) {
 		t.Fatalf("feedback: %+v", f)
 	}
 }
+
+// The settings page changes the budget and require_native: the running
+// endpoint takes them at once and config.json keeps them.
+func TestDaemonBuySettings(t *testing.T) {
+	e := newDaemonEnv(t, openPortal(), false)
+	d := e.daemon()
+	d.want(401, "not_logged_in", "GET", "/api/v1/buy", nil)
+	d.signIn(e, "buyer@example.com")
+	var v BuySettingsView
+	if err := json.Unmarshal(d.want(200, "", "GET", "/api/v1/buy", nil), &v); err != nil || v.BudgetMicros != DefaultBudgetMicros || v.RequireNative {
+		t.Fatalf("defaults: %+v %v", v, err)
+	}
+	if err := json.Unmarshal(d.want(200, "", "PUT", "/api/v1/buy", BuySettingsView{BudgetMicros: 5_000_000, RequireNative: true}), &v); err != nil || v.BudgetMicros != 5_000_000 || !v.RequireNative {
+		t.Fatalf("set: %+v %v", v, err)
+	}
+	c, err := LoadConfig(d.home)
+	if err != nil || c.Buy.BudgetMicros != 5_000_000 || !c.Buy.RequireNative {
+		t.Fatalf("saved: %+v %v", c.Buy, err)
+	}
+	d.want(400, "bad_request", "PUT", "/api/v1/buy", BuySettingsView{BudgetMicros: 5})
+	d.want(400, "bad_request", "PUT", "/api/v1/buy", map[string]any{"budget_micros": "lots"})
+}

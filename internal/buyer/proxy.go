@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"sharetoken/internal/apicompat"
@@ -44,6 +45,15 @@ type Proxy struct {
 	// request's API natively (no conversion). A request can also ask for it
 	// with the header X-Sharetoken-Require-Native: true.
 	RequireNative bool
+
+	mu sync.RWMutex // guards BudgetMicros and RequireNative once serving (SetBuy)
+}
+
+// SetBuy changes the budget and RequireNative of a running proxy.
+func (p *Proxy) SetBuy(budgetMicros uint64, requireNative bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.BudgetMicros, p.RequireNative = budgetMicros, requireNative
 }
 
 const maxProxyBody = protocol.MaxRequestBody
@@ -78,11 +88,14 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 
 // request is the network request for body in api.
 func (p *Proxy) request(r *http.Request, api, model string, body []byte) ChatRequest {
+	p.mu.RLock()
+	budget, native := p.BudgetMicros, p.RequireNative
+	p.mu.RUnlock()
 	return ChatRequest{
 		Model: model, API: api, Header: forwardHeader(api, r.Header), Body: body,
-		BudgetMicros: p.BudgetMicros, MaxTokens: protocol.RequestedOutput(api, body),
+		BudgetMicros: budget, MaxTokens: protocol.RequestedOutput(api, body),
 		MaxPriceIn: p.MaxPriceIn, MaxPriceOut: p.MaxPriceOut, RequireTEE: p.RequireTEE,
-		RequireNative: p.RequireNative || truthy(r.Header.Get(HeaderRequireNative)),
+		RequireNative: native || truthy(r.Header.Get(HeaderRequireNative)),
 		Node:          strings.TrimSpace(r.Header.Get(HeaderNode)),
 	}
 }

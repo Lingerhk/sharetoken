@@ -650,6 +650,10 @@ func (e *Engine) JobStatus(jobID string) (Status, bool) {
 	return st, err == nil && st != ""
 }
 
+// minAnswerTokens is the output a reservation must cover at least when the
+// balance is too small for the whole budget.
+const minAnswerTokens = 256
+
 type candidate struct {
 	offer *protocol.Offer
 	acct  string
@@ -856,7 +860,19 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		}
 		// A shared job moves no credits; its reservation only caps the output.
 		if !shared {
-			if err := led.Hold(jobID, buyerAcct, int64(hold)); err != nil {
+			err := led.Hold(jobID, buyerAcct, int64(hold))
+			if errors.Is(err, ledger.ErrInsufficientFunds) {
+				// The balance does not cover the whole budget (a request
+				// without an output limit holds all of it): hold what there
+				// is, when that pays for the prompt and a short answer. A
+				// smaller reservation only caps this request's output.
+				need := max(e.cfg.MinBudgetMicros, protocol.HoldFor(req.PromptTokens, minAnswerTokens, best.price.Prices().PromptCeiling(), best.price.PriceOutMicros))
+				if avail, berr := led.Balance(buyerAcct); berr == nil && avail > 0 && uint64(avail) >= need && uint64(avail) < hold {
+					hold = uint64(avail)
+					err = led.Hold(jobID, buyerAcct, avail)
+				}
+			}
+			if err != nil {
 				if errors.Is(err, ledger.ErrInsufficientFunds) {
 					return protocol.Errorf(protocol.CodeInsufficientFunds, "balance does not cover the %d micro reservation", hold)
 				}

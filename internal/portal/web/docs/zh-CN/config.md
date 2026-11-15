@@ -61,7 +61,7 @@
 ```json
 {
   "buy": {
-    "budget_micros": 200000,
+    "budget_micros": 2000000,
     "max_price_in": 0,
     "max_price_out": 0,
     "evidence": true,
@@ -76,7 +76,7 @@
 
 | 字段 | 含义 | 默认值 |
 |---|---|---|
-| `budget_micros` | 每个请求最多冻结多少，单位 micro-credit，用剩的退回 | `200000`（0.2 credit） |
+| `budget_micros` | 每个请求最多冻结多少，单位 micro-credit，用剩的退回 | `2000000`（2 credit） |
 | `max_price_in` | 每百万输入 token 最多愿意付多少，`0` 表示不限 | `0` |
 | `max_price_out` | 每百万输出 token 最多愿意付多少，`0` 表示不限 | `0` |
 | `evidence` | 节点虚报用量时，交出这一单的密钥以自动退款 | `true` |
