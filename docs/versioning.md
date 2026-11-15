@@ -93,7 +93,7 @@ A client can download and install a new build by itself, provided the package ca
 
 ### Release notes
 
-A release can carry a text of its own that tells users what this build brings. The sources are `release-notes/<language>.md` in the repository (`en.md`, `zh-CN.md`: the client's two languages), written for the release that wants them; the directory is not kept between releases, and a release without it has no notes (clients then show only the version). Publishing a release puts them beside the packages as `RELEASE-<version>.<language>.md`; the portal puts what it reads into `release.notes` (by language, each with a `summary` and a `body`), and the client hands it to the page unchanged. The files in the server's downloads directory can also be edited in place, without publishing again.
+A release can carry a text of its own that tells users what this build brings. The sources are `<language>.md` files (`en.md`, `zh-CN.md`: the client's two languages) in `$ST_RELEASE_NOTES`, by default `local/release-notes/<version>/`, outside the repository: notes are never committed (`release-notes/` is ignored), and a release without them has no notes (clients then show only the version; a release built by GitHub Actions has none). Publishing a release puts them beside the packages as `RELEASE-<version>.<language>.md`; the portal puts what it reads into `release.notes` (by language, each with a `summary` and a `body`), and the client hands it to the page unchanged. The files in the server's downloads directory can also be edited in place, without publishing again.
 
 The text is in a very small markup that clients draw themselves; it is never parsed as HTML:
 
