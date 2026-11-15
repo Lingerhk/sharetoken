@@ -12,6 +12,7 @@
 | [self-hosting.md](self-hosting.md) | 用 Docker Compose 运行完整的网络 |
 | [configuration.md](configuration.md) | 中继、协调器和门户的配置文件 |
 | [providers.md](providers.md) | 出售托管 API：厂商类型、API key 和 OAuth 登录 |
+| [apis.md](apis.md) | 三种模型接口（chat completions、Messages、Responses）：透传、转换、匹配、计费 |
 | [desktop.md](desktop.md) | 桌面应用：结构、本机 API、托盘、打包 |
 | [mail.md](mail.md) | 邮件服务：验证码、投递方式、DNS |
 | [versioning.md](versioning.md) | 发布版本、接口版本、升级规则、升级提醒 |

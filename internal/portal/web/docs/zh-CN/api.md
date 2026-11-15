@@ -1,15 +1,22 @@
 # 本地 API
 
-运行中的客户端在 `http://127.0.0.1:{{port}}` 上提供两组接口：`/v1/` 是 OpenAI 兼容接口，`/api/v1/` 用来查询和管理客户端。
+运行中的客户端在 `http://127.0.0.1:{{port}}` 上提供两组接口：`/v1/` 是模型接口（OpenAI 和 Anthropic 的接口），`/api/v1/` 用来查询和管理客户端。
 
-只接受本机请求。带非本机 `Origin` 的请求返回 403。管理接口还需要 key（见 [Key](#key)）。错误统一为 `{"error":{"code","message"}}`。
+只接受本机请求。带非本机 `Origin` 的请求返回 403。管理接口还需要 key（见 [Key](#key)）。错误的格式是 `{"error":{"code","message"}}`（`/v1/messages` 上是 Anthropic 的格式）。
 
-## OpenAI 兼容接口 {#openai}
+## 模型接口 {#openai}
 
 | 接口 | 说明 |
 |---|---|
-| `POST /v1/chat/completions` | 调用模型，支持 `stream`、`max_tokens` |
-| `GET /v1/models` | 网络上的模型 |
+| `POST /v1/chat/completions` | 用 OpenAI chat completions 接口调用模型，支持 `stream`、`max_tokens` |
+| `POST /v1/messages` | 用 Anthropic Messages 接口调用模型（Claude Code） |
+| `POST /v1/messages/count_tokens` | 在本机估算一个 Messages 请求的输入 token |
+| `POST /v1/responses` | 用 OpenAI Responses 接口调用模型（Codex） |
+| `GET /v1/responses` | 走 WebSocket 的 Responses 接口（Codex 的 `supports_websockets`） |
+| `POST /v1/responses/compact` | 压缩 Codex 的对话 |
+| `GET /v1/models` | 网络上的模型，以及原生支持的接口（`apis`）；带 `?client_version=` 时返回 Codex 的模型清单 |
+
+端点会读取的请求头：`X-Sharetoken-Require-Native: true`（只用不需要转换的节点）、`X-Sharetoken-Node: <节点 ID>`（只用这个节点）。
 
 用法见[调用模型](/docs/use-models)。
 

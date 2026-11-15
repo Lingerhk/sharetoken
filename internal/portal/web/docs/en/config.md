@@ -66,6 +66,7 @@ The file is strict JSON and cannot contain comments. The examples below list onl
     "max_price_out": 0,
     "evidence": true,
     "require_tee": false,
+    "require_native": false,
     "queue_seconds": 30,
     "first_byte_seconds": 30,
     "idle_seconds": 30
@@ -80,6 +81,7 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 | `max_price_out` | The most you will pay per million output tokens. `0` means no limit | `0` |
 | `evidence` | If a node overstates usage, hand over the key for that job to get an automatic refund | `true` |
 | `require_tee` | Send requests only to TEE nodes | `false` |
+| `require_native` | Send requests only to nodes whose model server speaks the request's API natively, never converted ([Native and converted](/docs/use-models#native)). A request can also ask for it with the header `X-Sharetoken-Require-Native: true` | `false` |
 | `queue_seconds` | How long to wait when all nodes are full. A negative value fails immediately | `30` |
 | `first_byte_seconds` | Time limit for the node's first frame. On timeout, another node is used. Nodes send a progress frame every 10 seconds while the model is thinking, so slow models do not need a higher value | `30` |
 | `idle_seconds` | Time limit between two frames. On timeout, the job is judged stuck. A job that gets only progress frames and no output for 5 minutes is judged stuck too | `30` |
@@ -109,7 +111,7 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 | `upstream_key_env` | The name of the environment variable that holds the local model server's API key | Empty |
 | `concurrency` | Number of requests handled at the same time | `2` |
 | `relays` | How many relays to register on | `2` |
-| `models` | The models you share. Usually managed with `share add` | Empty |
+| `models` | The models you share. Usually managed with `share add`. A model may also set `price_cache_read` and `price_cache_write`, the prices of input tokens read from and written to the prompt cache; see [cache prices](/docs/share#cache-prices) | Empty |
 | `tee` | Confidential VM type: `off`, `auto`, `sev-snp`, `tdx` | `off` |
 
 Hosted APIs you share (providers) are not in this file: they are kept, with their API keys and logins, in `providers.json` in the same directory. Manage them with the [`provider` command](/docs/share#providers) rather than editing the file.

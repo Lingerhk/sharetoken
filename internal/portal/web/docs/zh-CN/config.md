@@ -66,6 +66,7 @@
     "max_price_out": 0,
     "evidence": true,
     "require_tee": false,
+    "require_native": false,
     "queue_seconds": 30,
     "first_byte_seconds": 30,
     "idle_seconds": 30
@@ -80,6 +81,7 @@
 | `max_price_out` | 每百万输出 token 最多愿意付多少，`0` 表示不限 | `0` |
 | `evidence` | 节点虚报用量时，交出这一单的密钥以自动退款 | `true` |
 | `require_tee` | 只把请求发给 TEE 节点 | `false` |
+| `require_native` | 只把请求发给模型服务器原生支持请求所用接口的节点，不做转换（见[原生和转换](/docs/use-models#native)）。单个请求也可以用请求头 `X-Sharetoken-Require-Native: true` 要求 | `false` |
 | `queue_seconds` | 节点全部满载时最多等多久，负数表示立即失败 | `30` |
 | `first_byte_seconds` | 等节点第一帧的时限，超时换节点。模型思考期间节点每 10 秒发一个进度帧，所以慢模型也不需要调大 | `30` |
 | `idle_seconds` | 两帧之间的时限，超时判定为卡死。只收到进度帧、连续 5 分钟没有输出，也判定为卡死 | `30` |
@@ -109,7 +111,7 @@
 | `upstream_key_env` | 保存本机模型服务 API key 的环境变量名 | 空 |
 | `concurrency` | 同时处理的请求数 | `2` |
 | `relays` | 在几个中继上预约 | `2` |
-| `models` | 共享的模型。一般用 `share add` 管理 | 空 |
+| `models` | 共享的模型。一般用 `share add` 管理。每个模型还可以设置 `price_cache_read` 和 `price_cache_write`，即从 prompt 缓存读出和写入缓存的输入 token 的价格，见[缓存价格](/docs/share#cache-prices) | 空 |
 | `tee` | 机密虚拟机类型：`off`、`auto`、`sev-snp`、`tdx` | `off` |
 
 共享的托管 API（provider）不在这个文件里：它们连同 API key 和登录凭据保存在同一目录的 `providers.json`，用 [`provider` 命令](/docs/share#providers)管理，不建议手动编辑。

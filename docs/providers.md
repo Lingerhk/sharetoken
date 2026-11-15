@@ -6,7 +6,7 @@ This is the developer-level description of how a seller shares models that are h
 
 ## 1. Overview
 
-Besides a model server on its own machine (Ollama and the like), a seller can share a service it has with a model vendor. The client rewrites the buyer's OpenAI chat-completions request into the vendor's own format, sends it with the seller's API key or OAuth login, and rewrites the answer back into OpenAI streaming chunks. Nothing changes for the buyer, who still sees only the OpenAI format.
+Besides a model server on its own machine (Ollama and the like), a seller can share a service it has with a model vendor. A buyer's request arrives in one of three APIs (chat completions, Anthropic Messages, OpenAI Responses; see [apis.md](apis.md)). A request in an API the vendor speaks goes out as it is, with the seller's API key or OAuth login and the vendor's own adaptations; any other is converted by the node (`internal/apicompat`) and the answer converted back.
 
 - A seller can configure several providers, including several of the same kind (told apart with `-name`), and turn each on or off.
 - Local models and provider models can be sold at the same time.
@@ -40,12 +40,12 @@ Package [`internal/provider`](../internal/provider):
 |---|---|
 | `store.go` | Reading and writing `providers.json`: `File`, `Entry`, `Token`; `Load`, `Save`, `Update`; `View` (keys masked) |
 | `kind.go` | The table of kinds, `CheckSecretURL` |
-| `build.go` | `Entry.Upstream` (configuration → `node.Upstream`), `ListModels`, `Check`, `Probe`, `billable` |
+| `build.go` | `Entry.Upstream` (configuration → `node.Upstream`, with the APIs each kind speaks natively), `ListModels`, `Check`, `Probe` |
 | `ops.go` | Operations shared by the CLI and the API: `AddWithKey`, `SaveLogin`, `FinishLoginAndSave`, `SetEnabled`, `Remove`, `SetModel`, `RemoveModel`, `Models`, `Test`, `Views`, `KindViews` |
-| `chat.go`, `sse.go` | Parsing the buyer's chat request; sending SSE requests and writing the result as OpenAI chunks |
-| `openai.go` | OpenAI-compatible upstream; learning the output limit and retrying |
-| `anthropic.go` | chat ↔ Messages API |
-| `responses.go` | chat ↔ Responses (the Codex backend) |
+| `chat.go`, `sse.go` | Parsing a chat request (for the Gemini logins); sending SSE requests and writing results as OpenAI chunks |
+| `openai.go` | OpenAI-compatible upstream (chat; OpenAI's Responses; DeepSeek's Messages; Gemini's thought signatures); learning the output limit and retrying |
+| `anthropic.go` | The Messages API, passed through: model aliases, output limit and thinking budget, betas, foreign thinking blocks |
+| `responses.go` | The Codex backend's Responses rules, the stream cut at the job's limit, `/responses/compact` |
 | `gemini.go` | chat ↔ native Gemini format; tool schema clean-up |
 | `oauth.go` | Two-step login, token renewal, retry on 401 |
 | `oauth_anthropic.go`, `oauth_openai.go`, `oauth_google.go`, `oauth_grok.go` | Each vendor's login flow and request envelope |
@@ -173,7 +173,7 @@ The routes are in [`internal/client/providers.go`](../internal/client/providers.
 
 ## 7. Request rewriting
 
-Each provider ends up as a `node.Upstream`: it takes the body of the buyer's chat-completions request and emits OpenAI `chat.completion.chunk` objects.
+Each provider ends up as a `node.Upstream`: it says which APIs it speaks natively (`APIs`) and sends a request in one of them, emitting the vendor's stream events in that API (converted into it where the vendor has a format of its own, as Gemini's logins do). The node converts requests in the other APIs ([apis.md](apis.md)). The table describes the adaptations made on the way out.
 
 | Upstream | What is rewritten |
 |---|---|
@@ -195,9 +195,7 @@ Anthropic requires `max_tokens`; `anthropicMaxOutput` supplies the default.
 
 ### Hidden reasoning and billing
 
-A buyer checks the output tokens a seller claims: they may not exceed twice the estimate of the visible output plus 64 (`protocol.UsagePlausible`), and a job that claims more is rejected as a whole. A model with hidden reasoning (`gpt-5-nano`, for example) reports far more tokens than the buyer sees.
-
-`billable` wraps every provider and brings the claim down to that bound; the vendor's own number stays in the chunk as `completion_tokens_reported`. The consequence: **the seller is not paid for hidden reasoning tokens**, and prices should allow for that. `provider test` says so when it happens.
+A buyer checks the output tokens a seller claims (`protocol.UsagePlausible`): they may not exceed twice the estimate of the visible output plus 64, unless the answer shows that the model reasoned out of sight (a thinking or reasoning item, redacted or omitted thinking, reported reasoning tokens); then the vendor's count is accepted up to the job's output limit. The node lowers its claim to these bounds before signing (`protocol.BillableUsage`), so its receipt is never rejected for a vendor's count: reasoning past the limit, or output nobody can see in an answer without reasoning, is not paid. `provider test` shows such a count as `completion_tokens_reported`. Prompt tokens the vendor read from or wrote to its cache are billed at the seller's cache prices.
 
 ## 8. OAuth login
 

@@ -1,6 +1,6 @@
 ---
 name: sharetoken
-description: Use the ShareToken client (the `sharetoken` command) on this machine - buy model inference from the ShareToken network through its local OpenAI-compatible endpoint, check the client's status, balance, jobs, models and relays, share a local model or a hosted API to earn credits, and manage pairing. Use when the user mentions ShareToken, sharetoken, its credits, or wants to call or sell models through it.
+description: Use the ShareToken client (the `sharetoken` command) on this machine - buy model inference from the ShareToken network through its local endpoint (OpenAI chat completions and Responses, Anthropic Messages), check the client's status, balance, jobs, models and relays, share a local model or a hosted API to earn credits, and manage pairing. Use when the user mentions ShareToken, sharetoken, its credits, or wants to call or sell models through it.
 ---
 
 <!-- Installed by `sharetoken skill install`; `sharetoken skill uninstall` removes it. -->
@@ -16,7 +16,7 @@ This copy of the skill was installed by a @ENV@ build of the client:
 | Command | `@CMD@` |
 | Portal | @PORTAL@ |
 | State directory | `@HOME@` (settings in `config.json`; `-home DIR` or `$SHARETOKEN_HOME` selects another) |
-| OpenAI-compatible endpoint | `http://@HTTP@/v1` (only while the client runs) |
+| Model endpoint | `http://@HTTP@/v1` (OpenAI and Anthropic APIs; only while the client runs) |
 
 The examples below write `sharetoken`; use the command above if `sharetoken` is not on the PATH.
 @PLATFORM@
@@ -70,7 +70,8 @@ r = client.chat.completions.create(model="MODEL_ID", max_tokens=256,
                                    messages=[{"role": "user", "content": "Hello"}])
 ```
 
-- Only `POST /v1/chat/completions` and `GET /v1/models` exist (streaming works). There is no embeddings or Anthropic-format endpoint.
+- Endpoints: `POST /v1/chat/completions` (OpenAI), `POST /v1/messages` and `/v1/messages/count_tokens` (Anthropic: Claude Code with `ANTHROPIC_BASE_URL=http://@HTTP@` and `ANTHROPIC_AUTH_TOKEN` set to the key), `POST /v1/responses` (OpenAI Responses: Codex with a provider whose `base_url` is `http://@HTTP@/v1` and `wire_api = "responses"`), `GET /v1/models` (`apis` lists the APIs each model is served in natively). Streaming works; there is no embeddings endpoint.
+- Any model works in any of the three APIs: a node whose model server speaks another one converts the request. `X-Sharetoken-Require-Native: true` (or `buy.require_native`) takes only nodes that need no conversion.
 - Set `max_tokens`: only its worst-case cost is held. Without it the whole per-request budget (`buy.budget_micros`) is held. Reasoning models spend part of `max_tokens` on reasoning; a small value can leave `content` empty.
 - Response headers: `X-Sharetoken-Job`, `X-Sharetoken-Node`, `X-Sharetoken-Verified`, `X-Sharetoken-Cost-Micros`, and `X-Sharetoken-TEE` for an attested node.
 - Errors are `{"error":{"code":…}}`: `no_offers` 503 (nobody sells that model: check `models`), `capacity` 503 (busy, retry after `Retry-After`), `insufficient_funds` 402, `budget` 400, `upgrade_required` 426 (`sharetoken version --check`), `upstream_error` / `receipt_rejected` 502 (retry; the client already tried another node when it could).
@@ -96,7 +97,7 @@ Sharing commands take effect at once on a running client.
 sharetoken share                        # current sharing settings
 sharetoken share detect                 # models of the local model server (default Ollama, http://127.0.0.1:11434/v1)
 sharetoken share upstream URL           # another OpenAI-compatible local server (vLLM, LM Studio, llama.cpp …)
-sharetoken share add qwen2.5:7b [-id NAME] [-in PRICE] [-out PRICE] [-max-output N]
+sharetoken share add qwen2.5:7b [-id NAME] [-in PRICE] [-out PRICE] [-cache-read PRICE] [-cache-write PRICE] [-max-output N]
 sharetoken share rm ID
 sharetoken share on | off
 ```

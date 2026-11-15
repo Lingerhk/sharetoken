@@ -6,7 +6,7 @@ ShareToken 是开源权重模型的 P2P 共享网络。这份指南说明如何�
 
 同一个客户端、同一个账户，既能买也能卖：
 
-- **调用模型：** 客户端在本机开一个 OpenAI 兼容端点，任何支持 OpenAI 协议的工具改一下 base URL 就能用。
+- **调用模型：** 客户端在本机开一个同时支持 OpenAI 和 Anthropic 接口的端点，OpenAI 工具、Claude Code 和 Codex 改一下 base URL 就能用。
 - **共享模型：** 把本机 Ollama 等模型服务上的模型共享到网络，闲时赚 credit。不需要公网 IP，也不需要开端口。
 
 ## 选择版本 {#editions}

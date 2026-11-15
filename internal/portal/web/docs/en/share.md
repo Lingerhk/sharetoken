@@ -54,6 +54,8 @@ Check that the client can see the model:
 | `-id` | The model's ID on the network. Buyers use it to call the model | Same as the local model name |
 | `-in` | Price per million input tokens, in micro-credit | `100000` (0.1 credit) |
 | `-out` | Price per million output tokens, in micro-credit | `200000` (0.2 credit) |
+| `-cache-read` | Price per million input tokens the model server reads from its prompt cache | A tenth of `-in` |
+| `-cache-write` | Price per million input tokens the model server writes to its prompt cache | 1.25 × `-in` for Anthropic models, else `-in` |
 
 > [!TIP]
 > If other nodes already share the same model, use the same ID so buyers can select you together with them. Run `{{exe}} models` first to see the existing IDs and prices. The coordinator picks nodes by price, reputation, latency and success rate, and price has the highest weight.
@@ -159,7 +161,12 @@ For any other OpenAI-compatible API, use `custom`. To set up several accounts of
 - **In scripts:** without a terminal, the client reads one line from standard input. You can also put the key in the environment variable `SHARETOKEN_PROVIDER_KEY`. There is no command-line argument for it, so that the key does not stay in your shell history.
 - **An Anthropic key that is not tied to a workspace:** add `-header anthropic-workspace-id=WORKSPACE_ID`.
 - **A model's output limit:** when the provider refuses a request because of the output limit, the client sends it again within the limit the provider named, and keeps to it afterwards. To set a limit in advance, use `-max-output` in `share add`.
-- **Hidden reasoning is not billed:** some models do not return their reasoning, but the provider still counts it as usage. Buyers pay only for the output they receive, so these tokens earn nothing. `{{exe}} provider test` tells you when this happens. Take it into account in your prices.
+- **Hidden reasoning is billed within the output limit:** some models do not return all of their reasoning (encrypted, summarized or omitted), but the provider counts it as usage. When the answer shows that the model reasoned, buyers pay the reported output tokens up to the job's output limit; past it, and for output nobody can see in an answer without reasoning, they do not. `{{exe}} provider test` shows a report it could not bill (`reported`).
+- **Three APIs:** buyers call in chat completions, Anthropic Messages (Claude Code) or OpenAI Responses (Codex). A request your provider speaks natively goes to it unchanged; any other one is converted on your machine. Native requests are matched to you first: an Anthropic provider gets Claude Code's requests, a ChatGPT login Codex's, an OpenAI or DeepSeek key both chat and their own API.
+
+### Cache prices {#cache-prices}
+
+Model servers charge less for input they read from their prompt cache, and Anthropic charges more for input it writes to the cache. A buyer pays your cache prices for those tokens, as the provider reported them: set them with `-cache-read` and `-cache-write` in `share add`, or `price_cache_read` / `price_cache_write` in the configuration file. The defaults (a tenth of the input price for reads; 1.25 times it for writes on Anthropic models, the input price on others) follow the providers' own ratios.
 
 ### Add one with a login {#provider-login}
 

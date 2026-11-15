@@ -6,7 +6,7 @@
 
 ## 1. 概述
 
-卖家除了共享本机的模型服务（Ollama 等），还可以共享自己在模型厂商开通的服务。客户端把买家发来的 OpenAI chat-completions 请求改写成厂商自己的格式，用卖家的 API key 或 OAuth 登录发出去，再把回答改写回 OpenAI 流式分片。买家侧没有任何变化，仍然只看到 OpenAI 格式。
+卖家除了共享本机的模型服务（Ollama 等），还可以共享自己在模型厂商开通的服务。买家的请求是三种接口之一（chat completions、Anthropic Messages、OpenAI Responses，见 [apis.md](apis.md)）。厂商支持该接口时，请求带上卖家的 API key 或 OAuth 登录和厂商需要的适配后原样发出；不支持时由节点转换（`internal/apicompat`），再把回答转回来。
 
 - 一个卖家可以配置多个 provider，同一类型也可以配多个（用 `-name` 区分），各自可开可关。
 - 本机模型和 provider 的模型可以同时出售。
@@ -40,12 +40,12 @@
 |---|---|
 | `store.go` | `providers.json` 的读写：`File`、`Entry`、`Token`；`Load`、`Save`、`Update`；`View`（密钥打码） |
 | `kind.go` | 类型表，`CheckSecretURL` |
-| `build.go` | `Entry.Upstream`（配置 → `node.Upstream`）、`ListModels`、`Check`、`Probe`、`billable` |
+| `build.go` | `Entry.Upstream`（配置 → `node.Upstream`，带上每种 provider 原生支持的接口）、`ListModels`、`Check`、`Probe` |
 | `ops.go` | 命令行和 API 共用的操作：`AddWithKey`、`SaveLogin`、`FinishLoginAndSave`、`SetEnabled`、`Remove`、`SetModel`、`RemoveModel`、`Models`、`Test`、`Views`、`KindViews` |
-| `chat.go`、`sse.go` | 解析买家的 chat 请求；发送 SSE 请求，并把结果写成 OpenAI 分片 |
+| `chat.go`、`sse.go` | 解析 chat 请求（Gemini 登录用）；发送 SSE 请求，并把结果写成 OpenAI 分片 |
 | `openai.go` | OpenAI 兼容上游；输出上限的学习与重试 |
-| `anthropic.go` | chat ↔ Messages API |
-| `responses.go` | chat ↔ Responses（Codex 后端） |
+| `anthropic.go` | 透传 Messages API：模型别名、输出上限和 thinking 预算、beta、不是 Anthropic 签名的 thinking 块 |
+| `responses.go` | Codex 后端的 Responses 规则、按作业上限截断流、`/responses/compact` |
 | `gemini.go` | chat ↔ Gemini 原生格式；工具 schema 清理 |
 | `oauth.go` | 两步登录、令牌续期、401 重试 |
 | `oauth_anthropic.go`、`oauth_openai.go`、`oauth_google.go`、`oauth_grok.go` | 各家的登录流程和请求封装 |
@@ -173,7 +173,7 @@ sharetoken provider add anthropic -header anthropic-workspace-id=<工作区 ID>
 
 ## 7. 请求改写
 
-每个 provider 最终是一个 `node.Upstream`：输入买家的 chat-completions 请求体，输出 OpenAI 的 `chat.completion.chunk` 对象。
+每个 provider 最终是一个 `node.Upstream`：说明自己原生支持哪些接口（`APIs`），按其中一种发送请求，并以同一种接口输出厂商的流式事件（厂商有自己格式时先转成这种接口，例如 Gemini 登录）。其他接口的请求由节点转换（[apis.md](apis.md)）。下表是发出前做的适配。
 
 | 上游 | 改写内容 |
 |---|---|
@@ -195,9 +195,7 @@ Anthropic 必须带 `max_tokens`；`anthropicMaxOutput` 给出默认值。
 
 ### 隐藏推理与计费
 
-买家会核对卖家申报的输出 token：不得超过可见输出估算值的 2 倍加 64（`protocol.UsagePlausible`），超出的作业整单拒收。带隐藏推理的模型（例如 `gpt-5-nano`）报出的 token 远多于买家看到的内容。
-
-`billable` 包在每个 provider 外面，把申报量压到这个上限以内；厂商原始的数字保留在分片的 `completion_tokens_reported` 里。结果是：**隐藏推理的 token 卖家收不到钱**，定价时要把这一点算进去。`provider test` 遇到这种情况会提示。
+买家会核对卖家申报的输出 token（`protocol.UsagePlausible`）：不得超过可见输出估算值的 2 倍加 64；回答显示模型做了看不见的推理时（thinking 或 reasoning 项、redacted 或 omitted thinking、上报了推理 token），厂商的数字在作业输出上限以内都接受。节点签名前先把申报量降到这个范围内（`protocol.BillableUsage`），收据不会因为厂商的数字被拒：超过上限的推理，以及没有推理迹象的回答里看不见的输出，不计费。`provider test` 会把这种数字显示为 `completion_tokens_reported`。厂商从缓存读出或写入缓存的 prompt token 按卖家的缓存价格计费。
 
 ## 8. OAuth 登录
 

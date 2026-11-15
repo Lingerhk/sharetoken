@@ -1,6 +1,6 @@
 # 调用模型
 
-客户端运行时在本机提供 OpenAI 兼容端点。你的请求加密后只发给选中的节点，响应附带节点的签名收据，客户端自动核对。
+客户端运行时在本机提供一个端点，同时支持 OpenAI（chat completions 和 Responses）和 Anthropic（Messages）的接口，OpenAI 客户端、Claude Code 和 Codex 都能直接接入。你的请求加密后只发给选中的节点，响应附带节点的签名收据，客户端自动核对。
 
 ## 本地端点 {#endpoint}
 
@@ -8,7 +8,7 @@
 |---|---|
 | Base URL | `http://127.0.0.1:{{port}}/v1` |
 | API key | 本客户端的 key，`sk-st-…`：`{{exe}} apikey -q` 会打印它，桌面应用在端点旁边也有 |
-| 接口 | `POST /v1/chat/completions`、`GET /v1/models` |
+| 接口 | `POST /v1/chat/completions`（OpenAI）、`POST /v1/messages`（Anthropic，Claude Code）、`POST /v1/responses`（OpenAI Responses，Codex；也支持 WebSocket）、`GET /v1/models` |
 
 先确认 `{{exe}} up` 在运行，或者[在后台运行](/docs/running#background)。
 
@@ -155,11 +155,95 @@ $env:OPENAI_API_KEY = ({{exe}} apikey -q)
 
 网页里的工具如果带着非本机的 `Origin` 调用，端点会返回 403，这是为了防止恶意网页花你的 credit。
 
+## 接入 Claude Code {#claude-code}
+
+Claude Code 用 Anthropic Messages 接口访问端点。把它指向客户端，模型从 `{{exe}} models` 里选：
+
+::: macos linux
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:{{port}}
+export ANTHROPIC_AUTH_TOKEN=$({{exe}} apikey -q)
+export ANTHROPIC_MODEL=claude-sonnet-4-6          # a model ID from `{{exe}} models`
+export ANTHROPIC_SMALL_FAST_MODEL=claude-sonnet-4-6  # for Claude Code's background tasks
+claude
+```
+:::
+
+::: windows
+```powershell
+$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:{{port}}'
+$env:ANTHROPIC_AUTH_TOKEN = ({{exe}} apikey -q)
+$env:ANTHROPIC_MODEL = 'claude-sonnet-4-6'
+$env:ANTHROPIC_SMALL_FAST_MODEL = 'claude-sonnet-4-6'
+claude
+```
+:::
+
+工具调用、thinking 和 prompt 缓存都和直连 Anthropic 一样。网络上的任何模型都能用，不限于 Claude：模型服务器不支持 Messages 接口的节点会转换请求（见[原生和转换](#native)）。对不认识的模型 ID，Claude Code 会提示它按 100 万 token 的上下文窗口处理。`/v1/messages/count_tokens` 在本机估算，不发到网络。
+
+> [!TIP]
+> 编程助手的 prompt 很长，每个请求都有几万 token。请求返回 `budget` 错误，说明每个请求的冻结额按模型价格覆盖不了 prompt；在[配置文件](/docs/config#buy)里调高 `buy.budget_micros`，例如 `2000000`（2 credit）。实际只按用量扣费。
+
+## 接入 Codex {#codex}
+
+Codex 用 OpenAI Responses 接口访问端点。在 `~/.codex/config.toml` 里加一个 provider：
+
+```toml
+model = "gpt-5.5"              # a model ID from `{{exe}} models`
+model_provider = "sharetoken"
+
+[model_providers.sharetoken]
+name = "sharetoken"
+base_url = "http://127.0.0.1:{{port}}/v1"
+env_key = "SHARETOKEN_API_KEY"
+wire_api = "responses"
+supports_websockets = true     # optional: one connection for the whole session
+```
+
+然后把 key 交给 Codex 并启动：
+
+::: macos linux
+```bash
+export SHARETOKEN_API_KEY=$({{exe}} apikey -q)
+codex
+```
+:::
+
+::: windows
+```powershell
+$env:SHARETOKEN_API_KEY = ({{exe}} apikey -q)
+codex
+```
+:::
+
+工具调用（包括 `apply_patch`）、推理和上下文压缩，对网络上的任何模型都能用。走 WebSocket 时，Codex 每次只发新增的内容；节点在请求之间不保存任何东西，所以由客户端记住这条连接上的对话，再整段发出。`previous_response_id` 只在这种连接上可用，走 HTTP 时请发送完整对话（`store: false`，Codex 默认如此）。Codex 的 `/v1/responses/compact` 也支持：ChatGPT 登录的节点原生压缩，其他节点让模型写一段摘要。和 Claude Code 一样，请求返回 `budget` 错误时请调高 `buy.budget_micros`。
+
 想让 Claude Code 或 Codex 替你查看客户端、调用模型、管理共享，见[在编程助手中使用](/docs/agents)。
+
+## 原生和转换 {#native}
+
+每个节点都支持三种接口。模型服务器原生支持请求所用接口的节点，原样转发；其他节点会转换请求，做法和 sub2api 等网关一样：
+
+| 卖家的模型服务器 | 原生接口 |
+|---|---|
+| Anthropic（API key 或 Claude 登录） | Messages |
+| OpenAI API key | chat completions、Responses |
+| ChatGPT（Codex）登录 | Responses |
+| DeepSeek API key | chat completions、Messages |
+| Gemini、Grok 和其他 OpenAI 兼容服务器 | chat completions |
+
+- **原生优先：** 只要有空闲的原生节点，就优先匹配它，即使转换节点更便宜。`/v1/models` 的 `apis` 字段列出每个模型的原生接口。
+- **只要原生：** 在[配置文件](/docs/config#buy)里设置 `buy.require_native`，或给单个请求加请求头 `X-Sharetoken-Require-Native: true`。没有这样的节点时请求直接失败（`no_offers`），不会转换。
+- **转换会丢掉什么：** 加密推理和 thinking 签名只对生成它们的模型有效，对话换到另一类模型时会被丢弃；服务端工具（联网搜索、代码执行）任何节点都不提供。
+- **只用某个节点：** 请求头 `X-Sharetoken-Node: <节点 ID>` 只把请求发给这个节点，方便试用某个卖家。
+
+回答在收到任何内容之前失败时，客户端照常换别的节点重试。
 
 ## 如何计费 {#billing}
 
 - **按实际 token 结算：** 价格由节点报出，你按收据上的 token 数付费。
+- **prompt 缓存：** 模型服务器从 prompt 缓存读出的输入 token 按节点的缓存读价格计费（默认是输入价格的 1/10），写入缓存的按缓存写价格计费（Anthropic 模型默认是输入价格的 1.25 倍，其他模型等于输入价格）。收据分别记下这两部分，门户的作业列表用 `*` 标出这类作业。
+- **看不到的推理：** 有些模型的推理不完整展示（加密、只给摘要或不显示）。回答显示模型做了推理时，按模型服务器报告的输出 token 计费，上限是请求的输出上限（`max_tokens`、`max_output_tokens`）或冻结额能覆盖的量；否则输出按你收到的文本核对。
 - **冻结：** 发请求时先冻结一笔钱，结束后退回没用完的部分。请求带了 `max_tokens` 时只按最坏情况冻结，不带时冻结整个预算（默认 0.2 credit）。
 - **建议总是设置 `max_tokens`**，尤其是批量或高并发调用，否则容易因为冻结额过大而返回 `insufficient_funds`。
 - **中途停止：** 你的程序中途断开流式请求（比如点了停止），节点会立即停止生成，只按已送达的部分计费。
@@ -185,7 +269,7 @@ $env:OPENAI_API_KEY = ({{exe}} apikey -q)
 
 ## 长对话和大请求 {#sessions}
 
-- **回到同一个节点：** 同一段对话的后续请求，会优先交给上次服务它的节点。连接已经建好，模型服务器的 prompt 缓存也更容易命中，首字更快、费用可能更低。客户端按请求里的 `session_id` 识别对话；没有时，按模型和开头两条消息识别。那个节点满载或下线时，照常换别的节点。
+- **回到同一个节点：** 同一段对话的后续请求，会优先交给上次服务它的节点。连接已经建好，模型服务器的 prompt 缓存也更容易命中，首字更快、费用可能更低。客户端按会话识别对话：chat 请求的 `session_id`、Claude Code 的会话、Codex 的 `prompt_cache_key`；都没有时，按模型和开头两条消息识别。那个节点满载或下线时，照常换别的节点。
 - **请求大小：** 一个请求最大 32 MB（和多数云平台的 Claude 接口一致），可以带截图等图片。请求先压缩再发送，长对话历史通常压缩到原来的 1/3 到 1/5。
 
 ## 只用 TEE 节点 {#tee}
@@ -224,7 +308,7 @@ $env:OPENAI_API_KEY = ({{exe}} apikey -q)
 
 ## 错误和重试 {#errors}
 
-错误统一为 `{"error":{"code","message"}}`。
+错误的格式是 `{"error":{"code","message"}}`；`/v1/messages` 上是 Anthropic 的格式 `{"type":"error","error":{"type","message"}}`，Claude Code 会像显示 Anthropic 的错误一样显示它们。
 
 | 错误码 | HTTP | 含义和处理 |
 |---|---|---|

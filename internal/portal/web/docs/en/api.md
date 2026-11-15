@@ -1,15 +1,22 @@
 # Local API
 
-The running client serves two groups of endpoints on `http://127.0.0.1:{{port}}`: `/v1/` is the OpenAI-compatible interface, and `/api/v1/` is for querying and managing the client.
+The running client serves two groups of endpoints on `http://127.0.0.1:{{port}}`: `/v1/` is the model interface (OpenAI and Anthropic APIs), and `/api/v1/` is for querying and managing the client.
 
-Only requests from your machine are accepted. Requests with a non-local `Origin` get 403. The management endpoints also want a key (see [Key](#key)). Errors always have the form `{"error":{"code","message"}}`.
+Only requests from your machine are accepted. Requests with a non-local `Origin` get 403. The management endpoints also want a key (see [Key](#key)). Errors have the form `{"error":{"code","message"}}` (on `/v1/messages`, Anthropic's form).
 
-## OpenAI-compatible endpoints {#openai}
+## Model endpoints {#openai}
 
 | Endpoint | Description |
 |---|---|
-| `POST /v1/chat/completions` | Call a model. Supports `stream` and `max_tokens` |
-| `GET /v1/models` | The models on the network |
+| `POST /v1/chat/completions` | Call a model in the OpenAI chat completions API. Supports `stream` and `max_tokens` |
+| `POST /v1/messages` | Call a model in the Anthropic Messages API (Claude Code) |
+| `POST /v1/messages/count_tokens` | Estimate a Messages request's input tokens, on this machine |
+| `POST /v1/responses` | Call a model in the OpenAI Responses API (Codex) |
+| `GET /v1/responses` | The Responses API over a WebSocket (Codex's `supports_websockets`) |
+| `POST /v1/responses/compact` | Compact a Codex conversation |
+| `GET /v1/models` | The models on the network, with the APIs they are served in natively (`apis`); with `?client_version=`, Codex's model list |
+
+Request headers the endpoints read: `X-Sharetoken-Require-Native: true` (only nodes that need no conversion) and `X-Sharetoken-Node: <node ID>` (only that node).
 
 For usage, see [Call models](/docs/use-models).
 

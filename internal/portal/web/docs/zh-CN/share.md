@@ -54,6 +54,8 @@ ollama pull gemma4:e4b
 | `-id` | 模型在网络上的 ID，买家用它调用 | 和本机模型同名 |
 | `-in` | 每百万输入 token 的价格，单位 micro-credit | `100000`（0.1 credit） |
 | `-out` | 每百万输出 token 的价格，单位 micro-credit | `200000`（0.2 credit） |
+| `-cache-read` | 模型服务器从 prompt 缓存读出的输入 token，每百万的价格 | `-in` 的 1/10 |
+| `-cache-write` | 模型服务器写入 prompt 缓存的输入 token，每百万的价格 | Anthropic 模型为 `-in` 的 1.25 倍，其他等于 `-in` |
 
 > [!TIP]
 > 其他节点已经在共享同一个模型时，请使用相同的 ID，买家才能一起选到。先用 `{{exe}} models` 看看现有的 ID 和价格。协调器综合价格、信誉、延迟和成功率选择节点，价格的权重最高。
@@ -159,7 +161,12 @@ saved provider deepseek (DeepSeek, apikey) sk-…9b35
 - **脚本里使用：** 没有终端时从标准输入读一行，也可以放在环境变量 `SHARETOKEN_PROVIDER_KEY` 里。不提供命令行参数，是为了不让 key 留在命令历史里。
 - **Anthropic 的 key 没有绑定工作区时：** 加上 `-header anthropic-workspace-id=工作区ID`。
 - **模型的输出上限：** 厂商因为输出上限拒绝请求时，客户端会按厂商给出的上限自动重发，之后一直沿用。想预先指定，在 `share add` 时用 `-max-output`。
-- **看不见的推理不计费：** 有些模型的推理过程不返回给调用方，但厂商照样计入用量。买家只为收到的输出付费，所以这部分 token 不会计入收益。`{{exe}} provider test` 会提示这种情况，定价时请考虑进去。
+- **看不见的推理在输出上限内计费：** 有些模型的推理不完整返回（加密、只给摘要或不显示），但厂商照样计入用量。回答显示模型做了推理时，买家按上报的输出 token 付费，上限是这次作业的输出上限；超出上限的部分，以及没有推理迹象的回答里看不见的输出，不计费。`{{exe}} provider test` 会显示无法计费的上报数（`reported`）。
+- **三种接口：** 买家用 chat completions、Anthropic Messages（Claude Code）或 OpenAI Responses（Codex）调用。厂商原生支持的请求原样转发，其他的在你的机器上转换。原生请求优先匹配给你：Anthropic 拿到 Claude Code 的请求，ChatGPT 登录拿到 Codex 的，OpenAI 和 DeepSeek 的 key 拿到 chat 和各自的接口。
+
+### 缓存价格 {#cache-prices}
+
+模型服务器对从 prompt 缓存读出的输入收费更低，Anthropic 对写入缓存的输入收费更高。买家按厂商上报的缓存用量、以你的缓存价格付这部分 token：用 `share add` 的 `-cache-read`、`-cache-write` 设置，或在配置文件里写 `price_cache_read`、`price_cache_write`。默认值（读为输入价格的 1/10；写在 Anthropic 模型上为输入价格的 1.25 倍，其他模型等于输入价格）和厂商自己的比例一致。
 
 ### 用账号登录添加 {#provider-login}
 
