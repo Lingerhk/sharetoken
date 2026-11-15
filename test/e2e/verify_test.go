@@ -184,7 +184,7 @@ func TestAuditCatchesASubstitutedModel(t *testing.T) {
 
 	// Audits were paid like any job, out of platform funds; once settled, the
 	// audit identities' leftovers go back to the platform.
-	m.coord.Engine.Tick(time.Now().Add(2 * time.Minute))
+	m.coord.Engine.Tick(time.Now().Add(coordinator.AuditorLifetime + time.Minute))
 	if err := m.coord.Engine.CheckBooks(); err != nil {
 		t.Fatal(err)
 	}

@@ -56,6 +56,7 @@ import (
 	"math"
 	mrand "math/rand/v2"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -266,7 +267,14 @@ func (a *Auditor) Audit(ctx context.Context, nodeID, model string) (*coordinator
 	defer closeID()
 
 	rec := &coordinator.AuditRecord{Node: nodeID, Model: model, Method: v.Method(), Shadow: a.cfg.Shadow}
-	var results []questionResult
+	type answered struct {
+		res *buyer.Result
+		q   Question
+	}
+	var (
+		answers []answered
+		results []questionResult
+	)
 	for i := range a.cfg.Questions {
 		if i > 0 && a.cfg.Spread > 0 {
 			select {
@@ -297,6 +305,16 @@ func (a *Auditor) Audit(ctx context.Context, nodeID, model string) (*coordinator
 			rec.Shadow = false // a receipt proven wrong needs no calibration
 			return a.record(rec)
 		case err != nil:
+			var pe *protocol.Error
+			if errors.As(err, &pe) && pe.Code == protocol.CodeBadRequest && strings.Contains(pe.Message, "model server rejected") {
+				// The node's model refused a request the reference model takes
+				// (e.g. a parameter only the advertised model knows): a sign of
+				// another model, but also of a passing upstream fault. Leave a
+				// record, without penalty.
+				rec.Questions = i + 1
+				rec.Verdict, rec.Detail = coordinator.AuditInconclusive, fmt.Sprintf("question %d: the node's model server rejected the request: %s", i+1, pe.Message)
+				return a.record(rec)
+			}
 			return nil, err
 		}
 		if official != nil {
@@ -309,6 +327,13 @@ func (a *Auditor) Audit(ctx context.Context, nodeID, model string) (*coordinator
 		if err != nil {
 			return nil, err
 		}
+		answers = append(answers, answered{res, q})
+	}
+	// Score once every answer is in: scoring can take a minute per answer
+	// (one reference call per token), and the node should see the questions
+	// arrive like a buyer's, not paced by the reference.
+	for _, an := range answers {
+		res, q := an.res, an.q
 		sc, err := v.Score(ctx, q, res.Content, res.FinishReason != "length", a.cfg.ScoreTokens)
 		if err != nil {
 			return nil, fmt.Errorf("audit: reference model: %w", err)

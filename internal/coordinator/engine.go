@@ -1508,7 +1508,7 @@ func (e *Engine) Tick(now time.Time) {
 			}
 		}
 		idleAuditors, err = queryStrings(tx, `SELECT peer FROM peers p WHERE auditor = 1 AND created_at < ? AND NOT EXISTS (
-			SELECT 1 FROM jobs j WHERE j.buyer = p.peer AND j.status IN ('held', 'pending', 'disputed'))`, now.Add(-time.Minute).UnixNano())
+			SELECT 1 FROM jobs j WHERE j.buyer = p.peer AND j.status IN ('held', 'pending', 'disputed'))`, now.Add(-AuditorLifetime).UnixNano())
 		return err
 	})
 	if err != nil {

@@ -3,6 +3,7 @@ package coordinator
 import (
 	"database/sql"
 	"math"
+	"time"
 
 	"sharetoken/internal/accounts"
 	"sharetoken/internal/ledger"
@@ -79,6 +80,12 @@ func (e *Engine) LatestCalibration(model string) (*AuditCalibration, error) {
 	}
 	return &cs[0], nil
 }
+
+// AuditorLifetime is how long an audit identity lives: after it, once none of
+// its jobs is open, its leftover credits return to the platform and it can no
+// longer buy. An audit asks several questions, spread out and scored in
+// between, all under one identity.
+const AuditorLifetime = time.Hour
 
 // RegisterAuditor records peer as an audit identity and funds it out of the
 // platform's fees. Its leftover credits return to the platform once its jobs

@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -187,4 +189,23 @@ func TestAuditsReachNodesOnlyThroughOfficialRelays(t *testing.T) {
 		}
 	}
 
+}
+
+// A node whose model refuses the audit's request (a parameter the advertised
+// model takes) leaves an inconclusive record instead of escaping unseen.
+func TestAuditOfANodeThatRejectsTheQuestionIsRecorded(t *testing.T) {
+	m := newMarket(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"Unrecognized request argument supplied: reasoning_effort"}}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	_, picky := m.addNode(srv.URL, priceIn, priceOut)
+	m.waitOffers(1)
+	rec, err := m.auditor(audit.Config{}).Audit(m.ctx, picky.ID(), model)
+	if err != nil || rec.Verdict != coordinator.AuditInconclusive || !strings.Contains(rec.Detail, "rejected") || rec.Questions != 1 {
+		t.Fatalf("audit of a node that rejects the question: %+v %v", rec, err)
+	}
+	if st, _ := m.coord.Engine.NodeStats(picky.ID()); st.AuditsFailed != 0 || st.SuspendedUntil != 0 {
+		t.Fatalf("node record: %+v", st)
+	}
 }
