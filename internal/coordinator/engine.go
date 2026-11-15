@@ -569,10 +569,16 @@ func (e *Engine) models(show, shared func(acct string) bool) []protocol.ModelSum
 			}
 			s.MinPriceIn = min(s.MinPriceIn, m.PriceInMicros)
 			s.MinPriceOut = min(s.MinPriceOut, m.PriceOutMicros)
+			for _, api := range m.APIs {
+				if !slices.Contains(s.APIs, api) {
+					s.APIs = append(s.APIs, api)
+				}
+			}
 		}
 	}
 	out := make([]protocol.ModelSummary, 0, len(agg))
 	for _, s := range agg {
+		slices.SortFunc(s.APIs, func(a, b string) int { return slices.Index(protocol.AllAPIs, a) - slices.Index(protocol.AllAPIs, b) })
 		out = append(out, *s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
@@ -651,6 +657,7 @@ type candidate struct {
 	stats *NodeStats
 
 	inferVersion uint32
+	native       bool // the node's model server speaks the request's API
 }
 
 // IssueTicket matches buyer to a node for req.Model, reserves req.BudgetMicros
@@ -662,6 +669,10 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 	if len(req.InferVersions) == 0 {
 		return nil, protocol.Errorf(protocol.CodeBadRequest, "infer_versions is required")
 	}
+	if !protocol.ValidAPI(req.API) {
+		return nil, protocol.Errorf(protocol.CodeBadRequest, "unknown API %q", req.API)
+	}
+	req.API = protocol.NormalAPI(req.API)
 	if req.BudgetMicros < e.cfg.MinBudgetMicros || req.BudgetMicros > math.MaxInt64 {
 		return nil, protocol.Errorf(protocol.CodeBadRequest, "budget must be between %d and %d micros", e.cfg.MinBudgetMicros, int64(math.MaxInt64))
 	}
@@ -730,6 +741,9 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 				if !ok || (paid && ((req.MaxPriceIn > 0 && p.PriceInMicros > req.MaxPriceIn) || (req.MaxPriceOut > 0 && p.PriceOutMicros > req.MaxPriceOut))) {
 					continue
 				}
+				if req.RequireNative && !p.Native(req.API) {
+					continue
+				}
 				st, err := loadStats(tx, node)
 				if err != nil {
 					return nil, 0, err
@@ -741,7 +755,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 					full++
 					continue
 				}
-				cands = append(cands, candidate{offer: o, acct: oe.acct, price: p, stats: st, inferVersion: inferVersion})
+				cands = append(cands, candidate{offer: o, acct: oe.acct, price: p, stats: st, inferVersion: inferVersion, native: p.Native(req.API)})
 			}
 			return cands, full, nil
 		}
@@ -800,6 +814,9 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			if req.RequireTEE {
 				what = "no attested node"
 			}
+			if req.RequireNative {
+				what += " speaking the " + req.API + " API natively"
+			}
 			if scope.restricted() {
 				what += " of the sellers you are paired with"
 			}
@@ -810,6 +827,11 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 				}
 			}
 			return protocol.Errorf(protocol.CodeNoOffers, "%s currently offers %q within the price limits", what, req.Model)
+		}
+		// Nodes whose model server speaks the request's API come first: no
+		// conversion, nothing lost in it. The others convert.
+		if native := slices.DeleteFunc(slices.Clone(cands), func(c candidate) bool { return !c.native }); len(native) > 0 {
+			cands = native
 		}
 		best := e.pick(cands)
 		// A session's previous node, while it is a candidate: its connection
@@ -830,7 +852,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		}
 		hold := req.BudgetMicros
 		if req.MaxTokens > 0 && req.PromptTokens > 0 {
-			hold = min(hold, max(e.cfg.MinBudgetMicros, protocol.HoldFor(req.PromptTokens, req.MaxTokens, best.price.PriceInMicros, best.price.PriceOutMicros)))
+			hold = min(hold, max(e.cfg.MinBudgetMicros, protocol.HoldFor(req.PromptTokens, req.MaxTokens, best.price.Prices().PromptCeiling(), best.price.PriceOutMicros)))
 		}
 		// A shared job moves no credits; its reservation only caps the output.
 		if !shared {
@@ -842,21 +864,24 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			}
 		}
 		t := protocol.Ticket{
-			InferVersion:   best.inferVersion,
-			JobID:          jobID,
-			Model:          req.Model,
-			Node:           best.offer.Node,
-			NodeAddrs:      best.offer.Addrs,
-			NodeBoxPub:     best.offer.BoxPub,
-			NodeReceiptKey: best.offer.ReceiptKey,
-			Buyer:          buyer,
-			PriceInMicros:  best.price.PriceInMicros,
-			PriceOutMicros: best.price.PriceOutMicros,
-			ReservedMicros: hold,
-			IssuedAt:       now.UnixNano(),
-			ExpiresAt:      now.Add(e.cfg.TicketTTL).UnixNano(),
-			Coordinator:    e.self,
-			Shared:         shared,
+			InferVersion:    best.inferVersion,
+			JobID:           jobID,
+			Model:           req.Model,
+			Node:            best.offer.Node,
+			NodeAddrs:       best.offer.Addrs,
+			NodeBoxPub:      best.offer.BoxPub,
+			NodeReceiptKey:  best.offer.ReceiptKey,
+			Buyer:           buyer,
+			PriceInMicros:   best.price.PriceInMicros,
+			PriceOutMicros:  best.price.PriceOutMicros,
+			PriceCacheRead:  best.price.PriceCacheRead,
+			PriceCacheWrite: best.price.PriceCacheWrite,
+			API:             req.API,
+			ReservedMicros:  hold,
+			IssuedAt:        now.UnixNano(),
+			ExpiresAt:       now.Add(e.cfg.TicketTTL).UnixNano(),
+			Coordinator:     e.self,
+			Shared:          shared,
 		}
 		t.Sign(e.priv)
 		j := &job{ticket: t, buyerAcct: buyerAcct, nodeAcct: best.acct, status: StatusHeld,
@@ -1037,7 +1062,7 @@ func (e *Engine) Settle(submitter string, req protocol.SettleRequest) (*protocol
 		// Held -> final | disputed | pending.
 		sr := req.Receipt
 		j.receipt = &sr
-		j.cost = protocol.TicketCost(t, r.PromptTokens, r.CompletionTokens)
+		j.cost = protocol.TicketCost(t, protocol.ReceiptUsage(r))
 		switch {
 		case ackOK:
 			if err := e.finalize(tx, led, j, now); err != nil {
@@ -1077,7 +1102,7 @@ func (e *Engine) settleLate(tx *sql.Tx, led *ledger.Tx, j *job, req *protocol.Se
 	if err := verifyAck(t, r, req.Ack); err != nil {
 		return false, err
 	}
-	cost := protocol.TicketCost(t, r.PromptTokens, r.CompletionTokens)
+	cost := protocol.TicketCost(t, protocol.ReceiptUsage(r))
 	var fee int64
 	if cost > 0 {
 		lateID := t.JobID + ":late"
@@ -1386,7 +1411,7 @@ func (e *Engine) ApplyVerdict(buyer, jobID, reason string, judged *receipt.Signe
 		}
 		if j.receipt == nil {
 			j.receipt = judged
-			j.cost = protocol.TicketCost(&j.ticket, judged.Receipt.PromptTokens, judged.Receipt.CompletionTokens)
+			j.cost = protocol.TicketCost(&j.ticket, protocol.ReceiptUsage(&judged.Receipt))
 		}
 		j.disputeReason = clampReason(reason, "evidence submitted")
 		j.disputeOutcome, j.disputeDetail = string(v.Outcome), v.Detail

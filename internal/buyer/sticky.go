@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"sharetoken/internal/node"
+	"sharetoken/internal/protocol"
 )
 
 // Session affinity. A conversation's turns resend the whole history; served
@@ -78,29 +81,54 @@ func (s *stickyNodes) drop(key string) {
 }
 
 // sessionKey names the conversation a request belongs to: the caller's
-// Session, else the request's session_id, else its model and first two
-// messages (the system prompt and the opening question), which every later
-// turn of the same conversation repeats.
+// Session, else the session the tool names (a chat request's session_id,
+// Claude Code's session header or metadata.user_id, Codex's prompt_cache_key
+// or session_id header), else the request's model and first two messages or
+// input items (the system prompt and the opening question), which every
+// later turn of the same conversation repeats.
 func sessionKey(req ChatRequest) string {
 	if req.Session != "" {
 		return "s:" + req.Session
 	}
 	var head struct {
-		SessionID string            `json:"session_id"`
-		Messages  []json.RawMessage `json:"messages"`
+		SessionID      string            `json:"session_id"`
+		PromptCacheKey string            `json:"prompt_cache_key"`
+		Messages       []json.RawMessage `json:"messages"`
+		Input          json.RawMessage   `json:"input"`
+		Metadata       struct {
+			UserID string `json:"user_id"`
+		} `json:"metadata"`
 	}
 	if json.Unmarshal(req.Body, &head) != nil {
 		return ""
 	}
-	if head.SessionID != "" {
-		return "s:" + head.SessionID
+	var id string
+	switch protocol.NormalAPI(req.API) {
+	case protocol.APIMessages:
+		if id = req.Header.Get("x-claude-code-session-id"); id == "" {
+			id = node.ClaudeCodeSession(head.Metadata.UserID)
+		}
+	case protocol.APIResponses:
+		if id = head.PromptCacheKey; id == "" {
+			id = req.Header.Get("session_id")
+		}
+	default:
+		id = head.SessionID
 	}
-	if len(head.Messages) == 0 {
+	if id != "" {
+		return "s:" + id
+	}
+	items := head.Messages
+	if protocol.NormalAPI(req.API) == protocol.APIResponses {
+		items = nil
+		_ = json.Unmarshal(head.Input, &items)
+	}
+	if len(items) == 0 {
 		return ""
 	}
 	h := sha256.New()
 	h.Write([]byte(req.Model))
-	for _, m := range head.Messages[:min(2, len(head.Messages))] {
+	for _, m := range items[:min(2, len(items))] {
 		h.Write([]byte{0})
 		h.Write(m)
 	}

@@ -17,10 +17,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,12 +56,50 @@ type ModelConfig struct {
 	UpstreamModel  string `json:"upstream_model"`
 	PriceInMicros  uint64 `json:"price_in"`
 	PriceOutMicros uint64 `json:"price_out"`
+	// PriceCacheRead and PriceCacheWrite price prompt tokens read from and
+	// written to the model server's prompt cache. Unset, a read costs a
+	// tenth of the input price, and a write 1.25 times it where the model
+	// server speaks Anthropic Messages (which charges that) and the input
+	// price elsewhere.
+	PriceCacheRead  *uint64 `json:"price_cache_read,omitempty"`
+	PriceCacheWrite *uint64 `json:"price_cache_write,omitempty"`
 	// MaxOutputTokens caps a job's output below the node-wide limit, for a
 	// model whose server refuses larger requests (0: no cap of its own).
 	MaxOutputTokens uint64 `json:"max_output,omitempty"`
 	// Upstream serves this model instead of Config.Upstream: a node can sell
 	// models of several servers at once.
 	Upstream Upstream `json:"-"`
+}
+
+func (m ModelConfig) cacheRead() uint64 {
+	if m.PriceCacheRead != nil {
+		return *m.PriceCacheRead
+	}
+	return m.PriceInMicros / 10
+}
+
+func (m ModelConfig) cacheWrite() uint64 {
+	if m.PriceCacheWrite != nil {
+		return *m.PriceCacheWrite
+	}
+	if m.Upstream != nil && slices.Contains(m.Upstream.APIs(), protocol.APIMessages) {
+		return m.PriceInMicros + m.PriceInMicros/4
+	}
+	return m.PriceInMicros
+}
+
+// Price is the model's entry in the node's offer.
+func (m ModelConfig) Price() protocol.ModelPrice {
+	p := protocol.ModelPrice{Model: m.ID, PriceInMicros: m.PriceInMicros, PriceOutMicros: m.PriceOutMicros,
+		PriceCacheRead: m.cacheRead(), PriceCacheWrite: m.cacheWrite()}
+	if m.Upstream != nil {
+		for _, api := range protocol.AllAPIs {
+			if slices.Contains(m.Upstream.APIs(), api) {
+				p.APIs = append(p.APIs, api)
+			}
+		}
+	}
+	return p
 }
 
 // Config configures a node. Zero durations get defaults.
@@ -88,6 +126,10 @@ type Config struct {
 	// the client can fail over to another relay at once. It must not block.
 	OnCoordinatorUnreachable func()
 	Now                      func() time.Time
+	// Overbill signs the usage the model server reported as it is, without
+	// lowering it to what buyers accept: a node that inflates its bill. For
+	// tests of the buyer's and the judge's defences only.
+	Overbill bool
 }
 
 func (c *Config) setDefaults() {
@@ -159,7 +201,9 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 		return nil, errors.New("node: at least one model is required")
 	}
 	models := make(map[string]ModelConfig, len(cfg.Models))
-	for _, m := range cfg.Models {
+	cfg.Models = slices.Clone(cfg.Models)
+	for i := range cfg.Models {
+		m := &cfg.Models[i]
 		if m.ID == "" || m.UpstreamModel == "" {
 			return nil, fmt.Errorf("node: model %+v needs both id and upstream_model", m)
 		}
@@ -171,7 +215,7 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 		if _, dup := models[m.ID]; dup {
 			return nil, fmt.Errorf("node: duplicate model id %q", m.ID)
 		}
-		models[m.ID] = m
+		models[m.ID] = *m
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -280,7 +324,7 @@ func (s *Service) announce() error {
 		if up, ok := m.Upstream.(interface{ ReadyAt() time.Time }); ok && up.ReadyAt().After(now) {
 			continue
 		}
-		o.Models = append(o.Models, protocol.ModelPrice{Model: m.ID, PriceInMicros: m.PriceInMicros, PriceOutMicros: m.PriceOutMicros})
+		o.Models = append(o.Models, m.Price())
 	}
 	// Empty offers are invalid. Withdraw until a provider becomes available.
 	if len(o.Models) == 0 {
@@ -404,7 +448,13 @@ func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
 		go s.abandonNoFault(*t, "unreadable request")
 		return
 	}
-	plain, err := protocol.DecodeRequest(opened)
+	joined, err := protocol.DecodeRequest(opened)
+	if err != nil {
+		fail(st, protocol.Errorf(protocol.CodeBadRequest, "cannot decode the request: %v", err))
+		go s.abandonNoFault(*t, "undecodable request")
+		return
+	}
+	header, plain, err := protocol.SplitRequest(joined)
 	if err != nil {
 		fail(st, protocol.Errorf(protocol.CodeBadRequest, "cannot decode the request: %v", err))
 		go s.abandonNoFault(*t, "undecodable request")
@@ -416,7 +466,13 @@ func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
 		go s.abandonNoFault(*t, "bad response key")
 		return
 	}
-	body, estPrompt, err := UpstreamRequest(t, plain, mc.UpstreamModel)
+	prep, err := UpstreamRequest(t, header, plain, mc.UpstreamModel)
+	if err != nil {
+		fail(st, err)
+		go s.abandonNoFault(*t, "bad request")
+		return
+	}
+	call, err := plan(prep, mc.Upstream, t.Model)
 	if err != nil {
 		fail(st, err)
 		go s.abandonNoFault(*t, "bad request")
@@ -432,15 +488,15 @@ func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
 	ctx, cancel := context.WithTimeout(s.ctx, s.cfg.JobTimeout)
 	defer cancel()
 	ctx = WithRequestScope(ctx, t.Buyer)
-	var session struct {
-		ID string `json:"session_id"`
-	}
-	if err := json.Unmarshal(plain, &session); err != nil || len(session.ID) > 256 {
-		fail(st, protocol.Errorf(protocol.CodeBadRequest, "session_id must be a string of at most 256 bytes"))
+	session, err := requestSession(prep.API, header, plain)
+	if err != nil {
+		fail(st, err)
 		go s.abandonNoFault(*t, "invalid session_id")
 		return
 	}
-	ctx = WithRequestSession(ctx, session.ID)
+	ctx = WithRequestSession(ctx, session)
+	billing := &Billing{}
+	ctx = WithBilling(ctx, billing)
 	// Tell the coordinator the buyer showed up (in the background: it must
 	// not delay the first byte). If the job was already released for not
 	// starting in time, nobody will pay for it: stop.
@@ -450,6 +506,7 @@ func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
 	// stream (which a resume may replace) until it stops; it also sends
 	// progress frames while the model is silent.
 	rw := newRespWriter(st, t, key, s.cfg.Heartbeat, s.cfg.ResumeWindow)
+	rw.meter = &protocol.UsageMeter{}
 	s.mu.Lock()
 	s.jobs[t.JobID] = &liveJob{buyer: t.Buyer, rw: rw}
 	s.mu.Unlock()
@@ -463,7 +520,7 @@ func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
 			cur = last
 		}
 	}
-	err = mc.Upstream.Stream(ctx, body, rw.Write)
+	err = call.run(ctx, mc.Upstream, rw.Write)
 	if err == nil && rw.written() == 0 {
 		err = errors.New("upstream returned an empty stream")
 	}
@@ -488,7 +545,7 @@ func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
 		// so the payout waits out the dispute window like any unacknowledged
 		// job. Not a node failure.
 		s.log.Info("buyer left mid-stream; billing the delivered part", "job", t.JobID, "why", err, "chunks", delivered, "frames", frames)
-		sr, serr := s.signReceipt(t, sealedReq, rw.Digest(), estPrompt, protocol.EstimateTokens(text))
+		sr, serr := s.signReceipt(t, sealedReq, rw.Digest(), protocol.Usage{PromptTokens: prep.EstPrompt, CompletionTokens: protocol.EstimateTokens(text)})
 		if serr == nil {
 			go s.settle(*t, *sr, nil)
 		}
@@ -514,11 +571,11 @@ func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
 		return
 	}
 
-	pt, ct := estPrompt, protocol.EstimateTokens(text)
-	if usage := rw.usage; usage != nil {
-		pt, ct = usage.PromptTokens, usage.CompletionTokens
+	usage := bill(prep, rw.meter, text, billing)
+	if r := rw.meter.Usage(); s.cfg.Overbill && r != nil {
+		usage = *r
 	}
-	sr, err := s.signReceipt(t, sealedReq, rw.Digest(), pt, ct)
+	sr, err := s.signReceipt(t, sealedReq, rw.Digest(), usage)
 	if err != nil {
 		stop()
 		fail(cur, err)
@@ -553,7 +610,22 @@ func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
 	go s.settle(*t, *sr, ack)
 }
 
-func (s *Service) signReceipt(t *protocol.Ticket, sealedReq, respHash []byte, pt, ct uint64) (*receipt.SignedReceipt, error) {
+// bill is the usage a finished job's receipt claims: what the model server
+// reported (estimates when it reported nothing), within what the buyer
+// accepts (protocol.BillableUsage) and what the adapter allows.
+func bill(prep *Prepared, meter *protocol.UsageMeter, text string, b *Billing) protocol.Usage {
+	visible := protocol.EstimateTokens(text)
+	u := protocol.Usage{PromptTokens: prep.EstPrompt, CompletionTokens: visible}
+	if r := meter.Usage(); r != nil {
+		u = *r
+	}
+	if b.PromptCap > 0 {
+		u = u.CapPrompt(b.PromptCap)
+	}
+	return protocol.BillableUsage(u, prep.EstPrompt, visible, meter.Hidden(), prep.Limit)
+}
+
+func (s *Service) signReceipt(t *protocol.Ticket, sealedReq, respHash []byte, u protocol.Usage) (*receipt.SignedReceipt, error) {
 	nonce := make([]byte, 16)
 	_, _ = rand.Read(nonce)
 	return receipt.Sign(s.keys.Signer, receipt.Receipt{
@@ -562,8 +634,10 @@ func (s *Service) signReceipt(t *protocol.Ticket, sealedReq, respHash []byte, pt
 		NodeID:           s.id.receiptKey,
 		RequestHash:      receipt.Hash(sealedReq),
 		ResponseHash:     respHash,
-		PromptTokens:     pt,
-		CompletionTokens: ct,
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		CacheReadTokens:  u.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens,
 		UnixNano:         s.cfg.Now().UnixNano(),
 		Nonce:            nonce,
 	})

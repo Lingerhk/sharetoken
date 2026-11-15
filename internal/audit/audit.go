@@ -37,6 +37,7 @@ import (
 	"log/slog"
 	"math"
 	mrand "math/rand/v2"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -233,24 +234,25 @@ func (a *Auditor) record(rec *coordinator.AuditRecord) (*coordinator.AuditRecord
 
 // reference runs the exact upstream request an honest node would have sent.
 func (a *Auditor) reference(ctx context.Context, ref Reference, t *protocol.Ticket, plain []byte) (string, *protocol.Usage, error) {
-	body, _, err := node.UpstreamRequest(t, plain, ref.UpstreamModel)
+	prep, err := node.UpstreamRequest(t, nil, plain, ref.UpstreamModel)
 	if err != nil {
 		return "", nil, err
 	}
+	if !slices.Contains(ref.Upstream.APIs(), prep.API) {
+		return "", nil, fmt.Errorf("the reference model server does not speak %s", prep.API)
+	}
 	var (
 		text  strings.Builder
-		usage *protocol.Usage
+		meter protocol.UsageMeter
 	)
-	err = ref.Upstream.Stream(ctx, body, func(payload []byte) error {
-		if info, err := protocol.ParseChunk(payload); err == nil {
+	err = ref.Upstream.Stream(ctx, &prep.Request, func(payload []byte) error {
+		if info, err := protocol.ParseEvent(prep.API, payload); err == nil {
 			text.WriteString(info.Text())
-			if info.Usage != nil {
-				usage = info.Usage
-			}
+			meter.Add(info)
 		}
 		return nil
 	})
-	return text.String(), usage, err
+	return text.String(), meter.Usage(), err
 }
 
 // judge turns a similarity and the two usage reports into a verdict.

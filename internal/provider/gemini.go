@@ -277,6 +277,8 @@ type geminiStream struct {
 	out      *chunks
 	prompt   uint64
 	output   uint64
+	cached   uint64 // prompt tokens served from Gemini's context cache
+	thoughts uint64 // reasoning tokens, of which the stream shows a summary at most
 	reason   string
 	received bool
 }
@@ -318,9 +320,10 @@ func (s *geminiStream) event(data []byte) error {
 			FinishReason string `json:"finishReason"`
 		} `json:"candidates"`
 		UsageMetadata *struct {
-			PromptTokenCount     uint64 `json:"promptTokenCount"`
-			CandidatesTokenCount uint64 `json:"candidatesTokenCount"`
-			ThoughtsTokenCount   uint64 `json:"thoughtsTokenCount"`
+			PromptTokenCount        uint64 `json:"promptTokenCount"`
+			CandidatesTokenCount    uint64 `json:"candidatesTokenCount"`
+			ThoughtsTokenCount      uint64 `json:"thoughtsTokenCount"`
+			CachedContentTokenCount uint64 `json:"cachedContentTokenCount"`
 		} `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal(data, &r); err != nil {
@@ -329,6 +332,7 @@ func (s *geminiStream) event(data []byte) error {
 	s.received = true
 	if u := r.UsageMetadata; u != nil {
 		s.prompt, s.output = u.PromptTokenCount, u.CandidatesTokenCount+u.ThoughtsTokenCount
+		s.cached, s.thoughts = min(u.CachedContentTokenCount, u.PromptTokenCount), u.ThoughtsTokenCount
 	}
 	if len(r.Candidates) == 0 {
 		return nil
@@ -377,7 +381,7 @@ func (s *geminiStream) end() error {
 	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
 		reason = "content_filter"
 	}
-	return s.out.finish(reason, s.prompt, s.output)
+	return s.out.finishDetailed(reason, s.prompt, s.output, s.cached, s.thoughts)
 }
 
 // streamGemini posts an enveloped request and writes the answer as chunks.

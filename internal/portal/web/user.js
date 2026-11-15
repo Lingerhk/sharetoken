@@ -65,7 +65,9 @@
       { title: tr('模型'), cell: j => j.model },
       { title: tr('状态'), cell: j => [status(j.status), j.dispute_outcome ? h('span', { class: 'muted' }, ' ' + tr('裁决：{outcome}', { outcome: j.dispute_outcome })) : null] },
       { title: tr('对方'), cell: j => peer(j.role === 'buy' ? j.node : j.buyer) },
-      { title: 'tokens', num: true, cell: j => num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
+      { title: 'tokens', num: true, cell: j => (j.cache_read_tokens || j.cache_write_tokens)
+        ? h('span', { title: tr('其中缓存读 {read}，缓存写 {write}', { read: num(j.cache_read_tokens || 0), write: num(j.cache_write_tokens || 0) }) }, num(j.prompt_tokens) + '* / ' + num(j.completion_tokens))
+        : num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
       { title: tr('费用'), num: true, cell: j => credit(j.cost_micros) },
       { title: tr('收入'), num: true, cell: j => j.role === 'sell' && j.earned_micros ? h('span', { class: 'ok' }, '+' + credit(j.earned_micros)) : '' },
   ];

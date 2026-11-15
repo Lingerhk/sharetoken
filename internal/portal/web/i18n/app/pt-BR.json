@@ -247,5 +247,6 @@
   "登录时除了邮箱验证码，还要输入验证器 App 的验证码。关闭时请输入验证器 App 当前显示的验证码。": "Ao entrar, além do código do e-mail, é pedido um código do seu app autenticador. Para desativar, digite o código que o app mostra agora.",
   "管理员必须启用两步验证，下次登录时会要求绑定。": "Administradores precisam usar verificação em duas etapas; ela será pedida no seu próximo acesso.",
   "告诉我们你遇到的问题或建议。请不要填写验证码、token 或 prompt 内容。我们可能会通过账户邮箱回复你。": "Conte-nos um problema ou uma ideia. Não inclua códigos de acesso, tokens nem conteúdo de prompts. Podemos responder no e-mail da sua conta.",
-  "开启后，登录时除了邮箱验证码，还要输入验证器 App（如 Google Authenticator）的验证码。邮箱被盗时账户依然安全。": "Depois de ativada, ao entrar é pedido, além do código do e-mail, um código de um app autenticador (como o Google Authenticator), e sua conta continua segura mesmo se seu e-mail for invadido."
+  "开启后，登录时除了邮箱验证码，还要输入验证器 App（如 Google Authenticator）的验证码。邮箱被盗时账户依然安全。": "Depois de ativada, ao entrar é pedido, além do código do e-mail, um código de um app autenticador (como o Google Authenticator), e sua conta continua segura mesmo se seu e-mail for invadido.",
+  "其中缓存读 {read}，缓存写 {write}": "Destes, leituras de cache {read} e gravações de cache {write}"
 }

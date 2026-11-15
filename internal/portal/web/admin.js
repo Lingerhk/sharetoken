@@ -328,7 +328,7 @@
     const list = ST.listView({ path, key: 'jobs', empty: '没有作业', columns: [
       { title: '时间', cell: j => time(j.created_at) }, { title: '角色', cell: j => badge(j.role === 'buy' ? '买入' : '卖出', j.role === 'buy' ? 'accent' : 'ok') },
       { title: '模型', cell: j => j.model }, { title: '状态', cell: j => status(j.status) }, { title: '作业', cell: j => peer(j.job_id) },
-      { title: 'tokens', num: true, cell: j => num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
+      { title: 'tokens', num: true, cell: j => (j.cache_read_tokens || j.cache_write_tokens) ? h('span', { title: '其中缓存读 ' + num(j.cache_read_tokens || 0) + '，缓存写 ' + num(j.cache_write_tokens || 0) + (j.api ? '，' + j.api + ' API' : '') }, num(j.prompt_tokens) + '* / ' + num(j.completion_tokens)) : num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
       { title: '费用', num: true, cell: j => credit(j.cost_micros) }, { title: '手续费', num: true, cell: j => credit(j.fee_micros) },
     ] });
     await list.reload();
@@ -506,7 +506,7 @@
         { title: '状态', cell: j => [status(j.status), j.dispute_outcome ? h('div', { class: 'muted' }, '裁决 ' + j.dispute_outcome) : null] },
         { title: '买家', cell: j => [peer(j.buyer), h('div', { class: 'muted mono' }, j.buyer_acct)] },
         { title: '节点', cell: j => [peer(j.node), h('div', { class: 'muted mono' }, j.node_acct)] },
-        { title: 'tokens', num: true, cell: j => num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
+        { title: 'tokens', num: true, cell: j => (j.cache_read_tokens || j.cache_write_tokens) ? h('span', { title: '其中缓存读 ' + num(j.cache_read_tokens || 0) + '，缓存写 ' + num(j.cache_write_tokens || 0) + (j.api ? '，' + j.api + ' API' : '') }, num(j.prompt_tokens) + '* / ' + num(j.completion_tokens)) : num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
         { title: '费用', num: true, cell: j => credit(j.cost_micros) }, { title: '手续费', num: true, cell: j => credit(j.fee_micros) },
         { title: '完成', cell: j => time(j.done_at) },
       ] });

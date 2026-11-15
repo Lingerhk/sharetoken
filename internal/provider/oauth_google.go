@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"sharetoken/internal/node"
+	"sharetoken/internal/protocol"
 )
 
 // Gemini (the Gemini CLI's login) and Antigravity are both Google logins to
@@ -320,8 +321,13 @@ type codeAssistUpstream struct {
 	antigravity bool
 }
 
-func (u *codeAssistUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
-	chat, err := parseChat(body)
+func (u *codeAssistUpstream) APIs() []string { return []string{protocol.APIChat} }
+
+func (u *codeAssistUpstream) Stream(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	if r.API != protocol.APIChat {
+		return fmt.Errorf("code assist: cannot send a %s request", r.API)
+	}
+	chat, err := parseChat(r.Body)
 	if err != nil {
 		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 	}

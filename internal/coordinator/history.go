@@ -31,8 +31,13 @@ type JobInfo struct {
 	Node             string `json:"node"`
 	PromptTokens     uint64 `json:"prompt_tokens"`
 	CompletionTokens uint64 `json:"completion_tokens"`
-	CostMicros       uint64 `json:"cost_micros"` // what the buyer pays (0 when refunded or released)
-	FeeMicros        uint64 `json:"fee_micros"`  // platform fee out of the cost
+	// CacheReadTokens and CacheWriteTokens are the part of PromptTokens
+	// billed at the cache prices.
+	CacheReadTokens  uint64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens uint64 `json:"cache_write_tokens,omitempty"`
+	API              string `json:"api,omitempty"` // the API the buyer's request was in
+	CostMicros       uint64 `json:"cost_micros"`   // what the buyer pays (0 when refunded or released)
+	FeeMicros        uint64 `json:"fee_micros"`    // platform fee out of the cost
 	EarnedMicros     uint64 `json:"earned_micros,omitempty"`
 	DisputeOutcome   string `json:"dispute_outcome,omitempty"`
 	CreatedAt        int64  `json:"created_at"`
@@ -66,7 +71,7 @@ func (f JobQuery) to() int64 {
 }
 
 const accountJobCols = `job_id, buyer_acct, model, status, buyer, node, prompt_tokens, completion_tokens, cost, fee,
-	dispute_outcome, created_at, done_at, shared`
+	dispute_outcome, created_at, done_at, shared, api, cache_read_tokens, cache_write_tokens`
 
 // accountJobsSQL walks the index of each side in created_at order and stops
 // after the page: an OR of the two columns would sort the account's whole
@@ -131,12 +136,14 @@ func AccountJobs(db *sql.DB, acct string, f JobQuery) ([]JobInfo, error) {
 			buyerAcct     string
 			pt, ct, c, fe int64
 			shared        int64
+			cr, cw        int64
 		)
 		if err := rows.Scan(&j.JobID, &buyerAcct, &j.Model, &j.Status, &j.Buyer, &j.Node, &pt, &ct, &c, &fe,
-			&j.DisputeOutcome, &j.CreatedAt, &j.DoneAt, &shared); err != nil {
+			&j.DisputeOutcome, &j.CreatedAt, &j.DoneAt, &shared, &j.API, &cr, &cw); err != nil {
 			return nil, err
 		}
 		j.PromptTokens, j.CompletionTokens, j.CostMicros, j.FeeMicros = uint64(pt), uint64(ct), uint64(c), uint64(fe)
+		j.CacheReadTokens, j.CacheWriteTokens = uint64(cr), uint64(cw)
 		j.Shared = shared != 0
 		if j.Status == StatusRefunded || j.Status == StatusReleased {
 			j.CostMicros, j.FeeMicros = 0, 0 // nothing was charged
@@ -236,6 +243,9 @@ type AdminJob struct {
 	NodeAcct         string `json:"node_acct"`
 	PromptTokens     uint64 `json:"prompt_tokens"`
 	CompletionTokens uint64 `json:"completion_tokens"`
+	CacheReadTokens  uint64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens uint64 `json:"cache_write_tokens,omitempty"`
+	API              string `json:"api,omitempty"`
 	CostMicros       uint64 `json:"cost_micros"`
 	FeeMicros        uint64 `json:"fee_micros"`
 	DisputeReason    string `json:"dispute_reason,omitempty"`
@@ -258,11 +268,12 @@ func QueryJobs(q Querier, f JobQuery) ([]AdminJob, error) {
 	out := []AdminJob{}
 	for rows.Next() {
 		var j AdminJob
-		var pt, ct, c, fe, shared int64
+		var pt, ct, c, fe, shared, cr, cw int64
 		if err := rows.Scan(&j.JobID, &j.Model, &j.Status, &j.Buyer, &j.Node, &j.BuyerAcct, &j.NodeAcct, &pt, &ct, &c, &fe,
-			&j.DisputeReason, &j.DisputeOutcome, &j.DisputeDetail, &j.CreatedAt, &j.StartedAt, &j.DoneAt, &shared); err != nil {
+			&j.DisputeReason, &j.DisputeOutcome, &j.DisputeDetail, &j.CreatedAt, &j.StartedAt, &j.DoneAt, &shared, &j.API, &cr, &cw); err != nil {
 			return nil, err
 		}
+		j.CacheReadTokens, j.CacheWriteTokens = uint64(cr), uint64(cw)
 		j.Shared = shared != 0
 		j.PromptTokens, j.CompletionTokens, j.CostMicros, j.FeeMicros = uint64(pt), uint64(ct), uint64(c), uint64(fe)
 		if j.Status == StatusRefunded || j.Status == StatusReleased {
@@ -278,7 +289,7 @@ func QueryJobs(q Querier, f JobQuery) ([]AdminJob, error) {
 // table (TestQueryJobsUsesIndexes checks the plans).
 func queryJobsSQL(f JobQuery) (string, []any) {
 	const cols = `job_id, model, status, buyer, node, buyer_acct, node_acct, prompt_tokens, completion_tokens,
-		cost, fee, dispute_reason, dispute_outcome, dispute_detail, created_at, started_at, done_at, shared`
+		cost, fee, dispute_reason, dispute_outcome, dispute_detail, created_at, started_at, done_at, shared, api, cache_read_tokens, cache_write_tokens`
 	var statusWhere string
 	var statusArgs []any
 	if f.Status != "" {

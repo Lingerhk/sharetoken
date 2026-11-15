@@ -112,18 +112,28 @@ func New(h host.Host, keys *p2p.Keys, coordinator peer.AddrInfo) *Client {
 		FirstByteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxSilence: 5 * time.Minute, ResumeWindow: 45 * time.Second, log: slog.Default().With("component", "buyer")}
 }
 
-// ChatRequest is one chat-completions call.
+// ChatRequest is one request, in any of the APIs.
 type ChatRequest struct {
-	Model        string // marketplace model ID
-	Body         []byte // OpenAI chat-completions JSON; the node overrides model/stream/max_tokens
+	Model string // marketplace model ID
+	// API is the API Body is in (protocol.APIChat when empty).
+	API string
+	// Header holds the request's HTTP headers the model server may need
+	// (protocol.RequestHeader), lower-case; it travels sealed with Body.
+	Header       protocol.RequestHeader
+	Body         []byte // the request as the tool sent it; the node overrides model, stream and the output limit
 	BudgetMicros uint64 // reserved up front; settlement never exceeds it
 	// MaxTokens, when the request caps its output, lets the coordinator hold
 	// only the worst-case cost of this request instead of the whole budget.
 	MaxTokens   uint64
 	MaxPriceIn  uint64 // optional per-million-token price ceilings
 	MaxPriceOut uint64
-	RequireTEE  bool   // only nodes whose quote passes the client's attestation policy
-	Node        string // optional: only this node
+	RequireTEE  bool // only nodes whose quote passes the client's attestation policy
+	// RequireNative asks for a node whose model server speaks API natively.
+	RequireNative bool
+	// Collect keeps every event payload in the Result (Payloads), for a
+	// caller that answers with one aggregated JSON.
+	Collect bool
+	Node    string // optional: only this node
 	// Session names the conversation the request belongs to (default: its
 	// session_id, else its first messages). The node that served the
 	// session last is asked for again while it is available.
@@ -142,6 +152,7 @@ type Result struct {
 	ToolCalls         []protocol.ToolCall
 	AnthropicThinking []json.RawMessage
 	FinishReason      string
+	Payloads          [][]byte // every event payload, when the request asked to Collect them
 	CostMicros        uint64
 	Verified          bool   // receipt passed every check and was acknowledged
 	Attested          string // allow-list label of the node's verified TEE image, if any
@@ -194,8 +205,14 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 	// Compress the request while the coordinator picks a node: sealing needs
 	// the ticket, compressing does not.
 	encoded := make(chan encodedRequest, 1)
+	req.API = protocol.NormalAPI(req.API)
 	go func() {
-		b, err := protocol.EncodeRequest(req.Body)
+		joined, err := protocol.JoinRequest(req.Header, req.Body)
+		if err != nil {
+			encoded <- encodedRequest{nil, err}
+			return
+		}
+		b, err := protocol.EncodeRequest(joined)
 		encoded <- encodedRequest{b, err}
 	}()
 	enc := sync.OnceValue(func() encodedRequest { return <-encoded })
@@ -234,7 +251,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 		if e.err != nil {
 			return nil, e.err
 		}
-		res, delivered, err := c.runJob(ctx, &tr.Ticket, e.plain, req.Body, onChunk, &timing)
+		res, delivered, err := c.runJob(ctx, &tr.Ticket, e.plain, req, onChunk, &timing)
 		timing.Preferred = prefer != "" && tr.Ticket.Node == prefer
 		if delivered || err == nil {
 			c.sticky.put(session, tr.Ticket.Node)
@@ -358,6 +375,8 @@ func (c *Client) requestTicketOnce(ctx context.Context, req ChatRequest, exclude
 		protocol.TicketRequest{
 			InferVersions: protocol.SupportedInferVersions,
 			Model:         req.Model,
+			API:           req.API,
+			RequireNative: req.RequireNative,
 			BudgetMicros:  req.BudgetMicros,
 			MaxTokens:     req.MaxTokens,
 			PromptTokens:  promptEst(req),
@@ -387,6 +406,8 @@ func (c *Client) verifyTicket(tr *protocol.TicketResponse, req ChatRequest) (str
 		return "", errors.New("ticket issued to another buyer")
 	case t.Model != req.Model:
 		return "", errors.New("ticket is for a different model")
+	case protocol.NormalAPI(t.API) != protocol.NormalAPI(req.API):
+		return "", errors.New("ticket is for a different API")
 	case req.Node != "" && t.Node != req.Node:
 		return "", errors.New("ticket is for a different node than requested")
 	case t.ReservedMicros > req.BudgetMicros:
@@ -406,8 +427,10 @@ func (c *Client) verifyTicket(tr *protocol.TicketResponse, req ChatRequest) (str
 		return "", errors.New("ticket keys differ from the node's signed offer")
 	case !slices.Equal(o.Addrs, t.NodeAddrs):
 		return "", errors.New("ticket addresses differ from the node's signed offer")
-	case !ok || p.PriceInMicros != t.PriceInMicros || p.PriceOutMicros != t.PriceOutMicros:
+	case !ok || p.Prices() != t.Prices():
 		return "", errors.New("ticket price differs from the node's signed offer")
+	case req.RequireNative && !p.Native(req.API):
+		return "", errors.New("the node does not speak the request's API natively")
 	}
 	var label string
 	if c.Attestation != nil && o.Quote != nil {
@@ -443,7 +466,7 @@ type encodedRequest struct {
 
 // runJob executes one ticket. delivered reports whether any output reached
 // onChunk, after which failing over is no longer possible.
-func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body []byte, onChunk func([]byte) error, tm *Timing) (res *Result, delivered bool, err error) {
+func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte, req ChatRequest, onChunk func([]byte) error, tm *Timing) (res *Result, delivered bool, err error) {
 	nodeID, err := peer.Decode(t.Node)
 	if err != nil {
 		return nil, false, err
@@ -517,6 +540,8 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body [
 		thinking                []json.RawMessage
 		finish                  string
 		sr                      receipt.SignedReceipt
+		meter                   protocol.UsageMeter
+		payloads                [][]byte
 	)
 	dec := protocol.NewResponseDecoder()
 	frames := 0
@@ -596,7 +621,11 @@ recv:
 			}
 			for _, payload := range recs {
 				tm.Chunks++
-				if info, err := protocol.ParseChunk(payload); err == nil {
+				if req.Collect {
+					payloads = append(payloads, payload)
+				}
+				if info, err := protocol.ParseEvent(t.API, payload); err == nil {
+					meter.Add(info)
 					content.WriteString(info.Content)
 					reasoning.WriteString(info.Reasoning)
 					all.WriteString(info.Text())
@@ -631,9 +660,9 @@ recv:
 		tr.corrupt = errors.New("the response ended without its final frame")
 	}
 
-	res = &Result{Ticket: *t, Receipt: sr, Content: content.String(), Reasoning: reasoning.String(), Text: all.String(), ToolCalls: tools.Calls(), FinishReason: finish}
+	res = &Result{Ticket: *t, Receipt: sr, Content: content.String(), Reasoning: reasoning.String(), Text: all.String(), ToolCalls: tools.Calls(), FinishReason: finish, Payloads: payloads}
 	res.AnthropicThinking = thinking
-	if err := c.checkReceipt(t, &sr, tr, body, all.String()); err != nil {
+	if err := c.checkReceipt(t, &sr, tr, req.Body, all.String(), meter.Hidden()); err != nil {
 		_ = js.send(protocol.TypeReject, protocol.Reject{Reason: err.Error()})
 		return res, delivered, fmt.Errorf("%w: %v", ErrReceiptRejected, err)
 	}
@@ -644,7 +673,7 @@ recv:
 		c.log.Warn("could not deliver ack", "job", t.JobID, "err", err)
 	}
 	_ = js.cur().CloseWrite()
-	res.CostMicros = protocol.TicketCost(t, sr.Receipt.PromptTokens, sr.Receipt.CompletionTokens)
+	res.CostMicros = protocol.TicketCost(t, protocol.ReceiptUsage(&sr.Receipt))
 	res.Verified = true
 	return res, delivered, nil
 }
@@ -777,7 +806,7 @@ func (c *Client) logJob(t *protocol.Ticket, tm *Timing, err error) {
 // evidence when the transcript can prove the node wrong (unreadable chunks,
 // inflated usage), as a plain claim when it cannot (the node signed bytes
 // other than those delivered).
-func (c *Client) checkReceipt(t *protocol.Ticket, sr *receipt.SignedReceipt, tr *transcript, body []byte, text string) error {
+func (c *Client) checkReceipt(t *protocol.Ticket, sr *receipt.SignedReceipt, tr *transcript, body []byte, text string, hidden bool) error {
 	if err := receipt.BuyerCheck(sr, t.JobID, t.Model, t.NodeReceiptKey, receipt.Hash(tr.request), tr.hasher.Sum()); err != nil {
 		c.background(func() { c.fileDispute(t.JobID, err.Error()) })
 		return err
@@ -786,11 +815,12 @@ func (c *Client) checkReceipt(t *protocol.Ticket, sr *receipt.SignedReceipt, tr 
 		c.disputeWithEvidence(t, sr, tr, tr.corrupt.Error())
 		return tr.corrupt
 	}
-	estPrompt, err := protocol.EstimatePromptTokens(body)
+	estPrompt, err := protocol.EstimatePromptTokens(t.API, body)
 	if err != nil {
 		return err
 	}
-	if err := protocol.UsagePlausible(sr.Receipt.PromptTokens, sr.Receipt.CompletionTokens, estPrompt, protocol.EstimateTokens(text)); err != nil {
+	limit := protocol.OutputLimit(t, estPrompt, protocol.RequestedOutput(t.API, body))
+	if err := protocol.UsagePlausible(protocol.ReceiptUsage(&sr.Receipt), estPrompt, protocol.EstimateTokens(text), hidden, limit); err != nil {
 		c.disputeWithEvidence(t, sr, tr, "implausible usage: "+err.Error())
 		return err
 	}
@@ -916,7 +946,7 @@ func promptEst(req ChatRequest) uint64 {
 	if req.MaxTokens == 0 {
 		return 0
 	}
-	n, err := protocol.EstimatePromptTokens(req.Body)
+	n, err := protocol.EstimatePromptTokens(req.API, req.Body)
 	if err != nil {
 		return 0
 	}

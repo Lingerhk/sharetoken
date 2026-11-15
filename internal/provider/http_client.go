@@ -177,13 +177,36 @@ type outboundUpstream struct {
 	owner  string
 }
 
-func (u *outboundUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
+func (u *outboundUpstream) APIs() []string { return u.up.APIs() }
+
+func (u *outboundUpstream) Stream(ctx context.Context, r *node.Request, emit func([]byte) error) error {
 	if ready := u.ReadyAt(); ready.After(time.Now()) {
 		return &node.StatusError{Status: 429, Body: "provider is temporarily rate limited", RetryAt: ready}
 	}
-	err := u.up.Stream(withHTTPClient(ctx, u.client), body, emit)
+	err := u.up.Stream(withHTTPClient(ctx, u.client), r, emit)
 	recordProviderStatus(u.owner, err)
 	return err
+}
+
+// outboundCompactor is an outboundUpstream whose model server has a native
+// compact endpoint.
+type outboundCompactor struct{ *outboundUpstream }
+
+func (u outboundCompactor) Compact(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	if ready := u.ReadyAt(); ready.After(time.Now()) {
+		return &node.StatusError{Status: 429, Body: "provider is temporarily rate limited", RetryAt: ready}
+	}
+	err := u.up.(node.Compactor).Compact(withHTTPClient(ctx, u.client), r, emit)
+	recordProviderStatus(u.owner, err)
+	return err
+}
+
+// wrapOutbound returns the outbound wrapper of up, a node.Compactor when up is.
+func wrapOutbound(o *outboundUpstream) node.Upstream {
+	if _, ok := o.up.(node.Compactor); ok {
+		return outboundCompactor{o}
+	}
+	return o
 }
 
 func (u *outboundUpstream) ReadyAt() time.Time { return providerStatus(u.owner).RetryAt }

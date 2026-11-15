@@ -166,6 +166,12 @@ func (c *chunks) toolArgs(index int, args string) error {
 // finish closes the answer: the finish reason, then the token counts in a
 // chunk of their own, as OpenAI sends them with stream_options.include_usage.
 func (c *chunks) finish(reason string, prompt, completion uint64) error {
+	return c.finishDetailed(reason, prompt, completion, 0, 0)
+}
+
+// finishDetailed is finish with the prompt tokens read from a cache and the
+// completion tokens spent on reasoning.
+func (c *chunks) finishDetailed(reason string, prompt, completion, cached, reasoning uint64) error {
 	if reason == "" {
 		reason = "stop"
 	}
@@ -175,5 +181,12 @@ func (c *chunks) finish(reason string, prompt, completion uint64) error {
 	if err := c.send(nil, reason, nil); err != nil {
 		return err
 	}
-	return c.send(nil, "", map[string]any{"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion})
+	usage := map[string]any{"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
+	if cached > 0 {
+		usage["prompt_tokens_details"] = map[string]any{"cached_tokens": cached}
+	}
+	if reasoning > 0 {
+		usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": reasoning}
+	}
+	return c.send(nil, "", usage)
 }

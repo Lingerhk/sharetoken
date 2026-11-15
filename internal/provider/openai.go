@@ -1,9 +1,11 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"regexp"
@@ -12,10 +14,12 @@ import (
 	"sync"
 
 	"sharetoken/internal/node"
+	"sharetoken/internal/protocol"
 )
 
-// openAIUpstream is a provider that speaks OpenAI chat completions itself:
-// the request goes out almost as it came, and the stream comes back as it is.
+// openAIUpstream is a provider that speaks OpenAI chat completions itself,
+// and with responses set the Responses API too (OpenAI's own API): the
+// request goes out almost as it came, and the stream comes back as it is.
 type openAIUpstream struct {
 	base   string
 	header http.Header
@@ -27,22 +31,160 @@ type openAIUpstream struct {
 	// current models take max_completion_tokens and refuse max_tokens.
 	tokensField string
 	limits      outputLimits
+	responses   bool
+	// messages, when set, is the base URL of the provider's Anthropic
+	// Messages endpoint (DeepSeek has one): Messages requests go there.
+	messages string
+	// thoughtSignatures: Gemini wants the thought signature it gave with each
+	// tool call back with it; calls that lost theirs (converted from another
+	// API, or from another model) get the placeholder Gemini accepts.
+	thoughtSignatures bool
 }
 
-func (u *openAIUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
+func (u *openAIUpstream) APIs() []string {
+	apis := []string{protocol.APIChat}
+	if u.messages != "" {
+		apis = append(apis, protocol.APIMessages)
+	}
+	if u.responses {
+		apis = append(apis, protocol.APIResponses)
+	}
+	return apis
+}
+
+func (u *openAIUpstream) Stream(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	switch {
+	case r.API == protocol.APIResponses && u.responses:
+		return u.limits.retry(func() error {
+			out, err := limitOutput(dropConvertedReasoning(r.Body), &u.limits, "max_output_tokens", "max_output_tokens")
+			if err != nil {
+				return err
+			}
+			return retryWithoutReasoning(out, func(body []byte) error {
+				return u.post(ctx, "/responses", body, responsesPassthrough(emit))
+			})
+		}, r.Body)
+	case r.API == protocol.APIMessages && u.messages != "":
+		up := &anthropicUpstream{base: u.messages, limits: outputLimits{set: u.limits.set}, header: u.messagesHeader()}
+		return up.Stream(ctx, r, emit)
+	case r.API != protocol.APIChat:
+		return fmt.Errorf("provider: cannot send a %s request", r.API)
+	}
 	return u.limits.retry(func() error {
-		out, err := limitOutput(body, &u.limits, u.tokensField)
+		out, err := limitOutput(r.Body, &u.limits, "max_tokens", u.tokensField)
 		if err != nil {
 			return err
 		}
-		pass := func(data []byte) error { return emit(append([]byte(nil), data...)) }
-		if u.ts == nil {
-			return postSSE(ctx, u.base+"/chat/completions", u.header, out, pass)
+		if u.thoughtSignatures {
+			out = signToolCalls(out)
 		}
-		return withToken(ctx, u.ts, func(tok *Token) error {
-			return postSSE(ctx, u.base+"/chat/completions", u.auth(tok), out, pass)
+		return u.post(ctx, "/chat/completions", out, func(data []byte) error {
+			if msg, ok := chatError(data); ok {
+				return &node.StatusError{Status: http.StatusBadGateway, Body: clip(msg, 300)}
+			}
+			return emit(append([]byte(nil), data...))
 		})
-	}, body)
+	}, r.Body)
+}
+
+func (u *openAIUpstream) post(ctx context.Context, path string, body []byte, on func([]byte) error) error {
+	if u.ts == nil {
+		return postSSE(ctx, u.base+path, u.header, body, on)
+	}
+	return withToken(ctx, u.ts, func(tok *Token) error {
+		return postSSE(ctx, u.base+path, u.auth(tok), body, on)
+	})
+}
+
+// messagesHeader is the key header for the provider's Messages endpoint.
+func (u *openAIUpstream) messagesHeader() http.Header {
+	h := u.header.Clone()
+	if auth := h.Get("Authorization"); auth != "" {
+		h.Set("x-api-key", strings.TrimPrefix(auth, "Bearer "))
+		h.Del("Authorization")
+	}
+	return h
+}
+
+// signToolCalls gives each assistant tool call without a thought signature
+// Gemini's placeholder one (in Gemini's OpenAI API, extra_content.google).
+func signToolCalls(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"tool_calls"`)) {
+		return body
+	}
+	req, err := decodeObject(body)
+	if err != nil {
+		return body
+	}
+	changed := false
+	for _, m := range list(req["messages"]) {
+		msg, _ := m.(map[string]any)
+		if msg["role"] != "assistant" {
+			continue
+		}
+		for _, c := range list(msg["tool_calls"]) {
+			call, _ := c.(map[string]any)
+			if call == nil {
+				continue
+			}
+			extra, _ := call["extra_content"].(map[string]any)
+			if extra == nil {
+				extra = map[string]any{}
+			}
+			google, _ := extra["google"].(map[string]any)
+			if google == nil {
+				google = map[string]any{}
+			}
+			if sig, _ := google["thought_signature"].(string); sig != "" {
+				continue
+			}
+			google["thought_signature"] = skipThoughtSignature
+			extra["google"] = google
+			call["extra_content"] = extra
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+func list(v any) []any {
+	l, _ := v.([]any)
+	return l
+}
+
+// chatError reads an error a chat server sent inside its stream.
+func chatError(data []byte) (string, bool) {
+	var ev struct {
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    any    `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(data, &ev) != nil || ev.Error == nil {
+		return "", false
+	}
+	return strings.TrimSpace(fmt.Sprint(ev.Error.Type, " ", ev.Error.Message)), true
+}
+
+// responsesPassthrough passes a Responses stream on, failing on its error
+// events and on a stream that ends without its terminal event.
+func responsesPassthrough(emit func([]byte) error) func([]byte) error {
+	return func(data []byte) error {
+		typ, msg := eventType(data)
+		switch typ {
+		case "error", "response.failed":
+			return &node.StatusError{Status: http.StatusBadGateway, Body: clip(typ+": "+msg, 300)}
+		}
+		return emit(append([]byte(nil), data...))
+	}
 }
 
 // outputLimits are the output limits of a provider's models: those the user
@@ -85,10 +227,12 @@ func (l *outputLimits) retry(do func() error, body []byte) error {
 		return err
 	}
 	var req struct {
-		Model     string `json:"model"`
-		MaxTokens uint64 `json:"max_tokens"`
+		Model           string `json:"model"`
+		MaxTokens       uint64 `json:"max_tokens"`
+		MaxOutputTokens uint64 `json:"max_output_tokens"`
 	}
 	_ = json.Unmarshal(body, &req)
+	req.MaxTokens = max(req.MaxTokens, req.MaxOutputTokens)
 	for _, re := range limitPatterns {
 		m := re.FindStringSubmatch(se.Body)
 		if m == nil {
@@ -116,9 +260,9 @@ func (l *outputLimits) orMax(model string) uint64 {
 	return math.MaxUint64
 }
 
-// limitOutput lowers max_tokens to the model's own limit, and renames the
-// field when the API calls it something else.
-func limitOutput(body []byte, limits *outputLimits, field string) ([]byte, error) {
+// limitOutput lowers the output limit (field from) to the model's own limit,
+// and renames the field to what the API calls it (to; empty: unchanged).
+func limitOutput(body []byte, limits *outputLimits, from, to string) ([]byte, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, err
@@ -126,20 +270,20 @@ func limitOutput(body []byte, limits *outputLimits, field string) ([]byte, error
 	var model string
 	var limit uint64
 	_ = json.Unmarshal(m["model"], &model)
-	_ = json.Unmarshal(m["max_tokens"], &limit)
+	_ = json.Unmarshal(m[from], &limit)
 	c := limits.of(model)
-	if c == 0 && (field == "" || field == "max_tokens") {
+	if to == "" {
+		to = from
+	}
+	if c == 0 && to == from {
 		return body, nil
 	}
 	if c > 0 && (limit == 0 || limit > c) {
 		limit = c
 	}
-	delete(m, "max_tokens")
-	if field == "" {
-		field = "max_tokens"
-	}
+	delete(m, from)
 	if limit > 0 {
-		m[field], _ = json.Marshal(limit)
+		m[to], _ = json.Marshal(limit)
 	}
 	return json.Marshal(m)
 }

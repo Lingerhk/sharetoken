@@ -1142,8 +1142,10 @@ func (c *cmdCtx) share(args []string) error {
 		out := fs.Uint64("out", client.DefaultPriceOut, "price per million completion tokens, micro-credits")
 		from := fs.String("provider", "", "the provider whose model this is (default: the local model server)")
 		maxOut := fs.Uint64("max-output", 0, "the model's own limit of output tokens per request, if it refuses the usual one")
+		cacheRead := fs.Int64("cache-read", -1, "price per million prompt tokens read from the prompt cache (default: a tenth of -in)")
+		cacheWrite := fs.Int64("cache-write", -1, "price per million prompt tokens written to the prompt cache (default: 1.25 x -in for Anthropic models, else -in)")
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
-			return errors.New("usage: sharetoken share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-max-output N]")
+			return errors.New("usage: sharetoken share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-cache-read P] [-cache-write P] [-max-output N]")
 		}
 		upstreamModel := args[1]
 		_ = fs.Parse(args[2:])
@@ -1151,6 +1153,14 @@ func (c *cmdCtx) share(args []string) error {
 			*id = upstreamModel
 		}
 		m := node.ModelConfig{ID: *id, UpstreamModel: upstreamModel, PriceInMicros: *in, PriceOutMicros: *out, MaxOutputTokens: *maxOut}
+		if *cacheRead >= 0 {
+			v := uint64(*cacheRead)
+			m.PriceCacheRead = &v
+		}
+		if *cacheWrite >= 0 {
+			v := uint64(*cacheWrite)
+			m.PriceCacheWrite = &v
+		}
 		if *from != "" && *from != "local" {
 			var local []string
 			for _, lm := range sc.Models {

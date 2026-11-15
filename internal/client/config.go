@@ -54,8 +54,13 @@ type BuyConfig struct {
 	MaxPriceOut  uint64 `json:"max_price_out,omitempty"` // per million completion tokens
 	Evidence     bool   `json:"evidence"`                // disclose a provably bad job's key for an automatic refund
 	RequireTEE   bool   `json:"require_tee,omitempty"`
-	TEEPolicy    string `json:"tee_policy,omitempty"` // allow-list file of trusted node images
-	TEEOnline    bool   `json:"tee_online,omitempty"`
+	// RequireNative buys only from nodes whose model server speaks the
+	// request's API natively (Claude Code from Anthropic models, Codex from
+	// OpenAI Responses), never converted. Off, such nodes are preferred and
+	// others convert when none is free.
+	RequireNative bool   `json:"require_native,omitempty"`
+	TEEPolicy     string `json:"tee_policy,omitempty"` // allow-list file of trusted node images
+	TEEOnline     bool   `json:"tee_online,omitempty"`
 	// QueueSeconds is how long a request waits for a free node when all are
 	// busy (0: the default, 30; negative: fail at once).
 	QueueSeconds int `json:"queue_seconds,omitempty"`

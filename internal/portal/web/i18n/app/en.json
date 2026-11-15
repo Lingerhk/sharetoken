@@ -247,5 +247,6 @@
   "登录时除了邮箱验证码，还要输入验证器 App 的验证码。关闭时请输入验证器 App 当前显示的验证码。": "Signing in asks for a code from your authenticator app as well as the email code. To turn it off, enter the code your authenticator app shows now.",
   "管理员必须启用两步验证，下次登录时会要求绑定。": "Administrators must use two-factor authentication; you will be asked to set it up at your next sign-in.",
   "告诉我们你遇到的问题或建议。请不要填写验证码、token 或 prompt 内容。我们可能会通过账户邮箱回复你。": "Tell us about a problem or idea. Please do not include sign-in codes, tokens or prompt contents. We may reply to your account's email address.",
-  "开启后，登录时除了邮箱验证码，还要输入验证器 App（如 Google Authenticator）的验证码。邮箱被盗时账户依然安全。": "Once on, signing in asks for a code from an authenticator app (such as Google Authenticator) as well as the email code, so your account stays safe even if your mailbox is compromised."
+  "开启后，登录时除了邮箱验证码，还要输入验证器 App（如 Google Authenticator）的验证码。邮箱被盗时账户依然安全。": "Once on, signing in asks for a code from an authenticator app (such as Google Authenticator) as well as the email code, so your account stays safe even if your mailbox is compromised.",
+  "其中缓存读 {read}，缓存写 {write}": "Of which cache reads {read}, cache writes {write}"
 }

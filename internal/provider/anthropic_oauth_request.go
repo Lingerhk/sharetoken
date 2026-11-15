@@ -40,18 +40,10 @@ type claudeUserID struct {
 	SessionID   string `json:"session_id"`
 }
 
-func claudeSession(ctx context.Context, e *Entry, chat *chatRequest) string {
+func claudeSession(ctx context.Context, e *Entry, req map[string]any) string {
 	anchor := node.RequestSession(ctx)
 	if anchor == "" {
-		anchor = chat.SessionID
-	}
-	if anchor == "" {
-		for i := range chat.Messages {
-			if chat.Messages[i].Role == "user" {
-				anchor = chat.Messages[i].text()
-				break
-			}
-		}
+		anchor = firstAnthropicUserText(req)
 	}
 	// JSON gives unambiguous boundaries even when a caller includes separators.
 	seed, _ := json.Marshal([]string{e.ID, node.RequestScope(ctx), anchor})
@@ -81,10 +73,12 @@ func claudeFingerprint(text, version string) string {
 }
 
 func firstAnthropicUserText(req map[string]any) string {
-	msgs, _ := req["messages"].([]map[string]any)
-	for _, msg := range msgs {
+	for _, msg := range messageList(req) {
 		if msg["role"] != "user" {
 			continue
+		}
+		if s, ok := msg["content"].(string); ok {
+			return s
 		}
 		blocks, _ := msg["content"].([]any)
 		for _, raw := range blocks {
@@ -99,12 +93,25 @@ func firstAnthropicUserText(req map[string]any) string {
 	return ""
 }
 
-func applyClaudeOAuthProfile(ctx context.Context, req map[string]any, chat *chatRequest, e *Entry, tok *Token) (http.Header, error) {
+func applyClaudeOAuthProfile(ctx context.Context, req map[string]any, e *Entry, tok *Token) (http.Header, error) {
 	if e.Identity == nil || e.Identity.DeviceID == "" || e.Identity.SessionKey == "" {
 		return nil, fmt.Errorf("provider identity is missing; reload the saved provider")
 	}
 	if tok.AccountUUID == "" {
 		return nil, &node.StatusError{Status: http.StatusUnauthorized, Body: "Anthropic account UUID is missing; sign in again to enable the claude-code profile"}
+	}
+	// The session is the conversation's, read before the request changes.
+	session := claudeSession(ctx, e, req)
+	if isClaudeCodeRequest(req) {
+		// Claude Code's own request already has the shape: only the billing
+		// line (it fingerprints the buyer's client) and the account it acts
+		// for change.
+		system := req["system"].([]any)
+		system[0] = map[string]any{"type": "text", "text": fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli;", claudeCLIVersion, claudeFingerprint(firstAnthropicUserText(req), claudeCLIVersion))}
+		return claudeProfileHeader(req, e, tok, session), nil
+	}
+	if s, ok := req["system"].(string); ok {
+		req["system"] = []any{map[string]any{"type": "text", "text": s}}
 	}
 	var original []string
 	var originalCache any
@@ -128,7 +135,10 @@ func applyClaudeOAuthProfile(ctx context.Context, req map[string]any, chat *chat
 			{"role": "user", "content": []any{instruction}},
 			{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "Understood. I will follow these instructions."}}},
 		}
-		req["messages"] = append(messages, req["messages"].([]map[string]any)...)
+		for _, m := range messageList(req) {
+			messages = append(messages, m)
+		}
+		req["messages"] = messages
 	}
 	// Compute only after system migration has settled the first user message.
 	billing := fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli;", claudeCLIVersion, claudeFingerprint(firstAnthropicUserText(req), claudeCLIVersion))
@@ -141,7 +151,12 @@ func applyClaudeOAuthProfile(ctx context.Context, req map[string]any, chat *chat
 	if _, ok := req["tools"]; !ok {
 		req["tools"] = []any{}
 	}
-	session := claudeSession(ctx, e, chat)
+	return claudeProfileHeader(req, e, tok, session), nil
+}
+
+// claudeProfileHeader sets the request's metadata to the seller's account and
+// returns the headers Claude Code sends.
+func claudeProfileHeader(req map[string]any, e *Entry, tok *Token, session string) http.Header {
 	uid, _ := json.Marshal(claudeUserID{DeviceID: e.Identity.DeviceID, AccountUUID: tok.AccountUUID, SessionID: session})
 	req["metadata"] = map[string]any{"user_id": string(uid)}
 	normalizeAnthropicCache(req)
@@ -157,7 +172,7 @@ func applyClaudeOAuthProfile(ctx context.Context, req map[string]any, chat *chat
 	}
 	h.Set("X-Claude-Code-Session-Id", session)
 	h.Set("X-Client-Request-Id", randomUUID())
-	return h, nil
+	return h
 }
 
 func anthropicMessagesURL(base string, beta bool) (string, error) {

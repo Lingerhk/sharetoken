@@ -76,7 +76,7 @@ func (m *market) waitDispute(node string, done func(coordinator.DisputeInfo) boo
 // coordinator refunds it on the evidence alone: no human involved.
 func TestInflatedBillIsRefundedOnEvidence(t *testing.T) {
 	m := newMarket(t)
-	_, nodeKeys := m.addNode(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut)
+	_, nodeKeys := m.addNodeCfg(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut, nil, overbill)
 	m.waitOffers(1)
 	cl, _, buyerKeys := m.addBuyer(5_000_000)
 
@@ -104,7 +104,7 @@ func TestInflatedBillIsRefundedOnEvidence(t *testing.T) {
 // the job, so the same dispute waits for an arbitrator instead.
 func TestWithoutEvidenceTheDisputeWaitsForArbitration(t *testing.T) {
 	m := newMarket(t)
-	_, nodeKeys := m.addNode(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut)
+	_, nodeKeys := m.addNodeCfg(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut, nil, overbill)
 	m.waitOffers(1)
 	cl, _, _ := m.addBuyer(5_000_000)
 	cl.Evidence = false
@@ -211,7 +211,7 @@ func TestRequireTEEUsesOnlyAttestedNodes(t *testing.T) {
 // the audit job is refunded on evidence before the audit identity goes away.
 func TestAuditOfAnInflatingNodeIsAMismatchAndItsJobIsRefunded(t *testing.T) {
 	m := newMarket(t)
-	_, inflator := m.addNode(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut)
+	_, inflator := m.addNodeCfg(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut, nil, overbill)
 	m.waitOffers(1)
 	aud, err := audit.New(m.coord.Engine, audit.Config{
 		References: []audit.Reference{{
@@ -237,3 +237,6 @@ func TestAuditOfAnInflatingNodeIsAMismatchAndItsJobIsRefunded(t *testing.T) {
 		t.Fatalf("an inflating node was paid %d for audit jobs", got)
 	}
 }
+
+// overbill makes a node sign the inflated usage its model server reports.
+func overbill(c *node.Config) { c.Overbill = true }

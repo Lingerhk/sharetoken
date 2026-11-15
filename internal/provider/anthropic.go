@@ -1,17 +1,23 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"sharetoken/internal/apicompat"
 	"sharetoken/internal/node"
+	"sharetoken/internal/protocol"
 )
 
-// Anthropic speaks the Messages API: the chat-completions request is
-// rewritten into it, and its stream events back into OpenAI chunks.
+// Anthropic speaks the Messages API natively: a Messages request goes out as
+// it came (with the adaptations an API key or a subscription login needs),
+// and its events come back as they are. Requests in the other APIs reach it
+// converted by the node (package apicompat).
 
 const anthropicVersion = "2023-06-01"
 
@@ -29,40 +35,61 @@ type anthropicUpstream struct {
 	entry  *Entry
 }
 
-func (u *anthropicUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
-	chat, err := parseChat(body)
+func (u *anthropicUpstream) APIs() []string { return []string{protocol.APIMessages} }
+
+func (u *anthropicUpstream) Stream(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	if r.API != protocol.APIMessages {
+		return fmt.Errorf("anthropic: cannot send a %s request", r.API)
+	}
+	head, err := decodeObject(r.Body)
 	if err != nil {
 		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 	}
-	responseModel := chat.Model
-	if u.oauth {
-		if model := claudeOAuthModelIDs[chat.Model]; model != "" {
-			chat.Model = model
-		}
-	}
+	responseModel, _ := head["model"].(string)
 	sampling := ""
 	if u.entry != nil && u.entry.Anthropic != nil {
 		sampling = u.entry.Anthropic.Sampling
-	}
-	if err := validateAnthropicParameters(chat, sampling); err != nil {
-		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 	}
 	profile := u.entry != nil && u.entry.claudeProfile()
 	endpoint, err := anthropicMessagesURL(u.base, profile)
 	if err != nil {
 		return err
 	}
-	return u.limits.retry(func() error {
+	// The seller pays for instructions a subscription login has to add to a
+	// request that is not Claude Code's own.
+	if u.oauth && !isClaudeCodeRequest(head) {
+		if est, err := protocol.EstimatePromptTokens(protocol.APIMessages, r.Body); err == nil {
+			node.BillingOf(ctx).PromptCap = est
+		}
+	}
+	body := r.Body
+	err = u.limits.retry(func() error {
 		send := func(tok *Token) error {
-			req, err := anthropicRequest(chat, u.limits.of(responseModel))
+			// A fresh copy each time: the adaptations below change it.
+			req, err := decodeObject(body)
 			if err != nil {
 				return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 			}
+			if u.oauth {
+				if model := claudeOAuthModelIDs[responseModel]; model != "" {
+					req["model"] = model
+				}
+			}
+			model, _ := req["model"].(string)
+			dropForeignThinking(req)
+			if err := validateAnthropicRequest(req, model, sampling); err != nil {
+				return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
+			}
+			limit := u.limits.of(responseModel)
+			if limit == 0 {
+				limit = anthropicMaxOutput(model)
+			}
+			capOutput(req, limit)
 			h := u.header.Clone()
 			if u.oauth {
 				h = anthropicOAuthHeader(tok)
 				if profile {
-					h, err = applyClaudeOAuthProfile(ctx, req, chat, u.entry, tok)
+					h, err = applyClaudeOAuthProfile(ctx, req, u.entry, tok)
 					if err != nil {
 						return err
 					}
@@ -73,26 +100,223 @@ func (u *anthropicUpstream) Stream(ctx context.Context, body []byte, emit func([
 			if h == nil {
 				h = http.Header{}
 			}
+			mergeBetas(h, r.Header.Get("anthropic-beta"))
+			version := r.Header.Get("anthropic-version")
+			if version == "" {
+				version = anthropicVersion
+			}
+			h.Set("anthropic-version", version)
 			normalizeAnthropicCache(req)
-			h.Set("anthropic-version", anthropicVersion)
 			out, err := json.Marshal(req)
 			if err != nil {
 				return err
 			}
-			st := &anthropicStream{out: newChunks(responseModel, emit), tool: map[int]int{}}
-			if err := postSSE(ctx, endpoint, h, out, st.event); err != nil {
-				return err
+			done := false
+			err = postSSE(ctx, endpoint, h, out, func(data []byte) error {
+				typ, msg := eventType(data)
+				switch typ {
+				case "error":
+					status := http.StatusBadGateway
+					if strings.Contains(msg, "overloaded") {
+						status = http.StatusServiceUnavailable
+					}
+					return &node.StatusError{Status: status, Body: clip(msg, 300)}
+				case "message_stop":
+					done = true
+				}
+				return emit(append([]byte(nil), data...))
+			})
+			if err == nil && !done {
+				err = fmt.Errorf("the stream ended before the message did")
 			}
-			if !st.done {
-				return fmt.Errorf("the stream ended before the message did")
-			}
-			return nil
+			return err
 		}
 		if u.ts != nil {
 			return withToken(ctx, u.ts, send)
 		}
 		return send(nil)
-	}, body)
+	}, r.Body)
+	// A conversation that moved from another seller's account may carry
+	// thinking signed for that account: once refused, it goes without.
+	var se *node.StatusError
+	if errors.As(err, &se) && se.Status == http.StatusBadRequest && strings.Contains(strings.ToLower(se.Body), "signature") {
+		if stripped, ok := withoutThinking(r.Body); ok {
+			body = stripped
+			return u.Stream(ctx, &node.Request{API: r.API, Header: r.Header, Body: body, Op: r.Op, Limit: r.Limit}, emit)
+		}
+	}
+	return err
+}
+
+// withoutThinking removes every thinking block from a Messages request's
+// history (and the thinking setting, which a tool loop without its thinking
+// would make the API refuse).
+func withoutThinking(body []byte) ([]byte, bool) {
+	req, err := decodeObject(body)
+	if err != nil {
+		return nil, false
+	}
+	changed := false
+	for _, m := range messageList(req) {
+		blocks, ok := m["content"].([]any)
+		if !ok {
+			continue
+		}
+		out := blocks[:0]
+		for _, raw := range blocks {
+			if b, _ := raw.(map[string]any); b["type"] == "thinking" || b["type"] == "redacted_thinking" {
+				changed = true
+				continue
+			}
+			out = append(out, raw)
+		}
+		if len(out) == 0 {
+			out = append(out, map[string]any{"type": "text", "text": "(empty)"})
+		}
+		m["content"] = out
+	}
+	if !changed {
+		return nil, false
+	}
+	delete(req, "thinking")
+	b, err := json.Marshal(req)
+	return b, err == nil
+}
+
+// dropForeignThinking removes thinking blocks from the history that no
+// Anthropic model signed: those another upstream's reasoning was carried in
+// (apicompat), and those a chat history gave back without a signature. The
+// API refuses them; the model's own stay, as it needs them during a tool loop.
+func dropForeignThinking(req map[string]any) {
+	for _, m := range messageList(req) {
+		blocks, ok := m["content"].([]any)
+		if !ok {
+			continue
+		}
+		out := blocks[:0]
+		for _, raw := range blocks {
+			b, _ := raw.(map[string]any)
+			switch b["type"] {
+			case "thinking":
+				sig, _ := b["signature"].(string)
+				if sig == "" || apicompat.IsConverted(sig) {
+					continue
+				}
+			case "redacted_thinking":
+				if d, _ := b["data"].(string); d == "" {
+					continue
+				}
+			}
+			out = append(out, raw)
+		}
+		if len(out) == 0 {
+			out = append(out, map[string]any{"type": "text", "text": "(empty)"})
+		}
+		m["content"] = out
+	}
+}
+
+// decodeObject decodes a JSON object keeping numbers exact.
+func decodeObject(body []byte) (map[string]any, error) {
+	d := json.NewDecoder(bytes.NewReader(body))
+	d.UseNumber()
+	var m map[string]any
+	if err := d.Decode(&m); err != nil || m == nil {
+		return nil, fmt.Errorf("the request is not a JSON object")
+	}
+	return m, nil
+}
+
+// eventType reads an event's type and, for an error event, its message.
+func eventType(data []byte) (typ, msg string) {
+	var ev struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"error"`
+		Message  string `json:"message"`
+		Response struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(data, &ev) != nil {
+		return "", ""
+	}
+	msg = strings.TrimSpace(strings.Join([]string{ev.Error.Type, ev.Error.Code, ev.Error.Message, ev.Message, ev.Response.Error.Code, ev.Response.Error.Message}, " "))
+	return ev.Type, msg
+}
+
+// mergeBetas adds the buyer's betas (already filtered by the node) to those
+// h asks for.
+func mergeBetas(h http.Header, client string) {
+	var all []string
+	seen := map[string]bool{}
+	for _, list := range []string{h.Get("anthropic-beta"), client} {
+		for _, b := range strings.Split(list, ",") {
+			if b = strings.TrimSpace(b); b != "" && !seen[b] {
+				seen[b] = true
+				all = append(all, b)
+			}
+		}
+	}
+	if len(all) > 0 {
+		h.Set("anthropic-beta", strings.Join(all, ","))
+	}
+}
+
+// capOutput lowers max_tokens to the model's limit, and a thinking budget
+// below it (Anthropic wants budget_tokens < max_tokens).
+func capOutput(req map[string]any, limit uint64) {
+	maxTokens := number(req["max_tokens"])
+	if maxTokens == 0 || maxTokens > limit {
+		maxTokens = limit
+	}
+	req["max_tokens"] = maxTokens
+	if th, ok := req["thinking"].(map[string]any); ok && th["type"] == "enabled" {
+		if b := number(th["budget_tokens"]); b >= maxTokens {
+			if maxTokens <= 1024 {
+				delete(req, "thinking")
+			} else {
+				th["budget_tokens"] = maxTokens - 1
+			}
+		}
+	}
+}
+
+func number(v any) uint64 {
+	switch n := v.(type) {
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil || i < 0 {
+			f, _ := n.Float64()
+			return uint64(max(f, 0))
+		}
+		return uint64(i)
+	case float64:
+		return uint64(max(n, 0))
+	case uint64:
+		return n
+	case int:
+		return uint64(max(n, 0))
+	}
+	return 0
+}
+
+// isClaudeCodeRequest reports whether the request is Claude Code's own (its
+// system prompt opens with Claude Code's billing line).
+func isClaudeCodeRequest(req map[string]any) bool {
+	blocks, _ := req["system"].([]any)
+	if len(blocks) == 0 {
+		return false
+	}
+	b, _ := blocks[0].(map[string]any)
+	text, _ := b["text"].(string)
+	return strings.HasPrefix(text, "x-anthropic-billing-header:")
 }
 
 // claudeOAuthModelIDs gives the dated ID of the short model names a
@@ -103,316 +327,39 @@ var claudeOAuthModelIDs = map[string]string{
 	"claude-haiku-4-5":  "claude-haiku-4-5-20251001",
 }
 
-// claudeCodeSystem puts the Claude Code identity line before whatever system
-// blocks anthropicRequest built (which may be none).
+// claudeCodeSystem puts the Claude Code identity line before the request's
+// system prompt (a string or blocks, or none), unless it is there already.
 func claudeCodeSystem(system any) []any {
 	id := map[string]any{"type": "text", "text": claudeCodeIdentity}
-	if blocks, ok := system.([]any); ok {
-		return append([]any{id}, blocks...)
+	var blocks []any
+	switch s := system.(type) {
+	case string:
+		if s != "" {
+			blocks = []any{map[string]any{"type": "text", "text": s}}
+		}
+	case []any:
+		blocks = s
 	}
-	return []any{id}
+	for _, raw := range blocks {
+		if b, ok := raw.(map[string]any); ok && b["text"] == claudeCodeIdentity {
+			return blocks
+		}
+	}
+	return append([]any{id}, blocks...)
 }
 
 // anthropicMaxOutput is the output limit of a Claude model, for those that
-// refuse the node-wide one.
+// refuse a larger one.
 func anthropicMaxOutput(model string) uint64 {
 	switch {
 	case strings.Contains(model, "claude-3-haiku"), strings.Contains(model, "claude-3-opus"), strings.Contains(model, "claude-3-sonnet"):
 		return 4096
 	case strings.Contains(model, "claude-3-5"):
 		return 8192
+	case strings.Contains(model, "opus-4-0"), strings.Contains(model, "opus-4-1"), strings.Contains(model, "opus-4-2025"):
+		return 32000
 	}
-	return 32000 // Opus 4 and 4.1; later models take more, and the node asks for no more than 32768
-}
-
-// anthropicRequest turns a chat-completions request into a Messages request.
-func anthropicRequest(chat *chatRequest, limit uint64) (map[string]any, error) {
-	if limit == 0 {
-		limit = anthropicMaxOutput(chat.Model)
-	}
-	maxTokens := chat.MaxTokens
-	if maxTokens == 0 || maxTokens > limit {
-		maxTokens = limit
-	}
-	req := map[string]any{"model": chat.Model, "max_tokens": maxTokens, "stream": true}
-
-	var system []any
-	var msgs []map[string]any
-	// Consecutive messages of one role become one: tool results, which
-	// OpenAI sends as a message each, are blocks of a single user turn.
-	add := func(role string, blocks ...any) {
-		if len(blocks) == 0 {
-			return
-		}
-		if n := len(msgs); n > 0 && msgs[n-1]["role"] == role {
-			msgs[n-1]["content"] = append(msgs[n-1]["content"].([]any), blocks...)
-			return
-		}
-		msgs = append(msgs, map[string]any{"role": role, "content": blocks})
-	}
-	for i := range chat.Messages {
-		m := &chat.Messages[i]
-		for _, p := range m.parts() {
-			if err := p.CacheControl.valid(); err != nil {
-				return nil, err
-			}
-		}
-		switch m.Role {
-		case "system", "developer":
-			for _, p := range m.parts() {
-				if (p.Type == "" || p.Type == "text") && p.Text != "" {
-					block := map[string]any{"type": "text", "text": p.Text}
-					if p.CacheControl != nil {
-						block["cache_control"] = p.CacheControl.value()
-					}
-					system = append(system, block)
-				}
-			}
-		case "user":
-			add("user", anthropicBlocks(m)...)
-		case "assistant":
-			blocks, err := anthropicThinkingHistory(m.AnthropicThinking)
-			if err != nil {
-				return nil, err
-			}
-			blocks = append(blocks, anthropicBlocks(m)...)
-			for _, tc := range m.ToolCalls {
-				blocks = append(blocks, map[string]any{"type": "tool_use", "id": tc.ID, "name": tc.Function.Name, "input": rawObject(tc.Function.Arguments)})
-			}
-			add("assistant", blocks...)
-		case "tool":
-			content := anthropicBlocks(m)
-			if len(content) == 0 {
-				content = []any{map[string]any{"type": "text", "text": ""}}
-			}
-			add("user", map[string]any{"type": "tool_result", "tool_use_id": m.ToolCallID, "content": content})
-		default:
-			return nil, fmt.Errorf("unsupported message role %q", m.Role)
-		}
-	}
-	if len(msgs) == 0 {
-		return nil, fmt.Errorf("the request has no user message")
-	}
-	req["messages"] = msgs
-
-	wantJSON, _, schema := chat.jsonSchema()
-	if wantJSON {
-		hint := "Answer with a single JSON object and nothing else."
-		if len(schema) > 0 {
-			hint = "Answer with a single JSON object that matches this JSON schema, and nothing else:\n" + string(schema)
-		}
-		system = append(system, map[string]any{"type": "text", "text": hint})
-	}
-	if len(system) > 0 {
-		req["system"] = system
-	}
-
-	// Current Claude models refuse temperature together with top_p.
-	switch {
-	case chat.Temperature != nil:
-		req["temperature"] = min(*chat.Temperature, 1) // OpenAI's range is 0..2, Anthropic's 0..1
-	case chat.TopP != nil:
-		req["top_p"] = *chat.TopP
-	}
-	if s := chat.stops(); len(s) > 0 {
-		req["stop_sequences"] = s
-	}
-	if chat.User != "" {
-		req["metadata"] = map[string]any{"user_id": chat.User}
-	}
-	mode, name := chat.toolChoice()
-	if len(chat.Tools) > 0 && mode != "none" {
-		var tools []any
-		for _, t := range chat.Tools {
-			if t.Type != "" && t.Type != "function" {
-				continue
-			}
-			schema := t.Function.Parameters
-			if len(schema) == 0 || string(schema) == "null" {
-				schema = json.RawMessage(`{"type":"object","properties":{}}`)
-			}
-			tool := map[string]any{"name": t.Function.Name, "input_schema": schema}
-			if err := t.CacheControl.valid(); err != nil {
-				return nil, err
-			}
-			if t.CacheControl != nil {
-				tool["cache_control"] = t.CacheControl.value()
-			}
-			if t.Function.Description != "" {
-				tool["description"] = t.Function.Description
-			}
-			tools = append(tools, tool)
-		}
-		if len(tools) > 0 {
-			req["tools"] = tools
-			switch {
-			case name != "":
-				req["tool_choice"] = map[string]any{"type": "tool", "name": name}
-			case mode == "required":
-				req["tool_choice"] = map[string]any{"type": "any"}
-			case mode == "auto":
-				req["tool_choice"] = map[string]any{"type": "auto"}
-			}
-		}
-	}
-	return req, nil
-}
-
-// anthropicBlocks turns a message's text and images into content blocks.
-func anthropicBlocks(m *chatMessage) []any {
-	var out []any
-	for _, p := range m.parts() {
-		before := len(out)
-		switch p.Type {
-		case "text", "":
-			if p.Text != "" {
-				out = append(out, map[string]any{"type": "text", "text": p.Text})
-			}
-		case "image_url":
-			if mt, data, ok := dataURL(p.ImageURL.URL); ok {
-				out = append(out, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": mt, "data": data}})
-			} else if p.ImageURL.URL != "" {
-				out = append(out, map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": p.ImageURL.URL}})
-			}
-		}
-		if p.CacheControl != nil && len(out) > before {
-			out[len(out)-1].(map[string]any)["cache_control"] = p.CacheControl.value()
-		}
-	}
-	return out
-}
-
-// anthropicStream turns Messages stream events into chunks.
-type anthropicStream struct {
-	out      *chunks
-	tool     map[int]int // content block index → tool call index
-	prompt   uint64
-	output   uint64
-	reason   string
-	done     bool
-	thinking map[int]*anthropicThinkingBlock
-}
-
-func (s *anthropicStream) event(data []byte) error {
-	var ev struct {
-		Type    string `json:"type"`
-		Index   int    `json:"index"`
-		Message struct {
-			Usage anthropicUsage `json:"usage"`
-		} `json:"message"`
-		ContentBlock struct {
-			Type      string `json:"type"`
-			ID        string `json:"id"`
-			Name      string `json:"name"`
-			Text      string `json:"text"`
-			Thinking  string `json:"thinking"`
-			Signature string `json:"signature"`
-			Data      string `json:"data"`
-		} `json:"content_block"`
-		Delta struct {
-			Type        string `json:"type"`
-			Text        string `json:"text"`
-			Thinking    string `json:"thinking"`
-			Signature   string `json:"signature"`
-			PartialJSON string `json:"partial_json"`
-			StopReason  string `json:"stop_reason"`
-		} `json:"delta"`
-		Usage anthropicUsage `json:"usage"`
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(data, &ev); err != nil {
-		return nil // not ours to judge: skip what cannot be read
-	}
-	switch ev.Type {
-	case "message_start":
-		s.prompt = ev.Message.Usage.prompt()
-		s.output = ev.Message.Usage.OutputTokens
-	case "content_block_start":
-		switch ev.ContentBlock.Type {
-		case "thinking", "redacted_thinking":
-			if s.thinking == nil {
-				s.thinking = map[int]*anthropicThinkingBlock{}
-			}
-			s.thinking[ev.Index] = &anthropicThinkingBlock{Type: ev.ContentBlock.Type, Thinking: ev.ContentBlock.Thinking, Signature: ev.ContentBlock.Signature, Data: ev.ContentBlock.Data}
-			return s.out.reasoning(ev.ContentBlock.Thinking)
-		case "tool_use":
-			i, err := s.out.toolStart(ev.ContentBlock.ID, ev.ContentBlock.Name, "")
-			s.tool[ev.Index] = i
-			return err
-		case "text":
-			return s.out.text(ev.ContentBlock.Text)
-		}
-	case "content_block_delta":
-		switch ev.Delta.Type {
-		case "text_delta":
-			return s.out.text(ev.Delta.Text)
-		case "thinking_delta":
-			if block := s.thinking[ev.Index]; block != nil {
-				block.Thinking += ev.Delta.Thinking
-			}
-			return s.out.reasoning(ev.Delta.Thinking)
-		case "signature_delta":
-			if block := s.thinking[ev.Index]; block != nil {
-				block.Signature += ev.Delta.Signature
-			}
-		case "input_json_delta":
-			if i, ok := s.tool[ev.Index]; ok {
-				return s.out.toolArgs(i, ev.Delta.PartialJSON)
-			}
-		}
-	case "content_block_stop":
-		if block := s.thinking[ev.Index]; block != nil {
-			delete(s.thinking, ev.Index)
-			if block.Signature != "" || block.Type == "redacted_thinking" {
-				return s.out.send(map[string]any{"anthropic_thinking": []any{block}}, "", nil)
-			}
-		}
-	case "message_delta":
-		if ev.Delta.StopReason != "" {
-			s.reason = ev.Delta.StopReason
-		}
-		if ev.Usage.OutputTokens > 0 {
-			s.output = ev.Usage.OutputTokens
-		}
-		if p := ev.Usage.prompt(); p > 0 {
-			s.prompt = p
-		}
-	case "message_stop":
-		s.done = true
-		reason := "stop"
-		switch s.reason {
-		case "max_tokens":
-			reason = "length"
-		case "tool_use":
-			reason = "tool_calls"
-		case "refusal":
-			reason = "content_filter"
-		}
-		return s.out.finish(reason, s.prompt, s.output)
-	case "error":
-		status := http.StatusBadGateway
-		if ev.Error.Type == "overloaded_error" {
-			status = http.StatusServiceUnavailable
-		}
-		return &node.StatusError{Status: status, Body: ev.Error.Type + ": " + ev.Error.Message}
-	}
-	return nil
-}
-
-type anthropicUsage struct {
-	InputTokens         uint64 `json:"input_tokens"`
-	OutputTokens        uint64 `json:"output_tokens"`
-	CacheCreationTokens uint64 `json:"cache_creation_input_tokens"`
-	CacheReadTokens     uint64 `json:"cache_read_input_tokens"`
-}
-
-// prompt is everything the request sent in: cached parts are counted apart
-// by Anthropic and belong to the prompt all the same.
-func (u anthropicUsage) prompt() uint64 {
-	return u.InputTokens + u.CacheCreationTokens + u.CacheReadTokens
+	return 64000 // Sonnet 4.x and later models; the node asks for no more than the reservation covers
 }
 
 func anthropicModels(ctx context.Context, base string, header http.Header) ([]string, error) {

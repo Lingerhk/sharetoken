@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -144,20 +145,37 @@ type codexUpstream struct {
 	ts   TokenSource
 }
 
-func (u *codexUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
-	chat, err := parseChat(body)
-	if err != nil {
-		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
+func (u *codexUpstream) APIs() []string { return []string{protocol.APIResponses} }
+
+func (u *codexUpstream) Stream(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	if r.API != protocol.APIResponses {
+		return fmt.Errorf("codex: cannot send a %s request", r.API)
 	}
-	req, err := responsesRequest(chat)
-	if err != nil {
-		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
-	}
-	estPrompt, _ := protocol.EstimatePromptTokens(body)
-	session := randomUUID()
+	session := u.session(r)
 	return withToken(ctx, u.ts, func(tok *Token) error {
 		h := codexHeader(tok)
 		h.Set("session_id", session)
-		return streamResponses(ctx, u.base+"/responses", h, req, chat.Model, chat.MaxTokens, estPrompt, emit)
+		return retryWithoutReasoning(r.Body, func(body []byte) error {
+			return streamCodex(ctx, u.base+"/responses", h, body, emit)
+		})
 	})
+}
+
+// Compact implements node.Compactor with the backend's /responses/compact.
+func (u *codexUpstream) Compact(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	session := u.session(r)
+	return withToken(ctx, u.ts, func(tok *Token) error {
+		h := codexHeader(tok)
+		h.Set("session_id", session)
+		return compactCodex(ctx, u.base+"/responses/compact", h, r.Body, emit)
+	})
+}
+
+// session is the conversation's Codex session: the buyer's, which keeps the
+// backend's prompt cache of the conversation, or a new one.
+func (u *codexUpstream) session(r *node.Request) string {
+	if s := r.Header.Get("session_id"); s != "" {
+		return s
+	}
+	return randomUUID()
 }

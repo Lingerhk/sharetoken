@@ -84,7 +84,7 @@ type respWriter struct {
 	enc      *protocol.ResponseEncoder
 	pending  int // uncompressed bytes not yet in a frame
 	pendText strings.Builder
-	usage    *protocol.Usage
+	meter    *protocol.UsageMeter // the usage the model server reported; set before the first Write
 	frames   []frame
 	kept     int // bytes of frames still kept
 	dropped  int // frames[:dropped] were dropped
@@ -140,7 +140,7 @@ func (rw *respWriter) kick() {
 // Write adds one upstream payload. It fails once the buyer cancelled or is
 // gone for good.
 func (rw *respWriter) Write(payload []byte) error {
-	info, perr := protocol.ParseChunk(payload)
+	info, perr := protocol.ParseEvent(rw.t.API, payload)
 	rw.mu.Lock()
 	for rw.pending > maxPending && rw.err == nil {
 		rw.cond.Wait()
@@ -157,8 +157,8 @@ func (rw *respWriter) Write(payload []byte) error {
 	rw.pending += len(payload)
 	if perr == nil {
 		rw.pendText.WriteString(info.Text())
-		if info.Usage != nil {
-			rw.usage = info.Usage
+		if rw.meter != nil {
+			rw.meter.Add(info)
 		}
 	}
 	rw.mu.Unlock()

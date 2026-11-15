@@ -442,7 +442,7 @@ func (a *Agent) setupBuyer() error {
 	}
 	a.buyer = b
 	a.proxy = &buyer.Proxy{Client: b, BudgetMicros: a.cfg.Buy.BudgetMicros, MaxPriceIn: a.cfg.Buy.MaxPriceIn,
-		MaxPriceOut: a.cfg.Buy.MaxPriceOut, RequireTEE: a.cfg.Buy.RequireTEE}
+		MaxPriceOut: a.cfg.Buy.MaxPriceOut, RequireTEE: a.cfg.Buy.RequireTEE, RequireNative: a.cfg.Buy.RequireNative}
 	return nil
 }
 
@@ -903,7 +903,11 @@ func (a *Agent) shareModelsLocked(sc ShareConfig) ([]node.ModelConfig, error) {
 	var models []node.ModelConfig
 	seen := map[string]string{}
 	add := func(source string, up node.Upstream, ms []node.ModelConfig) {
-		up = &watchedUpstream{a: a, source: source, up: up}
+		wu := &watchedUpstream{a: a, source: source, up: up}
+		up = wu
+		if _, ok := wu.up.(node.Compactor); ok {
+			up = watchedCompactor{wu}
+		}
 		for _, m := range ms {
 			if other, dup := seen[m.ID]; dup {
 				a.warn("source:"+source+":"+m.ID, fmt.Sprintf("%s: model ID %s is already sold from %s; not sold twice", source, m.ID, other))
@@ -964,8 +968,22 @@ func (w *watchedUpstream) ReadyAt() time.Time {
 	return time.Time{}
 }
 
-func (w *watchedUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
-	err := w.up.Stream(ctx, body, emit)
+func (w *watchedUpstream) APIs() []string { return w.up.APIs() }
+
+func (w *watchedUpstream) Stream(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	return w.watch(w.up.Stream(ctx, r, emit))
+}
+
+// watchedCompactor is a watchedUpstream whose model server compacts natively.
+type watchedCompactor struct{ *watchedUpstream }
+
+func (w watchedCompactor) Compact(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	return w.watch(w.up.(node.Compactor).Compact(ctx, r, emit))
+}
+
+// watch tells the user about err when it says the credentials are refused,
+// the balance is gone or the provider limits the rate.
+func (w *watchedUpstream) watch(err error) error {
 	msg := ""
 	var se *node.StatusError
 	if errors.As(err, &se) {
