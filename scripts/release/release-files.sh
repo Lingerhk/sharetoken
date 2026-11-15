@@ -15,7 +15,9 @@
 #                          --unsigned leaves it out (a trial run; nothing to publish).
 #   RELEASE-<version>.json version, commit ($ST_COMMIT, else HEAD) and $ST_BUILD_TIME,
 #                          which must be the build time every package was built with.
-#   RELEASE-<version>.<lang>.md  release-notes/<lang>.md if there are any, checked for size and summary length.
+#   RELEASE-<version>.<lang>.md  the release notes, <lang>.md in $ST_RELEASE_NOTES (by default
+#                          local/release-notes/<version>, outside the repository) if there are
+#                          any, checked for size and summary length.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 V=${1:-}
@@ -32,6 +34,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 KEY=${ST_RELEASE_KEY:-local/keys/release-signing.pem}
+NOTES=${ST_RELEASE_NOTES:-local/release-notes/$V}
 
 check() {
   if [ -z "$UNSIGNED" ]; then
@@ -61,8 +64,8 @@ want 2 "Linux packages" dist/sharetoken-"$V"-linux-*.deb
 
 # The first paragraph line of the notes is shown on one line: keep it short.
 # Characters are counted as UTF-8 lead bytes, so the locale does not matter.
-for f in release-notes/*.md; do
-  [ -e "$f" ] || continue # notes are optional: no release-notes/ means none
+for f in "$NOTES"/*.md; do
+  [ -e "$f" ] || continue # notes are optional: no notes directory means none
   lang=$(basename "$f" .md)
   [ "$(wc -c < "$f")" -le 4096 ] || { echo "$f is larger than 4096 bytes" >&2; exit 2; }
   summary=$(grep -v -E '^[[:space:]]*($|#|[-*] )' "$f" | head -1 || true)
@@ -79,7 +82,7 @@ if [ -z "$UNSIGNED" ]; then
 fi
 printf '{"version":"%s","commit":"%s","build_time":"%s"}\n' "$V" "$COMMIT" "$ST_BUILD_TIME" > "dist/RELEASE-$V.json"
 OUT+=("dist/RELEASE-$V.json")
-for f in release-notes/*.md; do
+for f in "$NOTES"/*.md; do
   [ -e "$f" ] || continue
   cp "$f" "dist/RELEASE-$V.$(basename "$f" .md).md"
   OUT+=("dist/RELEASE-$V.$(basename "$f" .md).md")

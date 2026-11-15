@@ -10,7 +10,8 @@
 # packages share. The portal reads it to tell clients about the release
 # (GET /api/v1/update); the version alone may not tell 1.0.0 builds apart, and the commit and
 # build time are what tell a client a newer build exists.
-# release-notes/<lang>.md, when there, go along as RELEASE-<version>.<lang>.md: what
+# The release notes, <lang>.md in $ST_RELEASE_NOTES (by default local/release-notes/<version>,
+# never in the repository), when there, go along as RELEASE-<version>.<lang>.md: what
 # this build brings, shown by the clients that are offered it (docs/versioning.md).
 # SIGNATURES-<version> goes along too: the release key's signature of every package
 # (scripts/release/sign-packages.go), without which clients do not install a package by

@@ -14,6 +14,8 @@ gui/rsrc_windows_*.syso
 
 # Local only
 local/
+# Release notes live in local/release-notes/<version>/ (scripts/release/release-files.sh), never here
+release-notes/
 workspace/
 
 # Editors and operating systems
