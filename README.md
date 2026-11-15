@@ -94,7 +94,7 @@ threat model, including the seller's and the operator's side.
 | The coordinator, the relays and the network cannot read the prompt or the answer | The data path runs buyer to seller. It is encrypted twice: libp2p Noise end to end (also across a relay), and a sealed box per message (ephemeral X25519, HKDF-SHA256, AES-256-GCM) bound to the job and the chunk number. |
 | The answer was not altered, truncated or reordered | The seller signs a receipt over the hashes of the sealed request and of every sealed chunk. The client recomputes them from what it actually sent and received. |
 | An inflated bill is refunded | The client rejects a receipt whose token counts are implausible and discloses **that one job's** key. The coordinator verifies the transcript against the seller's own signature, counts the tokens with a reference tokenizer and decides on the facts. |
-| The model is the one advertised | The coordinator audits sellers at random as an ordinary buyer and replays the same request on its own reference copy of the model. Repeated mismatches suspend the seller. |
+| The model is the one advertised | The coordinator audits sellers at random as an ordinary buyer, through its own relays, with a few open-ended questions; its reference copy of the model checks every answer token by token. Repeated mismatches suspend the seller. |
 | Even the seller cannot read the prompt (optional) | Sellers running in an AMD SEV-SNP or Intel TDX confidential VM publish a hardware quote that binds both of their keys to a measured image. A buyer can require this. |
 | The books balance | A double-entry ledger in MySQL. Every movement is a balanced, journaled transfer, and the journal is replayed against the balances on startup. |
 | A mailbox alone is not enough to run the platform | There are no passwords: people sign in with a short-lived code mailed to them. Administrators must also use TOTP two-step verification, which anyone else can turn on. API tokens are stored as SHA-256 only, and wrong codes are throttled. |
@@ -110,10 +110,11 @@ before relying on the network:
 - **A seller that resells a hosted API forwards your prompt to that provider**,
   under the seller's account and that provider's data policy.
 - **Audits are statistical and need a reference.** They make cheating unprofitable
-  rather than impossible, and they cover only models for which the coordinator
-  holds a reference copy. That means open-weight models. For closed, hosted
-  models, the integrity and billing checks above still apply, but nothing proves
-  which model produced the text.
+  rather than impossible, and they cover only models whose reference reports
+  log-probabilities: open-weight models on a self-hosted server, DeepSeek, and
+  OpenAI's non-reasoning models. For the others (Claude, Gemini) the integrity
+  and billing checks above still apply, but nothing proves which model produced
+  the text.
 - **A CPU TEE does not cover GPU memory.** Treat GPU sellers as attested on the
   CPU side only.
 - **The coordinator and the portal are single operators' services.** They cannot

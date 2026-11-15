@@ -107,6 +107,20 @@ func (s *Service) Relays() []p2p.RelayStatus { return s.relays.Status() }
 // trailing /p2p/<coordinator>), the form a peerstore holds.
 func (s *Service) RelayAddrs() []ma.Multiaddr { return s.relays.CircuitAddrs() }
 
+// OfficialRelays lists the relays the coordinator reserves on (the -relay
+// ones and the enabled ones registered in the database), whether or not a
+// reservation currently holds. They are the only relays the auditor dials
+// nodes through.
+func (s *Service) OfficialRelays() []peer.ID {
+	var out []peer.ID
+	for _, r := range s.relays.Status() {
+		if ai, err := p2p.ParseRelay(r.Addr); err == nil {
+			out = append(out, ai.ID)
+		}
+	}
+	return out
+}
+
 // CircuitAddrs returns the coordinator's addresses through its relays.
 func (s *Service) CircuitAddrs() []string {
 	var out []string

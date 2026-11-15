@@ -266,4 +266,4 @@ The number of requests handled at the same time is 2 by default, set by `share.c
 
 ## How cheating is prevented {#audit}
 
-The coordinator places random jobs under a new identity and recomputes them on a reference model to compare. If two checks in a row do not match, the node is paused from taking jobs for 24 hours. Make sure the model you share matches its ID, and do not overstate usage: buyers recompute the hash themselves and can get a refund with the evidence.
+The coordinator places a few random jobs under a new identity and has a reference copy of the model check the answers token by token. If two checks in a row do not match, the node is paused from taking jobs for 24 hours. Make sure the model you share matches its ID, and do not overstate usage: buyers recompute the hash themselves and can get a refund with the evidence.

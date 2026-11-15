@@ -450,10 +450,26 @@ func (s *Server) handleAudits(w http.ResponseWriter, r *http.Request, cu ctxUser
 			{"node", func(a coordinator.AuditRecord) string { return a.Node }, false},
 			{"model", func(a coordinator.AuditRecord) string { return a.Model }, false},
 			{"verdict", func(a coordinator.AuditRecord) string { return string(a.Verdict) }, false},
+			{"method", func(a coordinator.AuditRecord) string { return a.Method }, false},
+			{"questions", func(a coordinator.AuditRecord) string { return strconv.Itoa(a.Questions) }, true},
+			{"score", func(a coordinator.AuditRecord) string { return strconv.FormatFloat(a.Score, 'f', 4, 64) }, true},
+			{"threshold", func(a coordinator.AuditRecord) string { return strconv.FormatFloat(a.Threshold, 'f', 4, 64) }, true},
+			{"shadow", func(a coordinator.AuditRecord) string { return strconv.FormatBool(a.Shadow) }, false},
 			{"similarity", func(a coordinator.AuditRecord) string { return strconv.FormatFloat(a.Similarity, 'f', 4, 64) }, true},
 			{"detail", func(a coordinator.AuditRecord) string { return a.Detail }, false},
 		},
 	})
+}
+
+// handleAuditCalibrations lists the reference models' audit calibrations,
+// newest first.
+func (s *Server) handleAuditCalibrations(w http.ResponseWriter, _ *http.Request, _ ctxUser) {
+	cs, err := coordinator.QueryCalibrations(s.db, "", 100)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"calibrations": cs})
 }
 
 func (s *Server) handleDisputes(w http.ResponseWriter, r *http.Request, cu ctxUser) {

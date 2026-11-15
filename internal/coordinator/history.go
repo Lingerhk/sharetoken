@@ -408,7 +408,8 @@ func CountAudits(q Querier, f RangeQuery) (int64, error) {
 
 // QueryAuditsPage lists audit results over a date range, newest first.
 func QueryAuditsPage(q Querier, f RangeQuery) ([]AuditRecord, error) {
-	rows, err := q.Query(`SELECT job_id, node, model, verdict, similarity, detail, at FROM audits WHERE at >= ? AND at < ? ORDER BY at DESC, id DESC LIMIT ? OFFSET ?`,
+	rows, err := q.Query(`SELECT job_id, node, model, verdict, similarity, detail, at, method, questions, score, threshold, shadow, COALESCE(scores, '')
+		FROM audits WHERE at >= ? AND at < ? ORDER BY at DESC, id DESC LIMIT ? OFFSET ?`,
 		f.From, f.to(), f.Limit, f.Offset)
 	if err != nil {
 		return nil, err
@@ -417,10 +418,37 @@ func QueryAuditsPage(q Querier, f RangeQuery) ([]AuditRecord, error) {
 	out := []AuditRecord{}
 	for rows.Next() {
 		var r AuditRecord
-		if err := rows.Scan(&r.JobID, &r.Node, &r.Model, &r.Verdict, &r.Similarity, &r.Detail, &r.At); err != nil {
+		if err := rows.Scan(&r.JobID, &r.Node, &r.Model, &r.Verdict, &r.Similarity, &r.Detail, &r.At,
+			&r.Method, &r.Questions, &r.Score, &r.Threshold, &r.Shadow, &r.Scores); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// QueryCalibrations lists audit calibrations, newest first: of one model, or
+// of every model when model is "".
+func QueryCalibrations(q Querier, model string, limit int) ([]AuditCalibration, error) {
+	query := `SELECT at, model, method, samples, honest_mean, honest_median, honest_p001, fail_rate, threshold, drift, detail FROM audit_calibrations`
+	var args []any
+	if model != "" {
+		query += ` WHERE model = ?`
+		args = append(args, model)
+	}
+	rows, err := q.Query(query+` ORDER BY at DESC, id DESC LIMIT ?`, append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AuditCalibration{}
+	for rows.Next() {
+		var c AuditCalibration
+		if err := rows.Scan(&c.At, &c.Model, &c.Method, &c.Samples, &c.HonestMean, &c.HonestMedian, &c.HonestP001,
+			&c.FailRate, &c.Threshold, &c.Drift, &c.Detail); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

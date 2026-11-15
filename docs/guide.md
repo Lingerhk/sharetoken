@@ -270,6 +270,7 @@ coordinator -db $DSN -fee-bps 500 \
 | `portal pass-key` | The public key relays verify passes with. |
 | `coordinator id` | The coordinator's peer ID. |
 | `coordinator disputes`, `resolve <job-id> pay\|refund`, `nodes`, `audits`, `relays`, `check`, `balance <peer-id>` | Disputes and their manual resolution, node records, audits, relay registry, a check of the books, a device's balance. |
+| `coordinator audit calibrate [-samples n] [model]`, `audit try <node-peer-id> <model>`, `audit calibrations` | Measure the reference models' honest scores (and with them the audit thresholds); audit one node now, through the official relays, recorded in shadow mode; list the calibrations. |
 | `portal check-config`, `coordinator check-config`, `relay -check-config` | Validate the configuration and print the effective settings. |
 
 Operator commands work on the database directly and can run beside the live services.
@@ -393,7 +394,8 @@ Lists take `limit` (default 50, at most 500), `page` or `offset`, `from` and `to
 | `GET /api/v1/admin/relays`, `POST /api/v1/admin/relays`, `PATCH …/{id}`, `POST …/{id}/enable`, `POST …/{id}/disable`, `DELETE …/{id}` | admin | Relay registry: add, rename or set the region, enable, disable, remove. |
 | `GET /api/v1/admin/jobs?status=&user=&account=&before=&limit=` | admin | All jobs, with both accounts, dispute reason and resolution. |
 | `GET /api/v1/admin/nodes` | admin | Node reputation records, with the owning user. |
-| `GET /api/v1/admin/audits?limit=` | admin | Inference audits. |
+| `GET /api/v1/admin/audits?limit=` | admin | Inference audits (method, score and threshold, shadow, each question's score). |
+| `GET /api/v1/admin/audit-calibrations` | admin | Calibrations of the reference models: honest score distribution, threshold, drift. |
 | `GET /api/v1/admin/disputes?limit=` | admin | Disputes, the unresolved first. |
 | `POST /api/v1/admin/disputes/{job}/resolve` | admin | `{decision: "pay"\|"refund"}`: manual resolution. |
 | `GET /api/v1/admin/ledger?account=&before=&limit=` | admin | The global journal, with the user name behind each `user:<id>` account. |

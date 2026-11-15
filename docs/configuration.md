@@ -85,13 +85,20 @@ Example: [`configs/coordinator.example.yaml`](../configs/coordinator.example.yam
 | `jobs.max_offer_ttl` | — | 5m | Upper bound on the lifetime an offer may claim |
 | `jobs.job_retention` | — | 720h | How long finished jobs are kept (the ledger is kept forever) |
 | `jobs.suspend_for` | — | 24h | How long a node that failed repeated audits is left out of matching |
-| `references[]` | `-reference` (repeatable) | empty | Reference copies of models: they enable audits and exact token counts in disputes. Each entry has `id` (marketplace model ID), `upstream` (model name on the server), `url` (OpenAI-compatible base URL) and `api_key_env` |
+| `references[]` | `-reference` (repeatable) | empty | Reference copies of models: they enable audits and exact token counts in disputes. Each entry has `id` (marketplace model ID), `upstream` (model name on the server), `url` (OpenAI-compatible base URL), `api_key_env` or `api_key_file`, `verify` (how audits check answers: `vllm`, `deepseek-prefix`, `openai-div`, or `none` for the bill only; default `none`), `verify_url` (base URL audits score against; default `url`) and `params` (extra fields of audit requests, e.g. `{reasoning_effort: none}` for a model that thinks by default) |
 | `audit.interval` | `-audit-interval` | 10m | Mean time between audits; 0 turns audits off |
-| `audit.budget_micros` | `-audit-budget` | 200000 | Hold per audit job, paid from platform fees |
-| `audit.prompts_file` | `-audit-prompts` | empty | Challenge prompts, one per line. Empty: built-in randomized prompts |
-| `audit.max_tokens` | — | 96 | Output limit of a challenge |
-| `audit.match_at` | — | 0.8 | Similarity at or above which a result counts as matching |
-| `audit.mismatch_below` | — | 0.4 | Similarity below which a result counts as a mismatch |
+| `audit.budget_micros` | `-audit-budget` | 200000 | Hold per question, paid from platform fees |
+| `audit.prompts_file` | `-audit-prompts` | empty | Private question pool, one per line: plain text, or `{"system": …, "messages": […]}`. Empty: built-in open questions |
+| `audit.max_tokens` | — | 96 | Output limit of a question |
+| `audit.questions` | `-audit-questions` | 5 | Questions per audit; the verdict is on all of them together |
+| `audit.spread` | `-audit-spread` | 2m | Random pause of up to this long between an audit's questions |
+| `audit.score_tokens` | — | 64 | Positions scored per answer (`deepseek-prefix` makes one call per position) |
+| `audit.threshold` | — | 0.85 | Mean top-1 rate below which a node serves another model, until a calibration measures one for the reference |
+| `audit.margin` | — | 0.03 | `threshold + margin` and above is a match; in between, inconclusive |
+| `audit.div_fails` | — | 2 | `openai-div`: failed answers that make a mismatch; none is a match |
+| `audit.shadow` | `-audit-shadow` | true | Record verdicts without touching nodes' records (a receipt that fails its checks still counts) |
+| `audit.calibrate_every` | — | 24h | How often each scoring reference is calibrated; 0: only by `coordinator audit calibrate` |
+| `audit.calibrate_samples` | — | 40 | Questions per calibration; at least 10 |
 | `tee.policy_file` | `-tee-policy` | empty | JSON allow-list of TEE images; setting it enables `require_tee` matching |
 | `tee.online_check` | `-tee-online` | false | Also check revocations and TCB status with AMD and Intel (needs network access) |
 | `debug.pprof_listen` | `-debug` | empty | Serves Go pprof profiles, e.g. `127.0.0.1:6060`; keep it on loopback |
@@ -101,9 +108,10 @@ Example: [`configs/coordinator.example.yaml`](../configs/coordinator.example.yam
 
 Notes:
 
-- Constraints checked at start-up: `jobs.start_grace < jobs.settle_grace < jobs.dispute_window ≤ jobs.job_retention`; `0 < audit.mismatch_below < audit.match_at ≤ 1`; reference IDs are unique.
-- `-reference id=…,upstream=…,url=…[,key-env=VAR]`, when given, replaces the whole `references[]` list. `key-env` corresponds to `api_key_env`.
+- Constraints checked at start-up: `jobs.start_grace < jobs.settle_grace < jobs.dispute_window ≤ jobs.job_retention`; `0 < audit.threshold < audit.threshold + audit.margin ≤ 1`; `1 ≤ audit.div_fails ≤ audit.questions`; reference IDs are unique and `verify` is one of the four kinds.
+- `-reference id=…,upstream=…,url=…[,key-env=VAR]`, when given, replaces the whole `references[]` list. `key-env` corresponds to `api_key_env`, `verify` to `verify`.
 - `audit.interval: 0` turns audits off but keeps the reference models for exact token counting. This suits models served by a commercial API: their output is not deterministic, so audits would misjudge, and each audit costs money.
+- Hosted APIs are not fully deterministic, so audits no longer compare how alike two texts are; they check the node's answer token by token (`docs/security.md` §2.4): DeepSeek with `deepseek-prefix`, OpenAI's non-reasoning models with `openai-div`; models that report no logprobs (Claude, Gemini) can only use `none`.
 - Setting either `dev.*` option prints a warning at start-up. Never use them on a public network.
 
 ## 4. portal

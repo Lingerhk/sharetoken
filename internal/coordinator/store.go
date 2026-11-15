@@ -25,7 +25,32 @@ var Migrations = []mysqldb.Migration{
 	{Version: 6, Name: "share partners", MinReader: 6, SQL: accounts.SharingSchema + sharedJobsSchema},
 	// The API a job was in, and the prompt tokens billed at cache prices.
 	{Version: 7, Name: "job API and cache tokens", SQL: jobAPISchema},
+	// Token-level audits: method, per-question scores, shadow verdicts, and
+	// the honest score distribution of each reference model.
+	{Version: 8, Name: "token-level audits", SQL: tokenAuditSchema},
 }
+
+const tokenAuditSchema = `ALTER TABLE audits ADD COLUMN method VARCHAR(16) NOT NULL DEFAULT '',
+	ADD COLUMN questions INT NOT NULL DEFAULT 0,
+	ADD COLUMN score DOUBLE NOT NULL DEFAULT 0,
+	ADD COLUMN threshold DOUBLE NOT NULL DEFAULT 0,
+	ADD COLUMN shadow TINYINT NOT NULL DEFAULT 0,
+	ADD COLUMN scores MEDIUMTEXT NULL;
+CREATE TABLE IF NOT EXISTS audit_calibrations (
+	id            BIGINT PRIMARY KEY AUTO_INCREMENT,
+	at            BIGINT NOT NULL,
+	model         VARCHAR(255) NOT NULL,
+	method        VARCHAR(16) NOT NULL,
+	samples       INT NOT NULL,
+	honest_mean   DOUBLE NOT NULL,
+	honest_median DOUBLE NOT NULL,
+	honest_p001   DOUBLE NOT NULL,
+	fail_rate     DOUBLE NOT NULL,
+	threshold     DOUBLE NOT NULL,
+	drift         TINYINT NOT NULL DEFAULT 0,
+	detail        TEXT NOT NULL DEFAULT (''),
+	KEY audit_calibrations_by_model (model, at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;`
 
 const jobAPISchema = `ALTER TABLE jobs ADD COLUMN api VARCHAR(16) NOT NULL DEFAULT '',
 	ADD COLUMN cache_read_tokens BIGINT NOT NULL DEFAULT 0,

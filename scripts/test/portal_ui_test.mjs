@@ -440,6 +440,25 @@ try {
   await evaluate(`(() => { const i = document.querySelector('#pairings-user'); i.value = 'no-such-user'; i.dispatchEvent(new Event('input')); return true; })()`); await sleep(900);
   await assertText('没有配对关系', 'searching the pairings by account name');
 
+  // inference audits: the calibration card, token-level scores and the per-question modal
+  const now = Date.now() * 1e6;
+  sql(`INSERT INTO audit_calibrations (at, model, method, samples, honest_mean, honest_median, honest_p001, fail_rate, threshold, drift, detail)
+    VALUES (${now}, 'ui-ref-model', 'tf', 30, 0.951, 0.953, 0.903, 0, 0.883, 0, '30 questions')`);
+  const scores = JSON.stringify([{ job: 'j1', via: '12D3KooWRelay', billed: [20, 64], question: 'Explain tides to a teenager.', answer: 'Tides are <b>the</b> rise and fall of the sea.',
+    score: { method: 'tf', tokens: 64, top1: 0.68, calls: 65 } }]).replace(/'/g, "''");
+  sql(`INSERT INTO audits (at, job_id, node, model, verdict, similarity, detail, method, questions, score, threshold, shadow, scores)
+    VALUES (${now}, 'ui-audit-job', '12D3KooWNode', 'ui-ref-model', 'mismatch', 0, 'answers differ from the reference model', 'tf', 5, 0.684, 0.883, 1, '${scores}')`);
+  await goto(base + '/admin/#/audits'); await sleep(900);
+  await assertText('参考模型校准', 'the audits page shows the reference calibrations');
+  await assertText('0.883', 'with the calibrated threshold');
+  await assertText('0.684 / 0.883', 'an audit shows its score against the threshold');
+  await assertText('影子', 'and that it ran in shadow mode');
+  await clickText('main button', '明细'); await sleep(500);
+  await assertText('Explain tides to a teenager.', 'the detail modal lists each question');
+  check(!(await evaluate(`!!document.querySelector('.audit-modal .audit-val b')`)), 'with the answer as text, not HTML');
+  await shot('10c-admin-audit-detail');
+  await clickText('.modal button', '关闭'); await sleep(300);
+
   // read-only pages render
   for (const [page, label] of [['jobs', '作业'], ['nodes', '节点'], ['audits', '审计'], ['disputes', '争议'], ['partners', '共享伙伴'], ['ledger', '账本']]) {
     await goto(base + '/admin/#/' + page); await sleep(700);

@@ -85,13 +85,20 @@
 | `jobs.max_offer_ttl` | — | 5m | Offer 可声明的有效期上限 |
 | `jobs.job_retention` | — | 720h | 已完成作业保留多久（账本永久保留） |
 | `jobs.suspend_for` | — | 24h | 抽检多次失败的节点被排除在撮合之外多久 |
-| `references[]` | `-reference`（可重复） | 空 | 模型的参考副本：有了它才能抽检，争议时才能精确计 token。每项有 `id`（市场模型 ID）、`upstream`（上游服务里的模型名）、`url`（OpenAI 兼容的 base URL）和 `api_key_env` |
+| `references[]` | `-reference`（可重复） | 空 | 模型的参考副本：有了它才能抽检，争议时才能精确计 token。每项有 `id`（市场模型 ID）、`upstream`（上游服务里的模型名）、`url`（OpenAI 兼容的 base URL）、`api_key_env` 或 `api_key_file`、`verify`（抽检怎样核对回答：`vllm`、`deepseek-prefix`、`openai-div`，或只核对计费的 `none`；默认 `none`）、`verify_url`（抽检打分用的 base URL，默认同 `url`）和 `params`（抽检请求的附加字段，例如默认会思考的模型用 `{reasoning_effort: none}`） |
 | `audit.interval` | `-audit-interval` | 10m | 抽检的平均间隔；0 关闭抽检 |
-| `audit.budget_micros` | `-audit-budget` | 200000 | 每次抽检的冻结额，由平台手续费支付 |
-| `audit.prompts_file` | `-audit-prompts` | 空 | 挑战 prompt，每行一个。为空：内置的随机 prompt |
-| `audit.max_tokens` | — | 96 | 挑战的输出上限 |
-| `audit.match_at` | — | 0.8 | 相似度达到或超过它算一致 |
-| `audit.mismatch_below` | — | 0.4 | 相似度低于它算不一致 |
+| `audit.budget_micros` | `-audit-budget` | 200000 | 每道题的冻结额，由平台手续费支付 |
+| `audit.prompts_file` | `-audit-prompts` | 空 | 私有题库，每行一题：纯文本，或 `{"system": …, "messages": […]}`。为空：内置的开放题 |
+| `audit.max_tokens` | — | 96 | 每道题的输出上限 |
+| `audit.questions` | `-audit-questions` | 5 | 每次抽检的题数；按全部题目一起判定 |
+| `audit.spread` | `-audit-spread` | 2m | 同一次抽检的两道题之间随机间隔，最长这么久 |
+| `audit.score_tokens` | — | 64 | 每个回答最多核对的位置数（`deepseek-prefix` 每个位置调用一次） |
+| `audit.threshold` | — | 0.85 | top-1 命中率均值低于它，判定节点用的是别的模型；校准后改用校准出的阈值 |
+| `audit.margin` | — | 0.03 | 达到 `threshold + margin` 算一致；两者之间无结论 |
+| `audit.div_fails` | — | 2 | `openai-div`：失败几题算不一致；0 题失败算一致 |
+| `audit.shadow` | `-audit-shadow` | true | 影子模式：只记录结论，不动节点记录（收据本身没通过检查的照常处理） |
+| `audit.calibrate_every` | — | 24h | 每个能打分的参考模型多久校准一次；0：只用 `coordinator audit calibrate` 手动校准 |
+| `audit.calibrate_samples` | — | 40 | 每次校准的题数，至少 10 |
 | `tee.policy_file` | `-tee-policy` | 空 | TEE 镜像白名单 JSON；设置后启用 `require_tee` 撮合 |
 | `tee.online_check` | `-tee-online` | false | 另外向 AMD 和 Intel 查询吊销与 TCB 状态（需要联网） |
 | `debug.pprof_listen` | `-debug` | 空 | 提供 Go pprof，例如 `127.0.0.1:6060`；只放在回环地址上 |
@@ -101,9 +108,10 @@
 
 说明：
 
-- 启动时检查的约束：`jobs.start_grace < jobs.settle_grace < jobs.dispute_window ≤ jobs.job_retention`；`0 < audit.mismatch_below < audit.match_at ≤ 1`；参考模型的 ID 不能重复。
-- 给了 `-reference id=…,upstream=…,url=…[,key-env=VAR]` 时，它整体替换 `references[]`。`key-env` 对应 `api_key_env`。
-- `audit.interval: 0` 关闭抽检，但保留参考模型用于精确计 token。这适合由商业 API 提供的模型：它们的输出不确定，抽检会误判，而且每次抽检都要花钱。
+- 启动时检查的约束：`jobs.start_grace < jobs.settle_grace < jobs.dispute_window ≤ jobs.job_retention`；`0 < audit.threshold < audit.threshold + audit.margin ≤ 1`；`1 ≤ audit.div_fails ≤ audit.questions`；参考模型的 ID 不能重复，`verify` 只能是四种之一。
+- 给了 `-reference id=…,upstream=…,url=…[,key-env=VAR]` 时，它整体替换 `references[]`。`key-env` 对应 `api_key_env`，`verify` 对应 `verify`。
+- `audit.interval: 0` 关闭抽检，但保留参考模型用于精确计 token。
+- 商业 API 的输出不完全确定，抽检不再比较文本是否相似，而是逐 token 核对（`docs/zh-CN/security.md` §2.4）：DeepSeek 用 `deepseek-prefix`，OpenAI 的非推理模型用 `openai-div`，不给 logprobs 的模型（Claude、Gemini）只能 `none`。
 - 设置任何一个 `dev.*` 选项都会在启动时打印警告。绝不要在公开网络上使用。
 
 ## 4. portal

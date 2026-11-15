@@ -448,6 +448,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/admin/jobs", s.admin(s.handleAdminJobs))
 	mux.Handle("GET /api/v1/admin/nodes", s.admin(s.handleNodes))
 	mux.Handle("GET /api/v1/admin/audits", s.admin(s.handleAudits))
+	mux.Handle("GET /api/v1/admin/audit-calibrations", s.admin(s.handleAuditCalibrations))
 	mux.Handle("GET /api/v1/admin/disputes", s.admin(s.handleDisputes))
 	mux.Handle("POST /api/v1/admin/disputes/{job}/resolve", s.admin(s.handleResolveDispute))
 	mux.Handle("GET /api/v1/admin/ledger", s.admin(s.handleJournal))

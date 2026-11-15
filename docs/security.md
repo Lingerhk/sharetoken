@@ -107,13 +107,28 @@ administrator.
 A receipt proves what was returned. It does not prove which model produced it.
 Two mechanisms address that:
 
-- **Audits** (`internal/audit`). At random times the coordinator buys one
-  completion from a seller under a fresh identity, through the ordinary buyer
-  path, with a randomized prompt and greedy decoding. It sends the byte-identical
-  request to its own reference copy of the model and compares the output and the
-  usage. A clear mismatch costs reputation, and consecutive mismatches suspend
-  the seller from matching. Results in between are inconclusive and cost nothing,
-  so numeric differences across hardware do not punish honest sellers.
+- **Audits** (`internal/audit`). At random times the coordinator buys a few
+  answers (five by default) from a seller under a fresh identity, through the
+  ordinary buyer path, with open-ended questions (explanations, advice,
+  rewrites; questions with one right answer tell nothing about the model) and
+  greedy decoding. Its own reference copy of the model then reads each answer
+  token by token: with teacher forcing it reports, at every position, whether
+  the seller's token is its own first choice (a self-hosted vLLM does this in
+  one call per answer, DeepSeek's prefix completion in one call per token);
+  where the reference only reports log-probabilities for its own output
+  (OpenAI), the seller's answer must leave the reference's greedy answer, if
+  at all, at a near tie. The verdict is on the mean over all questions, and the
+  threshold is calibrated per reference: the reference scores its own answers,
+  which is what an honest seller returns, every day. The bill is checked
+  against the reference's token counts. A clear mismatch costs reputation, and
+  consecutive mismatches suspend the seller from matching; results in between
+  are inconclusive and cost nothing. A new reference starts in shadow mode
+  (verdicts recorded only), and so does one whose honest scores drifted (the
+  provider changed the model behind the name). Models whose reference reports
+  no log-probabilities (Claude, Gemini) are checked for the bill only.
+  The auditor reaches sellers only through circuits of the coordinator's own
+  relays: never directly, which would show sellers the coordinator's address,
+  and never through any other relay.
 - **Hardware attestation** (`internal/attest`). A seller in an AMD SEV-SNP or
   Intel TDX confidential VM publishes a quote, signed by the CPU, over the
   guest's launch measurement and a hash of both of its keys. A buyer that
@@ -228,11 +243,16 @@ them more than the list above.
   then also subject to that provider's policy, and the seller is responsible for
   that provider's terms of service.
 - **Audits are probabilistic and need a reference.** A seller that could tell an
-  audit from a real job could behave only when audited. Audit prompts are
-  randomized and come from a fresh identity each time, but an operator who needs
-  stronger cover should give the auditor its own network egress. Only models
-  with a reference copy can be audited, which in practice means open-weight
-  models. For closed models nothing proves which model produced the text.
+  audit from a real job could behave only when audited. Audit questions look
+  like ordinary chat and arrive through an official relay like any relayed
+  buyer's, but each audit comes from a fresh identity with greedy decoding.
+  Audits only reach sellers through official relays, so trades over direct
+  connections or a seller's own relay are not audited. A token-level check
+  shows that answers behave like the reference model's; it is not a
+  cryptographic proof. Only models whose reference reports log-probabilities
+  can be checked: open-weight models on a self-hosted server, DeepSeek, and
+  OpenAI's non-reasoning models. For the others nothing proves which model
+  produced the text.
 - **Without a reference, usage checks are loose.** The fallback token counter is
   a heuristic and catches only gross over-billing.
 - **Attestation is only as good as the image.** The allow-listed measurement must

@@ -94,9 +94,13 @@ type Client struct {
 	// the client then checks its relay path at once instead of at the next
 	// health check. It must not block.
 	OnCoordinatorUnreachable func()
-	log                      *slog.Logger
-	bg                       sync.WaitGroup // disputes being delivered in the background
-	sticky                   stickyNodes
+	// NodeAddrs, if set, chooses which of a ticket's node addresses may be
+	// dialed (the auditor keeps only circuits through official relays). A
+	// ticket left with none fails.
+	NodeAddrs func([]ma.Multiaddr) []ma.Multiaddr
+	log       *slog.Logger
+	bg        sync.WaitGroup // disputes being delivered in the background
+	sticky    stickyNodes
 }
 
 // Attestation is the buyer's TEE trust configuration.
@@ -475,6 +479,11 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 	for _, a := range t.NodeAddrs {
 		if m, err := ma.NewMultiaddr(a); err == nil {
 			addrs = append(addrs, m)
+		}
+	}
+	if c.NodeAddrs != nil {
+		if addrs = c.NodeAddrs(addrs); len(addrs) == 0 {
+			return nil, false, errors.New("no permitted address for the node")
 		}
 	}
 	c.h.Peerstore().AddAddrs(nodeID, addrs, peerstore.TempAddrTTL)
