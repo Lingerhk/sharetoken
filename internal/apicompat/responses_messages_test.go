@@ -1,6 +1,7 @@
 package apicompat
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -865,6 +866,23 @@ func TestResponsesThinkingEnvelope(t *testing.T) {
 	for _, bad := range []string{"", "gAAAA", respThinkingPrefix + "!!", respEncodeThinking(respThinkingBlock{Type: "thinking", Thinking: "no sig"})} {
 		if _, ok := respDecodeThinking(bad); ok {
 			t.Errorf("%q decoded", bad)
+		}
+	}
+}
+
+// The 5.5 models think adaptively and refuse a thinking budget.
+func TestResponsesEffortToAdaptiveThinking(t *testing.T) {
+	for model, want := range map[string]string{"claude-haiku-5-5": `{"type":"adaptive"}`, "claude-sonnet-4-6": `"enabled"`} {
+		conv, err := Convert(Responses, Messages, []byte(`{"model":"`+model+`","stream":true,"max_output_tokens":20000,"input":"hi","reasoning":{"effort":"high"}}`), Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req map[string]any
+		_ = json.Unmarshal(conv.Body, &req)
+		th, _ := json.Marshal(req["thinking"])
+		oc, _ := json.Marshal(req["output_config"])
+		if !strings.Contains(string(th), want) || string(oc) != `{"effort":"high"}` {
+			t.Errorf("%s: thinking %s output_config %s", model, th, oc)
 		}
 	}
 }

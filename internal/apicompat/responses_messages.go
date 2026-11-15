@@ -217,7 +217,12 @@ func respToMessages(body []byte, opt Options) (*Conversion, error) {
 		}
 		// Thinking cannot be forced alongside a forced tool choice, and needs
 		// the last tool-using assistant turn to start with a thinking block.
-		if budget >= 1024 && !forced && respTrailingToolTurnHasThinking(msgs) {
+		switch {
+		case AdaptiveThinking(r.model) && !forced:
+			// These models think adaptively, at the effort; they refuse a budget.
+			out["thinking"] = map[string]any{"type": "adaptive"}
+			thinking = true
+		case budget >= 1024 && !forced && respTrailingToolTurnHasThinking(msgs):
 			out["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
 			thinking = true
 		}

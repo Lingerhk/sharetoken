@@ -38,6 +38,12 @@ type anthropicUpstream struct {
 func (u *anthropicUpstream) APIs() []string { return []string{protocol.APIMessages} }
 
 func (u *anthropicUpstream) Stream(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	return u.stream(ctx, r, emit, 0)
+}
+
+// stream sends r; fixes counts the times it was sent again in a form the
+// model server asked for in a refusal.
+func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit func([]byte) error, fixes int) error {
 	if r.API != protocol.APIMessages {
 		return fmt.Errorf("anthropic: cannot send a %s request", r.API)
 	}
@@ -136,16 +142,142 @@ func (u *anthropicUpstream) Stream(ctx context.Context, r *node.Request, emit fu
 		}
 		return send(nil)
 	}, r.Body)
+	var se *node.StatusError
+	// Newer models think adaptively and refuse a budget, older ones the
+	// reverse: a request in the other form (a client that does not know the
+	// model, a conversion) is sent once more in the one asked for.
+	// A client that takes the model for a newer one may send what it does
+	// not take: mid-conversation system messages go into the user turns.
+	if errors.As(err, &se) && se.Status == http.StatusBadRequest && fixes < 2 {
+		fixed, ok := swapThinking(r.Body, se.Body)
+		if !ok {
+			fixed, ok = systemToUser(r.Body, se.Body)
+		}
+		if ok {
+			return u.stream(ctx, &node.Request{API: r.API, Header: r.Header, Body: fixed, Op: r.Op, Limit: r.Limit}, emit, fixes+1)
+		}
+	}
 	// A conversation that moved from another seller's account may carry
 	// thinking signed for that account: once refused, it goes without.
-	var se *node.StatusError
 	if errors.As(err, &se) && se.Status == http.StatusBadRequest && strings.Contains(strings.ToLower(se.Body), "signature") {
 		if stripped, ok := withoutThinking(r.Body); ok {
-			body = stripped
-			return u.Stream(ctx, &node.Request{API: r.API, Header: r.Header, Body: body, Op: r.Op, Limit: r.Limit}, emit)
+			return u.stream(ctx, &node.Request{API: r.API, Header: r.Header, Body: stripped, Op: r.Op, Limit: r.Limit}, emit, 2)
 		}
 	}
 	return err
+}
+
+// swapThinking rewrites a request's thinking into the form the model server
+// asked for in its refusal: adaptive with an effort instead of a budget, or a
+// budget instead of adaptive.
+func swapThinking(body []byte, refusal string) ([]byte, bool) {
+	toAdaptive := strings.Contains(refusal, `thinking.type.enabled`) && strings.Contains(refusal, "not supported")
+	toBudget := strings.Contains(refusal, `thinking.type.adaptive`) && strings.Contains(refusal, "not supported")
+	if !toAdaptive && !toBudget {
+		return nil, false
+	}
+	req, err := decodeObject(body)
+	if err != nil {
+		return nil, false
+	}
+	th, _ := req["thinking"].(map[string]any)
+	switch {
+	case toAdaptive && th != nil && th["type"] == "enabled":
+		budget := number(th["budget_tokens"])
+		effort := "high"
+		switch {
+		case budget <= 2048:
+			effort = "low"
+		case budget <= 8192:
+			effort = "medium"
+		}
+		req["thinking"] = map[string]any{"type": "adaptive"}
+		oc, _ := req["output_config"].(map[string]any)
+		if oc == nil {
+			oc = map[string]any{}
+		}
+		if _, ok := oc["effort"]; !ok {
+			oc["effort"] = effort
+		}
+		req["output_config"] = oc
+	case toBudget && th != nil && th["type"] == "adaptive":
+		effort := "medium"
+		if oc, ok := req["output_config"].(map[string]any); ok {
+			if e, ok := oc["effort"].(string); ok {
+				effort = e
+			}
+			delete(oc, "effort")
+			if len(oc) == 0 {
+				delete(req, "output_config")
+			}
+		}
+		budget := map[string]uint64{"low": 1024, "medium": 4096, "high": 10240, "xhigh": 32768, "max": 32768}[effort]
+		if budget == 0 {
+			budget = 4096
+		}
+		if mt := number(req["max_tokens"]); mt > 0 && budget >= mt {
+			budget = mt - 1
+		}
+		if budget < 1024 {
+			delete(req, "thinking")
+		} else {
+			req["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
+		}
+	default:
+		return nil, false
+	}
+	b, err := json.Marshal(req)
+	return b, err == nil
+}
+
+// systemToUser answers a refusal of role "system" in messages: each such
+// message becomes text of the user turn it joins, marked as Claude Code marks
+// system reminders for models that take none.
+func systemToUser(body []byte, refusal string) ([]byte, bool) {
+	if !strings.Contains(refusal, "role 'system'") && !strings.Contains(refusal, `role "system"`) {
+		return nil, false
+	}
+	req, err := decodeObject(body)
+	if err != nil {
+		return nil, false
+	}
+	var out []map[string]any
+	changed := false
+	for _, m := range messageList(req) {
+		if m["role"] == "system" {
+			changed = true
+			var text strings.Builder
+			if s, ok := m["content"].(string); ok {
+				text.WriteString(s)
+			}
+			for _, b := range list(m["content"]) {
+				if bm, _ := b.(map[string]any); bm["type"] == "text" {
+					t, _ := bm["text"].(string)
+					text.WriteString(t)
+				}
+			}
+			m = map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "<system-reminder>\n" + text.String() + "\n</system-reminder>"}}}
+		}
+		if n := len(out); n > 0 && out[n-1]["role"] == m["role"] {
+			out[n-1]["content"] = append(contentBlocks(out[n-1]["content"]), contentBlocks(m["content"])...)
+			continue
+		}
+		out = append(out, m)
+	}
+	if !changed {
+		return nil, false
+	}
+	req["messages"] = out
+	b, err := json.Marshal(req)
+	return b, err == nil
+}
+
+// contentBlocks is a message's content as blocks: a string is one text block.
+func contentBlocks(c any) []any {
+	if s, ok := c.(string); ok {
+		return []any{map[string]any{"type": "text", "text": s}}
+	}
+	return list(c)
 }
 
 // withoutThinking removes every thinking block from a Messages request's

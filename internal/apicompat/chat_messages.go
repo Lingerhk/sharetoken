@@ -183,6 +183,15 @@ func chatMessagesRequest(r *chatRequest) (map[string]any, error) {
 	return req, nil
 }
 
+// AdaptiveThinking reports whether a Claude model thinks adaptively (thinking
+// {"type":"adaptive"} with output_config.effort) and refuses a thinking
+// budget: the 5.5 generation. A model server that refuses either form says
+// so, and the Anthropic adapter switches to the other.
+func AdaptiveThinking(model string) bool {
+	model = strings.ToLower(model)
+	return strings.HasPrefix(model, "claude-") && strings.Contains(model, "-5-5")
+}
+
 // chatAnthropicThinking maps reasoning_effort to extended thinking. The 5.5
 // models think adaptively at an effort; earlier models take a budget, which
 // must be at least 1024 tokens and below max_tokens, and refuse sampling
@@ -193,7 +202,7 @@ func chatAnthropicThinking(req map[string]any, r *chatRequest, maxTokens uint64,
 		return
 	}
 	model := strings.ToLower(r.Model)
-	if strings.HasPrefix(model, "claude-") && strings.Contains(model, "-5-5") {
+	if AdaptiveThinking(model) {
 		switch effort {
 		case "none":
 			switch {

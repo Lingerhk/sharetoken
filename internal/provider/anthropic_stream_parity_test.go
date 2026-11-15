@@ -325,3 +325,53 @@ func TestGeminiToolCallsKeepASignature(t *testing.T) {
 		t.Fatal("a request without tool calls changed")
 	}
 }
+
+// A model that refuses the thinking form it was sent gets the other one.
+func TestAnthropicThinkingFormIsSwapped(t *testing.T) {
+	var sent []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sent = append(sent, body)
+		if th, _ := body["thinking"].(map[string]any); th["type"] == "enabled" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"\"thinking.type.enabled\" is not supported for this model. Use \"thinking.type.adaptive\" and \"output_config.effort\" to control thinking behavior."}}`)
+			return
+		}
+		for _, ev := range messagesOK {
+			fmt.Fprintf(w, "data: %s\n\n", ev)
+		}
+	}))
+	defer srv.Close()
+	e := &Entry{ID: "k", Name: "anthropic", Type: KindAnthropic, Auth: AuthAPIKey, APIKey: "k", BaseURL: srv.URL}
+	up, _ := e.Upstream(nil)
+	body := `{"model":"claude-haiku-5-5","max_tokens":4000,"thinking":{"type":"enabled","budget_tokens":4096},"messages":[{"role":"user","content":"hi"}]}`
+	if err := up.Stream(context.Background(), &node.Request{API: protocol.APIMessages, Body: []byte(body)}, func([]byte) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 2 || asJSON(t, sent[1]["thinking"]) != `{"type":"adaptive"}` || asJSON(t, sent[1]["output_config"]) != `{"effort":"medium"}` {
+		t.Fatalf("sent %v", sent)
+	}
+	// The reverse, and no loop when the other form is refused too.
+	out, ok := swapThinking([]byte(`{"max_tokens":3000,"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`), `"thinking.type.adaptive" is not supported`)
+	if !ok || string(out) != `{"max_tokens":3000,"thinking":{"budget_tokens":2999,"type":"enabled"}}` {
+		t.Fatalf("to budget: %s %v", out, ok)
+	}
+	if _, ok := swapThinking([]byte(`{"thinking":{"type":"adaptive"}}`), `"thinking.type.enabled" is not supported`); ok {
+		t.Fatal("swapped a form that was not refused")
+	}
+}
+
+// A model that takes no system messages in the conversation gets them as
+// user text, joined to the user turn.
+func TestAnthropicSystemMessagesBecomeUserText(t *testing.T) {
+	body := `{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"be brief"}]},{"role":"assistant","content":"ok"}]}`
+	out, ok := systemToUser([]byte(body), `role 'system' is not supported on this model`)
+	want := `{"messages":[{"content":[{"text":"hi","type":"text"},{"text":"\u003csystem-reminder\u003e\nbe brief\n\u003c/system-reminder\u003e","type":"text"}],"role":"user"},{"content":"ok","role":"assistant"}]}`
+	if !ok || string(out) != want {
+		t.Fatalf("%s", out)
+	}
+	if _, ok := systemToUser([]byte(body), "something else"); ok {
+		t.Fatal("changed on another refusal")
+	}
+}

@@ -18,6 +18,7 @@ package e2e
 //	deepseek       DeepSeek with an API key: chat, and Messages at /anthropic
 //	deepseek-chat  DeepSeek's chat API only (Messages and Responses converted)
 //	openai         OpenAI with an API key: chat and Responses ($ST_OPENAI_MODEL, default gpt-5-mini)
+//	anthropic      Anthropic with an API key ($ANTHROPIC_WORKSPACE_ID optional; $ST_ANTHROPIC_MODEL, default claude-haiku-5-5)
 //	gemini         Gemini with an AI Studio key: its chat API ($ST_GEMINI_MODEL, default gemini-3.8-flash)
 //
 // ST_STACK_DEBUG=1 logs at debug level.
@@ -93,6 +94,9 @@ func TestStack(t *testing.T) {
 			e, upstream, maxOut = &provider.Entry{ID: s, Name: s, Type: provider.KindCustom, Auth: provider.AuthAPIKey, APIKey: os.Getenv("DEEPSEEK_API_KEY"), BaseURL: "https://api.deepseek.com"}, "deepseek-chat", 8192
 		case "openai":
 			e, upstream = &provider.Entry{ID: s, Name: s, Type: provider.KindOpenAI, Auth: provider.AuthAPIKey, APIKey: os.Getenv("OPENAI_API_KEY")}, openaiModel
+		case "anthropic":
+			e, upstream = &provider.Entry{ID: s, Name: s, Type: provider.KindAnthropic, Auth: provider.AuthAPIKey, APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+				Headers: map[string]string{"anthropic-workspace-id": os.Getenv("ANTHROPIC_WORKSPACE_ID")}}, envOr("ST_ANTHROPIC_MODEL", "claude-haiku-5-5")
 		case "gemini":
 			e, upstream = &provider.Entry{ID: s, Name: s, Type: provider.KindGemini, Auth: provider.AuthAPIKey, APIKey: os.Getenv("GEMINI_API_KEY")}, envOr("ST_GEMINI_MODEL", "gemini-3.8-flash")
 		default:
