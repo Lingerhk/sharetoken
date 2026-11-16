@@ -518,6 +518,19 @@ func TestRefusedEffortAndSchemaAreRepaired(t *testing.T) {
 		}
 	}
 
+	// A model that does not reason, in both APIs' words.
+	srv, sent = scriptedServer(t, refuse("Unrecognized request argument supplied: reasoning_effort"), scripted{Status: 200, Body: chatOK})
+	up = &openAIUpstream{base: srv.URL, header: http.Header{}, tokensField: "max_tokens", responses: true}
+	if err := up.Stream(context.Background(), &node.Request{API: protocol.APIChat, Body: []byte(`{"model":"gpt-4o-mini","max_tokens":10,"stream":true,"reasoning_effort":"low","messages":[]}`)}, discard); err != nil || len(*sent) != 2 || (*sent)[1]["reasoning_effort"] != nil {
+		t.Fatalf("chat without reasoning: %v %s", err, asJSON(t, *sent))
+	}
+	srv, sent = scriptedServer(t, refuse("Unsupported parameter: 'reasoning.effort' is not supported with this model."), done)
+	up = &openAIUpstream{base: srv.URL, header: http.Header{}, responses: true}
+	plain := []byte(`{"model":"gpt-4o-mini","max_output_tokens":100,"stream":true,"reasoning":{"effort":"low"},"include":["reasoning.encrypted_content","file_search_call.results"],"input":"hi"}`)
+	if err := up.Stream(context.Background(), &node.Request{API: protocol.APIResponses, Body: plain}, discard); err != nil || len(*sent) != 2 || (*sent)[1]["reasoning"] != nil || asJSON(t, (*sent)[1]["include"]) != `["file_search_call.results"]` {
+		t.Fatalf("responses without reasoning: %v %s", err, asJSON(t, *sent))
+	}
+
 	// Gemini names no setting.
 	srv, sent = scriptedServer(t, scripted{Status: 400, Body: `[{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}]`}, scripted{Status: 200, Body: chatOK})
 	up = &openAIUpstream{base: srv.URL, header: http.Header{}, tokensField: "max_tokens"}

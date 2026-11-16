@@ -216,10 +216,29 @@ type modelRepairs struct {
 // one value it has. Nothing that changes what the answer is made of (stop,
 // tools, the output limit) is among them.
 var droppable = map[string]bool{"temperature": true, "top_p": true, "presence_penalty": true, "frequency_penalty": true,
-	"reasoning_effort": true, "parallel_tool_calls": true}
+	"reasoning_effort": true, "reasoning": true, "parallel_tool_calls": true}
+
+// dropParam removes a setting from a request; with a Responses request's
+// reasoning goes the encrypted reasoning it asked to have included.
+func dropParam(req map[string]json.RawMessage, name string) {
+	delete(req, name)
+	if name != "reasoning" {
+		return
+	}
+	var include []string
+	if json.Unmarshal(req["include"], &include) != nil {
+		return
+	}
+	include = slices.DeleteFunc(include, func(s string) bool { return strings.HasPrefix(s, "reasoning.") })
+	if len(include) == 0 {
+		delete(req, "include")
+		return
+	}
+	req["include"], _ = json.Marshal(include)
+}
 
 var (
-	refusedParamPattern  = regexp.MustCompile(`(?i)unsupported (?:parameter|value): '([a-z_]+)'`)
+	refusedParamPattern  = regexp.MustCompile(`(?i)(?:unsupported (?:parameter|value): '([a-z_.]+)'|unrecognized request argument supplied: ([a-z_.]+))`)
 	refusedEffortPattern = regexp.MustCompile(`(?i)unsupported value: '([a-z]+)' is not supported with [^.]*model\. supported values are: ([^.]*)\.`)
 	quotedWord           = regexp.MustCompile(`'([a-z]+)'`)
 )
@@ -309,7 +328,7 @@ func (m *modelRepairs) apply(req map[string]json.RawMessage) bool {
 	changed := false
 	for _, name := range m.drop {
 		if _, ok := req[name]; ok {
-			delete(req, name)
+			dropParam(req, name)
 			changed = true
 		}
 	}
@@ -342,10 +361,13 @@ func repairRefused(req map[string]json.RawMessage, refusal string, learnt *model
 		}
 		return false
 	}
-	if m := refusedParamPattern.FindStringSubmatch(refusal); m != nil && droppable[m[1]] {
-		if _, sent := req[m[1]]; sent {
-			delete(req, m[1])
-			learnt.drop = append(learnt.drop, m[1])
+	if m := refusedParamPattern.FindStringSubmatch(refusal); m != nil {
+		// "reasoning.effort" (a Responses request to a model that does not
+		// reason) names a field of the reasoning object: the object goes.
+		name, _, _ := strings.Cut(m[1]+m[2], ".")
+		if _, sent := req[name]; sent && droppable[name] {
+			dropParam(req, name)
+			learnt.drop = append(learnt.drop, name)
 			return true
 		}
 		return false
