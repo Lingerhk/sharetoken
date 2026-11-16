@@ -108,8 +108,8 @@ A receipt proves what was returned. It does not prove which model produced it.
 Two mechanisms address that:
 
 - **Audits** (`internal/audit`). At random times the coordinator buys a few
-  answers (five by default) from a seller under a fresh identity, through the
-  ordinary buyer path, with open-ended questions (explanations, advice,
+  answers (five by default) from a seller through the ordinary buyer path, in
+  any of the three APIs, with open-ended questions (explanations, advice,
   rewrites; questions with one right answer tell nothing about the model) and
   greedy decoding. Its own reference copy of the model then reads each answer
   token by token: with teacher forcing it reports, at every position, whether
@@ -126,9 +126,24 @@ Two mechanisms address that:
   (verdicts recorded only), and so does one whose honest scores drifted (the
   provider changed the model behind the name). Models whose reference reports
   no log-probabilities (Claude, Gemini) are checked for the bill only.
-  The auditor reaches sellers only through circuits of the coordinator's own
-  relays: never directly, which would show sellers the coordinator's address,
-  and never through any other relay.
+  The questions are carried to the seller by users' clients
+  (`internal/coordinator/errand.go`): a client asks the coordinator now and
+  then whether there is one to carry, and runs it as a job of its own, from
+  its own device and over the connection it uses for its own purchases, so
+  the seller meets a buyer it may already know. Each question of an audit
+  goes through a different client where there are several. The coordinator
+  seals the request with a key it keeps: the client reads neither question
+  nor answer, and cannot change them, because the seller's receipt signs the
+  hashes of both and the coordinator checks what comes back against it. The
+  ticket is paid by the platform, not by the client. Only a client the market
+  could have matched to that seller for money carries: not the seller's own
+  devices, not its share partners, not a stranger to a private seller. A
+  user can turn carrying off (`buy.spot_checks`, "Spot checks" in the app's
+  settings). When no client is there to carry a question, the auditor asks
+  from a fresh identity of its own, and then only through circuits of the
+  coordinator's own relays: never directly, which would show sellers the
+  coordinator's address, and never through any other relay
+  (`audit.delivery`).
 - **Hardware attestation** (`internal/attest`). A seller in an AMD SEV-SNP or
   Intel TDX confidential VM publishes a quote, signed by the CPU, over the
   guest's launch measurement and a hash of both of its keys. A buyer that
@@ -175,9 +190,11 @@ cannot step around it.
   with it, unless it turns on private mode: then the coordinator matches only
   its paired buyers to it and hides its models from everyone else.
 - A buyer can be paired with three sellers at most.
-- Private sellers are audited like any other: the coordinator's audit
+- Private sellers are audited like any other: the clients of their paired
+  buyers carry the questions, and when none is there the coordinator's audit
   identities are matched to them. A private seller with few buyers can guess
-  that an unknown peer is an audit, so audits of such a seller prove less.
+  that an unknown peer is an audit, so audits that are not carried prove less
+  for such a seller.
 - Administrators see every pairing with both account names in full.
 
 ### 2.7 Share partners
@@ -243,11 +260,17 @@ them more than the list above.
   then also subject to that provider's policy, and the seller is responsible for
   that provider's terms of service.
 - **Audits are probabilistic and need a reference.** A seller that could tell an
-  audit from a real job could behave only when audited. Audit questions look
-  like ordinary chat and arrive through an official relay like any relayed
-  buyer's, but each audit comes from a fresh identity with greedy decoding.
-  Audits only reach sellers through official relays, so trades over direct
-  connections or a seller's own relay are not audited. A token-level check
+  audit from a real job could behave only when audited. A carried question
+  comes from a real buyer's device over that buyer's usual path, direct or
+  relayed, but it is still a short chat with greedy decoding, and a seller
+  could treat every such request honestly and cheat on long ones. A client
+  that carries learns that the seller was audited at that moment (not the
+  question, nor the verdict); a seller that also runs buyers' clients could
+  use that, and a client can refuse or lose what it carries, which costs the
+  platform the job but never the seller its record. The seller sees the
+  carrying device's peer ID and address, as for any job that device buys.
+  A question that no client could carry comes from a fresh identity through
+  an official relay, which a seller can tell from its regular buyers. A token-level check
   shows that answers behave like the reference model's; it is not a
   cryptographic proof. Only models whose reference reports log-probabilities
   can be checked: open-weight models on a self-hosted server, DeepSeek, and

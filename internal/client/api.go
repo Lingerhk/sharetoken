@@ -255,13 +255,31 @@ func (a *Agent) handleSetShare(w http.ResponseWriter, r *http.Request) {
 type BuySettingsView struct {
 	BudgetMicros  uint64 `json:"budget_micros"`
 	RequireNative bool   `json:"require_native"`
+	// SpotChecks: carry the platform's audits of sellers (BuyConfig). A
+	// change that leaves it out keeps the setting.
+	SpotChecks *bool `json:"spot_checks,omitempty"`
+}
+
+// buyView is the settings page's view of the buying settings.
+func buyView(b BuyConfig) BuySettingsView {
+	on := b.CarriesSpotChecks()
+	return BuySettingsView{BudgetMicros: b.BudgetMicros, RequireNative: b.RequireNative, SpotChecks: &on}
+}
+
+// apply writes the view into b.
+func (v BuySettingsView) apply(b *BuyConfig) {
+	b.BudgetMicros, b.RequireNative = v.BudgetMicros, v.RequireNative
+	if v.SpotChecks != nil {
+		on := *v.SpotChecks
+		b.SpotChecks = &on
+	}
 }
 
 // BuySettings reports the buying settings the settings page changes.
 func (a *Agent) BuySettings() BuySettingsView {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return BuySettingsView{BudgetMicros: a.cfg.Buy.BudgetMicros, RequireNative: a.cfg.Buy.RequireNative}
+	return buyView(a.cfg.Buy)
 }
 
 // SetBuySettings applies them to the running endpoint at once and saves them.
@@ -274,7 +292,7 @@ func (a *Agent) SetBuySettings(v BuySettingsView) error {
 	if err := saveBuySettings(a.home, v); err != nil {
 		return err
 	}
-	a.cfg.Buy.BudgetMicros, a.cfg.Buy.RequireNative = v.BudgetMicros, v.RequireNative
+	v.apply(&a.cfg.Buy)
 	if a.proxy != nil {
 		a.proxy.SetBuy(v.BudgetMicros, v.RequireNative)
 	}
@@ -297,7 +315,7 @@ func saveBuySettings(home string, v BuySettingsView) error {
 	if err != nil {
 		return err
 	}
-	disk.Buy.BudgetMicros, disk.Buy.RequireNative = v.BudgetMicros, v.RequireNative
+	v.apply(&disk.Buy)
 	return SaveConfig(home, disk)
 }
 

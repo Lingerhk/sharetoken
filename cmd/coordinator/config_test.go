@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,7 +21,7 @@ func TestExampleConfigLoads(t *testing.T) {
 		t.Fatalf("%+v %v", f, args)
 	}
 	// The sample documents the defaults: keep them in step with the engine's.
-	if d := defaults(); f.Jobs != d.Jobs || f.Market != d.Market || f.Audit != d.Audit || f.Network.RelaySync != d.Network.RelaySync {
+	if d := defaults(); f.Jobs != d.Jobs || f.Market != d.Market || !reflect.DeepEqual(f.Audit, d.Audit) || f.Network.RelaySync != d.Network.RelaySync {
 		t.Fatalf("sample differs from the defaults:\n%+v %+v %+v\n%+v %+v %+v", f.Jobs, f.Market, f.Audit, d.Jobs, d.Market, d.Audit)
 	}
 	if d, e := defaults(), coordinator.Defaults(); d.Jobs.StaleAfter.T() != e.StaleAfter || d.Jobs.MaxStaleTickets != e.MaxStaleTickets || d.Jobs.TicketTTL.T() != e.TicketTTL {

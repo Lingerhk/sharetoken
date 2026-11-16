@@ -42,7 +42,7 @@ func auditCmd(f File, keys *p2p.Keys, db *sql.DB, eng *coordinator.Engine, args 
 		fs := flag.NewFlagSet("audit calibrate", flag.ExitOnError)
 		samples := fs.Int("samples", f.Audit.CalibrateSamples, "questions to answer and score")
 		_ = fs.Parse(args[1:])
-		a, err := newAuditor(f, eng, refs, peer.AddrInfo{ID: keys.PeerID}, nil, nil)
+		a, err := newAuditor(f, eng, nil, refs, peer.AddrInfo{ID: keys.PeerID}, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -82,7 +82,7 @@ func auditCmd(f File, keys *p2p.Keys, db *sql.DB, eng *coordinator.Engine, args 
 		}
 		g := f
 		g.Audit.Shadow, g.Audit.Spread = true, 0 // an operator's check: record, never penalize
-		a, err := newAuditor(g, eng, refs, peer.AddrInfo{ID: keys.PeerID, Addrs: circuits}, nil,
+		a, err := newAuditor(g, eng, nil, refs, peer.AddrInfo{ID: keys.PeerID, Addrs: circuits}, nil,
 			func() []peer.ID { return official })
 		if err != nil {
 			return err

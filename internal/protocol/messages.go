@@ -81,6 +81,9 @@ const (
 	TypeReject        = "reject"
 	TypeEvidence      = "evidence"
 	TypeVerdict       = "verdict"
+	TypeErrandPoll    = "errand_poll"   // a client asks the coordinator for an errand
+	TypeErrand        = "errand"        // the coordinator's answer: an errand, or none
+	TypeErrandReport  = "errand_report" // a client hands back what an errand's node returned
 )
 
 // ModelPrice is a node's price for one model. Amounts are micro-credits
@@ -503,6 +506,52 @@ type Evidence struct {
 	Chunks    uint64                 `json:"chunks"`
 	// RequestBytes is the length of the sealed request that follows.
 	RequestBytes uint64 `json:"request_bytes"`
+}
+
+// Errands. The coordinator checks nodes with jobs of its own (package audit).
+// Sent from its own machine they would be told apart from buyers' jobs: by
+// the address they come from, by a peer ID no node has seen before, and by
+// never arriving over a direct connection. So it asks a client to carry the
+// job instead: the client asks for an errand from time to time (ErrandPoll)
+// and may get one job (ErrandJob), sealed by the coordinator with a job key
+// only the coordinator holds. The client runs it as a job of its own, under
+// its own device identity and over its own connection, without being able to
+// read the request or the answer, and hands the sealed answer and the node's
+// receipt back (ErrandReport). The receipt signs the hashes of both, so the
+// client can neither forge an answer nor change one. The job is paid from
+// the platform's account, never the client's.
+
+// ErrandPoll asks the coordinator for an errand.
+type ErrandPoll struct{}
+
+// Errand answers an ErrandPoll.
+type Errand struct {
+	// PollAfter is how many seconds to wait before asking again.
+	PollAfter uint32     `json:"poll_after"`
+	Job       *ErrandJob `json:"job,omitempty"`
+}
+
+// ErrandJob is one job to carry: what an InferRequest needs, ready made.
+type ErrandJob struct {
+	Ticket      Ticket `json:"ticket"` // issued to the carrying client
+	Offer       Offer  `json:"offer"`  // the node's signed offer, as with any ticket
+	BuyerBoxPub []byte `json:"buyer_box_pub"`
+	Request     []byte `json:"request"` // the sealed request
+}
+
+// MaxErrandRequest bounds an errand's sealed request.
+const MaxErrandRequest = 1 << 20
+
+// ErrandReport returns an errand: the node's receipt and, following it on the
+// same stream, exactly Chunks BinData frames (the sealed response frames as
+// received, in order). Error says why there is nothing to return.
+type ErrandReport struct {
+	JobID   string                 `json:"job_id"`
+	Receipt *receipt.SignedReceipt `json:"receipt,omitempty"`
+	Chunks  uint64                 `json:"chunks"`
+	Error   string                 `json:"error,omitempty"`
+	Relayed bool                   `json:"relayed,omitempty"` // the job ran through a relay
+	Via     string                 `json:"via,omitempty"`     // that relay's peer ID
 }
 
 // MaxEvidenceChunks bounds the response frames that may follow an Evidence frame.

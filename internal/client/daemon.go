@@ -892,7 +892,7 @@ func (d *Daemon) Handler() http.Handler {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, BuySettingsView{BudgetMicros: c.Buy.BudgetMicros, RequireNative: c.Buy.RequireNative})
+		writeJSON(w, http.StatusOK, buyView(c.Buy))
 	})
 	mux.HandleFunc("PUT /api/v1/buy", jsonBody(func(w http.ResponseWriter, r *http.Request, v BuySettingsView) {
 		if !d.loggedIn() {
@@ -912,7 +912,12 @@ func (d *Daemon) Handler() http.Handler {
 			writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, v)
+		c, err := LoadConfig(d.home)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, buyView(c.Buy))
 	}))
 	mux.HandleFunc("/api/v1/", d.toAgent)
 	mux.HandleFunc("/v1/", d.toAgent)

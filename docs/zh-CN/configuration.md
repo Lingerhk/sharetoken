@@ -99,6 +99,10 @@
 | `audit.shadow` | `-audit-shadow` | true | 影子模式：只记录结论，不动节点记录（收据本身没通过检查的照常处理） |
 | `audit.calibrate_every` | — | 24h | 每个能打分的参考模型多久校准一次；0：只用 `coordinator audit calibrate` 手动校准 |
 | `audit.calibrate_samples` | — | 40 | 每次校准的题数，至少 10 |
+| `audit.delivery` | — | auto | 题目怎么到节点。`auto`：由本来就可能向该节点购买的用户客户端转交（加密，平台付费），没有这样的客户端时由抽检身份经官方中继去问；`carried`：只用客户端转交；`direct`：只用抽检身份 |
+| `audit.carry_poll` | — | 1m | 客户端多久问一次有没有要转交的题（抽检开启时；否则每 10 分钟）。至少 5s |
+| `audit.carry_wait` | — | 3m | 转交的题最多等多久带回来。至少 10s |
+| `audit.apis` | — | chat, messages, responses | 出题用的接口，每道题随机取一个。参考模型可以用 `apis` 缩小范围 |
 | `tee.policy_file` | `-tee-policy` | 空 | TEE 镜像白名单 JSON；设置后启用 `require_tee` 撮合 |
 | `tee.online_check` | `-tee-online` | false | 另外向 AMD 和 Intel 查询吊销与 TCB 状态（需要联网） |
 | `debug.pprof_listen` | `-debug` | 空 | 提供 Go pprof，例如 `127.0.0.1:6060`；只放在回环地址上 |
@@ -198,6 +202,7 @@
 | `buy.max_price_in`、`buy.max_price_out` | 0（不限） | 每百万 prompt token 和 completion token 的价格上限 |
 | `buy.evidence` | true | 对可以证明有问题的单披露密钥，换取自动退款 |
 | `buy.require_tee`、`buy.tee_policy`、`buy.tee_online` | 关闭 | 只从经过证明的 TEE 节点购买；可信镜像的白名单文件；联网查询吊销状态 |
+| `buy.spot_checks` | 开启 | 协助平台抽检卖家：客户端偶尔替平台把一个很短的加密作业当作自己的作业转交给卖家。不花 credit，客户端也看不到内容（[security.md](security.md) §2.4） |
 | `buy.require_native` | 关闭 | 只从模型服务器原生支持请求接口的节点购买（[apis.md](apis.md)） |
 | `buy.queue_seconds` | 30 | 所有节点都忙时，请求等待空闲节点多久；负数：立即失败 |
 | `buy.first_byte_seconds`、`buy.idle_seconds` | 30、30 | 一单等待节点第一帧的时间上限，以及两帧之间的时间上限。模型不出声时，节点每 10 秒发一个进度帧 |

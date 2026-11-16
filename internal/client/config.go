@@ -58,9 +58,15 @@ type BuyConfig struct {
 	// request's API natively (Claude Code from Anthropic models, Codex from
 	// OpenAI Responses), never converted. Off, such nodes are preferred and
 	// others convert when none is free.
-	RequireNative bool   `json:"require_native,omitempty"`
-	TEEPolicy     string `json:"tee_policy,omitempty"` // allow-list file of trusted node images
-	TEEOnline     bool   `json:"tee_online,omitempty"`
+	RequireNative bool `json:"require_native,omitempty"`
+	// SpotChecks lets the platform's audits of sellers travel through this
+	// client (buyer.RunErrands): now and then it carries one short, sealed
+	// job to a seller as if it were its own. It cannot read the job, pays
+	// nothing, and the seller sees this device as it sees any buyer. Unset
+	// means on.
+	SpotChecks *bool  `json:"spot_checks,omitempty"`
+	TEEPolicy  string `json:"tee_policy,omitempty"` // allow-list file of trusted node images
+	TEEOnline  bool   `json:"tee_online,omitempty"`
 	// QueueSeconds is how long a request waits for a free node when all are
 	// busy (0: the default, 30; negative: fail at once).
 	QueueSeconds int `json:"queue_seconds,omitempty"`
@@ -130,6 +136,9 @@ func DefaultConfig() Config {
 func DefaultListen() []string {
 	return []string{"/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1", "/ip6/::/tcp/0", "/ip6/::/udp/0/quic-v1"}
 }
+
+// CarriesSpotChecks reports whether the client carries the platform's audits.
+func (b BuyConfig) CarriesSpotChecks() bool { return b.SpotChecks == nil || *b.SpotChecks }
 
 func (c *Config) fill() {
 	d := DefaultConfig()

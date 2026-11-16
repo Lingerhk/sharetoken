@@ -99,6 +99,10 @@ Example: [`configs/coordinator.example.yaml`](../configs/coordinator.example.yam
 | `audit.shadow` | `-audit-shadow` | true | Record verdicts without touching nodes' records (a receipt that fails its checks still counts) |
 | `audit.calibrate_every` | — | 24h | How often each scoring reference is calibrated; 0: only by `coordinator audit calibrate` |
 | `audit.calibrate_samples` | — | 40 | Questions per calibration; at least 10 |
+| `audit.delivery` | — | auto | How a question reaches a node. `auto`: a user's client that could buy from the node carries it (sealed, paid by the platform), and an audit identity asks through an official relay when no such client is there; `carried`: clients only; `direct`: audit identities only |
+| `audit.carry_poll` | — | 1m | How often clients ask for a question to carry (while audits run; every 10 minutes otherwise). At least 5s |
+| `audit.carry_wait` | — | 3m | How long a carried question may take to come back. At least 10s |
+| `audit.apis` | — | chat, messages, responses | The APIs questions are asked in, one drawn per question. A reference can narrow it with `apis` |
 | `tee.policy_file` | `-tee-policy` | empty | JSON allow-list of TEE images; setting it enables `require_tee` matching |
 | `tee.online_check` | `-tee-online` | false | Also check revocations and TCB status with AMD and Intel (needs network access) |
 | `debug.pprof_listen` | `-debug` | empty | Serves Go pprof profiles, e.g. `127.0.0.1:6060`; keep it on loopback |
@@ -198,6 +202,7 @@ The directory is created with mode 0700. Files in it:
 | `buy.max_price_in`, `buy.max_price_out` | 0 (no limit) | Price limits per million prompt and completion tokens |
 | `buy.evidence` | true | Disclose a provably bad job's key for an automatic refund |
 | `buy.require_tee`, `buy.tee_policy`, `buy.tee_online` | off | Buy only from attested TEE nodes; allow-list file of trusted images; online revocation check |
+| `buy.spot_checks` | on | Carry the platform's audits of sellers: now and then one short, sealed job goes to a seller through this client as if it were its own. It costs no credit and the client cannot read it ([security.md](security.md) §2.4) |
 | `buy.require_native` | off | Buy only from nodes whose model server speaks the request's API natively ([apis.md](apis.md)) |
 | `buy.queue_seconds` | 30 | How long a request waits for a free node when all are busy; negative: fail at once |
 | `buy.first_byte_seconds`, `buy.idle_seconds` | 30, 30 | How long a job may wait for the node's first frame, and between frames. Nodes send a progress frame every 10 seconds while the model is silent |

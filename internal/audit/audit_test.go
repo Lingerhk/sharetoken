@@ -328,8 +328,19 @@ func TestJudge(t *testing.T) {
 			t.Errorf("%s: verdict %s (%s), want %s", c.name, got, detail, c.want)
 		}
 	}
+	// Answers without text (the output went on hidden reasoning) are not
+	// scored; when most are like that the audit says nothing.
+	rs := tf(30, 39, 0.95, 0.93, 0.96, 0, 0)
+	rs[3].Score.Tokens, rs[4].Score.Tokens = 0, 0
+	if got, score, d := a.judge(MethodTF, rs, 0.85); got != coordinator.AuditMatch || score < 0.94 {
+		t.Errorf("two empty answers of five: %s %.3f %s", got, score, d)
+	}
+	rs[1].Score.Tokens, rs[1].Score.Top1 = 0, 0
+	if got, _, d := a.judge(MethodTF, rs, 0.85); got != coordinator.AuditInconclusive {
+		t.Errorf("three empty answers of five: %s %s", got, d)
+	}
 	// A partly scored answer is not held to the reference's completion count.
-	rs := tf(30, 400, 0.97)
+	rs = tf(30, 400, 0.97)
 	rs[0].Score.Tokens = 64
 	if got, _, d := a.judge(MethodTF, rs, 0.85); got != coordinator.AuditMatch {
 		t.Errorf("capped scoring: %s %s", got, d)

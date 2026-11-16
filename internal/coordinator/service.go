@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -31,6 +32,9 @@ const ctrlTimeout = 30 * time.Second
 // written back to the database, where the portal reads it.
 type Service struct {
 	Engine *Engine
+	// Errands is where the coordinator's own jobs wait for the clients that
+	// carry them (errand.go).
+	Errands *Errands
 
 	h       host.Host
 	relays  *p2p.Reserver
@@ -74,7 +78,7 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	s := &Service{Engine: eng, h: h, static: cfg.Relays, cancel: cancel, log: slog.Default().With("component", "coordinator")}
+	s := &Service{Engine: eng, Errands: newErrands(), h: h, static: cfg.Relays, cancel: cancel, log: slog.Default().With("component", "coordinator")}
 	s.relayDirty = make(chan struct{}, 1)
 	s.relays = p2p.NewReserver(h, func() {
 		select { // record relay health promptly; the portal hands it to users
@@ -280,6 +284,17 @@ func (s *Service) handleCtrl(st network.Stream) {
 	case protocol.TypeEvidence:
 		s.handleEvidence(st, remote, env)
 		return
+	case protocol.TypeErrandPoll:
+		e := s.Errands.poll(remote)
+		if err := protocol.Send(st, protocol.TypeErrand, e); err != nil && e.Job != nil {
+			// The job never left: free its ticket now and tell whoever waits.
+			_ = s.Engine.ReleaseUndelivered(e.Job.Ticket.JobID)
+			s.Errands.unsent(remote, e.Job.Ticket.JobID)
+		}
+		return
+	case protocol.TypeErrandReport:
+		s.handleErrandReport(st, remote, env)
+		return
 	default:
 		herr = protocol.Errorf(protocol.CodeBadRequest, "unknown request type %q", env.Type)
 	}
@@ -385,6 +400,53 @@ func (s *Service) handleEvidence(st network.Stream, remote string, env *protocol
 	}
 	s.log.Warn("dispute judged on evidence", "job", ev.JobID, "outcome", verdict.Outcome, "status", verdict.Status, "detail", verdict.Detail)
 	_ = protocol.Send(st, protocol.TypeVerdict, verdict)
+}
+
+// handleErrandReport takes back a carried job: the header, then the sealed
+// response frames. Only the device the job was handed to may return it.
+func (s *Service) handleErrandReport(st network.Stream, remote string, env *protocol.Envelope) {
+	_ = st.SetDeadline(time.Now().Add(evidenceTimeout))
+	var rep protocol.ErrandReport
+	if err := decode(env, &rep); err != nil {
+		s.sendError(st, env.Type, err)
+		return
+	}
+	if rep.Chunks > maxErrandChunks {
+		s.sendError(st, env.Type, protocol.Errorf(protocol.CodeBadRequest, "too many chunks"))
+		return
+	}
+	if !s.Errands.carried(remote, rep.JobID) {
+		s.sendError(st, env.Type, protocol.Errorf(protocol.CodeNotFound, "no such errand"))
+		return
+	}
+	res := ErrandResult{Receipt: rep.Receipt, Error: rep.Error, Relayed: rep.Relayed, Via: rep.Via}
+	size := 0
+	for i := uint64(0); i < rep.Chunks; i++ {
+		f, err := protocol.ReadStreamFrame(st, protocol.MaxFrameSize)
+		if err != nil {
+			_ = st.Reset()
+			return
+		}
+		var seq uint64
+		var sealed []byte
+		if f.Env == nil && f.Kind == protocol.BinData {
+			seq, sealed, err = protocol.DecodeData(f.Payload)
+		}
+		if f.Env != nil || f.Kind != protocol.BinData || err != nil || seq != i {
+			s.sendError(st, env.Type, protocol.Errorf(protocol.CodeBadRequest, "malformed errand frame"))
+			return
+		}
+		if size += len(sealed); size > maxErrandBytes {
+			s.sendError(st, env.Type, protocol.Errorf(protocol.CodeBadRequest, "the errand's answer is too large"))
+			return
+		}
+		res.Chunks = append(res.Chunks, bytes.Clone(sealed))
+	}
+	if !s.Errands.deliver(remote, rep.JobID, res) {
+		s.sendError(st, env.Type, protocol.Errorf(protocol.CodeNotFound, "no such errand"))
+		return
+	}
+	_ = protocol.Send(st, protocol.TypeOK, nil)
 }
 
 func decode(env *protocol.Envelope, v any) error {

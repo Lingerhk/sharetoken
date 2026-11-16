@@ -67,6 +67,7 @@
     "evidence": true,
     "require_tee": false,
     "require_native": false,
+    "spot_checks": true,
     "queue_seconds": 30,
     "first_byte_seconds": 30,
     "idle_seconds": 30
@@ -82,6 +83,7 @@
 | `evidence` | 节点虚报用量时，交出这一单的密钥以自动退款 | `true` |
 | `require_tee` | 只把请求发给 TEE 节点 | `false` |
 | `require_native` | 只把请求发给模型服务器原生支持请求所用接口的节点，不做转换（见[原生和转换](/docs/use-models#native)）。单个请求也可以用请求头 `X-Sharetoken-Require-Native: true` 要求 | `false` |
+| `spot_checks` | 协助平台抽检卖家。平台会不定期抽查卖家是否真的在用它标称的模型；开启后，客户端偶尔替平台把一个很短的抽检请求转交给卖家，就像发你自己的请求一样，卖家因此分不清哪次是抽检。请求和回答都是加密的（本机看不到内容），也不花 credit。卖家会像对待你发的任何请求一样看到本设备的地址 | `true` |
 | `queue_seconds` | 节点全部满载时最多等多久，负数表示立即失败 | `30` |
 | `first_byte_seconds` | 等节点第一帧的时限，超时换节点。模型思考期间节点每 10 秒发一个进度帧，所以慢模型也不需要调大 | `30` |
 | `idle_seconds` | 两帧之间的时限，超时判定为卡死。只收到进度帧、连续 5 分钟没有输出，也判定为卡死 | `30` |

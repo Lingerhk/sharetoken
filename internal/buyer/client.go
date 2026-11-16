@@ -157,6 +157,7 @@ type Result struct {
 	AnthropicThinking []json.RawMessage
 	FinishReason      string
 	Payloads          [][]byte // every event payload, when the request asked to Collect them
+	Sealed            [][]byte // a carried job (Carry): the sealed response frames, in order
 	CostMicros        uint64
 	Verified          bool   // receipt passed every check and was acknowledged
 	Attested          string // allow-list label of the node's verified TEE image, if any
@@ -255,7 +256,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 		if e.err != nil {
 			return nil, e.err
 		}
-		res, delivered, err := c.runJob(ctx, &tr.Ticket, e.plain, req, onChunk, &timing)
+		res, delivered, err := c.runJob(ctx, &tr.Ticket, e.plain, req, onChunk, &timing, nil)
 		timing.Preferred = prefer != "" && tr.Ticket.Node == prefer
 		if delivered || err == nil {
 			c.sticky.put(session, tr.Ticket.Node)
@@ -470,7 +471,11 @@ type encodedRequest struct {
 
 // runJob executes one ticket. delivered reports whether any output reached
 // onChunk, after which failing over is no longer possible.
-func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte, req ChatRequest, onChunk func([]byte) error, tm *Timing) (res *Result, delivered bool, err error) {
+//
+// carry, when set, is a job sealed by someone else (errand.go): its request
+// is sent as it is and the response frames are kept sealed. Everything the
+// node can observe is the same as for a job of the client's own.
+func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte, req ChatRequest, onChunk func([]byte) error, tm *Timing, carry *protocol.ErrandJob) (res *Result, delivered bool, err error) {
 	nodeID, err := peer.Decode(t.Node)
 	if err != nil {
 		return nil, false, err
@@ -522,18 +527,24 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 	// stream key derives from it. Disclosing it later opens this job and no
 	// other.
 	tr := &transcript{hasher: receipt.NewStreamHasher()}
-	if tr.jobKey, err = box.GenerateIdentity(); err != nil {
-		return nil, false, err
-	}
-	if tr.request, err = box.SealFrom(tr.jobKey, t.NodeBoxPub, encoded, protocol.RequestAAD(t)); err != nil {
-		return nil, false, err
-	}
-	key, err := tr.jobKey.NewStream(t.NodeBoxPub, protocol.ResponseKeyInfo(t, tr.jobKey.Public()))
-	if err != nil {
-		return nil, false, err
+	var key *box.Stream // nil for a carried job: its frames stay sealed
+	jobPub := []byte(nil)
+	if carry != nil {
+		tr.request, jobPub = carry.Request, carry.BuyerBoxPub
+	} else {
+		if tr.jobKey, err = box.GenerateIdentity(); err != nil {
+			return nil, false, err
+		}
+		if tr.request, err = box.SealFrom(tr.jobKey, t.NodeBoxPub, encoded, protocol.RequestAAD(t)); err != nil {
+			return nil, false, err
+		}
+		if key, err = tr.jobKey.NewStream(t.NodeBoxPub, protocol.ResponseKeyInfo(t, tr.jobKey.Public())); err != nil {
+			return nil, false, err
+		}
+		jobPub = tr.jobKey.Public()
 	}
 	t0 = time.Now()
-	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: tr.jobKey.Public(), RequestBytes: uint64(len(tr.request))}); err != nil {
+	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: jobPub, RequestBytes: uint64(len(tr.request))}); err != nil {
 		return nil, false, err
 	}
 	if err := protocol.SendSealedRequest(st, tr.request); err != nil {
@@ -556,6 +567,7 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 	frames := 0
 	lastData := sent
 	resumedAt := 0 // frames received when the stream was last replaced
+	carried := 0   // bytes of a carried job's frames
 recv:
 	for {
 		wait := c.IdleTimeout
@@ -612,11 +624,17 @@ recv:
 			}
 			lastData = time.Now()
 			tm.Frames++
+			if carry != nil {
+				if carried += len(sealed); carried > maxCarried {
+					js.cancel()
+					return nil, false, errors.New("the answer of a carried job is too large")
+				}
+			}
 			pos := uint64(len(tr.chunks))
 			tr.chunks = append(tr.chunks, sealed)
 			tr.hasher.WriteChunk(sealed)
-			if tr.corrupt != nil {
-				continue // keep the transcript complete; deliver nothing more
+			if tr.corrupt != nil || key == nil {
+				continue // keep the transcript complete; deliver nothing (more)
 			}
 			plain, err := key.Open(pos, sealed, protocol.ChunkAAD(t, pos))
 			if seq != pos || err != nil {
@@ -664,6 +682,20 @@ recv:
 		default:
 			return nil, delivered, fmt.Errorf("unexpected frame of kind %d", f.Kind)
 		}
+	}
+	if carry != nil {
+		// The carrier checks what it can: that the node signed for exactly the
+		// bytes that travelled. Whoever sealed the job judges the rest.
+		res = &Result{Ticket: *t, Receipt: sr, Sealed: tr.chunks}
+		if err := receipt.BuyerCheck(&sr, t.JobID, t.Model, t.NodeReceiptKey, receipt.Hash(tr.request), tr.hasher.Sum()); err != nil {
+			_ = js.send(protocol.TypeReject, protocol.Reject{Reason: err.Error()})
+			return res, false, fmt.Errorf("%w: %v", ErrReceiptRejected, err)
+		}
+		if err := js.send(protocol.TypeAck, protocol.Ack{Sig: ed25519.Sign(c.keys.Signer, protocol.AckBytes(&sr.Receipt))}); err != nil {
+			c.log.Warn("could not deliver ack", "job", t.JobID, "err", err)
+		}
+		_ = js.cur().CloseWrite()
+		return res, false, nil
 	}
 	if tr.corrupt == nil && !dec.Done() {
 		tr.corrupt = errors.New("the response ended without its final frame")

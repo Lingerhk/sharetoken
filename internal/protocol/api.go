@@ -300,6 +300,18 @@ func RequestedOutput(api string, body []byte) uint64 {
 	return r.MaxTokens
 }
 
+// Truncated reports whether a finish reason of api says the answer ran into
+// its output limit rather than ending on its own.
+func Truncated(api, finish string) bool {
+	switch NormalAPI(api) {
+	case APIMessages:
+		return finish == "max_tokens" || finish == "model_context_window_exceeded"
+	case APIResponses:
+		return finish == "max_output_tokens" || finish == "incomplete"
+	}
+	return finish == "length"
+}
+
 // HardMaxOutput caps a single job's output whatever the budget: coding agents
 // (Messages, Responses) write long answers, chat clients rarely do.
 func HardMaxOutput(api string) uint64 {

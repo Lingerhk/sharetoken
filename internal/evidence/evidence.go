@@ -80,6 +80,8 @@ type Judge struct {
 	badChunk int64
 	badWhy   string
 	text     strings.Builder
+	content  strings.Builder // the answer's visible content, without reasoning and tool arguments
+	finish   string
 }
 
 // New starts judging ev for ticket t, whose sealed request is request.
@@ -148,6 +150,11 @@ func (j *Judge) decide(o Outcome, detail string) {
 // Receipt is the receipt being judged.
 func (j *Judge) Receipt() *receipt.SignedReceipt { return j.r }
 
+// Answer is the content of the response read so far (what the model said,
+// without its reasoning and tool arguments) and its finish reason. An auditor
+// that sealed a job itself reads the answer here.
+func (j *Judge) Answer() (content, finish string) { return j.content.String(), j.finish }
+
 // Add feeds the next sealed response frame, exactly as the buyer received it.
 func (j *Judge) Add(seq uint64, sealed []byte) error {
 	if seq != j.next {
@@ -173,6 +180,10 @@ func (j *Judge) Add(seq uint64, sealed []byte) error {
 			j.meter.Add(info)
 			if j.text.Len() < maxText {
 				j.text.WriteString(info.Text())
+				j.content.WriteString(info.Content)
+			}
+			if info.FinishReason != "" {
+				j.finish = info.FinishReason
 			}
 		}
 	}

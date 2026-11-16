@@ -67,6 +67,7 @@ The file is strict JSON and cannot contain comments. The examples below list onl
     "evidence": true,
     "require_tee": false,
     "require_native": false,
+    "spot_checks": true,
     "queue_seconds": 30,
     "first_byte_seconds": 30,
     "idle_seconds": 30
@@ -82,6 +83,7 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 | `evidence` | If a node overstates usage, hand over the key for that job to get an automatic refund | `true` |
 | `require_tee` | Send requests only to TEE nodes | `false` |
 | `require_native` | Send requests only to nodes whose model server speaks the request's API natively, never converted ([Native and converted](/docs/use-models#native)). A request can also ask for it with the header `X-Sharetoken-Require-Native: true` | `false` |
+| `spot_checks` | Help the platform spot-check sellers. The platform checks at random that sellers really run the model they advertise; with this on, the client now and then carries one short check to a seller, the way it sends your own requests, so the seller cannot tell a check from a buyer. The request and the answer are encrypted (your machine cannot read them) and it costs no credit. The seller sees your device's address as it does for any request you send | `true` |
 | `queue_seconds` | How long to wait when all nodes are full. A negative value fails immediately | `30` |
 | `first_byte_seconds` | Time limit for the node's first frame. On timeout, another node is used. Nodes send a progress frame every 10 seconds while the model is thinking, so slow models do not need a higher value | `30` |
 | `idle_seconds` | Time limit between two frames. On timeout, the job is judged stuck. A job that gets only progress frames and no output for 5 minutes is judged stuck too | `30` |

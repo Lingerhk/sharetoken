@@ -56,7 +56,6 @@ import (
 	"math"
 	mrand "math/rand/v2"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -84,8 +83,12 @@ type Reference struct {
 	// Params are extra fields of every challenge request, e.g.
 	// {"reasoning_effort": "none"} for a model that thinks by default: with
 	// the output limit of a challenge spent on hidden reasoning there would
-	// be no answer to score.
+	// be no answer to score. They are chat completions fields; a challenge
+	// in another API carries what they convert to.
 	Params map[string]any
+	// APIs are the APIs this model's challenges are asked in (default:
+	// Config.APIs).
+	APIs []string
 }
 
 // Config configures the auditor. Zero values get defaults.
@@ -121,6 +124,25 @@ type Config struct {
 	// Shadow records verdicts without touching nodes' records.
 	Shadow  bool
 	Prompts []Challenge // question pool; default: built-in open questions
+	// APIs are the APIs challenges are asked in, one drawn per question
+	// (default: all three). Buyers' requests come in all of them, and a node
+	// answers each through a path of its own.
+	APIs []string
+	// Errands, if set, is the coordinator's errand board: questions are then
+	// carried to nodes by users' clients (Delivery).
+	Errands *coordinator.Errands
+	// Delivery is how questions reach nodes: DeliveryAuto (default),
+	// DeliveryCarried or DeliveryDirect.
+	Delivery string
+	// CarryWait is how long a carried question may take to come back once
+	// its carrier has asked for it (default 3m).
+	CarryWait time.Duration
+	// CarryBudgetMicros is the budget a carried question's ticket is sized
+	// from, like a client's own (default 2,000,000: the client's default).
+	CarryBudgetMicros uint64
+	// CarryPoll is how often clients are told to ask for errands while this
+	// auditor runs (default 1m).
+	CarryPoll time.Duration
 }
 
 // Auditor runs audits against the engine's live offers.
@@ -165,10 +187,36 @@ func New(eng *coordinator.Engine, cfg Config) (*Auditor, error) {
 	if cfg.DivFails == 0 {
 		cfg.DivFails = 2
 	}
+	if len(cfg.APIs) == 0 {
+		cfg.APIs = protocol.AllAPIs
+	}
+	if cfg.Delivery == "" {
+		cfg.Delivery = DeliveryAuto
+	}
+	if !slices.Contains(Deliveries, cfg.Delivery) {
+		return nil, fmt.Errorf("audit: unknown delivery %q", cfg.Delivery)
+	}
+	if cfg.Delivery == DeliveryCarried && cfg.Errands == nil {
+		return nil, errors.New("audit: carried delivery needs the coordinator's errand board")
+	}
+	if cfg.CarryWait == 0 {
+		cfg.CarryWait = 3 * time.Minute
+	}
+	if cfg.CarryBudgetMicros == 0 {
+		cfg.CarryBudgetMicros = 2_000_000
+	}
+	if cfg.CarryPoll == 0 {
+		cfg.CarryPoll = time.Minute
+	}
 	refs := make(map[string]Reference, len(cfg.References))
 	for _, r := range cfg.References {
 		if r.Model == "" || r.UpstreamModel == "" || r.Upstream == nil {
 			return nil, fmt.Errorf("audit: incomplete reference %+v", r)
+		}
+		for _, api := range append(slices.Clone(r.APIs), cfg.APIs...) {
+			if api == "" || !protocol.ValidAPI(api) {
+				return nil, fmt.Errorf("audit: reference %s: unknown API %q", r.Model, api)
+			}
 		}
 		refs[r.Model] = r
 	}
@@ -179,6 +227,11 @@ func New(eng *coordinator.Engine, cfg Config) (*Auditor, error) {
 // Run audits a random node serving a referenced model at random intervals
 // (exponential, mean cfg.Interval) until ctx ends.
 func (a *Auditor) Run(ctx context.Context) {
+	if a.cfg.Errands != nil && a.cfg.Delivery != DeliveryDirect {
+		// Clients ask for errands this often from now on: the ones that asked
+		// lately are the ones a question can be handed to.
+		a.cfg.Errands.SetPollAfter(a.cfg.CarryPoll)
+	}
 	for {
 		wait := time.Duration(mrand.ExpFloat64() * float64(a.cfg.Interval))
 		wait = min(max(wait, a.cfg.Interval/4), 4*a.cfg.Interval)
@@ -204,8 +257,11 @@ func (a *Auditor) pickTarget() (node, model string, ok bool) {
 	type pair struct{ node, model string }
 	var pairs []pair
 	official := a.official()
+	// A carried question reaches a node however its carrier does; one sent
+	// directly needs an official circuit.
+	carried := a.cfg.Errands != nil && a.cfg.Delivery != DeliveryDirect
 	for _, o := range a.eng.LiveOffers() {
-		if official != nil && len(officialCircuits(parseAddrs(o.Addrs), official)) == 0 {
+		if !carried && official != nil && len(officialCircuits(parseAddrs(o.Addrs), official)) == 0 {
 			continue
 		}
 		for _, m := range o.Models {
@@ -237,8 +293,10 @@ func (a *Auditor) official() map[peer.ID]bool {
 // questionResult is one answered and scored question.
 type questionResult struct {
 	Job      string    `json:"job"`
-	Via      string    `json:"via,omitempty"` // the relay the job ran through
-	Billed   [2]uint64 `json:"billed"`        // prompt, completion tokens on the receipt
+	API      string    `json:"api,omitempty"`     // the API the question was asked in
+	Carrier  string    `json:"carrier,omitempty"` // the device that carried it; none: an audit identity asked
+	Via      string    `json:"via,omitempty"`     // the relay the job ran through
+	Billed   [2]uint64 `json:"billed"`            // prompt, completion tokens on the receipt
 	Score    *Score    `json:"score"`
 	Question string    `json:"question"`
 	Answer   string    `json:"answer"`
@@ -256,19 +314,13 @@ func (a *Auditor) Audit(ctx context.Context, nodeID, model string) (*coordinator
 	if v == nil {
 		v = noVerifier{}
 	}
-	official := a.official()
-	if official != nil && len(official) == 0 {
-		return nil, errors.New("audit: no official relay to reach nodes through")
-	}
-	cl, closeID, err := a.identity(official, uint64(a.cfg.Questions))
-	if err != nil {
-		return nil, err
-	}
-	defer closeID()
+	dl := &delivery{a: a, official: a.official()}
+	defer dl.close()
 
 	rec := &coordinator.AuditRecord{Node: nodeID, Model: model, Method: v.Method(), Shadow: a.cfg.Shadow}
 	type answered struct {
-		res *buyer.Result
+		an  *answer
+		api string
 		q   Question
 	}
 	var (
@@ -283,64 +335,59 @@ func (a *Auditor) Audit(ctx context.Context, nodeID, model string) (*coordinator
 			case <-time.After(time.Duration(mrand.Int64N(int64(a.cfg.Spread)))):
 			}
 		}
-		ch := a.challenge()
-		req := map[string]any{"model": model, "messages": ch.messages(), "temperature": 0, "max_tokens": a.cfg.MaxTokens}
-		for k, v := range ref.Params {
-			req[k] = v
-		}
-		body, err := json.Marshal(req)
+		api := a.api(ref)
+		body, err := challengeBody(api, model, a.challenge(), ref.Params, a.cfg.MaxTokens)
 		if err != nil {
 			return nil, err
 		}
-		res, err := cl.Chat(ctx, buyer.ChatRequest{Model: model, Body: body, BudgetMicros: a.cfg.BudgetMicros, Node: nodeID}, nil)
-		if rec.JobID == "" && res != nil {
-			rec.JobID = res.Ticket.JobID
+		an, err := dl.ask(ctx, nodeID, model, api, body)
+		if rec.JobID == "" && an != nil {
+			rec.JobID = an.ticket.JobID
 		}
+		var (
+			wrong *proven
+			no    *refused
+		)
 		switch {
-		case errors.Is(err, buyer.ErrReceiptRejected) && res != nil:
+		case errors.As(err, &wrong):
 			// The node's own receipt failed verification: unreadable output or
-			// implausible usage. The buyer client has already disputed it.
+			// implausible usage.
+			if rec.JobID == "" {
+				rec.JobID = wrong.jobID
+			}
 			rec.Questions = i + 1
-			rec.Verdict, rec.Detail = coordinator.AuditMismatch, "receipt rejected: "+err.Error()
+			rec.Verdict, rec.Detail = coordinator.AuditMismatch, wrong.Error()
 			rec.Shadow = false // a receipt proven wrong needs no calibration
 			return a.record(rec)
+		case errors.As(err, &no):
+			// The node's model refused a request the reference model takes
+			// (e.g. a parameter only the advertised model knows): a sign of
+			// another model, but also of a passing upstream fault. Leave a
+			// record, without penalty.
+			rec.Questions = i + 1
+			rec.Verdict, rec.Detail = coordinator.AuditInconclusive, fmt.Sprintf("question %d: the node's model server rejected the request: %s", i+1, no.msg)
+			return a.record(rec)
 		case err != nil:
-			var pe *protocol.Error
-			if errors.As(err, &pe) && pe.Code == protocol.CodeBadRequest && strings.Contains(pe.Message, "model server rejected") {
-				// The node's model refused a request the reference model takes
-				// (e.g. a parameter only the advertised model knows): a sign of
-				// another model, but also of a passing upstream fault. Leave a
-				// record, without penalty.
-				rec.Questions = i + 1
-				rec.Verdict, rec.Detail = coordinator.AuditInconclusive, fmt.Sprintf("question %d: the node's model server rejected the request: %s", i+1, pe.Message)
-				return a.record(rec)
-			}
 			return nil, err
 		}
-		if official != nil {
-			// The filter and the gater make this impossible; check anyway.
-			if via, _ := peer.Decode(res.Timing.Via); !res.Timing.Relayed || !official[via] {
-				return nil, fmt.Errorf("audit: job %s did not run through an official relay", res.Ticket.JobID)
-			}
-		}
-		q, err := question(&res.Ticket, body, ref.UpstreamModel)
+		q, err := question(&an.ticket, body, ref.UpstreamModel)
 		if err != nil {
 			return nil, err
 		}
-		answers = append(answers, answered{res, q})
+		answers = append(answers, answered{an, api, q})
 	}
 	// Score once every answer is in: scoring can take a minute per answer
 	// (one reference call per token), and the node should see the questions
 	// arrive like a buyer's, not paced by the reference.
-	for _, an := range answers {
-		res, q := an.res, an.q
-		sc, err := v.Score(ctx, q, res.Content, res.FinishReason != "length", a.cfg.ScoreTokens)
+	for _, x := range answers {
+		an, q := x.an, x.q
+		sc, err := v.Score(ctx, q, an.content, !protocol.Truncated(x.api, an.finish), a.cfg.ScoreTokens)
 		if err != nil {
 			return nil, fmt.Errorf("audit: reference model: %w", err)
 		}
-		r := res.Receipt.Receipt
-		results = append(results, questionResult{Job: res.Ticket.JobID, Via: res.Timing.Via, Billed: [2]uint64{r.PromptTokens, r.CompletionTokens},
-			Score: sc, Question: q.Messages[len(q.Messages)-1].Content, Answer: res.Content})
+		results = append(results, questionResult{Job: an.ticket.JobID, API: x.api, Carrier: an.carrier, Via: an.via,
+			Billed: [2]uint64{an.receipt.PromptTokens, an.receipt.CompletionTokens},
+			Score:  sc, Question: q.Messages[len(q.Messages)-1].Content, Answer: an.content})
 	}
 	rec.Questions = len(results)
 	threshold, drift := a.threshold(model)
@@ -356,6 +403,17 @@ func (a *Auditor) Audit(ctx context.Context, nodeID, model string) (*coordinator
 		rec.Scores = string(js)
 	}
 	return a.record(rec)
+}
+
+// api draws the API of a question: one of the reference's, else the
+// auditor's. Asking only in one API would let a node serve another model in
+// the others.
+func (a *Auditor) api(ref Reference) string {
+	apis := ref.APIs
+	if len(apis) == 0 {
+		apis = a.cfg.APIs
+	}
+	return apis[mrand.IntN(len(apis))]
 }
 
 // identity creates a fresh, funded audit identity and its buyer client.
@@ -420,27 +478,6 @@ func (a *Auditor) threshold(model string) (float64, bool) {
 	return c.Threshold, c.Drift
 }
 
-// question is the challenge as an honest node sent it to its model: the
-// node's request rewriting applied (node.UpstreamRequest).
-func question(t *protocol.Ticket, plain []byte, upstreamModel string) (Question, error) {
-	prep, err := node.UpstreamRequest(t, nil, plain, upstreamModel)
-	if err != nil {
-		return Question{}, err
-	}
-	var b struct {
-		Messages  []Message `json:"messages"`
-		MaxTokens int       `json:"max_tokens"`
-		MaxCT     int       `json:"max_completion_tokens"`
-	}
-	if err := json.Unmarshal(prep.Body, &b); err != nil {
-		return Question{}, err
-	}
-	if len(b.Messages) == 0 {
-		return Question{}, errors.New("audit: the upstream request has no messages")
-	}
-	return Question{Messages: b.Messages, MaxTokens: max(b.MaxTokens, b.MaxCT)}, nil
-}
-
 // judge turns the scored questions into a verdict, the audit's score and a
 // detail line.
 func (a *Auditor) judge(method string, rs []questionResult, threshold float64) (verdict string, score float64, detail string) {
@@ -449,11 +486,23 @@ func (a *Auditor) judge(method string, rs []questionResult, threshold float64) (
 	}
 	switch method {
 	case MethodTF:
+		// An answer with no text has nothing to score: the output limit went
+		// on reasoning the model does not show (a request parameter that did
+		// not reach it, a model that cannot turn thinking off). That says
+		// nothing about which model it is, so it is no ground for a penalty.
 		var sum float64
+		scored := 0
 		for _, r := range rs {
+			if r.Score.Tokens == 0 {
+				continue
+			}
 			sum += r.Score.Top1
+			scored++
 		}
-		score = sum / float64(len(rs))
+		if scored*2 < len(rs) || scored == 0 {
+			return coordinator.AuditInconclusive, 0, fmt.Sprintf("%d of %d answers had no text to score", len(rs)-scored, len(rs))
+		}
+		score = sum / float64(scored)
 	case MethodDiv:
 		for _, r := range rs {
 			if r.Score.Fail {

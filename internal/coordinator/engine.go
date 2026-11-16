@@ -667,6 +667,14 @@ type candidate struct {
 // IssueTicket matches buyer to a node for req.Model, reserves req.BudgetMicros
 // from the buyer's account and returns a signed ticket plus the node's offer.
 func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protocol.TicketResponse, error) {
+	return e.issueTicket(buyer, req, false)
+}
+
+// issueTicket issues a ticket to buyer. errand: the job is the platform's
+// own, carried by buyer (errand.go): it is paid from AuditAccount, and the
+// buyer's account, credit and ticket record play no part. The node must be
+// one the buyer could have bought from on the market itself.
+func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bool) (*protocol.TicketResponse, error) {
 	if req.Model == "" {
 		return nil, protocol.Errorf(protocol.CodeBadRequest, "model is required")
 	}
@@ -693,11 +701,19 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		if err != nil {
 			return err
 		}
-		if err := e.grantDevCredit(tx, led, buyer, buyerAcct, now); err != nil {
-			return err
-		}
-		if err := accounts.TouchDevice(tx, buyer, now, 5*time.Minute); err != nil {
-			return err
+		payer := buyerAcct
+		if errand {
+			if scope.auditor || scope.onlyPartners {
+				return protocol.Errorf(protocol.CodeForbidden, "this device does not buy on the market")
+			}
+			payer = AuditAccount
+		} else {
+			if err := e.grantDevCredit(tx, led, buyer, buyerAcct, now); err != nil {
+				return err
+			}
+			if err := accounts.TouchDevice(tx, buyer, now, 5*time.Minute); err != nil {
+				return err
+			}
 		}
 		// A buyer that keeps taking tickets and never connects would block
 		// nodes' slots; cap the tickets it leaves unused.
@@ -707,12 +723,14 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		// out by a few dead nodes while a hoarder stays capped.
 		// A node that is offline (its relay just died, it is reconnecting)
 		// cannot report starts, so its tickets say nothing about the buyer.
-		stale, failed, err := e.unusedTickets(tx, buyerAcct, now)
-		if err != nil {
-			return err
-		}
-		if stale >= e.cfg.MaxStaleTickets || failed >= 4*e.cfg.MaxStaleTickets {
-			return protocol.Errorf(protocol.CodeBusy, "%d earlier tickets were never used (%d more reported failed); they are released when they expire", stale, failed)
+		if !errand {
+			stale, failed, err := e.unusedTickets(tx, buyerAcct, now)
+			if err != nil {
+				return err
+			}
+			if stale >= e.cfg.MaxStaleTickets || failed >= 4*e.cfg.MaxStaleTickets {
+				return protocol.Errorf(protocol.CodeBusy, "%d earlier tickets were never used (%d more reported failed); they are released when they expire", stale, failed)
+			}
 		}
 		busy, sharedBusy, err := busyNodes(tx, now.Add(-e.cfg.StartGrace).UnixNano())
 		if err != nil {
@@ -771,7 +789,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 		// sharedFull counts partner nodes that offer something but are busy,
 		// at capacity or past what their owner shares.
 		full, sharedFull, partnerOffers := 0, 0, false
-		if len(scope.partners) > 0 {
+		if len(scope.partners) > 0 && !errand {
 			var busyFull int
 			if cands, busyFull, err = gather(func(node string, oe *offerEntry) bool {
 				g, ok := scope.partners[oe.acct]
@@ -801,7 +819,12 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			return protocol.Errorf(protocol.CodeNoOffers, "none of your share partners' nodes currently offers %q", req.Model)
 		}
 		if !shared {
-			if cands, full, err = gather(func(_ string, oe *offerEntry) bool { return scope.allows(oe.acct) }, true); err != nil {
+			if cands, full, err = gather(func(_ string, oe *offerEntry) bool {
+				// An errand goes where the carrier would pay: a partner's node
+				// serves it for free, with a ticket that says so.
+				_, partner := scope.partners[oe.acct]
+				return scope.allows(oe.acct) && !(errand && partner)
+			}, true); err != nil {
 				return err
 			}
 		}
@@ -859,17 +882,27 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			hold = min(hold, max(e.cfg.MinBudgetMicros, protocol.HoldFor(req.PromptTokens, req.MaxTokens, best.price.Prices().PromptCeiling(), best.price.PriceOutMicros)))
 		}
 		// A shared job moves no credits; its reservation only caps the output.
+		if errand {
+			// The platform pays: exactly the hold is funded, so whatever comes
+			// back from it is surplus (Tick returns it).
+			if hold > math.MaxInt64 {
+				return ledger.ErrInvalidAmount
+			}
+			if err := led.Fund(payer, int64(hold), "audit funding"); err != nil {
+				return err
+			}
+		}
 		if !shared {
-			err := led.Hold(jobID, buyerAcct, int64(hold))
+			err := led.Hold(jobID, payer, int64(hold))
 			if errors.Is(err, ledger.ErrInsufficientFunds) {
 				// The balance does not cover the whole budget (a request
 				// without an output limit holds all of it): hold what there
 				// is, when that pays for the prompt and a short answer. A
 				// smaller reservation only caps this request's output.
 				need := max(e.cfg.MinBudgetMicros, protocol.HoldFor(req.PromptTokens, minAnswerTokens, best.price.Prices().PromptCeiling(), best.price.PriceOutMicros))
-				if avail, berr := led.Balance(buyerAcct); berr == nil && avail > 0 && uint64(avail) >= need && uint64(avail) < hold {
+				if avail, berr := led.Balance(payer); berr == nil && avail > 0 && uint64(avail) >= need && uint64(avail) < hold {
 					hold = uint64(avail)
-					err = led.Hold(jobID, buyerAcct, avail)
+					err = led.Hold(jobID, payer, avail)
 				}
 			}
 			if err != nil {
@@ -900,7 +933,7 @@ func (e *Engine) IssueTicket(buyer string, req protocol.TicketRequest) (*protoco
 			Shared:          shared,
 		}
 		t.Sign(e.priv)
-		j := &job{ticket: t, buyerAcct: buyerAcct, nodeAcct: best.acct, status: StatusHeld,
+		j := &job{ticket: t, buyerAcct: payer, nodeAcct: best.acct, status: StatusHeld,
 			createdAt: now.UnixNano(), releaseAt: now.Add(e.cfg.TicketTTL + e.cfg.SettleGrace).UnixNano()}
 		if err := insertJob(tx, j); err != nil {
 			return err
@@ -1355,6 +1388,9 @@ func (e *Engine) Dispute(buyer string, req protocol.DisputeRequest) error {
 		if buyer != j.ticket.Buyer {
 			return protocol.Errorf(protocol.CodeForbidden, "only the buyer may dispute")
 		}
+		if j.buyerAcct == AuditAccount {
+			return protocol.Errorf(protocol.CodeForbidden, "an errand is judged by the coordinator")
+		}
 		switch j.status {
 		case StatusHeld:
 			if j.disputeReason == "" {
@@ -1399,6 +1435,8 @@ func evidenceAllowed(j *job, buyer string) error {
 		return protocol.Errorf(protocol.CodeNotFound, "unknown job")
 	case buyer != j.ticket.Buyer:
 		return protocol.Errorf(protocol.CodeForbidden, "only the buyer may submit evidence")
+	case j.buyerAcct == AuditAccount:
+		return protocol.Errorf(protocol.CodeForbidden, "an errand is judged by the coordinator")
 	case j.disputeOutcome != "":
 		return protocol.Errorf(protocol.CodeConflict, "this job's evidence was already judged: %s", j.disputeOutcome)
 	case j.status != StatusHeld && j.status != StatusPending && j.status != StatusDisputed:
@@ -1486,6 +1524,7 @@ func (e *Engine) Tick(now time.Time) {
 	e.mu.Unlock()
 
 	var held, unstarted, pending, idleAuditors []string
+	sweepAudit := false
 	err := e.update(func(tx *sql.Tx, _ *ledger.Tx) (err error) {
 		if held, err = queryStrings(tx, `SELECT job_id FROM jobs WHERE status = 'held' AND release_at <= ?`, now.UnixNano()); err != nil {
 			return err
@@ -1502,6 +1541,7 @@ func (e *Engine) Tick(now time.Time) {
 		// rows it deletes.
 		if now.Sub(e.lastPurge) >= time.Minute {
 			e.lastPurge = now
+			sweepAudit = true
 			if _, err = tx.Exec(`DELETE FROM jobs WHERE status IN ('final', 'released', 'refunded') AND done_at < ?`,
 				now.Add(-e.cfg.JobRetention).UnixNano()); err != nil {
 				return err
@@ -1563,6 +1603,11 @@ func (e *Engine) Tick(now time.Time) {
 			}
 			return e.finalize(tx, led, j, now)
 		})
+	}
+	if sweepAudit {
+		if err := e.returnAuditFunds(); err != nil {
+			e.log.Error("returning audit funds failed", "err", err)
+		}
 	}
 	for _, peer := range idleAuditors {
 		if err := e.update(func(tx *sql.Tx, led *ledger.Tx) error {

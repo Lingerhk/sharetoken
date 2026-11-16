@@ -84,6 +84,13 @@ audit:
   shadow: true                   # record verdicts only; nodes' records are untouched
   calibrate_every: 24h           # measure each reference's honest scores (0: only by `coordinator audit calibrate`)
   calibrate_samples: 40          # questions per calibration
+  delivery: auto                 # how a question reaches a node. auto: a user's client that could buy from the
+                                 # node carries it (sealed: the client reads neither question nor answer, the
+                                 # platform pays), and an audit identity asks through an official relay when no
+                                 # such client is there; carried: clients only; direct: audit identities only
+  carry_poll: 1m                 # how often clients ask for a question to carry
+  carry_wait: 3m                 # how long a carried question may take to come back
+  apis: [chat, messages, responses]  # the APIs questions are asked in, one drawn per question
 
 tee:
   policy_file: ""                # JSON allow-list of TEE images; setting it enables matching for require_tee

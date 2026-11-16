@@ -49,6 +49,7 @@ import (
 	"sharetoken/internal/mysqldb"
 	"sharetoken/internal/node"
 	"sharetoken/internal/p2p"
+	"sharetoken/internal/protocol"
 	"sharetoken/internal/tokens"
 	"sharetoken/internal/version"
 )
@@ -68,6 +69,9 @@ type Reference struct {
 	// Params are extra fields of every audit request, e.g.
 	// {reasoning_effort: none} for a model that thinks by default.
 	Params map[string]any `yaml:"params"`
+	// APIs are the APIs this model's audit questions are asked in (default:
+	// audit.apis).
+	APIs []string `yaml:"apis"`
 }
 
 // File is coordinator.yaml (configs/coordinator.example.yaml).
@@ -118,6 +122,15 @@ type File struct {
 		Shadow           bool            `yaml:"shadow"`
 		CalibrateEvery   config.Duration `yaml:"calibrate_every"`
 		CalibrateSamples int             `yaml:"calibrate_samples"`
+		// Delivery: auto (users' clients carry the questions, an audit
+		// identity asks when none can), carried or direct.
+		Delivery string `yaml:"delivery"`
+		// CarryPoll is how often clients ask for a question to carry;
+		// CarryWait how long a carried one may take to come back.
+		CarryPoll config.Duration `yaml:"carry_poll"`
+		CarryWait config.Duration `yaml:"carry_wait"`
+		// APIs are the APIs questions are asked in, one drawn per question.
+		APIs []string `yaml:"apis"`
 	} `yaml:"audit"`
 	TEE struct {
 		PolicyFile  string `yaml:"policy_file"`
@@ -153,6 +166,8 @@ func defaults() File {
 	a.Interval, a.BudgetMicros, a.MaxTokens = config.D("10m"), 200_000, 96
 	a.Questions, a.Spread, a.ScoreTokens, a.Threshold, a.Margin, a.DivFails = 5, config.D("2m"), 64, 0.85, 0.03, 2
 	a.Shadow, a.CalibrateEvery, a.CalibrateSamples = true, config.D("24h"), 40
+	a.Delivery, a.CarryPoll, a.CarryWait = audit.DeliveryAuto, config.D("1m"), config.D("3m")
+	a.APIs = slices.Clone(protocol.AllAPIs)
 	f.Log = config.DefaultLog()
 	return f
 }
@@ -258,6 +273,23 @@ func (f *File) validate() error {
 	if a.Spread < 0 || a.CalibrateEvery < 0 {
 		bad("audit.spread and audit.calibrate_every must not be negative")
 	}
+	if !slices.Contains(audit.Deliveries, a.Delivery) {
+		bad("audit.delivery %q: want one of %s", a.Delivery, strings.Join(audit.Deliveries, ", "))
+	}
+	if a.CarryPoll.T() < 5*time.Second || a.CarryWait.T() < 10*time.Second {
+		bad("audit.carry_poll must be at least 5s and audit.carry_wait at least 10s")
+	}
+	badAPIs := func(where string, apis []string) {
+		for _, api := range apis {
+			if api == "" || !protocol.ValidAPI(api) {
+				bad("%s: unknown API %q (want %s)", where, api, strings.Join(protocol.AllAPIs, ", "))
+			}
+		}
+	}
+	if len(a.APIs) == 0 {
+		bad("audit.apis must name at least one API")
+	}
+	badAPIs("audit.apis", a.APIs)
 	seen := map[string]bool{}
 	for i, r := range f.References {
 		if r.ID == "" || r.Upstream == "" || r.URL == "" {
@@ -269,6 +301,7 @@ func (f *File) validate() error {
 		if r.Verify != "" && !slices.Contains(audit.VerifyKinds, r.Verify) {
 			bad("references[%d].verify %q: want one of %s", i, r.Verify, strings.Join(audit.VerifyKinds, ", "))
 		}
+		badAPIs(fmt.Sprintf("references[%d].apis", i), r.APIs)
 		seen[r.ID] = true
 	}
 	return errors.Join(errs...)
@@ -396,7 +429,7 @@ func main() {
 	defer svc.Close()
 
 	if len(references) > 0 && f.Audit.Interval > 0 {
-		aud, err := newAuditor(f, svc.Engine, references, peer.AddrInfo{ID: h.ID()},
+		aud, err := newAuditor(f, svc.Engine, svc.Errands, references, peer.AddrInfo{ID: h.ID()},
 			func() []ma.Multiaddr { return append(h.Addrs(), svc.RelayAddrs()...) }, svc.OfficialRelays)
 		if err != nil {
 			log.Fatal(err)
@@ -466,18 +499,24 @@ func buildReferences(rs []Reference) ([]audit.Reference, map[string]tokens.Serve
 		refs = append(refs, audit.Reference{
 			Model: r.ID, UpstreamModel: r.Upstream,
 			Upstream: &node.OpenAICompat{BaseURL: r.URL, APIKey: apiKey},
-			Verifier: v, Params: r.Params,
+			Verifier: v, Params: r.Params, APIs: r.APIs,
 		})
 		servers[r.ID] = tokens.Server{BaseURL: r.URL, Model: r.Upstream, APIKey: apiKey}
 	}
 	return refs, servers
 }
 
-// newAuditor builds the auditor from the audit settings.
-func newAuditor(f File, eng *coordinator.Engine, refs []audit.Reference, coord peer.AddrInfo,
+// newAuditor builds the auditor from the audit settings. errands is the
+// running coordinator's board; without one (an operator's command, a process
+// clients do not talk to) questions go out directly.
+func newAuditor(f File, eng *coordinator.Engine, errands *coordinator.Errands, refs []audit.Reference, coord peer.AddrInfo,
 	coordAddrs func() []ma.Multiaddr, official func() []peer.ID) (*audit.Auditor, error) {
 	a := f.Audit
+	if errands == nil {
+		a.Delivery = audit.DeliveryDirect
+	}
 	acfg := audit.Config{
+		Errands: errands, Delivery: a.Delivery, CarryPoll: a.CarryPoll.T(), CarryWait: a.CarryWait.T(), APIs: a.APIs,
 		References: refs, Coordinator: coord, CoordinatorAddrs: coordAddrs, OfficialRelays: official,
 		Interval: a.Interval.T(), BudgetMicros: a.BudgetMicros, MaxTokens: a.MaxTokens, Questions: a.Questions,
 		Spread: a.Spread.T(), ScoreTokens: a.ScoreTokens, Threshold: a.Threshold, Margin: a.Margin, DivFails: a.DivFails,

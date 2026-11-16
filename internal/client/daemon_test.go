@@ -1294,4 +1294,20 @@ func TestDaemonBuySettings(t *testing.T) {
 	}
 	d.want(400, "bad_request", "PUT", "/api/v1/buy", BuySettingsView{BudgetMicros: 5})
 	d.want(400, "bad_request", "PUT", "/api/v1/buy", map[string]any{"budget_micros": "lots"})
+
+	// Carrying the platform's spot checks is on unless the user turns it
+	// off; a change that does not mention it (an older page) keeps it.
+	if v.SpotChecks == nil || !*v.SpotChecks || !c.Buy.CarriesSpotChecks() {
+		t.Fatalf("spot checks by default: %+v", v)
+	}
+	off := false
+	if err := json.Unmarshal(d.want(200, "", "PUT", "/api/v1/buy", BuySettingsView{BudgetMicros: 5_000_000, SpotChecks: &off}), &v); err != nil || v.SpotChecks == nil || *v.SpotChecks {
+		t.Fatalf("turning spot checks off: %+v %v", v, err)
+	}
+	if err := json.Unmarshal(d.want(200, "", "PUT", "/api/v1/buy", map[string]any{"budget_micros": 4_000_000}), &v); err != nil || v.SpotChecks == nil || *v.SpotChecks || v.BudgetMicros != 4_000_000 {
+		t.Fatalf("a change without spot_checks: %+v %v", v, err)
+	}
+	if c, err := LoadConfig(d.home); err != nil || c.Buy.CarriesSpotChecks() {
+		t.Fatalf("saved: %+v %v", c.Buy, err)
+	}
 }

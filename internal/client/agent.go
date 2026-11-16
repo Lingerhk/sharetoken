@@ -47,6 +47,10 @@ type Agent struct {
 	// is up to the caller, and not from this call.
 	OnLoginEnded    func()
 	LoginCheckEvery time.Duration // how often to ask the portal (1m)
+	// ErrandFirst is when the client first asks the coordinator for an errand
+	// (a platform audit to carry, buyer.RunErrands); later the coordinator
+	// says when (20s).
+	ErrandFirst time.Duration
 	// HostOptions are extra libp2p options for the agent's host (embedding,
 	// tests); set before Start.
 	HostOptions []libp2p.Option
@@ -198,6 +202,11 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}})
 	go a.maintain()
+	go a.buyer.RunErrands(a.ctx, a.ErrandFirst, func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.cfg.Buy.CarriesSpotChecks()
+	})
 	return nil
 }
 
