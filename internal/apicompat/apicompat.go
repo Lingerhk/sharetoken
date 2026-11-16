@@ -21,6 +21,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -136,6 +137,11 @@ func EventName(api string, payload []byte) string {
 	}
 	return head.Type
 }
+
+// repeatedCallID is the ID the n-th (from 2) tool call with the same ID gets
+// where an upstream wants call IDs unique in a request; its result gets the
+// same one.
+func repeatedCallID(id string, n int) string { return id + "_" + strconv.Itoa(n) }
 
 // IsConverted reports whether an opaque value (a reasoning item's
 // encrypted_content, a thinking block's signature) was made by sharetoken's

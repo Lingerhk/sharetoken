@@ -280,6 +280,22 @@ func (w *msgWriter) drop(b *msgBlock) {
 	delete(w.byKey, b.key)
 }
 
+// dropCut removes the tool_use blocks that have not started and whose input
+// is not complete JSON, for an answer cut off by its output limit or a content
+// filter. A block that has started cannot be taken back: it ends with the
+// input it has, as a Messages upstream ends one at max_tokens.
+func (w *msgWriter) dropCut() {
+	keep := w.queue[:0]
+	for _, b := range w.queue {
+		if b.kind == msgKindToolUse && !b.live && !json.Valid([]byte(b.all.String())) {
+			delete(w.byKey, b.key)
+			continue
+		}
+		keep = append(keep, b)
+	}
+	w.queue = keep
+}
+
 func (w *msgWriter) startBlock(b *msgBlock) {
 	w.start()
 	b.live = true

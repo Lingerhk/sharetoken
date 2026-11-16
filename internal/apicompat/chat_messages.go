@@ -124,11 +124,12 @@ func chatMessagesRequest(r *chatRequest) (map[string]any, error) {
 	case "json_object":
 		system = append(system, map[string]any{"type": "text", "text": "Answer with a single JSON object and nothing else."})
 	case "json_schema":
-		hint := "Answer with a single JSON object and nothing else."
 		if len(rf.schema) > 0 {
-			hint = "Answer with a single JSON object that matches this JSON schema, and nothing else:\n" + string(rf.schema)
+			// Messages has a field for a schema: output_config.format.
+			chatOutputConfig(req)["format"] = map[string]any{"type": "json_schema", "schema": rf.schema}
+		} else {
+			system = append(system, map[string]any{"type": "text", "text": "Answer with a single JSON object and nothing else."})
 		}
-		system = append(system, map[string]any{"type": "text", "text": hint})
 	}
 	if len(system) > 0 {
 		req["system"] = system
@@ -141,7 +142,8 @@ func chatMessagesRequest(r *chatRequest) (map[string]any, error) {
 	case r.TopP != nil:
 		req["top_p"] = *r.TopP
 	}
-	if s := r.stops(); len(s) > 0 {
+	// Anthropic refuses a stop sequence that is only whitespace ("\n").
+	if s := slices.DeleteFunc(r.stops(), func(s string) bool { return strings.TrimSpace(s) == "" }); len(s) > 0 {
 		req["stop_sequences"] = s
 	}
 	if r.User != "" {
@@ -194,8 +196,8 @@ func AdaptiveThinking(model string) bool {
 
 // chatAnthropicThinking maps reasoning_effort to extended thinking. The 5.5
 // models think adaptively at an effort; earlier models take a budget, which
-// must be at least 1024 tokens and below max_tokens, and refuse sampling
-// settings and a forced tool with it.
+// must be at least 1024 tokens and is at most half of max_tokens, and refuse
+// sampling settings and a forced tool with it.
 func chatAnthropicThinking(req map[string]any, r *chatRequest, maxTokens uint64, forced bool) {
 	effort := strings.ToLower(strings.TrimSpace(r.ReasoningEffort))
 	if effort == "" {
@@ -221,19 +223,72 @@ func chatAnthropicThinking(req map[string]any, r *chatRequest, maxTokens uint64,
 		default:
 			req["thinking"], effort = map[string]any{"type": "adaptive"}, "medium"
 		}
-		req["output_config"] = map[string]any{"effort": effort}
+		chatOutputConfig(req)["effort"] = effort
+		return
+	}
+	if effort == "none" {
+		// Said outright: a Messages server whose model thinks unless told
+		// otherwise (and a conversion back to chat) must not fall back to
+		// its default.
+		req["thinking"] = map[string]any{"type": "disabled"}
 		return
 	}
 	budget := map[string]uint64{"low": 1024, "medium": 4096, "high": 10240, "xhigh": 32768, "max": 32768}[effort]
-	if budget == 0 || forced || maxTokens <= 1024 {
+	// At least half of max_tokens stays for the visible answer.
+	budget = min(budget, maxTokens/2)
+	if budget < 1024 || forced {
 		return // none, minimal, unknown; or no room to think
 	}
-	budget = min(budget, maxTokens-1)
+	// In a tool loop the assistant turn that called the tools must start
+	// with a thinking block; a client that did not send anthropic_thinking
+	// back gets the turn without thinking.
+	if msgs, _ := req["messages"].([]map[string]any); !chatTrailingToolTurnHasThinking(msgs) {
+		return
+	}
 	req["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
 	delete(req, "temperature")
 	if p, ok := req["top_p"].(float64); ok && p < 0.95 {
 		delete(req, "top_p")
 	}
+}
+
+// chatOutputConfig is the request's output_config, made when there is none.
+func chatOutputConfig(req map[string]any) map[string]any {
+	oc, ok := req["output_config"].(map[string]any)
+	if !ok {
+		oc = map[string]any{}
+		req["output_config"] = oc
+	}
+	return oc
+}
+
+// chatTrailingToolTurnHasThinking reports whether thinking can be enabled:
+// when the conversation ends in a tool loop, the assistant turn that called
+// the tools must start with a thinking block (as respTrailingToolTurnHasThinking).
+func chatTrailingToolTurnHasThinking(msgs []map[string]any) bool {
+	has := func(blocks []any, typ string) bool {
+		for _, b := range blocks {
+			if bm, ok := b.(map[string]any); ok && bm["type"] == typ {
+				return true
+			}
+		}
+		return false
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		blocks, _ := msgs[i]["content"].([]any)
+		if msgs[i]["role"] == "user" {
+			if !has(blocks, "tool_result") {
+				return true // a fresh user turn: no tool loop to continue
+			}
+			continue
+		}
+		if len(blocks) == 0 || !has(blocks, "tool_use") {
+			return true
+		}
+		first, _ := blocks[0].(map[string]any)
+		return first["type"] == "thinking" || first["type"] == "redacted_thinking"
+	}
+	return true
 }
 
 // chatThinkingHistory turns anthropic_thinking blocks back into the signed
@@ -333,24 +388,28 @@ func chatToolUseID(id string) string {
 // chatPairTools makes the turns what Anthropic requires: every tool_use is
 // answered by a tool_result in the very next user turn (results are moved
 // there from wherever the history had them; calls without a result and
-// results without a call are dropped), the roles alternate (consecutive
+// results without a call are dropped; a repeated call ID is made unique), the
+// roles alternate (consecutive
 // turns of a role become one: tool results, which chat sends as a message
 // each, are blocks of a single user turn), and a user turn starts with its
 // tool results.
 func chatPairTools(msgs []map[string]any) []map[string]any {
-	results := map[string]any{}
+	// The results of each call ID, in order: an ID a history uses again (some
+	// model servers number the calls of every answer from zero) pairs its
+	// calls with its results in order of appearance.
+	results := map[string][]map[string]any{}
 	for _, m := range msgs {
 		if m["role"] != "user" {
 			continue
 		}
 		for _, b := range m["content"].([]any) {
 			if bm, ok := b.(map[string]any); ok && bm["type"] == "tool_result" {
-				if _, dup := results[bm["tool_use_id"].(string)]; !dup {
-					results[bm["tool_use_id"].(string)] = b
-				}
+				id := bm["tool_use_id"].(string)
+				results[id] = append(results[id], bm)
 			}
 		}
 	}
+	calls := map[string]int{}
 	var out []map[string]any
 	add := func(role any, blocks []any) {
 		if len(blocks) == 0 {
@@ -369,9 +428,15 @@ func chatPairTools(msgs []map[string]any) []map[string]any {
 			switch {
 			case bm != nil && bm["type"] == "tool_use":
 				id := bm["id"].(string)
-				if r, ok := results[id]; ok && r != nil {
+				if q := results[id]; len(q) > 0 {
+					r := q[0]
+					results[id] = q[1:] // each result answers one call
+					if calls[id]++; calls[id] > 1 {
+						// Anthropic wants tool_use IDs unique in a request.
+						unique := repeatedCallID(id, calls[id])
+						bm["id"], r["tool_use_id"] = unique, unique
+					}
 					kept, answers = append(kept, b), append(answers, r)
-					results[id] = nil // each result answers one call
 				}
 				continue
 			case bm != nil && bm["type"] == "tool_result":
@@ -398,7 +463,7 @@ func chatResultRank(b any) int {
 }
 
 // chatAnthropicTools converts function tools (their schema made an object
-// schema Anthropic takes) and web_search.
+// schema Anthropic takes); other tools are left out.
 func chatAnthropicTools(tools []chatTool) ([]any, error) {
 	var out []any
 	for i := range tools {
@@ -406,17 +471,14 @@ func chatAnthropicTools(tools []chatTool) ([]any, error) {
 		if err := t.CacheControl.valid(); err != nil {
 			return nil, err
 		}
-		var tool map[string]any
-		switch {
-		case strings.EqualFold(strings.TrimSpace(t.Type), "web_search"):
-			tool = map[string]any{"type": "web_search_20250305", "name": "web_search"}
-		case t.isFunction():
-			tool = map[string]any{"name": t.Function.Name, "input_schema": chatAnthropicSchema(t.Function.Parameters)}
-			if t.Function.Description != "" {
-				tool["description"] = t.Function.Description
-			}
-		default:
+		// Function tools only: a built-in tool (web_search, ...) would run on
+		// the upstream's side, which the node does not price.
+		if !t.isFunction() {
 			continue
+		}
+		tool := map[string]any{"name": t.Function.Name, "input_schema": chatAnthropicSchema(t.Function.Parameters)}
+		if t.Function.Description != "" {
+			tool["description"] = t.Function.Description
 		}
 		if t.CacheControl != nil {
 			tool["cache_control"] = t.CacheControl.value()
@@ -649,6 +711,7 @@ type chatMessagesBlock struct {
 	tool     int
 	seed     string // a tool_use's input given on its start
 	streamed bool   // input_json_delta came
+	sent     bool   // arguments went out
 	thinking chatThinkingBlock
 }
 
@@ -776,6 +839,7 @@ func (s *chatFromMessages) Event(payload []byte, emit func([]byte) error) error 
 		case "input_json_delta":
 			if b != nil && b.kind == "tool" {
 				b.streamed = true
+				b.sent = b.sent || d.PartialJSON != ""
 				return s.out.toolArgs(b.tool, d.PartialJSON)
 			}
 		}
@@ -809,7 +873,7 @@ func (s *chatFromMessages) Event(payload []byte, emit func([]byte) error) error 
 // closeBlock finishes a content block: a signed or redacted thinking block
 // goes out whole as anthropic_thinking (also when its text was omitted, so
 // the reasoning is not lost to the next turn), a tool_use without streamed
-// input gets the input its start gave.
+// input gets the input its start gave, or "{}".
 func (s *chatFromMessages) closeBlock(b *chatMessagesBlock) error {
 	switch b.kind {
 	case "thinking":
@@ -818,8 +882,14 @@ func (s *chatFromMessages) closeBlock(b *chatMessagesBlock) error {
 		}
 	case "tool":
 		if !b.streamed && b.seed != "" {
-			b.streamed = true
+			b.streamed, b.sent = true, true
 			return s.out.toolArgs(b.tool, b.seed)
+		}
+		if !b.sent {
+			// A tool without input streams no arguments (one empty delta):
+			// chat clients parse the arguments as JSON, so they are "{}".
+			b.sent = true
+			return s.out.toolArgs(b.tool, "{}")
 		}
 	}
 	return nil

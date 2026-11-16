@@ -154,16 +154,26 @@ func TestAnthropicProfileHTTPAndBilling(t *testing.T) {
 	if sent["max_tokens"].(float64) != 512 {
 		t.Fatal("budget changed")
 	}
-	// The cap the node bills by.
+	// What the node takes off the prompt it bills: the login's instructions,
+	// not a cap at the estimate of the buyer's request.
 	b := &node.Billing{}
 	ctx := node.WithBilling(context.Background(), b)
 	body := `{"model":"claude-sonnet-4-6","max_tokens":100,"messages":[{"role":"user","content":"hello there"}]}`
 	if err := up.Stream(ctx, &node.Request{API: protocol.APIMessages, Body: []byte(body)}, func([]byte) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	est, _ := protocol.EstimatePromptTokens(protocol.APIMessages, []byte(body))
-	if b.PromptCap != est {
-		t.Fatalf("prompt cap %d, want the estimate %d", b.PromptCap, est)
+	added := protocol.EstimateTokens(claudeCodeIdentity + claudeExpansion)
+	if b.PromptCap != 0 || b.PromptDiscount < added || b.PromptDiscount > 2*added {
+		t.Fatalf("billing %+v, want a discount of about %d and no cap", b, added)
+	}
+	// Claude Code's own request carries nothing of the adapter's.
+	b = &node.Billing{}
+	body = `{"model":"claude-sonnet-4-6","max_tokens":100,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=1; cc_entrypoint=cli;"},{"type":"text","text":"You are Claude Code."}],"messages":[{"role":"user","content":"hello there"}]}`
+	if err := up.Stream(node.WithBilling(context.Background(), b), &node.Request{API: protocol.APIMessages, Body: []byte(body)}, func([]byte) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if b.PromptCap != 0 || b.PromptDiscount != 0 {
+		t.Fatalf("billing of Claude Code's own request: %+v", b)
 	}
 }
 

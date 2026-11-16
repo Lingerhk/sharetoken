@@ -21,9 +21,16 @@ const maxSSELine = 4 << 20
 // A non-200 answer is a *node.StatusError, which the node sorts into the
 // buyer's fault (400, 413, 422) or its own.
 func postSSE(ctx context.Context, url string, header http.Header, body []byte, on func(data []byte) error) error {
+	_, err := postSSEDone(ctx, url, header, body, on)
+	return err
+}
+
+// postSSEDone is postSSE that also tells whether the answer ended with the
+// "[DONE]" line chat servers close a stream with.
+func postSSEDone(ctx context.Context, url string, header http.Header, body []byte, on func(data []byte) error) (done bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header = header.Clone()
 	req.Header.Set("Content-Type", "application/json")
@@ -32,12 +39,12 @@ func postSSE(ctx context.Context, url string, header http.Header, body []byte, o
 	}
 	resp, err := clientForContext(ctx).Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return responseStatus(resp, string(msg))
+		return false, responseStatus(resp, string(msg))
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), maxSSELine)
@@ -47,14 +54,18 @@ func postSSE(ctx context.Context, url string, header http.Header, body []byte, o
 			continue
 		}
 		data := bytes.TrimSpace(line[len("data:"):])
-		if len(data) == 0 || string(data) == "[DONE]" {
+		if len(data) == 0 {
+			continue
+		}
+		if string(data) == "[DONE]" {
+			done = true
 			continue
 		}
 		if err := on(data); err != nil {
-			return err
+			return done, err
 		}
 	}
-	return sc.Err()
+	return done, sc.Err()
 }
 
 // getJSON fetches url and decodes the JSON answer.

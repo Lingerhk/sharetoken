@@ -17,9 +17,10 @@ func init() {
 	registerAggregator(Messages, msgAggregate)
 }
 
-// msgMinOutputTokens is the least max_output_tokens sent: upstreams reject
-// very small limits.
-const msgMinOutputTokens = 128
+// msgMinOutputTokens is the least max_output_tokens the Responses API takes.
+// A limit is raised to it and no further: the node computed the request's
+// from the buyer's reservation.
+const msgMinOutputTokens = 16
 
 func msgToResponses(body []byte, opt Options) (*Conversion, error) {
 	r, err := msgParseRequest(body)
@@ -48,6 +49,11 @@ func msgToResponses(body []byte, opt Options) (*Conversion, error) {
 	}
 	if r.MaxTokens > 0 {
 		out["max_output_tokens"] = max(r.MaxTokens, msgMinOutputTokens)
+	}
+	// The Responses API has no stop parameter: the request's stop_sequences
+	// are not sent, and the answer does not end at them.
+	if schema := msgOutputSchema(r); schema != nil {
+		out["text"] = map[string]any{"format": map[string]any{"type": "json_schema", "name": msgSchemaName, "schema": schema}}
 	}
 	if !msgReasoningOnly(r.Model) {
 		if r.Temperature != nil {
@@ -228,7 +234,7 @@ func msgResponsesInput(r *msgRequest, names *msgToolNames) ([]any, error) {
 					}
 					items = append(items, map[string]any{"type": "reasoning", "summary": summary, "encrypted_content": enc})
 				case "tool_use":
-					if !uses[b.ID] {
+					if !msgTake(uses, b.ID) {
 						continue
 					}
 					flush()
@@ -242,7 +248,7 @@ func msgResponsesInput(r *msgRequest, names *msgToolNames) ([]any, error) {
 		default: // user
 			var parts, media []any
 			for _, b := range blocks {
-				if b.Type != "tool_result" || !results[b.ToolUseID] {
+				if b.Type != "tool_result" || !msgTake(results, b.ToolUseID) {
 					continue
 				}
 				text, extra := msgToolResult(b)
@@ -731,6 +737,11 @@ func (t *msgFromResponses) terminal(e *msgRespEvent) error {
 			}
 			_ = json.Unmarshal(*r.IncompleteDetails, &d)
 			incomplete = d.Reason
+		}
+		if incomplete == "max_output_tokens" || incomplete == "content_filter" {
+			// Cut off: a tool call the client has not seen yet with half its
+			// input is not sent.
+			t.w.dropCut()
 		}
 		t.recoverOutput(r.Output)
 	}

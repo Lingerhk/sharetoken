@@ -228,6 +228,16 @@ func respToMessages(body []byte, opt Options) (*Conversion, error) {
 		}
 	}
 
+	// Structured output: text.format's schema is output_config.format's.
+	if schema := respFormatSchema(r.textFormat); schema != nil {
+		oc, ok := out["output_config"].(map[string]any)
+		if !ok {
+			oc = map[string]any{}
+			out["output_config"] = oc
+		}
+		oc["format"] = map[string]any{"type": "json_schema", "schema": schema}
+	}
+
 	if !thinking {
 		if t := r.temperature; t != nil {
 			v := *t
@@ -261,6 +271,20 @@ func respToMessages(body []byte, opt Options) (*Conversion, error) {
 		model = r.model
 	}
 	return &Conversion{Body: b, Translator: &respFromMessages{s: newRespStream(model, r.tools), blocks: map[int]*respMsgBlock{}}}, nil
+}
+
+// respFormatSchema is the JSON schema text.format asks the answer to follow,
+// nil when it asks for none (text, or json_object, which Messages has no
+// field for).
+func respFormatSchema(raw json.RawMessage) json.RawMessage {
+	var f struct {
+		Type   string          `json:"type"`
+		Schema json.RawMessage `json:"schema"`
+	}
+	if json.Unmarshal(raw, &f) != nil || f.Type != "json_schema" || len(f.Schema) == 0 || string(f.Schema) == "null" {
+		return nil
+	}
+	return f.Schema
 }
 
 func respHasTextPart(parts []respPart) bool {
@@ -709,6 +733,11 @@ func (t *respFromMessages) blockStop(b *respMsgBlock) error {
 			if err := t.s.callArgs(b.call, b.seed); err != nil {
 				return err
 			}
+		}
+		if args := b.call.args.String(); args != "" && !json.Valid([]byte(args)) {
+			// Cut off, most likely: the stop reason, which comes after the
+			// block's end, says whether it is, and the call ends then.
+			return nil
 		}
 		return t.s.closeCall(b.call)
 	}

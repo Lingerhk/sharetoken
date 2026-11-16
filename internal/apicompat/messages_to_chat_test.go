@@ -52,8 +52,8 @@ func TestMessagesToChatRequestBasics(t *testing.T) {
 		t.Error("reasoning_effort for a model without reasoning")
 	}
 	m, _ = msgConvert(t, Chat, msgReq(t, "m", []any{msgUser("x")}, map[string]any{"max_tokens": 1}), Options{})
-	if m["max_tokens"] != 128.0 {
-		t.Errorf("floor %v", m["max_tokens"])
+	if m["max_tokens"] != 1.0 {
+		t.Errorf("the output limit is the request's: %v", m["max_tokens"])
 	}
 }
 

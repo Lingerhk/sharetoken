@@ -538,24 +538,42 @@ func respIsImageDataURL(s string) bool {
 // output, a parallel call whose output never came, an output whose call was
 // trimmed away): calls without an output and outputs without a call are left
 // out, and whatever sat between a call and its output comes after the outputs.
+// A call id a history uses again (some model servers number the calls of
+// every answer from zero) pairs its calls with its outputs in order of
+// appearance, the later pairs under an id of their own; of several outputs
+// for one call the last one wins.
 func respPairCalls(items []respItem) []respItem {
-	outputs := map[string]respItem{}
+	outputs := map[string][]respItem{}
+	calls := map[string]int{}
 	for _, it := range items {
-		if it.kind == respItemOutput {
-			outputs[it.callID] = it // the last one wins
+		switch it.kind {
+		case respItemOutput:
+			outputs[it.callID] = append(outputs[it.callID], it)
+		case respItemCall:
+			calls[it.callID]++
 		}
 	}
-	emitted := map[string]bool{}
+	seen := map[string]int{}
 	var out, group []respItem
 	flush := func() {
 		var results []respItem
 		for _, it := range group {
 			if it.kind == respItemCall {
-				o, ok := outputs[it.callID]
-				if !ok || emitted[it.callID] {
-					continue // unanswered, or a repeated call id
+				id := it.callID
+				q := outputs[id]
+				if len(q) == 0 {
+					continue // unanswered
 				}
-				emitted[it.callID] = true
+				seen[id]++
+				o := q[0]
+				outputs[id] = q[1:]
+				if seen[id] == calls[id] {
+					o, outputs[id] = q[len(q)-1], nil // its last call: the last output
+				}
+				if seen[id] > 1 {
+					it.callID = repeatedCallID(id, seen[id])
+					o.callID = it.callID
+				}
 				results = append(results, o)
 			}
 			out = append(out, it)

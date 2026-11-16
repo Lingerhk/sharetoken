@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"sharetoken/internal/node"
 	"sharetoken/internal/protocol"
@@ -34,7 +35,9 @@ type openAIUpstream struct {
 	responses   bool
 	// messages, when set, is the base URL of the provider's Anthropic
 	// Messages endpoint (DeepSeek has one): Messages requests go there.
-	messages string
+	messages   string
+	messagesUp *anthropicUpstream // made once: it keeps the limits it learns
+	messagesMu sync.Mutex
 	// thoughtSignatures: Gemini wants the thought signature it gave with each
 	// tool call back with it; calls that lost theirs (converted from another
 	// API, or from another model) get the placeholder Gemini accepts.
@@ -61,12 +64,18 @@ func (u *openAIUpstream) Stream(ctx context.Context, r *node.Request, emit func(
 				return err
 			}
 			return retryWithoutReasoning(out, func(body []byte) error {
-				return u.post(ctx, "/responses", body, responsesPassthrough(emit))
+				on, ended := responsesPassthrough(emit)
+				if _, err := u.post(ctx, "/responses", body, on); err != nil {
+					return err
+				}
+				if !ended() {
+					return fmt.Errorf("the stream ended before the response did")
+				}
+				return nil
 			})
 		}, r.Body)
 	case r.API == protocol.APIMessages && u.messages != "":
-		up := &anthropicUpstream{base: u.messages, limits: outputLimits{set: u.limits.set}, header: u.messagesHeader()}
-		return up.Stream(ctx, r, emit)
+		return u.messagesUpstream().Stream(ctx, r, emit)
 	case r.API != protocol.APIChat:
 		return fmt.Errorf("provider: cannot send a %s request", r.API)
 	}
@@ -78,22 +87,54 @@ func (u *openAIUpstream) Stream(ctx context.Context, r *node.Request, emit func(
 		if u.thoughtSignatures {
 			out = signToolCalls(out)
 		}
-		return u.post(ctx, "/chat/completions", out, func(data []byte) error {
+		// The answer is complete with a finish_reason or the closing [DONE]:
+		// a stream that ends before either was cut on the way.
+		finished := false
+		done, err := u.post(ctx, "/chat/completions", out, func(data []byte) error {
 			if msg, ok := chatError(data); ok {
 				return &node.StatusError{Status: http.StatusBadGateway, Body: clip(msg, 300)}
 			}
+			finished = finished || chatFinished(data)
 			return emit(append([]byte(nil), data...))
 		})
+		if err == nil && !finished && !done {
+			err = fmt.Errorf("the stream ended before the answer did")
+		}
+		return err
 	}, r.Body)
 }
 
-func (u *openAIUpstream) post(ctx context.Context, path string, body []byte, on func([]byte) error) error {
+// post sends body to path and calls on with each event payload. done tells
+// whether the "[DONE]" line that closes a chat stream came.
+func (u *openAIUpstream) post(ctx context.Context, path string, body []byte, on func([]byte) error) (done bool, err error) {
 	if u.ts == nil {
-		return postSSE(ctx, u.base+path, u.header, body, on)
+		return postSSEDone(ctx, u.base+path, u.header, body, on)
 	}
-	return withToken(ctx, u.ts, func(tok *Token) error {
-		return postSSE(ctx, u.base+path, u.auth(tok), body, on)
+	err = withToken(ctx, u.ts, func(tok *Token) error {
+		done, err = postSSEDone(ctx, u.base+path, u.auth(tok), body, on)
+		return err
 	})
+	return done, err
+}
+
+// messagesUpstream is the provider's Messages endpoint, the same one for
+// every request, so an output limit it learnt holds for the next.
+func (u *openAIUpstream) messagesUpstream() *anthropicUpstream {
+	u.messagesMu.Lock()
+	defer u.messagesMu.Unlock()
+	if u.messagesUp == nil {
+		u.messagesUp = &anthropicUpstream{base: u.messages, limits: outputLimits{set: u.limits.set}, header: u.messagesHeader()}
+	}
+	return u.messagesUp
+}
+
+// chatFinished reports whether a chat chunk carries a finish_reason.
+func chatFinished(data []byte) bool {
+	if !bytes.Contains(data, []byte(`"finish_reason"`)) {
+		return false
+	}
+	info, err := protocol.ParseChunk(data)
+	return err == nil && info.FinishReason != ""
 }
 
 // messagesHeader is the key header for the provider's Messages endpoint.
@@ -175,16 +216,21 @@ func chatError(data []byte) (string, bool) {
 }
 
 // responsesPassthrough passes a Responses stream on, failing on its error
-// events and on a stream that ends without its terminal event.
-func responsesPassthrough(emit func([]byte) error) func([]byte) error {
-	return func(data []byte) error {
+// events. ended tells whether the terminal event came: a stream without it
+// was cut on the way.
+func responsesPassthrough(emit func([]byte) error) (on func([]byte) error, ended func() bool) {
+	done := false
+	on = func(data []byte) error {
 		typ, msg := eventType(data)
 		switch typ {
 		case "error", "response.failed":
 			return &node.StatusError{Status: http.StatusBadGateway, Body: clip(typ+": "+msg, 300)}
+		case "response.completed", "response.incomplete", "response.done":
+			done = true
 		}
 		return emit(append([]byte(nil), data...))
 	}
+	return on, func() bool { return done }
 }
 
 // outputLimits are the output limits of a provider's models: those the user
@@ -194,36 +240,80 @@ func responsesPassthrough(emit func([]byte) error) func([]byte) error {
 type outputLimits struct {
 	set     map[string]uint64 // upstream model → limit, from the configuration
 	mu      sync.Mutex
-	learned map[string]uint64
+	learned map[string]learnedLimit
 }
+
+// learnedLimit is a limit a provider told, and when: it is asked again after
+// learnedLimitTTL, as providers raise their limits.
+type learnedLimit struct {
+	limit uint64
+	at    time.Time
+}
+
+const (
+	learnedLimitTTL = 24 * time.Hour
+	// minLearnedLimit: no model worth serving writes less, so a smaller
+	// number in a refusal is not a model's limit.
+	minLearnedLimit = 1024
+)
 
 func (l *outputLimits) of(model string) uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if v := l.learned[model]; v > 0 {
-		return v
+	if v, ok := l.learned[model]; ok {
+		if timeNow().Sub(v.at) < learnedLimitTTL {
+			return v.limit
+		}
+		delete(l.learned, model)
 	}
 	return l.set[model]
 }
 
-// limitPatterns find the limit in a provider's refusal, e.g.
-// "This model supports at most 16384 completion tokens",
-// "the valid range of max_tokens is [1, 8192]",
-// "max_tokens: 32768 > 8192, which is the maximum allowed".
+func (l *outputLimits) learn(model string, limit uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.learned == nil {
+		l.learned = map[string]learnedLimit{}
+	}
+	l.learned[model] = learnedLimit{limit: limit, at: timeNow()}
+}
+
+// forget drops what learn(model, limit) stored, unless it changed since.
+func (l *outputLimits) forget(model string, limit uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if v, ok := l.learned[model]; ok && v.limit == limit {
+		delete(l.learned, model)
+	}
+}
+
+// limitPatterns are the refusals of a request for asking more output than
+// the model writes, with the model's limit:
+//
+//	OpenAI     "max_tokens is too large: 32768. This model supports at most 16384 completion tokens"
+//	OpenAI     "Invalid 'max_output_tokens': integer above maximum value. Expected a value <= 128000"
+//	DeepSeek   "the valid range of max_tokens is [1, 8192]"
+//	Anthropic  "max_tokens: 32768 > 8192, which is the maximum allowed number of output tokens"
+//
+// Nothing else is read as a limit: a provider quotes the buyer's own text in
+// other refusals, and a number in that is not the model's limit.
 var limitPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`at most (\d+)`),
-	regexp.MustCompile(`\[\d+, ?(\d+)\]`),
-	regexp.MustCompile(`> ?(\d+)`),
-	regexp.MustCompile(`maximum[^\d]{0,60}(\d+)`),
+	regexp.MustCompile(`max_(?:completion_|output_)?tokens is too large: \d+\. This model supports at most (\d+) completion tokens`),
+	regexp.MustCompile(`Invalid 'max_(?:completion_|output_)?tokens': integer above maximum value\. Expected a value <= (\d+)`),
+	regexp.MustCompile(`the valid range of max_(?:completion_|output_)?tokens is \[\d+, ?(\d+)\]`),
+	regexp.MustCompile(`max_tokens: \d+ > (\d+), which is the maximum allowed number of output tokens`),
 }
 
 // retry runs do, and once more when the provider refused the request for its
 // output limit and said what the model's limit is. Such a refusal comes
-// before any output, so nothing was sent on.
+// before any output, so nothing was sent on. The limit is kept for later
+// requests only if the provider then took the request: a refusal that merely
+// quotes text of the buyer's that looks like a limit is given again for the
+// second request, and teaches nothing.
 func (l *outputLimits) retry(do func() error, body []byte) error {
 	err := do()
 	var se *node.StatusError
-	if !errors.As(err, &se) || se.Status != http.StatusBadRequest || !strings.Contains(se.Body, "max_") && !strings.Contains(se.Body, "output tokens") {
+	if !errors.As(err, &se) || se.Status != http.StatusBadRequest {
 		return err
 	}
 	var req struct {
@@ -239,16 +329,15 @@ func (l *outputLimits) retry(do func() error, body []byte) error {
 			continue
 		}
 		limit, _ := strconv.ParseUint(m[1], 10, 64)
-		if limit == 0 || limit >= req.MaxTokens || limit >= l.orMax(req.Model) {
+		if limit < minLearnedLimit || limit >= req.MaxTokens || limit >= l.orMax(req.Model) {
 			continue
 		}
-		l.mu.Lock()
-		if l.learned == nil {
-			l.learned = map[string]uint64{}
+		l.learn(req.Model, limit)
+		err := do()
+		if errors.As(err, &se) && se.Status == http.StatusBadRequest {
+			l.forget(req.Model, limit)
 		}
-		l.learned[req.Model] = limit
-		l.mu.Unlock()
-		return do()
+		return err
 	}
 	return err
 }

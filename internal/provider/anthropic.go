@@ -63,11 +63,7 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 	}
 	// The seller pays for instructions a subscription login has to add to a
 	// request that is not Claude Code's own.
-	if u.oauth && !isClaudeCodeRequest(head) {
-		if est, err := protocol.EstimatePromptTokens(protocol.APIMessages, r.Body); err == nil {
-			node.BillingOf(ctx).PromptCap = est
-		}
-	}
+	injected := u.oauth && !isClaudeCodeRequest(head)
 	body := r.Body
 	err = u.limits.retry(func() error {
 		send := func(tok *Token) error {
@@ -91,6 +87,11 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 				limit = anthropicMaxOutput(model)
 			}
 			capOutput(req, limit)
+			// The request as the buyer's, before the login's own instructions.
+			var plain []byte
+			if injected {
+				plain, _ = json.Marshal(req)
+			}
 			h := u.header.Clone()
 			if u.oauth {
 				h = anthropicOAuthHeader(tok)
@@ -116,6 +117,9 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 			out, err := json.Marshal(req)
 			if err != nil {
 				return err
+			}
+			if injected {
+				node.BillingOf(ctx).PromptDiscount = injectedPrompt(plain, out)
 			}
 			done := false
 			err = postSSE(ctx, endpoint, h, out, func(data []byte) error {
@@ -165,6 +169,22 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 		}
 	}
 	return err
+}
+
+// injectedPrompt estimates the prompt tokens the adapter added to the
+// buyer's request: the estimate of what goes out over that of what came,
+// and half as much again, as the estimate runs below what Claude counts for
+// instructions in prose. The node takes it off the prompt it bills.
+func injectedPrompt(buyer, sent []byte) uint64 {
+	before, err := protocol.EstimatePromptTokens(protocol.APIMessages, buyer)
+	if err != nil {
+		return 0
+	}
+	after, err := protocol.EstimatePromptTokens(protocol.APIMessages, sent)
+	if err != nil || after <= before {
+		return 0
+	}
+	return (after - before) * 3 / 2
 }
 
 // swapThinking rewrites a request's thinking into the form the model server
@@ -311,6 +331,26 @@ func withoutThinking(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	delete(req, "thinking")
+	// Context edits that clear thinking need thinking to be on.
+	if cm, ok := req["context_management"].(map[string]any); ok {
+		if edits, ok := cm["edits"].([]any); ok {
+			kept := []any{}
+			for _, raw := range edits {
+				e, _ := raw.(map[string]any)
+				if typ, _ := e["type"].(string); strings.HasPrefix(typ, "clear_thinking") {
+					continue
+				}
+				kept = append(kept, raw)
+			}
+			cm["edits"] = kept
+			if len(kept) == 0 {
+				delete(cm, "edits")
+			}
+			if len(cm) == 0 {
+				delete(req, "context_management")
+			}
+		}
+	}
 	b, err := json.Marshal(req)
 	return b, err == nil
 }

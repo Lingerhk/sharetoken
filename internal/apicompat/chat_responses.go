@@ -35,7 +35,8 @@ func chatToResponses(body []byte, opt Options) (*Conversion, error) {
 
 func chatResponsesRequest(r *chatRequest) (map[string]any, error) {
 	var instructions []string
-	var input []any
+	var input []chatInputItem
+	add := func(item map[string]any) { input = append(input, chatInputItem{item: item}) }
 	ids := newChatLegacyIDs(r.Messages)
 	for i := range r.Messages {
 		m := &r.Messages[i]
@@ -47,36 +48,53 @@ func chatResponsesRequest(r *chatRequest) (map[string]any, error) {
 				instructions = append(instructions, t)
 			}
 		case "developer":
-			input = append(input, map[string]any{"type": "message", "role": "developer", "content": chatResponsesContent(m)})
+			add(map[string]any{"type": "message", "role": "developer", "content": chatResponsesContent(m)})
 		case "assistant":
 			if t := m.assistantText(); t != "" {
-				input = append(input, map[string]any{"type": "message", "role": "assistant",
-					"content": []any{map[string]any{"type": "output_text", "text": t}}})
+				input = append(input, chatInputItem{assistant: true, item: map[string]any{"type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": t}}}})
 			}
 			for _, tc := range m.toolCalls(ids) {
 				args := tc.Function.Arguments
 				if args == "" {
 					args = "{}"
 				}
-				input = append(input, map[string]any{"type": "function_call", "call_id": tc.ID, "name": chatToolNameOut(tc.Function.Name), "arguments": args})
+				input = append(input, chatInputItem{call: tc.ID, item: map[string]any{
+					"type": "function_call", "call_id": tc.ID, "name": chatToolNameOut(tc.Function.Name), "arguments": args}})
 			}
 		case "tool", "function":
+			// The output is text; images and files in it go to the model in
+			// a user message after the outputs.
+			var media []any
+			if parts, ok := chatResponsesContent(m).([]any); ok {
+				for _, p := range parts {
+					if pm, _ := p.(map[string]any); pm["type"] != "input_text" {
+						media = append(media, p)
+					}
+				}
+			}
 			out := m.text()
-			if out == "" {
+			switch {
+			case out == "" && len(media) > 0:
+				out = respMediaMarker
+			case out == "":
 				out = "(empty)"
 			}
-			input = append(input, map[string]any{"type": "function_call_output", "call_id": m.resultID(ids), "output": out})
+			id := m.resultID(ids)
+			input = append(input, chatInputItem{output: id, media: media,
+				item: map[string]any{"type": "function_call_output", "call_id": id, "output": out}})
 		default: // user, and any other role as the user's
-			input = append(input, map[string]any{"type": "message", "role": "user", "content": chatResponsesContent(m)})
+			add(map[string]any{"type": "message", "role": "user", "content": chatResponsesContent(m)})
 		}
 	}
+	input = chatPairResponses(input)
 	if len(input) == 0 {
 		return nil, fmt.Errorf("the request has no user message")
 	}
 	req := map[string]any{
 		"model":        r.Model,
 		"instructions": strings.Join(instructions, "\n\n"),
-		"input":        input,
+		"input":        chatResponsesItems(input),
 		"stream":       true,
 		"store":        false,
 		"include":      []string{"reasoning.encrypted_content"},
@@ -84,6 +102,8 @@ func chatResponsesRequest(r *chatRequest) (map[string]any, error) {
 	if n := r.maxTokens(); n > 0 {
 		req["max_output_tokens"] = max(n, chatMinOutputTokens)
 	}
+	// The Responses API has no stop parameter: the request's stop sequences
+	// are not sent, and the answer does not end at them.
 	// Reasoning models refuse sampling settings.
 	if !chatReasoningModel(r.Model) {
 		if r.Temperature != nil {
@@ -126,8 +146,11 @@ func chatResponsesRequest(r *chatRequest) (map[string]any, error) {
 			req["tool_choice"] = map[string]any{"type": "function", "name": chatToolNameOut(name)}
 		case mode != "":
 			req["tool_choice"] = mode
-		case other != nil:
+		case chatAllowedFunctions(other):
 			req["tool_choice"] = other
+		case other != nil:
+			// It names a tool that is not a function, and those are gone.
+			req["tool_choice"] = "auto"
 		}
 		if r.ParallelToolCalls != nil {
 			req["parallel_tool_calls"] = *r.ParallelToolCalls
@@ -137,6 +160,78 @@ func chatResponsesRequest(r *chatRequest) (map[string]any, error) {
 		req["prompt_cache_key"] = r.SessionID
 	}
 	return req, nil
+}
+
+// chatInputItem is a Responses input item on its way into the request.
+type chatInputItem struct {
+	item      map[string]any
+	assistant bool   // an assistant message
+	call      string // function_call: its call ID
+	output    string // function_call_output: the call ID it answers
+	media     []any  // function_call_output: its images and files
+}
+
+func chatResponsesItems(input []chatInputItem) []any {
+	out := make([]any, 0, len(input))
+	for _, in := range input {
+		out = append(out, in.item)
+	}
+	return out
+}
+
+// chatPairResponses makes the tool calls what the Responses API requires, as
+// respPairCalls does for a Responses client: the calls of an assistant turn
+// are followed directly by their outputs, in call order, calls without an
+// output and outputs without a call are left out, and what sat between a call
+// and its output comes after the outputs. A call ID used again pairs its
+// calls and outputs in order of appearance. The media of the outputs follow
+// them in one user message.
+func chatPairResponses(input []chatInputItem) []chatInputItem {
+	outputs := map[string][]chatInputItem{}
+	for _, in := range input {
+		if in.output != "" {
+			outputs[in.output] = append(outputs[in.output], in)
+		}
+	}
+	var out, group []chatInputItem
+	flush := func() {
+		var results []chatInputItem
+		var media []any
+		for _, in := range group {
+			if in.item["type"] == "function_call" {
+				q := outputs[in.call]
+				if len(q) == 0 {
+					continue // unanswered
+				}
+				outputs[in.call] = q[1:]
+				results = append(results, q[0])
+				media = append(media, q[0].media...)
+			}
+			out = append(out, in)
+		}
+		out = append(out, results...)
+		if len(media) > 0 {
+			out = append(out, chatInputItem{item: map[string]any{"type": "message", "role": "user", "content": media}})
+		}
+		group = nil
+	}
+	for _, in := range input {
+		switch in.item["type"] {
+		case "function_call":
+			group = append(group, in)
+		case "function_call_output":
+			flush() // placed after its call, or an orphan
+		default:
+			if in.assistant {
+				group = append(group, in)
+				continue
+			}
+			flush()
+			out = append(out, in)
+		}
+	}
+	flush()
+	return out
 }
 
 // chatResponsesContent is a user or developer message's content as
@@ -187,26 +282,34 @@ func chatResponsesContent(m *chatMessage) any {
 	return out
 }
 
-// chatResponsesTools converts function tools, and keeps the built-in tools
-// the Responses API shares with chat (x_search with its settings, web_search,
-// code_execution).
+// chatAllowedFunctions reports an allowed_tools choice that lists function
+// tools only.
+func chatAllowedFunctions(raw json.RawMessage) bool {
+	var c struct {
+		Type  string `json:"type"`
+		Tools []struct {
+			Type string `json:"type"`
+		} `json:"tools"`
+	}
+	if json.Unmarshal(raw, &c) != nil || c.Type != "allowed_tools" || len(c.Tools) == 0 {
+		return false
+	}
+	for _, t := range c.Tools {
+		if t.Type != "function" {
+			return false
+		}
+	}
+	return true
+}
+
+// chatResponsesTools converts function tools; other tools are left out.
 func chatResponsesTools(tools []chatTool) []any {
 	var out []any
 	for i := range tools {
 		t := &tools[i]
-		switch strings.ToLower(strings.TrimSpace(t.Type)) {
-		case "x_search":
-			var m map[string]any
-			if json.Unmarshal(t.raw, &m) == nil {
-				delete(m, "cache_control")
-				m["type"] = "x_search"
-				out = append(out, m)
-			}
-			continue
-		case "web_search", "code_execution":
-			out = append(out, map[string]any{"type": strings.ToLower(strings.TrimSpace(t.Type))})
-			continue
-		}
+		// Function tools only: a built-in tool (web_search, code_execution,
+		// x_search, ...) would run on the upstream's side, which the node
+		// does not price.
 		if !t.isFunction() {
 			continue
 		}

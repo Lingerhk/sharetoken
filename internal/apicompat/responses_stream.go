@@ -62,6 +62,7 @@ type respStream struct {
 	seq     int
 
 	started, finished bool
+	cut               bool // the answer ends incomplete: an open call's arguments may be cut off
 	nextIndex         int
 	done              map[int]map[string]any // finished items by output_index
 
@@ -392,10 +393,19 @@ func (s *respStream) closeCall(c *respCallState) error {
 		return err
 	}
 	args := c.args.String()
+	// A call the output limit (or a content filter) cut off has half its
+	// arguments: it is handed over as incomplete, not as a call to run.
+	status := "completed"
+	if s.cut && !json.Valid([]byte(args)) {
+		status = "incomplete"
+	}
 	var item map[string]any
 	switch c.client.kind {
 	case respKindCustom:
 		input := respCustomInput(args)
+		if status == "incomplete" {
+			input = ""
+		}
 		if input != "" {
 			if err := s.send(map[string]any{"type": "response.custom_tool_call_input.delta", "item_id": c.id,
 				"output_index": c.index, "delta": input}); err != nil {
@@ -406,26 +416,28 @@ func (s *respStream) closeCall(c *respCallState) error {
 			"output_index": c.index, "input": input}); err != nil {
 			return err
 		}
-		item = map[string]any{"type": "custom_tool_call", "id": c.id, "status": "completed",
+		item = map[string]any{"type": "custom_tool_call", "id": c.id, "status": status,
 			"call_id": c.callID, "name": c.client.name, "input": input}
 	case respKindToolSearch:
-		item = map[string]any{"type": "tool_search_call", "id": c.id, "status": "completed",
+		item = map[string]any{"type": "tool_search_call", "id": c.id, "status": status,
 			"call_id": c.callID, "execution": "client", "arguments": respArgumentsObject(args)}
 	case respKindLocalShell:
-		item = map[string]any{"type": "local_shell_call", "id": c.id, "status": "completed",
+		item = map[string]any{"type": "local_shell_call", "id": c.id, "status": status,
 			"call_id": c.callID, "action": respLocalShellAction(args)}
 	default:
-		if strings.TrimSpace(args) == "" {
-			args = "{}"
-			if err := s.sendArgsDelta(c, args); err != nil {
+		if status == "completed" {
+			if strings.TrimSpace(args) == "" {
+				args = "{}"
+				if err := s.sendArgsDelta(c, args); err != nil {
+					return err
+				}
+			}
+			if err := s.send(map[string]any{"type": "response.function_call_arguments.done", "item_id": c.id,
+				"output_index": c.index, "arguments": args}); err != nil {
 				return err
 			}
 		}
-		if err := s.send(map[string]any{"type": "response.function_call_arguments.done", "item_id": c.id,
-			"output_index": c.index, "arguments": args}); err != nil {
-			return err
-		}
-		item = map[string]any{"type": "function_call", "id": c.id, "status": "completed",
+		item = map[string]any{"type": "function_call", "id": c.id, "status": status,
 			"call_id": c.callID, "name": c.client.name, "arguments": args}
 		if c.client.kind == respKindNamespace {
 			item["namespace"] = c.client.namespace
@@ -470,6 +482,7 @@ func (s *respStream) finish(reason string, usage respUsage) error {
 	if err := s.start(); err != nil {
 		return err
 	}
+	s.cut = reason != ""
 	if err := s.closeAll(); err != nil {
 		return err
 	}
@@ -521,11 +534,22 @@ func respAggregate(payloads [][]byte) ([]byte, error) {
 			if len(ev.Item) > 0 {
 				items = append(items, doneItem{ev.OutputIndex, ev.Item})
 			}
-		case "response.completed", "response.incomplete", "response.failed", "response.done":
+		case "response.completed", "response.incomplete", "response.done":
 			var r map[string]json.RawMessage
 			if json.Unmarshal(ev.Response, &r) == nil && r != nil {
 				terminal = r
 			}
+		case "response.failed":
+			// A failed response is an error, as it is on a stream.
+			var r struct {
+				Error json.RawMessage `json:"error"`
+			}
+			_ = json.Unmarshal(ev.Response, &r)
+			msg := msgErrorMessage(r.Error)
+			if msg == "" {
+				msg = "response failed"
+			}
+			return nil, fmt.Errorf("apicompat: responses stream error: %s", msg)
 		case "error":
 			msg := ev.Message
 			if msg == "" {

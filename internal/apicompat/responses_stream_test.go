@@ -342,7 +342,7 @@ func TestAggregateResponses(t *testing.T) {
 		}, "msg_1", "incomplete", false},
 		{"failed", []string{
 			`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"x","message":"y"}}}`,
-		}, "", "failed", false},
+		}, "", "", true},
 		{"no terminal", []string{`{"type":"response.created","response":{}}`}, "", "", true},
 		{"error event", []string{`{"type":"error","message":"boom"}`}, "", "", true},
 	}

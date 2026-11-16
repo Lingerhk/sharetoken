@@ -144,6 +144,11 @@ func (s *summarizer) event(payload []byte) error {
 		if ev.Response == nil {
 			ev.Response = map[string]any{}
 		}
+		// A summary cut short is not the conversation: the buyer keeps its
+		// history rather than replace it with half a summary.
+		if ev.Type == "response.incomplete" || ev.Response["status"] == "incomplete" {
+			return errors.New("the summary was cut short")
+		}
 		if s.text.Len() == 0 {
 			s.text.WriteString(outputText(ev.Response["output"]))
 		}

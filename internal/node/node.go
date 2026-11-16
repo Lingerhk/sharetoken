@@ -616,12 +616,13 @@ func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
 func bill(prep *Prepared, meter *protocol.UsageMeter, text string, b *Billing) protocol.Usage {
 	visible := protocol.EstimateTokens(text)
 	u := protocol.Usage{PromptTokens: prep.EstPrompt, CompletionTokens: visible}
-	if r := meter.Usage(); r != nil {
-		u = *r
+	// A report of no tokens at all is no report: a converted stream has to
+	// carry a usage object even when the model server sent none.
+	reported := false
+	if r := meter.Usage(); r != nil && (r.PromptTokens > 0 || r.CompletionTokens > 0) {
+		u, reported = *r, true
 	}
-	if b.PromptCap > 0 {
-		u = u.CapPrompt(b.PromptCap)
-	}
+	u = b.Prompt(u, reported)
 	return protocol.BillableUsage(u, prep.EstPrompt, visible, meter.Hidden(), prep.Limit)
 }
 

@@ -32,7 +32,28 @@ type msgThinking struct {
 }
 
 type msgOutputCfg struct {
-	Effort string `json:"effort"`
+	Effort string          `json:"effort"`
+	Format json.RawMessage `json:"format"` // structured output: {"type":"json_schema","schema":{...}}
+}
+
+// msgSchemaName names the schema of a structured output for the OpenAI APIs,
+// which want one; Messages has none.
+const msgSchemaName = "answer"
+
+// msgOutputSchema is the JSON schema output_config.format asks the answer to
+// follow, nil when it asks for none.
+func msgOutputSchema(r *msgRequest) json.RawMessage {
+	if r.OutputConfig == nil {
+		return nil
+	}
+	var f struct {
+		Type   string          `json:"type"`
+		Schema json.RawMessage `json:"schema"`
+	}
+	if json.Unmarshal(r.OutputConfig.Format, &f) != nil || f.Type != "json_schema" || len(f.Schema) == 0 || string(f.Schema) == "null" {
+		return nil
+	}
+	return f.Schema
 }
 
 type msgMetadata struct {
@@ -482,34 +503,45 @@ func msgSearchResultText(c msgContent) (string, bool) {
 	return strings.Join(parts, "\n"), len(parts) > 0
 }
 
-// msgPairs finds the tool calls that can be sent: a tool_use needs a
+// msgPairs counts the tool calls that can be sent: a tool_use needs a
 // tool_result and a tool_result its tool_use (OpenAI upstreams reject either
 // alone). Histories that lost one of them (trimmed or interrupted
-// conversations) still convert.
-func msgPairs(msgs []msgMessage) (uses, results map[string]bool) {
-	uses, results = map[string]bool{}, map[string]bool{}
+// conversations) still convert. Only a user turn's results count (the
+// converters read them nowhere else). An ID a history uses again pairs in
+// order of appearance: as many of its calls as it has results, and as many
+// results as calls; msgTake takes them one by one.
+func msgPairs(msgs []msgMessage) (uses, results map[string]int) {
+	uses, results = map[string]int{}, map[string]int{}
 	for _, m := range msgs {
 		blocks, _ := msgBlocks(m.Content)
 		for _, b := range blocks {
 			switch {
 			case b.Type == "tool_use" && m.Role == "assistant" && b.ID != "":
-				uses[b.ID] = true
-			case b.Type == "tool_result" && m.Role != "assistant" && b.ToolUseID != "":
-				results[b.ToolUseID] = true
+				uses[b.ID]++
+			case b.Type == "tool_result" && m.Role != "assistant" && m.Role != "system" && b.ToolUseID != "":
+				results[b.ToolUseID]++
 			}
 		}
 	}
-	for id := range uses {
-		if !results[id] {
-			delete(uses, id)
-		}
+	for id, n := range uses {
+		n = min(n, results[id])
+		uses[id], results[id] = n, n
 	}
 	for id := range results {
-		if !uses[id] {
-			delete(results, id)
+		if uses[id] == 0 {
+			results[id] = 0
 		}
 	}
 	return uses, results
+}
+
+// msgTake reports whether one more block with id pairs, and counts it.
+func msgTake(left map[string]int, id string) bool {
+	if left[id] == 0 {
+		return false
+	}
+	left[id]--
+	return true
 }
 
 // msgToolArgs is a tool_use input as function call arguments.

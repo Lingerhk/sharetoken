@@ -232,3 +232,71 @@ func TestCheckTicket(t *testing.T) {
 		}
 	}
 }
+
+// Tools that would run on the seller's account (a chat server's hosted
+// tools) are dropped from chat requests; function tools stay.
+func TestPrepareChatDropsHostedTools(t *testing.T) {
+	got := prepared(t, protocol.APIChat, []byte(`{"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"web_search"},{"type":"function","function":{"name":"f","parameters":{}}},{"type":"code_execution"}],
+		"tool_choice":{"type":"web_search"}}`), 100)
+	tools, _ := got["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["type"] != "function" {
+		t.Fatalf("tools = %v, want the function tool only", got["tools"])
+	}
+	if got["tool_choice"] != "auto" {
+		t.Errorf("tool_choice = %v, want auto", got["tool_choice"])
+	}
+	got = prepared(t, protocol.APIChat, []byte(`{"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{}}}],"tool_choice":{"type":"function","function":{"name":"f"}}}`), 100)
+	if tc, _ := got["tool_choice"].(map[string]any); tc["type"] != "function" {
+		t.Errorf("a function tool_choice must stay: %v", got["tool_choice"])
+	}
+	got = prepared(t, protocol.APIChat, []byte(`{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"x_search"}],"tool_choice":"required"}`), 100)
+	if _, ok := got["tools"]; ok {
+		t.Errorf("tools = %v, want none", got["tools"])
+	}
+	if _, ok := got["tool_choice"]; ok {
+		t.Errorf("tool_choice without tools: %v", got["tool_choice"])
+	}
+}
+
+// Header values the buyer chose reach the model server only as plain tokens:
+// a control character would fail the seller's request, at the seller's cost.
+func TestUpstreamHeaderValuesArePlainTokens(t *testing.T) {
+	h := upstreamHeader(protocol.APIMessages, protocol.RequestHeader{
+		"anthropic-version": "2023-06-01\r\nx-evil: 1",
+		"anthropic-beta":    "interleaved-thinking-2025-05-14,context-1m-2025\x00-08-07,context-1m-2025-08-07 x",
+	})
+	if _, ok := h["anthropic-version"]; ok || h["anthropic-beta"] != "interleaved-thinking-2025-05-14" {
+		t.Errorf("headers = %q", h)
+	}
+	h = upstreamHeader(protocol.APIResponses, protocol.RequestHeader{"session_id": "abc\ndef"})
+	if len(h) != 0 {
+		t.Errorf("headers = %q", h)
+	}
+	h = upstreamHeader(protocol.APIResponses, protocol.RequestHeader{"session_id": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"})
+	if h["session_id"] == "" {
+		t.Error("a UUID session id must pass")
+	}
+}
+
+// A usage report of no tokens at all (a converted stream has to carry a
+// usage object even when the model server sent none) is no report: the node
+// bills its own estimate, as when there is none.
+func TestBillTreatsAnEmptyUsageReportAsNone(t *testing.T) {
+	prep := &Prepared{Request: Request{Limit: 1000}, EstPrompt: 40}
+	text := strings.Repeat("word ", 50)
+	var none, zero, real protocol.UsageMeter
+	zero.Add(protocol.ChunkInfo{Usage: &protocol.Usage{}})
+	real.Add(protocol.ChunkInfo{Usage: &protocol.Usage{PromptTokens: 42, CompletionTokens: 55}})
+	want := bill(prep, &none, text, &Billing{})
+	if want.PromptTokens != 40 || want.CompletionTokens == 0 {
+		t.Fatalf("estimate: %+v", want)
+	}
+	if got := bill(prep, &zero, text, &Billing{}); got != want {
+		t.Errorf("an empty report billed %+v, want the estimate %+v", got, want)
+	}
+	if got := bill(prep, &real, text, &Billing{}); got.PromptTokens != 42 || got.CompletionTokens != 55 {
+		t.Errorf("a real report billed %+v", got)
+	}
+}

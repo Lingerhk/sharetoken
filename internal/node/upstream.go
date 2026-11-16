@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,6 +43,24 @@ type Billing struct {
 	// adds instructions of its own to the buyer's request (a subscription
 	// login's required system prompt) has the seller pay for them.
 	PromptCap uint64
+	// PromptDiscount, when set, is taken off the prompt tokens the model
+	// server reported: an estimate of what the adapter added to the buyer's
+	// request, which the seller pays for.
+	PromptDiscount uint64
+}
+
+// Prompt lowers u, the usage of a job, to what the adapter lets the node
+// bill of its prompt. reported tells that u is the model server's count
+// rather than the node's estimate of the buyer's request, which holds
+// nothing the adapter added.
+func (b *Billing) Prompt(u protocol.Usage, reported bool) protocol.Usage {
+	if b.PromptCap > 0 {
+		u = u.CapPrompt(b.PromptCap)
+	}
+	if reported && b.PromptDiscount > 0 {
+		u = u.CapPrompt(u.PromptTokens - min(u.PromptTokens, b.PromptDiscount))
+	}
+	return u
 }
 
 // WithBilling attaches b to ctx for the model server adapter to fill in.
@@ -128,6 +148,7 @@ func (u *OpenAICompat) Stream(ctx context.Context, r *Request, emit func([]byte)
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), maxSSELine)
+	finished := false
 	for sc.Scan() {
 		line := sc.Bytes()
 		if !bytes.HasPrefix(line, []byte("data:")) {
@@ -140,9 +161,51 @@ func (u *OpenAICompat) Stream(ctx context.Context, r *Request, emit func([]byte)
 		if string(payload) == "[DONE]" {
 			return nil
 		}
+		if msg, ok := chatStreamError(payload); ok {
+			return &StatusError{Status: http.StatusBadGateway, Body: clip(msg, 300)}
+		}
+		finished = finished || chatFinished(payload)
 		if err := emit(bytes.Clone(payload)); err != nil {
 			return err
 		}
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if !finished {
+		return errors.New("the stream ended before the answer did")
+	}
+	return nil
+}
+
+// chatStreamError reads an error a chat server sent inside its stream, in
+// place of a chunk: {"error": {"message": …}} or {"error": "…"}.
+func chatStreamError(payload []byte) (string, bool) {
+	if !bytes.Contains(payload, []byte(`"error"`)) {
+		return "", false
+	}
+	var ev struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(payload, &ev) != nil || len(ev.Error) == 0 || string(ev.Error) == "null" {
+		return "", false
+	}
+	var obj struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	}
+	if json.Unmarshal(ev.Error, &obj) == nil && (obj.Message != "" || obj.Type != "") {
+		return strings.TrimSpace(obj.Type + " " + obj.Message), true
+	}
+	return strings.Trim(string(ev.Error), `"`), true
+}
+
+// chatFinished reports whether a chunk carries a finish_reason: the answer
+// is complete, whether or not [DONE] follows.
+func chatFinished(payload []byte) bool {
+	if !bytes.Contains(payload, []byte(`"finish_reason"`)) {
+		return false
+	}
+	info, err := protocol.ParseChunk(payload)
+	return err == nil && info.FinishReason != ""
 }

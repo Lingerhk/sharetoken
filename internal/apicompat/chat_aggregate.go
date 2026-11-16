@@ -92,6 +92,11 @@ func chatAggregate(payloads [][]byte) ([]byte, error) {
 					i = *tc.Index
 				}
 				cl := byIndex[i]
+				// Some model servers give every parallel call the same
+				// index: another ID there is another call.
+				if cl != nil && tc.ID != "" && cl.ID != "" && tc.ID != cl.ID {
+					cl = nil
+				}
 				if cl == nil {
 					cl = &call{Type: "function"}
 					byIndex[i] = cl
@@ -121,6 +126,11 @@ func chatAggregate(payloads [][]byte) ([]byte, error) {
 		finish = "tool_calls"
 	}
 	msg := map[string]any{"role": "assistant", "content": content.String()}
+	for _, cl := range calls {
+		if strings.TrimSpace(cl.Function.Arguments) == "" {
+			cl.Function.Arguments = "{}" // clients parse the arguments as JSON
+		}
+	}
 	if len(calls) > 0 {
 		msg["tool_calls"] = calls
 		if content.Len() == 0 {

@@ -95,7 +95,7 @@ func TestChatMessagesThinkingRoundTrip(t *testing.T) {
 	if res.reasoning != "plan" || len(res.thinking) != 1 || res.thinking[0] != (chatThinkingBlock{Type: "thinking", Thinking: "plan", Signature: "opaque-signature"}) {
 		t.Fatalf("thinking was duplicated or lost: %+v", res)
 	}
-	if len(res.calls) != 1 || res.calls[0].Args != "" || res.finish != "tool_calls" {
+	if len(res.calls) != 1 || res.calls[0].Args != "{}" || res.finish != "tool_calls" {
 		t.Fatalf("%+v", res)
 	}
 	history := map[string]any{"model": "claude-sonnet-5-5", "messages": []any{
@@ -275,8 +275,10 @@ func TestChatToMessagesRequest(t *testing.T) {
 	}{
 		{name: "json_object hint", rest: `"response_format":{"type":"json_object"},"messages":[` + user + `]`,
 			want: []string{`"system":[{"text":"Answer with a single JSON object and nothing else.","type":"text"}]`}},
-		{name: "json_schema hint", rest: `"response_format":{"type":"json_schema","json_schema":{"name":"a","schema":{"type":"object"}}},"messages":[{"role":"system","content":"S"},` + user + `]`,
-			want: []string{`"system":[{"text":"S","type":"text"},{"text":"Answer with a single JSON object that matches this JSON schema, and nothing else:\n{\"type\":\"object\"}","type":"text"}]`}},
+		{name: "json_schema is output_config.format", rest: `"response_format":{"type":"json_schema","json_schema":{"name":"a","schema":{"type":"object"}}},"messages":[{"role":"system","content":"S"},` + user + `]`,
+			want: []string{`"output_config":{"format":{"schema":{"type":"object"},"type":"json_schema"}}`, `"system":[{"text":"S","type":"text"}]`}},
+		{name: "json_schema without a schema is a hint", rest: `"response_format":{"type":"json_schema","json_schema":{"name":"a"}},"messages":[` + user + `]`,
+			want: []string{`"system":[{"text":"Answer with a single JSON object and nothing else.","type":"text"}]`}, not: []string{"output_config"}},
 		{name: "temperature is clamped", rest: `"temperature":1.5,"messages":[` + user + `]`, want: []string{`"temperature":1`}},
 		{name: "temperature wins over top_p", rest: `"temperature":0.2,"top_p":0.5,"messages":[` + user + `]`, want: []string{`"temperature":0.2`}, not: []string{"top_p"}},
 		{name: "top_p alone", rest: `"top_p":0.5,"messages":[` + user + `]`, want: []string{`"top_p":0.5`}},
@@ -294,8 +296,9 @@ func TestChatToMessagesRequest(t *testing.T) {
 		{name: "no parallel tool calls", rest: `"parallel_tool_calls":false,"messages":[` + user + `],"tools":[{"type":"function","function":{"name":"f"}}]`,
 			want: []string{`"tool_choice":{"disable_parallel_tool_use":true,"type":"auto"}`}},
 		{name: "no tools, no tool_choice", rest: `"tool_choice":"required","messages":[` + user + `]`, not: []string{"tool_choice", "tools"}},
-		{name: "web search", rest: `"messages":[` + user + `],"tools":[{"type":"web_search"},{"type":"code_interpreter"}]`,
-			want: []string{`"tools":[{"name":"web_search","type":"web_search_20250305"}]`}},
+		{name: "function tools only", rest: `"tool_choice":{"type":"web_search"},"messages":[` + user + `],"tools":[{"type":"web_search"},{"type":"code_interpreter"},{"type":"function","function":{"name":"f"}}]`,
+			want: []string{`"tools":[{"input_schema":{"properties":{},"type":"object"},"name":"f"}]`}, not: []string{"web_search", "tool_choice"}},
+		{name: "no function tools, no tools", rest: `"messages":[` + user + `],"tools":[{"type":"web_search"}]`, not: []string{"tools", "web_search"}},
 		{name: "a root union becomes one object", rest: `"messages":[` + user + `],"tools":[{"type":"function","function":{"name":"f","parameters":{"anyOf":[{"type":"object","properties":{"a":{"type":"string"},"c":{"type":"string"}},"required":["a","c"]},{"type":"object","properties":{"b":{"type":"string"},"c":{"type":"integer"}},"required":["b","c"]}]}}}]`,
 			want: []string{`"input_schema":{"properties":{"a":{"type":"string"},"b":{"type":"string"},"c":{"anyOf":[{"type":"string"},{"type":"integer"}]}},"required":["c"],"type":"object"}`}},
 		{name: "allOf requires every branch's", rest: `"messages":[` + user + `],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","allOf":[{"properties":{"a":{}},"required":["a"]},{"type":"object","properties":{"b":{}},"required":["b"]}]}}}]`,
@@ -326,12 +329,15 @@ func TestChatToMessagesRequest(t *testing.T) {
 		{name: "a prefill does not end in whitespace", rest: `"messages":[` + user + `,{"role":"assistant","content":"Sure: \n"}]`,
 			want: []string{`{"content":[{"text":"Sure:","type":"text"}],"role":"assistant"}`}},
 		{name: "effort as a thinking budget", model: "claude-sonnet-4-6", rest: `"reasoning_effort":"high","temperature":0.3,"max_tokens":20000,"messages":[` + user + `]`,
-			want: []string{`"thinking":{"budget_tokens":10240,"type":"enabled"}`}, not: []string{"temperature", "output_config"}},
-		{name: "a budget below max_tokens", model: "claude-sonnet-4-6", rest: `"reasoning_effort":"xhigh","max_tokens":4000,"messages":[` + user + `]`,
-			want: []string{`"thinking":{"budget_tokens":3999,"type":"enabled"}`}},
+			want: []string{`"thinking":{"budget_tokens":10000,"type":"enabled"}`}, not: []string{"temperature", "output_config"}},
+		{name: "the whole budget when max_tokens has room", model: "claude-sonnet-4-6", rest: `"reasoning_effort":"high","max_tokens":30000,"messages":[` + user + `]`,
+			want: []string{`"thinking":{"budget_tokens":10240,"type":"enabled"}`}},
+		{name: "half of max_tokens stays for the answer", model: "claude-sonnet-4-6", rest: `"reasoning_effort":"xhigh","max_tokens":4000,"messages":[` + user + `]`,
+			want: []string{`"thinking":{"budget_tokens":2000,"type":"enabled"}`}},
+		{name: "half of max_tokens is no room to think", model: "claude-sonnet-4-6", rest: `"reasoning_effort":"high","max_tokens":2000,"messages":[` + user + `]`, not: []string{"thinking"}},
 		{name: "no room to think", model: "claude-sonnet-4-6", rest: `"reasoning_effort":"low","max_tokens":1024,"messages":[` + user + `]`, not: []string{"thinking"}},
 		{name: "no thinking with a forced tool", model: "claude-sonnet-4-6", rest: `"reasoning_effort":"high","tool_choice":"required","messages":[` + user + `],"tools":[{"type":"function","function":{"name":"f"}}]`, not: []string{"thinking"}},
-		{name: "effort none", model: "claude-sonnet-4-6", rest: `"reasoning_effort":"none","messages":[` + user + `]`, not: []string{"thinking"}},
+		{name: "effort none", model: "claude-sonnet-4-6", rest: `"reasoning_effort":"none","messages":[` + user + `]`, want: []string{`"thinking":{"type":"disabled"}`}},
 		{name: "5.5 thinks adaptively", model: "claude-opus-5-5", rest: `"reasoning_effort":"high","messages":[` + user + `]`,
 			want: []string{`"thinking":{"type":"adaptive"}`, `"output_config":{"effort":"high"}`}},
 		{name: "Sonnet 5.5 at no effort", model: "claude-sonnet-5-5", rest: `"reasoning_effort":"none","messages":[` + user + `]`,

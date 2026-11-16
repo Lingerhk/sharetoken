@@ -71,7 +71,7 @@ func TestMessagesToResponsesSampling(t *testing.T) {
 }
 
 func TestMessagesToResponsesMaxTokensFloor(t *testing.T) {
-	for _, tc := range []struct{ in, want float64 }{{10, 128}, {128, 128}, {129, 129}, {128000, 128000}} {
+	for _, tc := range []struct{ in, want float64 }{{10, 16}, {16, 16}, {17, 17}, {128, 128}, {128000, 128000}} {
 		m, _ := msgConvert(t, Responses, msgReq(t, "gpt-5.5", []any{msgUser("x")}, map[string]any{"max_tokens": tc.in}), Options{})
 		if m["max_output_tokens"] != tc.want {
 			t.Errorf("max_tokens %v → %v, want %v", tc.in, m["max_output_tokens"], tc.want)

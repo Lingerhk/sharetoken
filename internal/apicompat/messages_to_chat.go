@@ -48,11 +48,12 @@ func msgToChat(body []byte, opt Options) (*Conversion, error) {
 	}
 	if r.MaxTokens > 0 {
 		// OpenAI's reasoning models only take max_completion_tokens; other
-		// chat upstreams know max_tokens.
+		// chat upstreams know max_tokens. The limit is the request's (the node
+		// computed it from the buyer's reservation): it is not raised.
 		if msgReasoningOnly(r.Model) {
-			out["max_completion_tokens"] = max(r.MaxTokens, msgMinOutputTokens)
+			out["max_completion_tokens"] = r.MaxTokens
 		} else {
-			out["max_tokens"] = max(r.MaxTokens, msgMinOutputTokens)
+			out["max_tokens"] = r.MaxTokens
 		}
 	}
 	if !msgReasoningOnly(r.Model) {
@@ -72,6 +73,10 @@ func msgToChat(body []byte, opt Options) (*Conversion, error) {
 			stop = stop[:4]
 		}
 		out["stop"] = stop
+	}
+	if schema := msgOutputSchema(r); schema != nil {
+		out["response_format"] = map[string]any{"type": "json_schema",
+			"json_schema": map[string]any{"name": msgSchemaName, "schema": schema}}
 	}
 	var tools []any
 	declared := map[string]bool{}
@@ -194,7 +199,7 @@ func msgChatMessages(r *msgRequest, names *msgToolNames) ([]msgChatMsg, error) {
 						thinking = append(thinking, b.Thinking)
 					}
 				case "tool_use":
-					if !uses[b.ID] {
+					if !msgTake(uses, b.ID) {
 						continue
 					}
 					var c msgChatCall
@@ -218,7 +223,7 @@ func msgChatMessages(r *msgRequest, names *msgToolNames) ([]msgChatMsg, error) {
 		default: // user
 			var parts, media []any
 			for _, b := range blocks {
-				if b.Type != "tool_result" || !results[b.ToolUseID] {
+				if b.Type != "tool_result" || !msgTake(results, b.ToolUseID) {
 					continue
 				}
 				text, extra := msgToolResult(b)
@@ -256,12 +261,14 @@ func msgChatMessages(r *msgRequest, names *msgToolNames) ([]msgChatMsg, error) {
 
 // msgChatOrder puts each tool reply right after the assistant message that
 // called it: chat upstreams reject any other message in between (a system
-// message among the turns can land there).
+// message among the turns can land there). The replies of a call ID used
+// again answer its calls in order of appearance; a call without a reply is
+// left out, as its reply would be.
 func msgChatOrder(msgs []msgChatMsg) []msgChatMsg {
-	replies := map[string]msgChatMsg{}
+	replies := map[string][]msgChatMsg{}
 	for _, m := range msgs {
 		if m.Role == "tool" {
-			replies[m.ToolCallID] = m
+			replies[m.ToolCallID] = append(replies[m.ToolCallID], m)
 		}
 	}
 	out := make([]msgChatMsg, 0, len(msgs))
@@ -269,10 +276,25 @@ func msgChatOrder(msgs []msgChatMsg) []msgChatMsg {
 		if m.Role == "tool" {
 			continue
 		}
-		out = append(out, m)
+		var calls []msgChatCall
+		var answers []msgChatMsg
 		for _, c := range m.ToolCalls {
-			out = append(out, replies[c.ID])
+			q := replies[c.ID]
+			if len(q) == 0 {
+				continue
+			}
+			replies[c.ID] = q[1:]
+			calls, answers = append(calls, c), append(answers, q[0])
 		}
+		if len(m.ToolCalls) > 0 && len(calls) == 0 {
+			m.ReasoningContent = ""
+			if m.Content == nil {
+				continue
+			}
+		}
+		m.ToolCalls = calls
+		out = append(out, m)
+		out = append(out, answers...)
 	}
 	return out
 }
@@ -327,7 +349,8 @@ type msgFromChat struct {
 	text     *msgBlock
 	tools    map[int]*msgChatTool
 	byID     map[string]int
-	last     int // index of the last tool call
+	slots    map[int]int // the upstream's tool call index: the call it means now
+	last     int         // index of the last tool call
 
 	finish    string
 	usage     msgUsage
@@ -338,11 +361,30 @@ type msgFromChat struct {
 
 type msgChatTool struct {
 	block *msgBlock
+	id    string // the upstream's call ID, empty until it gave one
 	args  strings.Builder
 }
 
 func newMsgFromChat(model string, names *msgToolNames) *msgFromChat {
-	return &msgFromChat{w: newMsgWriter(model), names: names, tools: map[int]*msgChatTool{}, byID: map[string]int{}}
+	return &msgFromChat{w: newMsgWriter(model), names: names, tools: map[int]*msgChatTool{}, byID: map[string]int{}, slots: map[int]int{}}
+}
+
+// slot is the call a fragment with the upstream's index belongs to. Some
+// model servers give every parallel call the same index and tell them apart
+// by ID only: another ID at a known index is another call.
+func (t *msgFromChat) slot(index int, id string) int {
+	s, known := t.slots[index]
+	if known {
+		if tool := t.tools[s]; tool == nil || id == "" || tool.id == "" || tool.id == id {
+			return s
+		}
+	}
+	s = index
+	for t.tools[s] != nil {
+		s++
+	}
+	t.slots[index] = s
+	return s
 }
 
 type msgChatChunk struct {
@@ -428,7 +470,7 @@ func (t *msgFromChat) Event(payload []byte, emit func([]byte) error) error {
 			idx := t.last
 			switch {
 			case tc.Index != nil:
-				idx = *tc.Index
+				idx = t.slot(*tc.Index, tc.ID)
 			case tc.ID != "":
 				if i, ok := t.byID[tc.ID]; ok {
 					idx = i
@@ -444,6 +486,11 @@ func (t *msgFromChat) Event(payload []byte, emit func([]byte) error) error {
 		}
 		if ch.FinishReason != nil && *ch.FinishReason != "" {
 			t.finish = *ch.FinishReason
+			if t.cut() {
+				// A tool call the client has not seen yet with half its
+				// input is not sent.
+				t.w.dropCut()
+			}
 			t.w.finishAll()
 			t.thinking, t.text = nil, nil
 		}
@@ -481,20 +528,25 @@ func (t *msgFromChat) toolCall(idx int, id, name, args string) {
 				t.w.finish(o.block)
 			}
 		}
+		tool = &msgChatTool{id: id}
 		if id == "" {
 			id = "call_" + msgRandomHex(12)
 		}
 		b := t.w.open("c"+t.nextSeq(), msgKindToolUse)
 		b.id, b.named = id, false
-		tool = &msgChatTool{block: b}
+		tool.block = b
 		t.tools[idx] = tool
 		t.byID[id] = idx
 		t.content = true
 	}
 	b := tool.block
-	if id != "" && !b.live && id != b.id {
-		b.id = id
+	if id != "" && tool.id == "" {
+		// The ID came after the call's first fragment.
+		tool.id = id
 		t.byID[id] = idx
+		if !b.live {
+			b.id = id
+		}
 	}
 	if name != "" && !b.named {
 		b.name = t.names.toClient(name)
@@ -514,13 +566,20 @@ func (t *msgFromChat) end() {
 	case "content_filter":
 		reason = "refusal"
 	}
-	if t.w.toolUse && reason != "max_tokens" {
-		reason = "tool_use"
-	} else if t.refusal && reason == "end_turn" {
-		reason = "refusal"
+	// An answer that was cut off does not end in tool_use: its last call may
+	// have half its input.
+	if !t.cut() {
+		if t.w.toolUse {
+			reason = "tool_use"
+		} else if t.refusal {
+			reason = "refusal"
+		}
 	}
 	t.w.stop(reason, t.usage)
 }
+
+// cut reports an answer the output limit or a content filter ended.
+func (t *msgFromChat) cut() bool { return t.finish == "length" || t.finish == "content_filter" }
 
 func (t *msgFromChat) Close(emit func([]byte) error) error {
 	if t.w.stopped {

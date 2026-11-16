@@ -167,7 +167,9 @@ func (u *codexUpstream) Compact(ctx context.Context, r *node.Request, emit func(
 	return withToken(ctx, u.ts, func(tok *Token) error {
 		h := codexHeader(tok)
 		h.Set("session_id", session)
-		return compactCodex(ctx, u.base+"/responses/compact", h, r.Body, emit)
+		return retryWithoutReasoning(r.Body, func(body []byte) error {
+			return compactCodex(ctx, u.base+"/responses/compact", h, body, emit)
+		})
 	})
 }
 

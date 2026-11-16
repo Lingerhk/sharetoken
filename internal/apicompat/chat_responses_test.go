@@ -85,11 +85,10 @@ func TestChatToResponsesRequest(t *testing.T) {
 			want: []string{`"max_output_tokens":16`}},
 		{name: "the smaller output limit wins", rest: `"max_tokens":500,"max_completion_tokens":300,"messages":[{"role":"user","content":"Hi"}]`,
 			want: []string{`"max_output_tokens":300`}},
-		{name: "tools: strict kept, built-ins kept, nameless and unknown dropped, parallel_tool_calls",
+		{name: "tools: strict kept, built-ins, nameless and unknown dropped, parallel_tool_calls",
 			rest: `"parallel_tool_calls":false,"messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"},"strict":true}},{"type":"web_search"},{"type":"code_execution"},{"type":"unsupported_builtin"},{"type":"function"},{"type":"x_search","allowed_x_handles":["xai"],"from_date":"2026-08-01","enable_image_understanding":true}],"tool_choice":{"type":"x_search"}`,
-			want: []string{`{"name":"read","parameters":{"properties":{},"type":"object"},"strict":true,"type":"function"}`, `{"type":"web_search"}`, `{"type":"code_execution"}`,
-				`{"allowed_x_handles":["xai"],"enable_image_understanding":true,"from_date":"2026-08-01","type":"x_search"}`, `"tool_choice":{"type":"x_search"}`, `"parallel_tool_calls":false`},
-			not: []string{"unsupported_builtin"}},
+			want: []string{`"tools":[{"name":"read","parameters":{"properties":{},"type":"object"},"strict":true,"type":"function"}]`, `"tool_choice":"auto"`, `"parallel_tool_calls":false`},
+			not:  []string{"unsupported_builtin", "web_search", "code_execution", "x_search"}},
 		{name: "no tools, no tool_choice", rest: `"tool_choice":"auto","parallel_tool_calls":true,"messages":[{"role":"user","content":"Hi"}]`,
 			not: []string{"tool_choice", "parallel_tool_calls"}},
 	} {
@@ -113,7 +112,9 @@ func TestChatToResponsesToolChoice(t *testing.T) {
 		{`{"type":"function","function":{"name":"python"}}`, `{"name":"python__st","type":"function"}`},
 		{`"auto"`, `"auto"`}, {`"required"`, `"required"`}, {`"none"`, `"none"`},
 		{`{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"get_weather"}]}`, `{"mode":"auto","tools":[{"name":"get_weather","type":"function"}],"type":"allowed_tools"}`},
-		{`{"type":"function","function":{}}`, `{"function":{},"type":"function"}`},
+		{`{"type":"function","function":{}}`, `"auto"`},
+		{`{"type":"web_search"}`, `"auto"`},
+		{`{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"get_weather"},{"type":"web_search"}]}`, `"auto"`},
 	} {
 		req, _ := chatConvert(t, Responses, chatBody(t, "gpt-4o", `"messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather"}},{"type":"function","function":{"name":"python"}}],"tool_choice":`+tc.choice), "")
 		if got := chatJSON(t, req["tool_choice"]); got != tc.want {
@@ -165,8 +166,8 @@ func TestChatToResponsesLegacyFunctionCalls(t *testing.T) {
 	}
 
 	req, _ = chatConvert(t, Responses, chatBody(t, "gpt-4o", `"messages":[{"role":"user","content":"hi"},{"role":"function","name":"lookup","content":"orphan"}]`), "")
-	if items = chatResponsesInput(t, req); items[1]["call_id"] != "lookup" {
-		t.Fatalf("an unpaired result keeps the name: %v", items)
+	if items = chatResponsesInput(t, req); len(items) != 1 || items[0]["role"] != "user" {
+		t.Fatalf("an unpaired result is left out: %v", items)
 	}
 }
 

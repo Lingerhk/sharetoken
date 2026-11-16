@@ -325,6 +325,8 @@ func respChatToolChoice(raw json.RawMessage, tools *respTools) any {
 type respFromChat struct {
 	s         *respStream
 	calls     map[int]*respCallState
+	slots     map[int]int    // the upstream's tool call index: the call it means now
+	ids       map[int]string // the upstream's call IDs
 	order     []int
 	finish    string
 	usage     respUsage
@@ -388,10 +390,11 @@ func (d *respChatDelta) reasoningText() string {
 func (t *respFromChat) Event(payload []byte, emit func([]byte) error) error {
 	t.s.emit = emit
 	if strings.TrimSpace(string(payload)) == "[DONE]" {
-		if t.s.started && !t.s.finished {
-			return t.end()
+		// A stream that produced nothing is left to Close, which fails it.
+		if t.s.finished || (!t.s.produced() && t.finish == "" && !t.gotUsage) {
+			return nil
 		}
-		return nil
+		return t.end()
 	}
 	var ch respChatChunk
 	if err := json.Unmarshal(payload, &ch); err != nil {
@@ -426,9 +429,8 @@ func (t *respFromChat) Event(payload []byte, emit func([]byte) error) error {
 			t.usage.reasoning = d.ReasoningTokens
 		}
 	}
-	if err := t.s.start(); err != nil {
-		return err
-	}
+	// response.created waits for the first output (or the end): a stream that
+	// brings nothing has sent the client nothing.
 	for _, c := range ch.Choices {
 		if c.Index != 0 {
 			continue
@@ -481,7 +483,7 @@ func (t *respFromChat) delta(d *respChatDelta, whole bool) error {
 	for _, tc := range d.ToolCalls {
 		idx := -1
 		if tc.Index != nil {
-			idx = *tc.Index
+			idx = t.slot(*tc.Index, tc.ID)
 		} else {
 			// No index: a new id is a new call, no id continues the last one.
 			for _, i := range t.order {
@@ -520,11 +522,36 @@ func (t *respFromChat) delta(d *respChatDelta, whole bool) error {
 				return err
 			}
 		}
+		if tc.ID != "" && t.ids[idx] == "" {
+			if t.ids == nil {
+				t.ids = map[int]string{}
+			}
+			t.ids[idx] = tc.ID
+		}
 		if err := t.s.callArgs(c, tc.Function.Arguments); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// slot is the call a fragment with the upstream's index belongs to. Some
+// model servers give every parallel call the same index and tell them apart
+// by ID only: another ID at a known index is another call.
+func (t *respFromChat) slot(index int, id string) int {
+	s, known := t.slots[index]
+	if known && (id == "" || t.ids[s] == "" || t.ids[s] == id) {
+		return s
+	}
+	s = index
+	for t.calls[s] != nil {
+		s++
+	}
+	if t.slots == nil {
+		t.slots = map[int]int{}
+	}
+	t.slots[index] = s
+	return s
 }
 
 // end finishes the response: a chat stream's end is its terminal event,

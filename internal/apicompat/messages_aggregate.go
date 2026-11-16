@@ -26,6 +26,7 @@ func msgAggregate(payloads [][]byte) ([]byte, error) {
 		blocks  = map[int]*msgAggBlock{}
 		stop    any
 		stopSeq any
+		ended   bool // message_delta or message_stop came
 	)
 	for _, p := range payloads {
 		var e struct {
@@ -98,7 +99,10 @@ func msgAggregate(payloads [][]byte) ([]byte, error) {
 					b.cites = append(b.cites, c)
 				}
 			}
+		case "message_stop":
+			ended = true
 		case "message_delta":
+			ended = true
 			var d struct {
 				StopReason   any `json:"stop_reason"`
 				StopSequence any `json:"stop_sequence"`
@@ -128,6 +132,10 @@ func msgAggregate(payloads [][]byte) ([]byte, error) {
 	}
 	if msg == nil {
 		return nil, errors.New("apicompat: messages stream has no message_start")
+	}
+	if !ended {
+		// Cut off before its end: half an answer is not the answer.
+		return nil, errors.New("apicompat: messages stream ended before its message_stop")
 	}
 
 	idx := make([]int, 0, len(blocks))

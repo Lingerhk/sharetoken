@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"sharetoken/internal/apicompat"
 	"sharetoken/internal/node"
@@ -37,6 +38,11 @@ func codexRequest(body []byte) (req map[string]any, limit uint64, renamed bool, 
 	limit = number(req["max_output_tokens"])
 	for _, k := range []string{"max_output_tokens", "temperature", "top_p", "max_tokens"} {
 		delete(req, k)
+	}
+	// The backend takes the input as a list of items only.
+	if text, ok := req["input"].(string); ok {
+		req["input"] = []any{map[string]any{"type": "message", "role": "user", "content": []any{
+			map[string]any{"type": "input_text", "text": text}}}}
 	}
 	if _, ok := req["instructions"].(string); !ok {
 		req["instructions"] = ""
@@ -91,31 +97,61 @@ func codexRequest(body []byte) (req map[string]any, limit uint64, renamed bool, 
 
 // codexStream passes the backend's events on. It puts the reserved tool name
 // back, fails on error events, and cuts the stream when the visible output
-// outgrows limit: the buyer gets what its reservation covers, ended by a
-// response.incomplete event as if the backend had stopped there.
+// outgrows limit: the buyer gets what its reservation covers, ended as the
+// API ends an answer that reached max_output_tokens.
 type codexStream struct {
 	emit      func([]byte) error
 	renamed   bool
 	limit     uint64
 	estPrompt uint64
 
-	text     strings.Builder
+	count    tokenCounter   // the visible output so far
 	response map[string]any // from response.created
 	items    []any          // output items done so far
+	open     *codexItem     // the item being written
 	seq      int64
 	done     bool
-	started  bool
 }
+
+// codexItem is an output item the backend has started and not finished.
+type codexItem struct {
+	index        int64          // output_index
+	item         map[string]any // as response.output_item.added gave it
+	parts        []any          // a message's content parts done so far
+	partOpen     bool           // a message part is being written
+	refusal      bool           // that part is a refusal, not text
+	contentIndex int64
+	text         strings.Builder // of the open part, or the call's arguments or input
+}
+
+// tokenCounter is protocol.EstimateTokens of a text that arrives in pieces,
+// without reading the whole text again for each piece.
+type tokenCounter struct{ latin, cjk uint64 }
+
+func (c *tokenCounter) add(s string) {
+	for _, r := range s {
+		if unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul) {
+			c.cjk++
+		} else {
+			c.latin++
+		}
+	}
+}
+
+func (c *tokenCounter) tokens() uint64 { return (c.latin+3)/4 + (c.cjk*2+2)/3 }
 
 var errOutputLimit = fmt.Errorf("output limit reached")
 
 func (s *codexStream) event(data []byte) error {
 	var ev struct {
-		Type     string          `json:"type"`
-		Delta    string          `json:"delta"`
-		Seq      int64           `json:"sequence_number"`
-		Item     json.RawMessage `json:"item"`
-		Response map[string]any  `json:"response"`
+		Type         string          `json:"type"`
+		Delta        string          `json:"delta"`
+		Seq          int64           `json:"sequence_number"`
+		OutputIndex  int64           `json:"output_index"`
+		ContentIndex int64           `json:"content_index"`
+		Item         json.RawMessage `json:"item"`
+		Part         json.RawMessage `json:"part"`
+		Response     map[string]any  `json:"response"`
 	}
 	if json.Unmarshal(data, &ev) != nil {
 		return nil
@@ -127,56 +163,155 @@ func (s *codexStream) event(data []byte) error {
 		return &node.StatusError{Status: http.StatusBadGateway, Body: clip(ev.Type+": "+msg, 300)}
 	case "response.created":
 		s.response = ev.Response
+	case "response.output_item.added":
+		var item map[string]any
+		_ = json.Unmarshal(ev.Item, &item)
+		s.open = &codexItem{index: ev.OutputIndex, item: item}
+	case "response.content_part.added":
+		if o := s.open; o != nil {
+			o.partOpen, o.refusal, o.contentIndex = true, false, ev.ContentIndex
+			o.text.Reset()
+		}
+	case "response.content_part.done":
+		if o := s.open; o != nil {
+			var part any
+			_ = json.Unmarshal(ev.Part, &part)
+			o.parts, o.partOpen = append(o.parts, part), false
+			o.text.Reset()
+		}
 	case "response.output_item.done":
 		var item any
 		_ = json.Unmarshal(ev.Item, &item)
 		s.items = append(s.items, item)
+		s.open = nil
 	case "response.completed", "response.incomplete", "response.done":
 		s.done = true
 	}
-	if s.renamed && strings.Contains(string(data), reservedToolAlias) {
-		data = []byte(strings.ReplaceAll(string(data), `"name":"`+reservedToolAlias+`"`, `"name":"`+reservedTool+`"`))
-	}
-	if err := s.emit(append([]byte(nil), data...)); err != nil {
+	if err := s.out(data); err != nil {
 		return err
 	}
 	switch ev.Type {
 	case "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
 		"response.function_call_arguments.delta", "response.custom_tool_call_input.delta", "response.refusal.delta":
-		s.started = true
-		s.text.WriteString(ev.Delta)
-		if s.limit > 0 && protocol.EstimateTokens(s.text.String()) > s.limit {
+		if o := s.open; o != nil {
+			switch ev.Type {
+			case "response.output_text.delta", "response.refusal.delta":
+				o.partOpen, o.contentIndex = true, ev.ContentIndex
+				o.refusal = ev.Type == "response.refusal.delta"
+			}
+			o.text.WriteString(ev.Delta)
+		}
+		s.count.add(ev.Delta)
+		if s.limit > 0 && s.count.tokens() > s.limit {
 			return errOutputLimit
 		}
-	case "response.output_item.added":
-		s.started = true
 	}
 	return nil
 }
 
-// end closes a stream the backend did not finish (cut at the limit, or ended
-// early after some output) with a terminal event of its own.
-func (s *codexStream) end(reason string) error {
+// out passes one event on, under the tool name the buyer knows.
+func (s *codexStream) out(data []byte) error {
+	if s.renamed && bytes.Contains(data, []byte(reservedToolAlias)) {
+		data = []byte(strings.ReplaceAll(string(data), `"name":"`+reservedToolAlias+`"`, `"name":"`+reservedTool+`"`))
+	}
+	return s.emit(append([]byte(nil), data...))
+}
+
+// send passes on an event made here, numbered after the backend's.
+func (s *codexStream) send(ev map[string]any) error {
+	s.seq++
+	ev["sequence_number"] = s.seq
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	return s.out(b)
+}
+
+// closeOpen ends the item the cut interrupted, as the API ends one that
+// reached the output limit: the events that close its text or arguments,
+// then the item with status incomplete. It returns the item, or nil when
+// there is none to give: unfinished reasoning has no encrypted content yet,
+// and a later request could not send it back.
+func (s *codexStream) closeOpen() (map[string]any, error) {
+	o := s.open
+	s.open = nil
+	if o == nil || o.item == nil {
+		return nil, nil
+	}
+	item, text := o.item, o.text.String()
+	at := func(typ string) map[string]any {
+		return map[string]any{"type": typ, "item_id": item["id"], "output_index": o.index}
+	}
+	switch item["type"] {
+	case "message":
+		parts := o.parts
+		if parts == nil {
+			parts = []any{}
+		}
+		if o.partOpen {
+			done, part := at("response.output_text.done"), map[string]any{"type": "output_text", "text": text, "annotations": []any{}}
+			done["text"] = text
+			if o.refusal {
+				done, part = at("response.refusal.done"), map[string]any{"type": "refusal", "refusal": text}
+				done["refusal"] = text
+			}
+			done["content_index"] = o.contentIndex
+			if err := s.send(done); err != nil {
+				return nil, err
+			}
+			partDone := at("response.content_part.done")
+			partDone["content_index"], partDone["part"] = o.contentIndex, part
+			if err := s.send(partDone); err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+		}
+		item["content"] = parts
+	case "function_call":
+		done := at("response.function_call_arguments.done")
+		done["arguments"], item["arguments"] = text, text
+		if err := s.send(done); err != nil {
+			return nil, err
+		}
+	case "custom_tool_call":
+		done := at("response.custom_tool_call_input.done")
+		done["input"], item["input"] = text, text
+		if err := s.send(done); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, nil
+	}
+	item["status"] = "incomplete"
+	return item, s.send(map[string]any{"type": "response.output_item.done", "output_index": o.index, "item": item})
+}
+
+// end closes a stream cut at the output limit: the open item, then
+// response.incomplete with the output so far and the usage of what was sent.
+func (s *codexStream) end() error {
+	items := s.items
+	if items == nil {
+		items = []any{}
+	}
+	item, err := s.closeOpen()
+	if err != nil {
+		return err
+	}
+	if item != nil {
+		items = append(items, item)
+	}
 	r := s.response
 	if r == nil {
 		r = map[string]any{"id": "resp_" + randomHex(12), "object": "response", "created_at": time.Now().Unix()}
 	}
-	r["output"] = s.items
-	out := protocol.EstimateTokens(s.text.String())
+	r["output"] = items
+	out := s.count.tokens()
 	r["usage"] = map[string]any{"input_tokens": s.estPrompt, "output_tokens": out, "total_tokens": s.estPrompt + out,
 		"input_tokens_details": map[string]any{"cached_tokens": 0}, "output_tokens_details": map[string]any{"reasoning_tokens": 0}}
-	typ := "response.completed"
-	r["status"] = "completed"
-	if reason != "" {
-		typ = "response.incomplete"
-		r["status"] = "incomplete"
-		r["incomplete_details"] = map[string]any{"reason": reason}
-	}
-	b, err := json.Marshal(map[string]any{"type": typ, "sequence_number": s.seq + 1, "response": r})
-	if err != nil {
-		return err
-	}
-	return s.emit(b)
+	r["status"] = "incomplete"
+	r["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
+	return s.send(map[string]any{"type": "response.incomplete", "response": r})
 }
 
 // streamCodex posts a Codex Responses request and passes the answer on.
@@ -196,12 +331,12 @@ func streamCodex(ctx context.Context, url string, header http.Header, body []byt
 	err = postSSE(ctx, url, header, out, st.event)
 	switch {
 	case err == errOutputLimit:
-		return st.end("max_output_tokens")
+		return st.end()
 	case err != nil:
 		return err
-	case !st.done && st.started:
-		return st.end("")
 	case !st.done:
+		// The backend's stream stopped without its terminal event: the
+		// answer is not whole, and is not passed off as one.
 		return fmt.Errorf("the stream ended before the response did")
 	}
 	return nil
@@ -254,39 +389,63 @@ func compactCodex(ctx context.Context, url string, header http.Header, body []by
 	return emit(b)
 }
 
-// retryWithoutReasoning sends body, and once more without its reasoning
-// items when the upstream refused their encrypted content: reasoning only
-// decrypts at the account that made it, and a conversation that moved from
-// another seller carries that seller's.
+// retryWithoutReasoning sends body, and again without what the upstream
+// could not decrypt when it refused the request for its encrypted content:
+// reasoning only decrypts at the account that made it, and a conversation
+// that moved from another seller carries that seller's. The reasoning items
+// go first; if the request is refused again, so do the backend's compaction
+// items (those sharetoken made hold a readable summary and stay).
 func retryWithoutReasoning(body []byte, do func([]byte) error) error {
 	err := do(body)
-	var se *node.StatusError
-	if !errors.As(err, &se) || se.Status != http.StatusBadRequest || !strings.Contains(strings.ToLower(se.Body), "encrypted") {
-		return err
+	for _, strip := range []func([]byte) ([]byte, bool){withoutReasoning, withoutForeignCompaction} {
+		var se *node.StatusError
+		if !errors.As(err, &se) || se.Status != http.StatusBadRequest || !strings.Contains(strings.ToLower(se.Body), "encrypted") {
+			return err
+		}
+		if stripped, ok := strip(body); ok {
+			body = stripped
+			err = do(body)
+		}
 	}
-	stripped, ok := withoutReasoning(body)
-	if !ok {
-		return err
-	}
-	return do(stripped)
+	return err
 }
 
 // withoutReasoning removes the reasoning items from a Responses request's input.
 func withoutReasoning(body []byte) ([]byte, bool) {
+	return withoutItems(body, func(m map[string]any) bool { return m["type"] == "reasoning" })
+}
+
+// withoutForeignCompaction removes from a Responses request's input the
+// compaction items a model server made: opaque to every account but its own.
+func withoutForeignCompaction(body []byte) ([]byte, bool) {
+	return withoutItems(body, func(m map[string]any) bool {
+		if m["type"] != "compaction" && m["type"] != "compaction_summary" {
+			return false
+		}
+		enc, _ := m["encrypted_content"].(string)
+		return !apicompat.IsConverted(enc)
+	})
+}
+
+// withoutItems removes the input items drop accepts; false when there are none.
+func withoutItems(body []byte, drop func(map[string]any) bool) ([]byte, bool) {
 	req, err := decodeObject(body)
 	if err != nil {
 		return nil, false
 	}
 	input, _ := req["input"].([]any)
-	out := input[:0]
+	var out []any
 	for _, it := range input {
-		if m, _ := it.(map[string]any); m["type"] == "reasoning" {
+		if m, _ := it.(map[string]any); m != nil && drop(m) {
 			continue
 		}
 		out = append(out, it)
 	}
 	if len(out) == len(input) {
 		return nil, false
+	}
+	if out == nil {
+		out = []any{}
 	}
 	req["input"] = out
 	b, err := json.Marshal(req)

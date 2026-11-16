@@ -136,6 +136,33 @@ func prepareChat(in map[string]json.RawMessage, limit uint64) (map[string]any, e
 		return nil, err
 	}
 	out := pick(in, chatFields)
+	// Function tools run on the buyer's machine. Anything else a chat server
+	// may know (web_search, code_execution, x_search) runs on the seller's
+	// account, which the node did not price; a conversion to Messages or
+	// Responses would even turn it into those APIs' hosted tools.
+	if raw, ok := in["tools"]; ok {
+		tools, kept, err := filterTools(raw, func(t map[string]any) bool {
+			typ, _ := t["type"].(string)
+			return typ == "" || typ == "function"
+		})
+		if err != nil {
+			return nil, err
+		}
+		if kept == 0 {
+			delete(out, "tools")
+			delete(out, "tool_choice")
+		} else {
+			out["tools"] = tools
+			if raw, ok := in["tool_choice"]; ok {
+				var tc map[string]any
+				if json.Unmarshal(raw, &tc) == nil {
+					if typ, _ := tc["type"].(string); typ != "" && typ != "function" && typ != "allowed_tools" {
+						out["tool_choice"] = "auto"
+					}
+				}
+			}
+		}
+	}
 	out["stream_options"] = map[string]bool{"include_usage": true}
 	out["max_tokens"] = limit
 	return out, nil
@@ -264,13 +291,13 @@ func upstreamHeader(api string, in protocol.RequestHeader) protocol.RequestHeade
 	out := protocol.RequestHeader{}
 	switch api {
 	case protocol.APIMessages:
-		if v := in.Get("anthropic-version"); v != "" {
+		if v := in.Get("anthropic-version"); headerToken(v, 32) {
 			out["anthropic-version"] = v
 		}
 		var betas []string
 		for _, b := range strings.Split(in.Get("anthropic-beta"), ",") {
 			b = strings.TrimSpace(b)
-			if b != "" && slices.ContainsFunc(anthropicBetaFamilies, func(f string) bool { return strings.HasPrefix(b, f+"-20") }) {
+			if headerToken(b, 96) && slices.ContainsFunc(anthropicBetaFamilies, func(f string) bool { return strings.HasPrefix(b, f+"-20") }) {
 				betas = append(betas, b)
 			}
 		}
@@ -278,11 +305,29 @@ func upstreamHeader(api string, in protocol.RequestHeader) protocol.RequestHeade
 			out["anthropic-beta"] = strings.Join(betas, ",")
 		}
 	case protocol.APIResponses:
-		if v := in.Get("session_id"); v != "" && len(v) <= 128 {
+		if v := in.Get("session_id"); headerToken(v, 128) {
 			out["session_id"] = v
 		}
 	}
 	return out
+}
+
+// headerToken reports whether v is a plain token of at most max bytes
+// (letters, digits, '.', '_', '-', ':'). The buyer chooses these values and
+// they go into the model server's HTTP headers: anything else is left out,
+// so a control character cannot fail the seller's request.
+func headerToken(v string, max int) bool {
+	if v == "" || len(v) > max {
+		return false
+	}
+	for _, c := range []byte(v) {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '_', c == '-', c == ':':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // identity is what a ticket must be bound to for this node to accept it.
