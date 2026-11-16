@@ -129,7 +129,7 @@ dist/sharetoken-1.0.0-linux-arm64.deb             scripts/build/build-gui-linux.
 dist/sharetoken-cli-1.0.0-linux-amd64.tar.gz      scripts/build/build-cli.sh prod linux amd64（"all" 构建三个系统、两种架构）
 dist/sharetoken-cli-1.0.0-windows-amd64.zip       scripts/build/build-cli.sh prod windows amd64
 dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 scripts/build/build.sh relay
-dist/sharetoken-relay-1.0.3-linux-amd64.tar.gz   scripts/build/build-relay.sh prod amd64（"all" 构建两种架构）：中继程序、unit 文件和 README
+dist/sharetoken-relay-1.0.3-linux-amd64.tar.gz   scripts/build/build-relay.sh amd64（不带参数：两种架构）：中继程序、unit 文件和 README
 dist/sharetoken-1.0.0-macos-arm64.app.zip         同上：.app 打成 zip，一键升级用
 dist/SHA256SUMS-1.0.0
 dist/SIGNATURES-1.0.0                             scripts/release/release-files.sh 用发布密钥签名

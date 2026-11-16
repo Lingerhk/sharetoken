@@ -129,7 +129,7 @@ dist/sharetoken-1.0.0-linux-arm64.deb             scripts/build/build-gui-linux.
 dist/sharetoken-cli-1.0.0-linux-amd64.tar.gz      scripts/build/build-cli.sh prod linux amd64 ("all" builds three systems, two architectures)
 dist/sharetoken-cli-1.0.0-windows-amd64.zip       scripts/build/build-cli.sh prod windows amd64
 dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 scripts/build/build.sh relay
-dist/sharetoken-relay-1.0.3-linux-amd64.tar.gz   scripts/build/build-relay.sh prod amd64 ("all" builds both architectures): the relay, a unit file and a README
+dist/sharetoken-relay-1.0.3-linux-amd64.tar.gz   scripts/build/build-relay.sh amd64 (no argument: both architectures): the relay, a unit file and a README
 dist/sharetoken-1.0.0-macos-arm64.app.zip         the same: the .app zipped, for one-click updates
 dist/SHA256SUMS-1.0.0
 dist/SIGNATURES-1.0.0                             scripts/release/release-files.sh, with the release key
