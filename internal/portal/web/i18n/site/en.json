@@ -237,5 +237,15 @@
   "回答合并发送并补齐长度，请求按区间补齐，中继无法再从数据包大小推测每个 token 的长度。": "Answers are sent in merged, padded frames and requests are padded to size buckets, so relays can no longer infer the length of each token from packet sizes.",
   "性能提升": "Performance",
   "稳定性提升": "Reliability",
-  "安全性": "Security"
+  "安全性": "Security",
+  "新功能": "New",
+  "本地端点同时提供 OpenAI Chat Completions、Anthropic Messages 和 OpenAI Responses 三种接口，Claude Code 和 Codex 可以直接使用；卖家的模型服务原生支持时原样转发，否则自动转换。": "The local endpoint speaks three APIs: OpenAI Chat Completions, Anthropic Messages and OpenAI Responses, so Claude Code and Codex work with it directly. A seller whose model server speaks the request's API passes it on unchanged; others convert it.",
+  "私有中继：可以部署自己的中继，只为你列出的账号服务，别人访问你共享的设备时走你自己的服务器。文档提供 Linux 版中继程序和部署步骤。": "Private relays: run a relay of your own that serves only the accounts you list, so that the devices you share from are reached through your own server. The guide has the relay program for Linux and the steps.",
+  "从 prompt 缓存读出和写入缓存的 token 单独计价；每个请求的预算默认 2 credit，可以在桌面应用的设置里调整，也可以选择只用原生支持请求接口的卖家。": "Tokens read from and written to the prompt cache have prices of their own. The budget per request is 2 credits by default and can be changed in the desktop app's settings, where you can also choose to buy only from sellers that speak the request's API natively.",
+  "三种接口之间的转换更完整：并行工具调用、结构化输出、思考设置、工具返回的图片和缓存用量都能正确往返。": "Conversion between the three APIs is more complete: parallel tool calls, structured output, thinking settings, images returned by tools and cache usage all survive the round trip.",
+  "模型服务临时出错（过载、5xx、连接中断）时自动重试；额度用完或登录失效的提供商会暂停接单，不再让请求一个个失败。": "Temporary failures of a model server (overload, 5xx, a broken connection) are retried. A provider that ran out of quota or whose login expired stops taking jobs instead of failing them one by one.",
+  "模型服务的回答中途断开时按失败处理，不再当作完整回答计费。": "An answer that the model server cut off midway counts as failed and is no longer billed as complete.",
+  "平台抽检可以由用户的客户端转交：请求和回答全程加密，转交的客户端看不到内容，也不花 credit，卖家分不清抽检和真实请求。默认开启，可以在配置文件里关闭。": "Spot checks can be carried by users' clients: the request and the answer stay encrypted, the carrying client cannot read them and pays nothing, and the seller cannot tell a check from a real request. On by default; the configuration file turns it off.",
+  "抽检覆盖三种接口，由参考模型逐 token 核对卖家的回答。": "Spot checks cover all three APIs, and a reference model checks the seller's answer token by token.",
+  "卖家节点不再执行买家请求里的托管工具；买家带来的请求头和 beta 开关按卖家的账号类型过滤。": "Seller nodes no longer run hosted tools named in a buyer's request, and the headers and beta switches a buyer sends are filtered by the kind of account the seller uses."
 }

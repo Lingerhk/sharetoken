@@ -30,6 +30,7 @@ For usage, see [Call models](/docs/use-models).
 | `GET /api/v1/jobs?role=buy&limit=20` | Recent jobs |
 | `GET /api/v1/ledger?limit=20` | Bills |
 | `POST /api/v1/relays/measure` | Measure again right away and return the result |
+| `POST /api/v1/relays/private`, `DELETE /api/v1/relays/private` | Add or remove a [private relay](/docs/relay): `{"addr": "<address>"}`; removing also takes the relay's ID |
 | `GET /api/v1/share` | Read the sharing settings |
 | `PUT /api/v1/share` | Change the sharing settings. They are validated, then applied immediately and saved |
 | `POST /api/v1/share/start`, `POST /api/v1/share/stop` | Turn sharing on or pause it |

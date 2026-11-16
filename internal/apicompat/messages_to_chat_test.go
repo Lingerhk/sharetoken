@@ -364,7 +364,7 @@ func TestMessagesFromChatErrors(t *testing.T) {
 		{"nothing", nil, "without a response"},
 		{"done only", []string{"[DONE]"}, "without a response"},
 		{"role only", []string{msgChunk(t, map[string]any{"role": "assistant"}, "")}, "without a response"},
-		{"not JSON", []string{"{"}, "chat chunk"},
+		{"not JSON", []string{"{"}, "without a response"}, // an unreadable chunk is skipped
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := msgFeed(t, msgCTranslator(t), tc.chunks...)

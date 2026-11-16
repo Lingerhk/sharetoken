@@ -15,6 +15,7 @@ can and cannot do, and where the protection stops. The design behind it is in
 | Buyer's client | Its own prompts and credit | Paying honestly: it may refuse a valid receipt |
 | Seller's client | The plaintext of the jobs it serves (unless it runs in a TEE) | Running the advertised model, reporting usage honestly, returning what the model produced |
 | Relay | Forwarding bytes | Anything else. It sees who talks to whom and how much, never content |
+| Private relay (run by a user, §2.8) | Forwarding bytes to its owners' nodes | Anything else, and less than the network's relays: no traffic with the coordinator passes through it |
 | Coordinator | The ledger, matching, dispute decisions | Prompts and answers: they do not pass through it. It sees one job's content only when the buyer discloses it as evidence |
 | Portal | Accounts (email addresses; no passwords), sign-in codes (salted hashes), tokens (hashed), two-factor secrets (encrypted), device bindings, credit grants | Prompts and answers, device private keys |
 | Network | Nothing | |
@@ -138,8 +139,8 @@ Two mechanisms address that:
   ticket is paid by the platform, not by the client. Only a client the market
   could have matched to that seller for money carries: not the seller's own
   devices, not its share partners, not a stranger to a private seller. A
-  user can turn carrying off (`buy.spot_checks`, "Spot checks" in the app's
-  settings). When no client is there to carry a question, the auditor asks
+  user can turn carrying off, in the client's configuration file only
+  (`buy.spot_checks`). When no client is there to carry a question, the auditor asks
   from a fresh identity of its own, and then only through circuits of the
   coordinator's own relays: never directly, which would show sellers the
   coordinator's address, and never through any other relay
@@ -222,6 +223,37 @@ as usual.
 - Partners are matched whatever the user's pairings, and a private seller still
   serves its partners: private mode concerns paying buyers only.
 
+### 2.8 Private relays
+
+A user can run a relay of their own (`relay init`, the same program as the
+network's relays) and have their sharing nodes reached through it
+(`private_relays` in the client's configuration). Three rules keep such a relay
+from learning or deciding more than a seller already does:
+
+- **It admits only its owners.** The relay lists accounts
+  (`access.networks[].allow_accounts`). The portal signs the account into
+  every relay pass, so the relay admits those accounts' devices offline, a new
+  device needs no change on the relay, and a disabled user's passes run out
+  within their lifetime. It carries no coordinator (no `allow_peers`).
+- **Traffic with the coordinator never uses it.** The client keeps private
+  relays in a list of their own that the choice of the path to the
+  coordinator never reads (`internal/client/private_relays.go`), and the
+  coordinator reserves only on the relays registered with the portal. Whoever
+  runs a private relay therefore never sees the coordinator's address, nor
+  which users are online: only the nodes that reserved on it and the buyers
+  that connect to them.
+- **The platform's own audit connections never use it.** The auditor's
+  identity dials only circuits of registered relays (§2.4). Nodes behind a
+  private relay are audited all the same, by the jobs that buyers' clients
+  carry: a carrier dials whatever addresses the node offers, as it does for
+  its own requests.
+
+Nothing registers a private relay: the portal and the coordinator do not know
+it exists, apart from its circuit addresses in the node's offers. While one
+of its private relays holds a reservation, a node holds none on the network's
+relays (unless `share.keep_official`); when none does for half a minute, it
+falls back to them.
+
 ## 3. Accounts, devices and the platform
 
 | Threat | Defence | Code |
@@ -285,6 +317,11 @@ them more than the list above.
 - **Relayed connections are not admission-controlled.** Anyone can open a circuit
   to a reserved peer. The peer authenticates and rejects strangers, but the
   relay's bandwidth is used. Only aggregate limits bound it.
+- **A seller's own relay sees its buyers' addresses.** A buyer that reaches a
+  node through the seller's private relay shows that relay its network
+  address, the times and the byte counts: what a direct connection shows the
+  seller anyway, now also when the buyer could not connect directly. It sees
+  no content.
 - **Pairing is a matching rule, not encryption.** It decides which sellers a
   buyer's requests are sent to. What a paired seller can see of a prompt is
   unchanged, and the platform, which keeps the pairings, could alter them.

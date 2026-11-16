@@ -1,6 +1,7 @@
 package client
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -59,6 +60,9 @@ type RelayView struct {
 	CoordinatorOK bool    `json:"coordinator_ok"`
 	Current       bool    `json:"current"`  // carries this client's coordinator traffic
 	Reserved      bool    `json:"reserved"` // holds a reservation for sharing
+	// Private marks a relay of the user's own (config private_relays): only
+	// sharing uses it, never the coordinator.
+	Private bool `json:"private,omitempty"`
 }
 
 // ShareStatus is the sharing side.
@@ -111,6 +115,17 @@ func (a *Agent) Status() Status {
 		}
 		st.Relays = append(st.Relays, v)
 	}
+	resErr := map[string]string{}
+	for _, r := range st.Share.Reservations {
+		resErr[r.Addr] = r.Err
+	}
+	for _, r := range a.private {
+		v := RelayView{Addr: r.Addr, Name: "private", Private: true, Reserved: reserved[r.Addr], Error: cmp.Or(r.Err, resErr[r.Addr])}
+		if r.OK() {
+			v.RTTMillis = float64(r.RTT.Microseconds()) / 1000
+		}
+		st.Relays = append(st.Relays, v)
+	}
 	for _, w := range a.warnings {
 		st.Warnings = append(st.Warnings, w)
 	}
@@ -151,6 +166,7 @@ func (a *Agent) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, a.Status().Share)
 	})
 	mux.HandleFunc("GET /api/v1/share/detect", a.handleDetect)
+	a.privateRelayRoutes(mux)
 	a.providerRoutes(mux)
 	a.pairingRoutes(mux)
 	a.sharingRoutes(mux)
@@ -255,24 +271,16 @@ func (a *Agent) handleSetShare(w http.ResponseWriter, r *http.Request) {
 type BuySettingsView struct {
 	BudgetMicros  uint64 `json:"budget_micros"`
 	RequireNative bool   `json:"require_native"`
-	// SpotChecks: carry the platform's audits of sellers (BuyConfig). A
-	// change that leaves it out keeps the setting.
-	SpotChecks *bool `json:"spot_checks,omitempty"`
 }
 
 // buyView is the settings page's view of the buying settings.
 func buyView(b BuyConfig) BuySettingsView {
-	on := b.CarriesSpotChecks()
-	return BuySettingsView{BudgetMicros: b.BudgetMicros, RequireNative: b.RequireNative, SpotChecks: &on}
+	return BuySettingsView{BudgetMicros: b.BudgetMicros, RequireNative: b.RequireNative}
 }
 
 // apply writes the view into b.
 func (v BuySettingsView) apply(b *BuyConfig) {
 	b.BudgetMicros, b.RequireNative = v.BudgetMicros, v.RequireNative
-	if v.SpotChecks != nil {
-		on := *v.SpotChecks
-		b.SpotChecks = &on
-	}
 }
 
 // BuySettings reports the buying settings the settings page changes.

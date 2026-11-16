@@ -66,11 +66,11 @@ func (e *Entry) Upstream(ts TokenSource) (node.Upstream, error) {
 		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}, tokensField: "max_completion_tokens", responses: true}
 	case KindDeepSeek:
 		// DeepSeek also serves the Anthropic Messages API, at /anthropic.
-		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}, messages: strings.TrimRight(e.URL(), "/") + "/anthropic"}
+		up = (&openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}, messages: strings.TrimRight(e.URL(), "/") + "/anthropic"}).chatQuirks(e.Type)
 	case KindGemini:
 		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}, thoughtSignatures: true}
 	default:
-		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}}
+		up = (&openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}}).chatQuirks(e.Type)
 	}
 	return wrapOutbound(&outboundUpstream{up: up, client: client, owner: e.ID}), nil
 }

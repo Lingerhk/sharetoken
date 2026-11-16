@@ -1344,7 +1344,6 @@ I18N.ready.then(() => {
     // once and saved in config.json.
     let buyDirty = false;
     const nativeBox = h('input', { type: 'checkbox', id: 'buy-native', disabled: true, onchange: () => saveBuy(nativeBox) });
-    const spotBox = h('input', { type: 'checkbox', id: 'buy-spot', disabled: true, onchange: () => saveBuy(spotBox) });
     const budgetInput = h('input', { type: 'text', id: 'buy-budget', class: 'narrow short', inputmode: 'decimal', 'aria-label': tr('每个请求的预算'),
       oninput: () => { buyDirty = true; }, onkeydown: e => { if (e.key === 'Enter') saveBuy(budgetSave); } });
     const budgetSave = h('button', { type: 'button', id: 'buy-budget-save', onclick: () => saveBuy(budgetSave) }, tr('保存'));
@@ -1352,8 +1351,6 @@ I18N.ready.then(() => {
     function drawBuy(b) {
       nativeBox.checked = !!b.require_native;
       nativeBox.disabled = false;
-      spotBox.checked = b.spot_checks !== false;
-      spotBox.disabled = false;
       if (!buyDirty && document.activeElement !== budgetInput) budgetInput.value = String(b.budget_micros / 1e6);
     }
     async function loadBuy() {
@@ -1368,7 +1365,7 @@ I18N.ready.then(() => {
       }
       el.disabled = true;
       try {
-        drawBuy(await api('PUT', '/api/v1/buy', { budget_micros: Math.round(credits * 1e6), require_native: nativeBox.checked, spot_checks: spotBox.checked }));
+        drawBuy(await api('PUT', '/api/v1/buy', { budget_micros: Math.round(credits * 1e6), require_native: nativeBox.checked }));
         buyDirty = false;
         buyNote.className = 'small ok';
         buyNote.textContent = tr('已保存');
@@ -1392,9 +1389,7 @@ I18N.ready.then(() => {
       h('span', { class: 'k' }, tr('原生卖家')), h('label', { class: 'v check' }, nativeBox, h('span', null, tr('只用原生支持请求接口的卖家'))), h('span'),
       h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'buy-native-hint' }, tr('卖家的模型服务器原生支持请求所用的接口时（如 Claude Code 用 Anthropic Messages，Codex 用 OpenAI Responses）原样转发，不做转换。不勾选时优先选这类卖家，没有空闲的就由其他卖家转换后提供；勾选后没有这类卖家时请求直接失败。')),
       h('span', { class: 'k' }, tr('每个请求的预算')), h('span', { class: 'v' }, budgetInput, ' ', h('span', { class: 'muted small' }, 'credit'), ' ', buyNote), budgetSave,
-      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'buy-budget-hint' }, tr('每个请求先冻结这么多，结束后按实际用量扣费，多余的退回。编程助手的 prompt 很长，预算太小会返回 budget 错误。')),
-      h('span', { class: 'k' }, tr('平台抽检')), h('label', { class: 'v check' }, spotBox, h('span', null, tr('协助平台抽检卖家'))), h('span'),
-      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'buy-spot-hint' }, tr('平台会不定期抽查卖家是否真的在用它标称的模型。开启后，本客户端偶尔替平台把一个很短的抽检请求转交给卖家，就像你自己的请求一样，卖家因此分不清哪次是抽检。请求和回答都是加密的，本机看不到内容，也不花你的 credit；卖家会像对待普通买家一样看到本设备的地址。'))));
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'buy-budget-hint' }, tr('每个请求先冻结这么多，结束后按实际用量扣费，多余的退回。编程助手的 prompt 很长，预算太小会返回 budget 错误。'))));
     let market = [];
     const pairing = pairingView();
     const partners = partnersView();

@@ -76,6 +76,13 @@ List the models on the network, the node count, the TEE node count and the lowes
 
 Show the latency of each relay. `-measure` measures again right away. The client must be running.
 
+| Command | Meaning |
+|---|---|
+| `relays` | Every relay, its latency, and what this client uses it for |
+| `relays -measure` | Measure again first |
+| `relays add <address>` | Share through a relay of your own, see [Run your own relay](/docs/relay) |
+| `relays remove <address or ID>` | Stop using it |
+
 ### apikey {#apikey}
 
 The local endpoint's API key (see [Call models](/docs/use-models#endpoint)). A running client follows a change at once.

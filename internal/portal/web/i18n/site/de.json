@@ -237,5 +237,15 @@
   "回答合并发送并补齐长度，请求按区间补齐，中继无法再从数据包大小推测每个 token 的长度。": "Antworten werden in zusammengefassten, aufgefüllten Frames gesendet und Anfragen auf Größenstufen aufgefüllt, sodass Relays die Länge einzelner Tokens nicht mehr aus Paketgrößen ableiten können.",
   "性能提升": "Leistung",
   "稳定性提升": "Zuverlässigkeit",
-  "安全性": "Sicherheit"
+  "安全性": "Sicherheit",
+  "新功能": "Neu",
+  "本地端点同时提供 OpenAI Chat Completions、Anthropic Messages 和 OpenAI Responses 三种接口，Claude Code 和 Codex 可以直接使用；卖家的模型服务原生支持时原样转发，否则自动转换。": "Der lokale Endpunkt spricht drei APIs: OpenAI Chat Completions, Anthropic Messages und OpenAI Responses. Claude Code und Codex arbeiten damit direkt. Ein Verkäufer, dessen Modellserver die API der Anfrage spricht, reicht sie unverändert weiter; andere wandeln sie um.",
+  "私有中继：可以部署自己的中继，只为你列出的账号服务，别人访问你共享的设备时走你自己的服务器。文档提供 Linux 版中继程序和部署步骤。": "Private Relays: Betreiben Sie ein eigenes Relay, das nur die von Ihnen genannten Konten bedient, sodass Ihre freigebenden Geräte über Ihren eigenen Server erreicht werden. Die Anleitung enthält das Relay-Programm für Linux und die Schritte.",
+  "从 prompt 缓存读出和写入缓存的 token 单独计价；每个请求的预算默认 2 credit，可以在桌面应用的设置里调整，也可以选择只用原生支持请求接口的卖家。": "Aus dem Prompt-Cache gelesene und in ihn geschriebene Tokens haben eigene Preise. Das Budget pro Anfrage beträgt standardmäßig 2 Credits und lässt sich in den Einstellungen der Desktop-App ändern; dort können Sie auch festlegen, nur bei Verkäufern zu kaufen, die die API der Anfrage nativ sprechen.",
+  "三种接口之间的转换更完整：并行工具调用、结构化输出、思考设置、工具返回的图片和缓存用量都能正确往返。": "Die Umwandlung zwischen den drei APIs ist vollständiger: parallele Tool-Aufrufe, strukturierte Ausgabe, Thinking-Einstellungen, von Tools zurückgegebene Bilder und Cache-Nutzung überstehen den Hin- und Rückweg.",
+  "模型服务临时出错（过载、5xx、连接中断）时自动重试；额度用完或登录失效的提供商会暂停接单，不再让请求一个个失败。": "Vorübergehende Fehler eines Modellservers (Überlastung, 5xx, abgebrochene Verbindung) werden wiederholt. Ein Anbieter ohne Kontingent oder mit abgelaufener Anmeldung nimmt keine Aufträge mehr an, statt sie einzeln scheitern zu lassen.",
+  "模型服务的回答中途断开时按失败处理，不再当作完整回答计费。": "Eine Antwort, die der Modellserver mittendrin abbricht, gilt als fehlgeschlagen und wird nicht mehr als vollständig abgerechnet.",
+  "平台抽检可以由用户的客户端转交：请求和回答全程加密，转交的客户端看不到内容，也不花 credit，卖家分不清抽检和真实请求。默认开启，可以在配置文件里关闭。": "Stichproben können von den Clients der Nutzer überbracht werden: Anfrage und Antwort bleiben verschlüsselt, der überbringende Client kann sie nicht lesen und zahlt nichts, und der Verkäufer kann eine Stichprobe nicht von einer echten Anfrage unterscheiden. Standardmäßig an; die Konfigurationsdatei schaltet es ab.",
+  "抽检覆盖三种接口，由参考模型逐 token 核对卖家的回答。": "Stichproben decken alle drei APIs ab, und ein Referenzmodell prüft die Antwort des Verkäufers Token für Token.",
+  "卖家节点不再执行买家请求里的托管工具；买家带来的请求头和 beta 开关按卖家的账号类型过滤。": "Verkäuferknoten führen gehostete Tools aus der Anfrage eines Käufers nicht mehr aus, und die vom Käufer gesendeten Header und Beta-Schalter werden nach der Kontoart des Verkäufers gefiltert."
 }

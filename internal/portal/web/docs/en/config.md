@@ -83,7 +83,7 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 | `evidence` | If a node overstates usage, hand over the key for that job to get an automatic refund | `true` |
 | `require_tee` | Send requests only to TEE nodes | `false` |
 | `require_native` | Send requests only to nodes whose model server speaks the request's API natively, never converted ([Native and converted](/docs/use-models#native)). A request can also ask for it with the header `X-Sharetoken-Require-Native: true` | `false` |
-| `spot_checks` | Help the platform spot-check sellers. The platform checks at random that sellers really run the model they advertise; with this on, the client now and then carries one short check to a seller, the way it sends your own requests, so the seller cannot tell a check from a buyer. The request and the answer are encrypted (your machine cannot read them) and it costs no credit. The seller sees your device's address as it does for any request you send | `true` |
+| `spot_checks` | Help the platform spot-check sellers. The platform checks at random that sellers really run the model they advertise; with this on, the client now and then carries one short check to a seller, the way it sends your own requests, so the seller cannot tell a check from a buyer. The request and the answer are encrypted (your machine cannot read them) and it costs no credit. The seller sees your device's address as it does for any request you send. It is on unless this file turns it off; the desktop app has no switch for it | `true` |
 | `queue_seconds` | How long to wait when all nodes are full. A negative value fails immediately | `30` |
 | `first_byte_seconds` | Time limit for the node's first frame. On timeout, another node is used. Nodes send a progress frame every 10 seconds while the model is thinking, so slow models do not need a higher value | `30` |
 | `idle_seconds` | Time limit between two frames. On timeout, the job is judged stuck. A job that gets only progress frames and no output for 5 minutes is judged stuck too | `30` |
@@ -112,7 +112,8 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 | `upstream` | The OpenAI-compatible address of the local model server | Ollama: `http://127.0.0.1:11434/v1` |
 | `upstream_key_env` | The name of the environment variable that holds the local model server's API key | Empty |
 | `concurrency` | Number of requests handled at the same time | `2` |
-| `relays` | How many relays to register on | `2` |
+| `relays` | How many of the network's relays to register on | `2` |
+| `keep_official` | With a [private relay](/docs/relay): also stay on the network's relays while it works | `false` |
 | `models` | The models you share. Usually managed with `share add`. A model may also set `price_cache_read` and `price_cache_write`, the prices of input tokens read from and written to the prompt cache; see [cache prices](/docs/share#cache-prices) | Empty |
 | `tee` | Confidential VM type: `off`, `auto`, `sev-snp`, `tdx` | `off` |
 
@@ -128,3 +129,4 @@ When you change settings with the `share` subcommands, the running client applie
 | `listen` | libp2p listen addresses | All network interfaces, IPv4 and IPv6, TCP and QUIC |
 | `nat` | UPnP, NAT-PMP and hole punching | `true` |
 | `relays` | If not empty, overrides the relay list from the portal | Empty |
+| `private_relays` | Relays of your own that your sharing runs through, see [Run your own relay](/docs/relay). Managed with `relays add` | Empty |

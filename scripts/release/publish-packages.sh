@@ -2,7 +2,7 @@
 # Builds the packages users download and puts them where a portal offers them (the
 # downloads.dir of its config), replacing the directory only once all have arrived:
 # the desktop installers (.dmg, .exe, .deb) and the command-line archives, for three
-# systems and two architectures each. Runs on a Mac: the .dmg needs hdiutil.
+# systems and two architectures each, and the relay for Linux. Runs on a Mac: the .dmg needs hdiutil.
 #   scripts/release/publish-packages.sh <version> <user@host> <directory> [--with-dev-cli] [--owner <user>]
 # --with-dev-cli adds the dev command-line packages, for testing against the dev
 # network. The portal does not list them, but serves them by name.
@@ -33,8 +33,9 @@ cd "$(dirname "$0")/../.."
 scripts/release/release-files.sh "$V" --check
 # The version does not identify the code before launch, so nothing is reused.
 export ST_BUILD_TIME=${ST_BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
-rm -rf "dist/SHA256SUMS-$V" "dist/SIGNATURES-$V" "dist/RELEASE-$V.json" dist/RELEASE-"$V".*.md dist/sharetoken-cli-* dist/sharetoken-[0-9]* dist/sharetoken-dev-[0-9]*
+rm -rf "dist/SHA256SUMS-$V" "dist/SIGNATURES-$V" "dist/RELEASE-$V.json" dist/RELEASE-"$V".*.md dist/sharetoken-cli-* dist/sharetoken-relay-* dist/sharetoken-[0-9]* dist/sharetoken-dev-[0-9]*
 scripts/build/build-cli.sh prod all >/dev/null
+scripts/build/build-relay.sh >/dev/null
 for arch in amd64 arm64; do
   scripts/build/build-gui.sh prod macos "$arch" >/dev/null
   scripts/build/build-gui.sh prod windows "$arch" >/dev/null

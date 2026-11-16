@@ -38,6 +38,8 @@ Example: [`configs/relay.example.yaml`](../configs/relay.example.yaml). The acce
 | `access.networks[].name` | — | — | Required, unique |
 | `access.networks[].portal_keys` | — | — | Required. The network's portal pass keys (`portal pass-key`); several during a key rotation. A key cannot appear in two networks |
 | `access.networks[].allow_peers` | — | empty | Peers that may reserve without a pass: the network's coordinator (`coordinator id`). A peer cannot appear in two networks. Empty produces a warning, since the coordinator then cannot reserve here |
+| `access.networks[].allow_accounts` | — | empty | Makes the relay private: only devices of these accounts of the network (`user:3`) may reserve. A private relay lists no `allow_peers`. `relay init -account … -out relay.yaml` writes such a file ([security.md](security.md) §2.8) |
+| `access.networks[].portal_url` | — | empty | The network's portal. The relay reads the pass key from it at start and every 6 hours, in addition to `portal_keys`, so that a relay nobody maintains survives a key rotation. https only |
 | `access.networks[].max_devices_per_user` | — | 4 | Devices of one user account that may hold reservations at once. Accounts are counted within their network |
 | `access.networks[].max_reservations` | — | 0 | Cap on the reservations of all devices of this network together; the coordinator does not count. 0: only `limits.max_reservations` applies |
 | `limits.max_reservations` | `-max-reservations` | 4096 | Reservations held at once, all networks together |
@@ -198,11 +200,12 @@ The directory is created with mode 0700. Files in it:
 | `listen` | TCP and QUIC on IPv4 and IPv6, any port | libp2p listen addresses |
 | `nat` | true | UPnP/NAT-PMP and hole punching |
 | `relays` | empty | Overrides the relays the portal lists |
+| `private_relays` | empty | Relays the user runs (at most 8). A sharing node reserves on them; nothing else uses them, and traffic with the coordinator never does (`sharetoken relays add`, [security.md](security.md) §2.8) |
 | `buy.budget_micros` | 2000000 | Credit reserved per request; the unused part is refunded |
 | `buy.max_price_in`, `buy.max_price_out` | 0 (no limit) | Price limits per million prompt and completion tokens |
 | `buy.evidence` | true | Disclose a provably bad job's key for an automatic refund |
 | `buy.require_tee`, `buy.tee_policy`, `buy.tee_online` | off | Buy only from attested TEE nodes; allow-list file of trusted images; online revocation check |
-| `buy.spot_checks` | on | Carry the platform's audits of sellers: now and then one short, sealed job goes to a seller through this client as if it were its own. It costs no credit and the client cannot read it ([security.md](security.md) §2.4) |
+| `buy.spot_checks` | on | Carry the platform's audits of sellers: now and then one short, sealed job goes to a seller through this client as if it were its own. It costs no credit and the client cannot read it ([security.md](security.md) §2.4). Turned off only here: the app has no switch for it |
 | `buy.require_native` | off | Buy only from nodes whose model server speaks the request's API natively ([apis.md](apis.md)) |
 | `buy.queue_seconds` | 30 | How long a request waits for a free node when all are busy; negative: fail at once |
 | `buy.first_byte_seconds`, `buy.idle_seconds` | 30, 30 | How long a job may wait for the node's first frame, and between frames. Nodes send a progress frame every 10 seconds while the model is silent |
@@ -210,7 +213,8 @@ The directory is created with mode 0700. Files in it:
 | `share.upstream`, `share.upstream_key_env` | `http://127.0.0.1:11434/v1`, empty | OpenAI-compatible base URL of the local model server, and the environment variable holding its API key |
 | `share.concurrency` | 2 | Concurrent jobs |
 | `share.models` | empty | Models shared from the local model server |
-| `share.relays` | 2 | Number of relays to hold reservations on |
+| `share.relays` | 2 | Number of the network's relays to hold reservations on |
+| `share.keep_official` | false | With private relays: hold those reservations also while a private relay works. Off, the network's relays are the fallback after 30 seconds without one |
 | `share.tee` | `off` | `off`, `auto`, `sev-snp` or `tdx` |
 
 The `up` and `daemon` flags `-http`, `-listen` and `-nat` override the file for that run and are not saved.

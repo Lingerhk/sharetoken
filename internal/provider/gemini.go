@@ -280,6 +280,7 @@ type geminiStream struct {
 	cached   uint64 // prompt tokens served from Gemini's context cache
 	thoughts uint64 // reasoning tokens, of which the stream shows a summary at most
 	reason   string
+	blocked  bool // the prompt was refused: there is no candidate, and no finishReason
 	received bool
 }
 
@@ -298,7 +299,11 @@ func (s *geminiStream) event(data []byte) error {
 			if status < 400 {
 				status = http.StatusBadGateway
 			}
-			return &node.StatusError{Status: status, Body: clip(wrap.Error.Message, 300)}
+			se := &node.StatusError{Status: status, Body: clip(wrap.Error.Message, 300)}
+			if status == http.StatusTooManyRequests {
+				se.RetryAt = limitReset(nil, string(data), timeNow())
+			}
+			return se
 		}
 		if len(wrap.Response) > 0 {
 			data = wrap.Response
@@ -319,6 +324,9 @@ func (s *geminiStream) event(data []byte) error {
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
 		} `json:"candidates"`
+		PromptFeedback struct {
+			BlockReason string `json:"blockReason"`
+		} `json:"promptFeedback"`
 		UsageMetadata *struct {
 			PromptTokenCount        uint64 `json:"promptTokenCount"`
 			CandidatesTokenCount    uint64 `json:"candidatesTokenCount"`
@@ -330,6 +338,7 @@ func (s *geminiStream) event(data []byte) error {
 		return nil
 	}
 	s.received = true
+	s.blocked = s.blocked || r.PromptFeedback.BlockReason != ""
 	if u := r.UsageMetadata; u != nil {
 		s.prompt, s.output = u.PromptTokenCount, u.CandidatesTokenCount+u.ThoughtsTokenCount
 		s.cached, s.thoughts = min(u.CachedContentTokenCount, u.PromptTokenCount), u.ThoughtsTokenCount
@@ -376,10 +385,23 @@ func (s *geminiStream) end() error {
 	}
 	reason := "stop"
 	switch s.reason {
+	case "":
+		// Every answer ends with a finishReason: without one the stream was
+		// cut on the way, unless the prompt itself was refused.
+		if !s.blocked {
+			return fmt.Errorf("the stream ended before the answer did")
+		}
+		reason = "content_filter"
 	case "MAX_TOKENS":
 		reason = "length"
 	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
 		reason = "content_filter"
+	case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL":
+		// The model wrote a tool call the backend could not read and gave
+		// nothing else: a failure worth another try, not an empty answer.
+		if !s.out.started {
+			return &node.StatusError{Status: http.StatusBadGateway, Body: "the model server could not read the model's tool call (" + s.reason + ")"}
+		}
 	}
 	return s.out.finishDetailed(reason, s.prompt, s.output, s.cached, s.thoughts)
 }

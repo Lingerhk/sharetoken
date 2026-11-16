@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +44,13 @@ type openAIUpstream struct {
 	// tool call back with it; calls that lost theirs (converted from another
 	// API, or from another model) get the placeholder Gemini accepts.
 	thoughtSignatures bool
+	// systemRole: the provider's chat API has no "developer" role (DeepSeek,
+	// Moonshot, Zhipu): such a message goes as "system".
+	systemRole bool
+	// reasoningBack: DeepSeek's thinking mode wants reasoning_content back on
+	// every assistant message of the history.
+	reasoningBack bool
+	refused       refusedParams
 }
 
 func (u *openAIUpstream) APIs() []string {
@@ -64,14 +73,16 @@ func (u *openAIUpstream) Stream(ctx context.Context, r *node.Request, emit func(
 				return err
 			}
 			return retryWithoutReasoning(out, func(body []byte) error {
-				on, ended := responsesPassthrough(emit)
-				if _, err := u.post(ctx, "/responses", body, on); err != nil {
-					return err
-				}
-				if !ended() {
-					return fmt.Errorf("the stream ended before the response did")
-				}
-				return nil
+				return u.refused.retry(body, func(body []byte) error {
+					on, ended := responsesPassthrough(emit)
+					if _, err := u.post(ctx, "/responses", body, on); err != nil {
+						return err
+					}
+					if !ended() {
+						return fmt.Errorf("the stream ended before the response did")
+					}
+					return nil
+				})
 			})
 		}, r.Body)
 	case r.API == protocol.APIMessages && u.messages != "":
@@ -87,21 +98,329 @@ func (u *openAIUpstream) Stream(ctx context.Context, r *node.Request, emit func(
 		if u.thoughtSignatures {
 			out = signToolCalls(out)
 		}
-		// The answer is complete with a finish_reason or the closing [DONE]:
-		// a stream that ends before either was cut on the way.
-		finished := false
-		done, err := u.post(ctx, "/chat/completions", out, func(data []byte) error {
-			if msg, ok := chatError(data); ok {
-				return &node.StatusError{Status: http.StatusBadGateway, Body: clip(msg, 300)}
-			}
-			finished = finished || chatFinished(data)
-			return emit(append([]byte(nil), data...))
-		})
-		if err == nil && !finished && !done {
-			err = fmt.Errorf("the stream ended before the answer did")
+		if u.systemRole || u.reasoningBack {
+			out = strictChat(out, u.systemRole, u.reasoningBack)
 		}
-		return err
+		return u.refused.retry(out, func(body []byte) error {
+			// The answer is complete with a finish_reason or the closing [DONE]:
+			// a stream that ends before either was cut on the way.
+			finished, called := false, false
+			done, err := u.post(ctx, "/chat/completions", body, func(data []byte) error {
+				if msg, ok := chatError(data); ok {
+					return &node.StatusError{Status: http.StatusBadGateway, Body: clip(msg, 300)}
+				}
+				finished = finished || chatFinished(data)
+				data = append([]byte(nil), data...)
+				// Gemini's chat API ends an answer made of tool calls with
+				// "stop"; a client that goes by the finish reason would not
+				// run them.
+				called = called || bytes.Contains(data, []byte(`"tool_calls"`))
+				if called {
+					data = bytes.Replace(data, []byte(`"finish_reason":"stop"`), []byte(`"finish_reason":"tool_calls"`), 1)
+				}
+				return emit(data)
+			})
+			if err == nil && !finished && !done {
+				err = fmt.Errorf("the stream ended before the answer did")
+			}
+			return err
+		})
 	}, r.Body)
+}
+
+// strictChatHosts are the chat APIs that refuse the "developer" role; a
+// custom provider may point at one.
+var strictChatHosts = map[string]bool{"api.deepseek.com": true, "api.kimi.com": true, "api.moonshot.cn": true,
+	"api.moonshot.ai": true, "open.bigmodel.cn": true, "api.z.ai": true}
+
+// chatQuirks sets what the chat API at u.base needs beyond the kind's own.
+func (u *openAIUpstream) chatQuirks(kind string) *openAIUpstream {
+	host := ""
+	if parsed, err := url.Parse(u.base); err == nil {
+		host = strings.ToLower(parsed.Hostname())
+	}
+	deepseek := kind == KindDeepSeek || host == "api.deepseek.com"
+	u.systemRole = deepseek || strictChatHosts[host]
+	u.reasoningBack = deepseek
+	return u
+}
+
+// strictChat adapts a chat request's messages to a provider stricter than
+// OpenAI: "developer" messages become "system" ones (systemRole), and an
+// assistant message without reasoning_content gets a blank one
+// (reasoningBack). DeepSeek refuses a history whose assistant messages lost
+// their reasoning ("The reasoning_content in the thinking mode must be passed
+// back to the API"), as clients that follow OpenAI's API drop it; it takes a
+// single space in its place.
+func strictChat(body []byte, systemRole, reasoningBack bool) []byte {
+	var req map[string]json.RawMessage
+	var messages []map[string]json.RawMessage
+	if json.Unmarshal(body, &req) != nil || json.Unmarshal(req["messages"], &messages) != nil {
+		return body
+	}
+	changed := false
+	for _, m := range messages {
+		var role string
+		_ = json.Unmarshal(m["role"], &role)
+		switch {
+		case systemRole && role == "developer":
+			m["role"], changed = json.RawMessage(`"system"`), true
+		case reasoningBack && role == "assistant":
+			var reasoning string
+			if _ = json.Unmarshal(m["reasoning_content"], &reasoning); reasoning == "" {
+				m["reasoning_content"], changed = json.RawMessage(`" "`), true
+			}
+		}
+	}
+	if !changed {
+		return body
+	}
+	req["messages"], _ = json.Marshal(messages)
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// refusedParams are the settings each model refused: OpenAI's reasoning
+// models take no temperature or top_p, others no penalties or reasoning
+// effort, and say so with
+//
+//	"Unsupported parameter: 'top_p' is not supported with this model."
+//	"Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) value is supported."
+//
+// A buyer's tool sends them without knowing the model (and a conversion
+// carries them over from another API), so the request goes again without the
+// setting, and later requests for the model leave it out from the start.
+//
+// Two refusals are repaired rather than dropped. A reasoning effort the model
+// does not have ("'none' is not supported with the 'gpt-5-mini' model.
+// Supported values are: 'minimal', 'low', 'medium', and 'high'.") becomes the
+// nearest one it has. And a chat API without structured output (DeepSeek:
+// "This response_format type is unavailable now") gets JSON mode with the
+// schema in a system message, which is how such a model is asked for one.
+// Gemini's "none" becomes "minimal" the same way.
+type refusedParams struct {
+	mu      sync.Mutex
+	byModel map[string]*modelRepairs
+}
+
+type modelRepairs struct {
+	drop      []string
+	effort    map[string]string // an effort the model refused -> the one sent instead
+	plainJSON bool              // json_schema goes as json_object
+}
+
+// droppable are the settings a request may lose: the model then uses the
+// one value it has. Nothing that changes what the answer is made of (stop,
+// tools, the output limit) is among them.
+var droppable = map[string]bool{"temperature": true, "top_p": true, "presence_penalty": true, "frequency_penalty": true,
+	"reasoning_effort": true, "parallel_tool_calls": true}
+
+var (
+	refusedParamPattern  = regexp.MustCompile(`(?i)unsupported (?:parameter|value): '([a-z_]+)'`)
+	refusedEffortPattern = regexp.MustCompile(`(?i)unsupported value: '([a-z]+)' is not supported with [^.]*model\. supported values are: ([^.]*)\.`)
+	quotedWord           = regexp.MustCompile(`'([a-z]+)'`)
+)
+
+// efforts in order: a refused one becomes the nearest the model has, the
+// lower of two equally near.
+var efforts = []string{"none", "minimal", "low", "medium", "high", "xhigh"}
+
+func nearestEffort(want string, have []string) string {
+	at := slices.Index(efforts, want)
+	best, dist := "", len(efforts)
+	for _, h := range have {
+		i := slices.Index(efforts, h)
+		if i < 0 || h == want {
+			continue
+		}
+		d := i - at
+		if d < 0 {
+			d = -d
+		}
+		if d < dist {
+			best, dist = h, d
+		}
+	}
+	if at < 0 {
+		return ""
+	}
+	return best
+}
+
+// requestEffort reads the reasoning effort of a chat ("reasoning_effort") or
+// Responses ("reasoning.effort") request.
+func requestEffort(req map[string]json.RawMessage) string {
+	var effort string
+	if json.Unmarshal(req["reasoning_effort"], &effort) == nil && effort != "" {
+		return effort
+	}
+	var reasoning map[string]json.RawMessage
+	if json.Unmarshal(req["reasoning"], &reasoning) == nil {
+		_ = json.Unmarshal(reasoning["effort"], &effort)
+	}
+	return effort
+}
+
+func setRequestEffort(req map[string]json.RawMessage, effort string) {
+	value, _ := json.Marshal(effort)
+	if _, chat := req["reasoning_effort"]; chat {
+		req["reasoning_effort"] = value
+		return
+	}
+	var reasoning map[string]json.RawMessage
+	if json.Unmarshal(req["reasoning"], &reasoning) == nil && reasoning != nil {
+		reasoning["effort"] = value
+		req["reasoning"], _ = json.Marshal(reasoning)
+	}
+}
+
+// plainJSON turns a chat request's json_schema response format into JSON
+// mode, with the schema in a system message at the front. It reports whether
+// the request had one.
+func plainJSON(req map[string]json.RawMessage) bool {
+	var format struct {
+		Type       string `json:"type"`
+		JSONSchema struct {
+			Schema json.RawMessage `json:"schema"`
+		} `json:"json_schema"`
+	}
+	var messages []json.RawMessage
+	if json.Unmarshal(req["response_format"], &format) != nil || format.Type != "json_schema" || json.Unmarshal(req["messages"], &messages) != nil {
+		return false
+	}
+	text := "Answer with a single JSON object and nothing else."
+	if len(format.JSONSchema.Schema) > 0 {
+		text = "Answer with a single JSON object and nothing else. It must match this JSON Schema:\n" + string(format.JSONSchema.Schema)
+	}
+	note, _ := json.Marshal(map[string]string{"role": "system", "content": text})
+	req["messages"], _ = json.Marshal(append([]json.RawMessage{note}, messages...))
+	req["response_format"] = json.RawMessage(`{"type":"json_object"}`)
+	return true
+}
+
+// apply makes the repairs known for the model. It reports whether req changed.
+func (m *modelRepairs) apply(req map[string]json.RawMessage) bool {
+	if m == nil {
+		return false
+	}
+	changed := false
+	for _, name := range m.drop {
+		if _, ok := req[name]; ok {
+			delete(req, name)
+			changed = true
+		}
+	}
+	if to := m.effort[requestEffort(req)]; to != "" {
+		setRequestEffort(req, to)
+		changed = true
+	}
+	if m.plainJSON && plainJSON(req) {
+		changed = true
+	}
+	return changed
+}
+
+// repair changes req the way the refusal asks, and notes it in learnt. It
+// reports whether there was anything to change.
+func repairRefused(req map[string]json.RawMessage, refusal string, learnt *modelRepairs) bool {
+	if m := refusedEffortPattern.FindStringSubmatch(refusal); m != nil {
+		from := strings.ToLower(m[1])
+		var have []string
+		for _, q := range quotedWord.FindAllStringSubmatch(strings.ToLower(m[2]), -1) {
+			have = append(have, q[1])
+		}
+		if to := nearestEffort(from, have); to != "" && requestEffort(req) == from {
+			setRequestEffort(req, to)
+			if learnt.effort == nil {
+				learnt.effort = map[string]string{}
+			}
+			learnt.effort[from] = to
+			return true
+		}
+		return false
+	}
+	if m := refusedParamPattern.FindStringSubmatch(refusal); m != nil && droppable[m[1]] {
+		if _, sent := req[m[1]]; sent {
+			delete(req, m[1])
+			learnt.drop = append(learnt.drop, m[1])
+			return true
+		}
+		return false
+	}
+	// Gemini 3 cannot think less than "minimal", and says of "none" only
+	// that an argument is invalid.
+	if strings.Contains(refusal, "INVALID_ARGUMENT") && requestEffort(req) == "none" {
+		setRequestEffort(req, "minimal")
+		if learnt.effort == nil {
+			learnt.effort = map[string]string{}
+		}
+		learnt.effort["none"] = "minimal"
+		return true
+	}
+	if strings.Contains(refusal, "response_format") && !learnt.plainJSON && plainJSON(req) {
+		learnt.plainJSON = true
+		return true
+	}
+	return false
+}
+
+func (p *refusedParams) retry(body []byte, do func([]byte) error) error {
+	var req map[string]json.RawMessage
+	if json.Unmarshal(body, &req) != nil {
+		return do(body)
+	}
+	var model string
+	_ = json.Unmarshal(req["model"], &model)
+	p.mu.Lock()
+	known := p.byModel[model]
+	changed := known.apply(req)
+	p.mu.Unlock()
+	if changed {
+		body, _ = json.Marshal(req)
+	}
+	learnt := &modelRepairs{}
+	repaired := false
+	err := do(body)
+	for range len(droppable) + 2 {
+		var se *node.StatusError
+		if !errors.As(err, &se) || se.Status != http.StatusBadRequest || !repairRefused(req, se.Body, learnt) {
+			break
+		}
+		repaired = true
+		body, _ = json.Marshal(req)
+		err = do(body)
+	}
+	// Kept only when the provider then took the request: a refusal that
+	// merely quotes the buyer's text comes again, and teaches nothing.
+	var se *node.StatusError
+	if repaired && !(errors.As(err, &se) && se.Status == http.StatusBadRequest) {
+		p.mu.Lock()
+		if p.byModel == nil {
+			p.byModel = map[string]*modelRepairs{}
+		}
+		m := p.byModel[model]
+		if m == nil {
+			m = &modelRepairs{}
+			p.byModel[model] = m
+		}
+		for _, name := range learnt.drop {
+			if !slices.Contains(m.drop, name) {
+				m.drop = append(m.drop, name)
+			}
+		}
+		for from, to := range learnt.effort {
+			if m.effort == nil {
+				m.effort = map[string]string{}
+			}
+			m.effort[from] = to
+		}
+		m.plainJSON = m.plainJSON || learnt.plainJSON
+		p.mu.Unlock()
+	}
+	return err
 }
 
 // post sends body to path and calls on with each event payload. done tells
@@ -123,7 +442,7 @@ func (u *openAIUpstream) messagesUpstream() *anthropicUpstream {
 	u.messagesMu.Lock()
 	defer u.messagesMu.Unlock()
 	if u.messagesUp == nil {
-		u.messagesUp = &anthropicUpstream{base: u.messages, limits: outputLimits{set: u.limits.set}, header: u.messagesHeader()}
+		u.messagesUp = &anthropicUpstream{base: u.messages, limits: outputLimits{set: u.limits.set}, header: u.messagesHeader(), passback: true}
 	}
 	return u.messagesUp
 }

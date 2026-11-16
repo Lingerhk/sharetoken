@@ -384,7 +384,7 @@ func (t *msgFromResponses) Event(payload []byte, emit func([]byte) error) error 
 	}
 	var e msgRespEvent
 	if err := json.Unmarshal(payload, &e); err != nil {
-		return fmt.Errorf("apicompat: responses event: %w", err)
+		return nil // skipped, as in msgFromChat
 	}
 	if err := t.event(&e); err != nil {
 		return err

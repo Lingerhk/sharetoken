@@ -29,7 +29,7 @@ OpenAI 客户端 -/v1/chat/...--+  （原样）   （原生优先）            
 - **`ModelPrice.APIs`**：节点的模型服务器对该模型原生支持的接口（`node.Upstream.APIs`）。
 - **`ModelPrice`、`Ticket` 的 `PriceCacheRead`、`PriceCacheWrite`**：从模型服务器的 prompt 缓存读出、写入缓存的 prompt token 的价格。
 - **`Receipt.CacheReadTokens`、`Receipt.CacheWriteTokens`**：`PromptTokens` 中按上面两个价格计费的部分。
-- **密封请求**是请求头加请求体：`uvarint(请求头 JSON 长度) || 请求头 JSON || 请求体`（`protocol.JoinRequest`）。请求头里是模型服务器需要的客户端请求头（`anthropic-version`、`anthropic-beta`、Claude Code 和 Codex 的会话 ID），以及 sharetoken 自己的 `x-sharetoken-op: compact`。买家挑选（`buyer.forwardHeader`），节点再过滤一遍（`node.upstreamHeader`：Anthropic beta 按家族放行）。
+- **密封请求**是请求头加请求体：`uvarint(请求头 JSON 长度) || 请求头 JSON || 请求体`（`protocol.JoinRequest`）。请求头里是模型服务器需要的客户端请求头（`anthropic-version`、`anthropic-beta`、Claude Code 和 Codex 的会话 ID），以及 sharetoken 自己的 `x-sharetoken-op: compact`。买家挑选（`buyer.forwardHeader`），节点再过滤一遍（`node.upstreamHeader`：Anthropic beta 按家族放行）。卖家的 Anthropic 适配器再按账号类型决定哪些 beta 真正发出去（`provider.buyerBetas`）：`context-1m` 只给 Claude Sonnet 5；订阅登录的账号不发 `output-128k` 和 `computer-use`；按 Claude Code 配置重写的请求用配置自己的列表，只额外保留买家的格式类 beta；API key 账号其余照发。
 - **响应记录**是 SSE 事件的数据（`data:` 后面的 JSON）。Messages 和 Responses 的数据里用 `type` 带着事件名，买家据此还原 `event:` 行（`apicompat.EventName`）。
 
 ## 匹配

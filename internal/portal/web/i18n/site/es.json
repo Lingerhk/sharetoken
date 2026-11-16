@@ -237,5 +237,15 @@
   "回答合并发送并补齐长度，请求按区间补齐，中继无法再从数据包大小推测每个 token 的长度。": "Las respuestas se envían en tramas agrupadas y rellenadas, y las solicitudes se rellenan por tramos de tamaño, así que un relé ya no puede deducir la longitud de cada token por el tamaño de los paquetes.",
   "性能提升": "Rendimiento",
   "稳定性提升": "Fiabilidad",
-  "安全性": "Seguridad"
+  "安全性": "Seguridad",
+  "新功能": "Novedades",
+  "本地端点同时提供 OpenAI Chat Completions、Anthropic Messages 和 OpenAI Responses 三种接口，Claude Code 和 Codex 可以直接使用；卖家的模型服务原生支持时原样转发，否则自动转换。": "El punto de acceso local habla tres API: OpenAI Chat Completions, Anthropic Messages y OpenAI Responses, así que Claude Code y Codex funcionan con él directamente. Un vendedor cuyo servidor de modelos habla la API de la solicitud la reenvía sin cambios; los demás la convierten.",
+  "私有中继：可以部署自己的中继，只为你列出的账号服务，别人访问你共享的设备时走你自己的服务器。文档提供 Linux 版中继程序和部署步骤。": "Relés privados: ejecuta un relé propio que solo atiende a las cuentas que indiques, para que los dispositivos desde los que compartes se alcancen a través de tu propio servidor. La guía incluye el programa del relé para Linux y los pasos.",
+  "从 prompt 缓存读出和写入缓存的 token 单独计价；每个请求的预算默认 2 credit，可以在桌面应用的设置里调整，也可以选择只用原生支持请求接口的卖家。": "Los tokens leídos de la caché de prompts y los escritos en ella tienen precios propios. El presupuesto por solicitud es de 2 créditos por defecto y se cambia en los ajustes de la aplicación de escritorio, donde también puedes elegir comprar solo a vendedores que hablen de forma nativa la API de la solicitud.",
+  "三种接口之间的转换更完整：并行工具调用、结构化输出、思考设置、工具返回的图片和缓存用量都能正确往返。": "La conversión entre las tres API es más completa: llamadas a herramientas en paralelo, salida estructurada, ajustes de razonamiento, imágenes devueltas por herramientas y uso de caché sobreviven al viaje de ida y vuelta.",
+  "模型服务临时出错（过载、5xx、连接中断）时自动重试；额度用完或登录失效的提供商会暂停接单，不再让请求一个个失败。": "Los fallos temporales de un servidor de modelos (sobrecarga, 5xx, conexión rota) se reintentan. Un proveedor sin cuota o con el inicio de sesión caducado deja de aceptar trabajos en lugar de hacerlos fallar uno a uno.",
+  "模型服务的回答中途断开时按失败处理，不再当作完整回答计费。": "Una respuesta que el servidor de modelos corta a mitad cuenta como fallida y ya no se factura como completa.",
+  "平台抽检可以由用户的客户端转交：请求和回答全程加密，转交的客户端看不到内容，也不花 credit，卖家分不清抽检和真实请求。默认开启，可以在配置文件里关闭。": "Las comprobaciones aleatorias pueden llevarlas los clientes de los usuarios: la solicitud y la respuesta siguen cifradas, el cliente que las lleva no puede leerlas ni paga nada, y el vendedor no puede distinguir una comprobación de una solicitud real. Activado por defecto; el archivo de configuración lo desactiva.",
+  "抽检覆盖三种接口，由参考模型逐 token 核对卖家的回答。": "Las comprobaciones aleatorias cubren las tres API, y un modelo de referencia verifica la respuesta del vendedor token a token.",
+  "卖家节点不再执行买家请求里的托管工具；买家带来的请求头和 beta 开关按卖家的账号类型过滤。": "Los nodos vendedores ya no ejecutan las herramientas alojadas que aparecen en la solicitud de un comprador, y las cabeceras y opciones beta que envía el comprador se filtran según el tipo de cuenta del vendedor."
 }

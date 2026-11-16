@@ -349,7 +349,8 @@ type respChatChunk struct {
 		PromptTokens        int `json:"prompt_tokens"`
 		CompletionTokens    int `json:"completion_tokens"`
 		TotalTokens         int `json:"total_tokens"`
-		PromptCacheHit      int `json:"prompt_cache_hit_tokens"`
+		PromptCacheHit      int `json:"prompt_cache_hit_tokens"` // DeepSeek
+		CachedTokens        int `json:"cached_tokens"`           // Kimi
 		PromptTokensDetails *struct {
 			CachedTokens        int `json:"cached_tokens"`
 			CacheCreationTokens int `json:"cache_creation_tokens"`
@@ -363,28 +364,30 @@ type respChatChunk struct {
 }
 
 type respChatDelta struct {
-	Content          *string `json:"content"`
-	ReasoningContent *string `json:"reasoning_content"`
-	Reasoning        any     `json:"reasoning"`
-	Refusal          *string `json:"refusal"`
+	Content          json.RawMessage `json:"content"`
+	ReasoningContent *string         `json:"reasoning_content"`
+	Reasoning        any             `json:"reasoning"`
+	Refusal          *string         `json:"refusal"`
 	ToolCalls        []struct {
 		Index    *int   `json:"index"`
 		ID       string `json:"id"`
 		Function struct {
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
+			Name      string    `json:"name"`
+			Arguments looseArgs `json:"arguments"`
 		} `json:"function"`
 	} `json:"tool_calls"`
 }
 
-func (d *respChatDelta) reasoningText() string {
+// texts is the delta's answer text and its reasoning, whichever field (or
+// content part) the model server put them in.
+func (d *respChatDelta) texts() (text, reasoning string) {
+	text, reasoning = looseContent(d.Content)
 	if d.ReasoningContent != nil && *d.ReasoningContent != "" {
-		return *d.ReasoningContent
+		reasoning = *d.ReasoningContent
+	} else if s, ok := d.Reasoning.(string); ok && s != "" {
+		reasoning = s
 	}
-	if s, ok := d.Reasoning.(string); ok {
-		return s
-	}
-	return ""
+	return text, reasoning
 }
 
 func (t *respFromChat) Event(payload []byte, emit func([]byte) error) error {
@@ -398,7 +401,7 @@ func (t *respFromChat) Event(payload []byte, emit func([]byte) error) error {
 	}
 	var ch respChatChunk
 	if err := json.Unmarshal(payload, &ch); err != nil {
-		return fmt.Errorf("apicompat: parse chat chunk: %w", err)
+		return nil // skipped, as in msgFromChat
 	}
 	if e := strings.TrimSpace(string(ch.Error)); e != "" && e != "null" {
 		var detail struct {
@@ -418,7 +421,7 @@ func (t *respFromChat) Event(payload []byte, emit func([]byte) error) error {
 	}
 	if u := ch.Usage; u != nil {
 		t.gotUsage = true
-		t.usage = respUsage{input: u.PromptTokens, output: u.CompletionTokens, total: u.TotalTokens, cached: u.PromptCacheHit}
+		t.usage = respUsage{input: u.PromptTokens, output: u.CompletionTokens, total: u.TotalTokens, cached: max(u.PromptCacheHit, u.CachedTokens)}
 		if d := u.PromptTokensDetails; d != nil {
 			if d.CachedTokens > 0 {
 				t.usage.cached = d.CachedTokens
@@ -454,16 +457,13 @@ func (t *respFromChat) Event(payload []byte, emit func([]byte) error) error {
 }
 
 func (t *respFromChat) delta(d *respChatDelta, whole bool) error {
-	if r := d.reasoningText(); r != "" && !(whole && t.reasoning.Len() > 0) {
+	text, r := d.texts()
+	if r != "" && !(whole && t.reasoning.Len() > 0) {
 		t.reasoning.WriteString(r)
 		t.reasoned = true
 		if err := t.s.reasoningDelta(r); err != nil {
 			return err
 		}
-	}
-	text := ""
-	if d.Content != nil {
-		text = *d.Content
 	}
 	if d.Refusal != nil {
 		text += *d.Refusal
@@ -528,7 +528,7 @@ func (t *respFromChat) delta(d *respChatDelta, whole bool) error {
 			}
 			t.ids[idx] = tc.ID
 		}
-		if err := t.s.callArgs(c, tc.Function.Arguments); err != nil {
+		if err := t.s.callArgs(c, string(tc.Function.Arguments)); err != nil {
 			return err
 		}
 	}

@@ -408,3 +408,201 @@ func TestResponsesFromChatEmptyStream(t *testing.T) {
 		t.Fatalf("err %v, events:\n%s", err, regJoin(out))
 	}
 }
+
+// regBody converts with the model the request names.
+func regBody(t *testing.T, from, to, body string) string {
+	t.Helper()
+	c, err := Convert(from, to, []byte(body), Options{})
+	if err != nil {
+		t.Fatalf("convert %s to %s: %v", from, to, err)
+	}
+	return string(c.Body)
+}
+
+// Every Claude model from Opus 4.7 on refuses a thinking budget, not only
+// the 5.5 ones: they get adaptive thinking at the effort. A date is not a
+// minor version, and other servers' models keep the budget.
+func TestClaudeAdaptiveThinkingByModel(t *testing.T) {
+	for model, want := range map[string]bool{
+		"claude-opus-4-7": true, "claude-opus-4-8": true, "claude-opus-5": true, "claude-sonnet-5": true,
+		"claude-opus-5-5": true, "claude-haiku-5-5": true, "claude-fable-5-2": true, "claude-mythos-5-1": true,
+		"anthropic/claude-opus-4.7": true, "us.anthropic.claude-opus-4-8-v1:0": true,
+		"claude-opus-4-6": false, "claude-sonnet-4-6": false, "claude-haiku-4-5-20251001": false,
+		"claude-sonnet-4-20250514": false, "claude-opus-4-1-20250805": false, "claude-3-7-sonnet-latest": false,
+		"claude-x": false, "glm-4.7": false, "kimi-k2": false,
+	} {
+		if AdaptiveThinking(model) != want {
+			t.Errorf("AdaptiveThinking(%q) = %v", model, !want)
+		}
+	}
+	got := regBody(t, Chat, Messages, `{"model":"claude-opus-4-8","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`)
+	regWant(t, got, `"thinking":{"type":"adaptive"}`, `"output_config":{"effort":"high"}`)
+	regNot(t, got, "budget_tokens")
+	got = regBody(t, Responses, Messages, `{"model":"claude-sonnet-5","input":"hi","max_output_tokens":20000,"reasoning":{"effort":"xhigh"}}`)
+	regWant(t, got, `"thinking":{"type":"adaptive"}`, `"output_config":{"effort":"xhigh"}`)
+	regNot(t, got, "budget_tokens")
+}
+
+// A Responses client asking an adaptive model for no reasoning got the
+// model's default (full) thinking: it now gets the least each model allows,
+// as a chat client does.
+func TestResponsesToMessagesEffortNone(t *testing.T) {
+	for model, want := range map[string]string{
+		"claude-sonnet-5-5": `"thinking":{"type":"between_tools"}`,
+		"claude-opus-4-8":   `"thinking":{"type":"disabled"}`,
+		"claude-haiku-5-5":  `"thinking":{"type":"disabled"}`,
+		"claude-opus-5-5":   `"thinking":{"type":"adaptive"}`,
+		"claude-fable-5-2":  `"thinking":{"type":"adaptive"}`,
+	} {
+		for _, from := range []string{
+			regBody(t, Responses, Messages, `{"model":"`+model+`","input":"hi","reasoning":{"effort":"none"}}`),
+			regBody(t, Chat, Messages, `{"model":"`+model+`","reasoning_effort":"none","messages":[{"role":"user","content":"hi"}]}`),
+		} {
+			regWant(t, from, want, `"output_config":{"effort":"low"}`)
+		}
+	}
+	// minimal is not an Anthropic effort.
+	got := regBody(t, Responses, Messages, `{"model":"claude-opus-4-8","input":"hi","reasoning":{"effort":"minimal"}}`)
+	regWant(t, got, `"thinking":{"type":"adaptive"}`, `"output_config":{"effort":"low"}`)
+	// A model with a budget is as before.
+	got = regBody(t, Responses, Messages, `{"model":"claude-sonnet-4-6","input":"hi","reasoning":{"effort":"none"}}`)
+	regNot(t, got, "thinking", "output_config")
+}
+
+// Opus 4.7 and the models after it refuse temperature and top_p (400): a
+// client's sampling settings are left out for them, with or without thinking.
+func TestClaudeSamplingLeftOut(t *testing.T) {
+	for _, model := range []string{"claude-opus-4-7", "claude-sonnet-5-5", "claude-fable-5-2"} {
+		for _, got := range []string{
+			regBody(t, Chat, Messages, `{"model":"`+model+`","temperature":0.2,"messages":[{"role":"user","content":"hi"}]}`),
+			regBody(t, Chat, Messages, `{"model":"`+model+`","top_p":0.5,"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`),
+			regBody(t, Responses, Messages, `{"model":"`+model+`","input":"hi","temperature":0.2}`),
+			regBody(t, Responses, Messages, `{"model":"`+model+`","input":"hi","top_p":0.5,"reasoning":{"effort":"high"}}`),
+		} {
+			regNot(t, got, "temperature", "top_p")
+		}
+	}
+	// Earlier models and other servers' models keep them.
+	for _, model := range []string{"claude-sonnet-4-6", "glm-4.7"} {
+		regWant(t, regBody(t, Chat, Messages, `{"model":"`+model+`","temperature":0.2,"messages":[{"role":"user","content":"hi"}]}`), `"temperature":0.2`)
+		regWant(t, regBody(t, Responses, Messages, `{"model":"`+model+`","input":"hi","top_p":0.5}`), `"top_p":0.5`)
+	}
+}
+
+// Chat servers that send a tool call's arguments as an object (Ollama) or the
+// content as parts with the thinking inside (Mistral) ended the stream with a
+// parse error.
+func TestChatUpstreamLooseShapes(t *testing.T) {
+	chunks := []string{
+		`{"choices":[{"index":0,"delta":{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"hmm"}]}]}}]}`,
+		`{"choices":[{"index":0,"delta":{"content":[{"type":"text","text":"ok"}]}}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"f","arguments":{"a":1}}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		`[DONE]`,
+	}
+	tr := regConvert(t, Messages, Chat, `{"model":"x","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"f","input_schema":{"type":"object"}}]}`).Translator
+	out, err := regStream(t, tr, chunks...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regWant(t, regJoin(out), `"thinking":"hmm"`, `"text":"ok"`, `"name":"f"`, `{\"a\":1}`, `"stop_reason":"tool_use"`)
+
+	tr = regConvert(t, Responses, Chat, `{"model":"x","input":"hi","tools":[{"type":"function","name":"f","parameters":{"type":"object"}}]}`).Translator
+	if out, err = regStream(t, tr, chunks...); err != nil {
+		t.Fatal(err)
+	}
+	regWant(t, regJoin(out), `"delta":"hmm"`, `"delta":"ok"`, `"arguments":"{\"a\":1}"`, `"type":"response.completed"`)
+
+	var payloads [][]byte
+	for _, c := range chunks[:3] {
+		payloads = append(payloads, []byte(c))
+	}
+	body, err := Aggregate(Chat, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regWant(t, string(body), `"content":"ok"`, `"reasoning_content":"hmm"`, `"arguments":"{\"a\":1}"`)
+}
+
+// One event that cannot be read is skipped, as sub2api does; it used to end
+// an answer that was otherwise complete.
+func TestUnreadableEventIsSkipped(t *testing.T) {
+	tr := regConvert(t, Messages, Chat, `{"model":"x","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`).Translator
+	out, err := regStream(t, tr,
+		`{"choices":[{"index":0,"delta":{"content":"a"}}]}`, `{"choices":[{"index":0,"delta":{"content":`,
+		`{"choices":[{"index":0,"delta":{"content":"b"},"finish_reason":"stop"}]}`, `[DONE]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regWant(t, regJoin(out), `"text":"a"`, `"text":"b"`, `"type":"message_stop"`)
+
+	tr = regConvert(t, Chat, Messages, `{"model":"x","messages":[{"role":"user","content":"hi"}]}`).Translator
+	out, err = regStream(t, tr,
+		`{"type":"message_start","message":{"usage":{"input_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a"}}`,
+		`{"type":"ping"`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+		`{"type":"message_stop"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regWant(t, regJoin(out), `"content":"a"`, `"finish_reason":"stop"`)
+}
+
+// Cache counts in the places other servers put them: DeepSeek's
+// prompt_cache_hit_tokens and Kimi's cached_tokens beside prompt_tokens, and
+// Messages cache writes given by lifetime only. They were read as no cache.
+func TestCacheUsageSpellings(t *testing.T) {
+	for _, usage := range []string{
+		`{"prompt_tokens":100,"completion_tokens":2,"prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":40}`,
+		`{"prompt_tokens":100,"completion_tokens":2,"cached_tokens":60}`,
+	} {
+		tr := regConvert(t, Messages, Chat, `{"model":"x","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`).Translator
+		out, err := regStream(t, tr, `{"choices":[{"index":0,"delta":{"content":"a"},"finish_reason":"stop"}],"usage":`+usage+`}`, `[DONE]`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		regWant(t, regJoin(out), `"cache_read_input_tokens":60`, `"input_tokens":40`)
+
+		tr = regConvert(t, Responses, Chat, `{"model":"x","input":"hi"}`).Translator
+		if out, err = regStream(t, tr, `{"choices":[{"index":0,"delta":{"content":"a"},"finish_reason":"stop"}],"usage":`+usage+`}`, `[DONE]`); err != nil {
+			t.Fatal(err)
+		}
+		regWant(t, regJoin(out), `"input_tokens":100`, `"cached_tokens":60`)
+	}
+
+	events := []string{
+		`{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":30}}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+		`{"type":"message_stop"}`,
+	}
+	tr := regConvert(t, Chat, Messages, `{"model":"x","messages":[{"role":"user","content":"hi"}],"stream_options":{"include_usage":true}}`).Translator
+	out, err := regStream(t, tr, events...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regWant(t, regJoin(out), `"prompt_tokens":60`, `"cache_creation_tokens":50`)
+	tr = regConvert(t, Responses, Messages, `{"model":"x","input":"hi"}`).Translator
+	if out, err = regStream(t, tr, events...); err != nil {
+		t.Fatal(err)
+	}
+	regWant(t, regJoin(out), `"input_tokens":60`)
+}
+
+// A chat server that sends an empty reasoning_content beside the text in
+// "reasoning" (OpenRouter-style relays) lost the reasoning for a Messages
+// client.
+func TestMessagesFromChatReasoningAlias(t *testing.T) {
+	tr := regConvert(t, Messages, Chat, `{"model":"x","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`).Translator
+	out, err := regStream(t, tr,
+		`{"choices":[{"index":0,"delta":{"reasoning_content":"","reasoning":"why"}}]}`,
+		`{"choices":[{"index":0,"delta":{"content":"a"},"finish_reason":"stop"}]}`, `[DONE]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regWant(t, regJoin(out), `"thinking":"why"`, `"text":"a"`)
+}

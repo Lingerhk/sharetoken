@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -391,7 +390,7 @@ type msgChatChunk struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Content          *string         `json:"content"`
+			Content          json.RawMessage `json:"content"`
 			ReasoningContent *string         `json:"reasoning_content"`
 			Reasoning        json.RawMessage `json:"reasoning"`
 			Refusal          *string         `json:"refusal"`
@@ -399,8 +398,8 @@ type msgChatChunk struct {
 				Index    *int   `json:"index"`
 				ID       string `json:"id"`
 				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
+					Name      string    `json:"name"`
+					Arguments looseArgs `json:"arguments"`
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
@@ -423,7 +422,9 @@ func (t *msgFromChat) Event(payload []byte, emit func([]byte) error) error {
 	}
 	var c msgChatChunk
 	if err := json.Unmarshal(payload, &c); err != nil {
-		return fmt.Errorf("apicompat: chat chunk: %w", err)
+		// A chunk that cannot be read is skipped (as sub2api does): one odd
+		// chunk does not take the rest of the answer with it.
+		return nil
 	}
 	if m := msgErrorMessage(c.Error); m != "" {
 		return errors.New("apicompat: upstream: " + m)
@@ -436,11 +437,11 @@ func (t *msgFromChat) Event(payload []byte, emit func([]byte) error) error {
 			continue // one answer is asked for
 		}
 		d := ch.Delta
-		reasoning := ""
-		if d.ReasoningContent != nil {
+		text, reasoning := looseContent(d.Content)
+		if d.ReasoningContent != nil && *d.ReasoningContent != "" {
 			reasoning = *d.ReasoningContent
-		} else {
-			reasoning = msgDeltaString(d.Reasoning)
+		} else if r := msgDeltaString(d.Reasoning); r != "" {
+			reasoning = r
 		}
 		if reasoning != "" {
 			if t.thinking == nil {
@@ -449,19 +450,23 @@ func (t *msgFromChat) Event(payload []byte, emit func([]byte) error) error {
 			t.content = true
 			t.w.add(t.thinking, reasoning)
 		}
-		for _, s := range []*string{d.Content, d.Refusal} {
-			if s == nil || *s == "" {
+		refusal := ""
+		if d.Refusal != nil {
+			refusal = *d.Refusal
+		}
+		for i, s := range []string{text, refusal} {
+			if s == "" {
 				continue
 			}
 			t.endThinking()
 			if t.text == nil {
 				t.text = t.w.open("x"+t.nextSeq(), msgKindText)
 			}
-			if s == d.Refusal {
+			if i == 1 {
 				t.refusal = true
 			}
 			t.content = true
-			t.w.add(t.text, *s)
+			t.w.add(t.text, s)
 		}
 		for i := range d.ToolCalls {
 			tc := &d.ToolCalls[i]
@@ -482,7 +487,7 @@ func (t *msgFromChat) Event(payload []byte, emit func([]byte) error) error {
 				}
 			}
 			t.last = idx
-			t.toolCall(idx, tc.ID, tc.Function.Name, tc.Function.Arguments)
+			t.toolCall(idx, tc.ID, tc.Function.Name, string(tc.Function.Arguments))
 		}
 		if ch.FinishReason != nil && *ch.FinishReason != "" {
 			t.finish = *ch.FinishReason

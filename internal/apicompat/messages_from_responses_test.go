@@ -457,7 +457,7 @@ func TestMessagesFromResponsesErrors(t *testing.T) {
 		{"error event nested", []string{`{"type":"error","error":{"type":"invalid_request_error","message":"bad input"}}`}, "bad input"},
 		{"nothing", nil, "without a response"},
 		{"created only", []string{msgRCreated}, "without a response"},
-		{"not JSON", []string{`nope`}, "responses event"},
+		{"not JSON", []string{`nope`}, "without a response"}, // an unreadable event is skipped
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var emitted int

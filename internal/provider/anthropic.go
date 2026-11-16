@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"sharetoken/internal/apicompat"
@@ -33,6 +34,9 @@ type anthropicUpstream struct {
 	ts     TokenSource
 	oauth  bool
 	entry  *Entry
+	// passback: the server is another vendor's Messages endpoint (DeepSeek's),
+	// which signs no thinking and wants every thinking block back as it was.
+	passback bool
 }
 
 func (u *anthropicUpstream) APIs() []string { return []string{protocol.APIMessages} }
@@ -78,7 +82,10 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 				}
 			}
 			model, _ := req["model"].(string)
-			dropForeignThinking(req)
+			if !u.passback {
+				dropForeignThinking(req)
+			}
+			dropEmptyText(req)
 			if err := validateAnthropicRequest(req, model, sampling); err != nil {
 				return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 			}
@@ -107,7 +114,9 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 			if h == nil {
 				h = http.Header{}
 			}
-			mergeBetas(h, r.Header.Get("anthropic-beta"))
+			betas := buyerBetas(r.Header.Get("anthropic-beta"), model, u.oauth, u.oauth && profile && injected)
+			mergeBetas(h, strings.Join(betas, ","))
+			dropToolsetStreamingBeta(h, req, model)
 			version := r.Header.Get("anthropic-version")
 			if version == "" {
 				version = anthropicVersion
@@ -162,13 +171,62 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 		}
 	}
 	// A conversation that moved from another seller's account may carry
-	// thinking signed for that account: once refused, it goes without.
-	if errors.As(err, &se) && se.Status == http.StatusBadRequest && strings.Contains(strings.ToLower(se.Body), "signature") {
+	// thinking signed for that account, or lack the thinking this model
+	// expects before a tool call: once refused, it goes without thinking.
+	if errors.As(err, &se) && se.Status == http.StatusBadRequest && !u.passback && thinkingRefused(se.Body) {
 		if stripped, ok := withoutThinking(r.Body); ok {
 			return u.stream(ctx, &node.Request{API: r.API, Header: r.Header, Body: stripped, Op: r.Op, Limit: r.Limit}, emit, 2)
 		}
 	}
 	return err
+}
+
+// thinkingRefused reports whether a refusal is about the thinking blocks of
+// the history (the cases sub2api retries without thinking):
+//
+//	"Invalid `signature` in `thinking` block"
+//	"Expected `thinking` or `redacted_thinking`, but found `tool_use`"
+//	"`thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified"
+func thinkingRefused(refusal string) bool {
+	msg := strings.ToLower(refusal)
+	switch {
+	case strings.Contains(msg, "signature"), strings.Contains(msg, "thinking block must contain"):
+		return true
+	case strings.Contains(msg, "thinking"):
+		return strings.Contains(msg, "expected") || strings.Contains(msg, "cannot be modified")
+	}
+	return false
+}
+
+// dropEmptyText removes the empty text blocks of the history (those inside
+// tool results too): clients and conversions leave them behind, and the API
+// refuses a request for one ("text content blocks must be non-empty").
+func dropEmptyText(req map[string]any) {
+	var clean func(blocks []any) []any
+	clean = func(blocks []any) []any {
+		out := blocks[:0]
+		for _, raw := range blocks {
+			b, _ := raw.(map[string]any)
+			if text, isText := b["text"].(string); b["type"] == "text" && isText && text == "" {
+				continue
+			}
+			if nested, ok := b["content"].([]any); ok && b["type"] == "tool_result" {
+				b["content"] = clean(nested)
+			}
+			out = append(out, raw)
+		}
+		return out
+	}
+	for _, m := range messageList(req) {
+		blocks, ok := m["content"].([]any)
+		if !ok {
+			continue
+		}
+		if blocks = clean(blocks); len(blocks) == 0 {
+			blocks = append(blocks, map[string]any{"type": "text", "text": "(empty)"})
+		}
+		m["content"] = blocks
+	}
 }
 
 // injectedPrompt estimates the prompt tokens the adapter added to the
@@ -327,7 +385,9 @@ func withoutThinking(body []byte) ([]byte, bool) {
 		}
 		m["content"] = out
 	}
-	if !changed {
+	// Thinking that is on with no block in the history is refused as well,
+	// when the model expects one before a tool call that has none.
+	if _, on := req["thinking"]; !changed && !on {
 		return nil, false
 	}
 	delete(req, "thinking")
@@ -423,8 +483,68 @@ func eventType(data []byte) (typ, msg string) {
 	return ev.Type, msg
 }
 
-// mergeBetas adds the buyer's betas (already filtered by the node) to those
-// h asks for.
+// buyerBetas is what of the buyer's betas goes out on the seller's account.
+// The node kept the families it knows (node.upstreamHeader); which of them a
+// request may carry depends on the account and the model, as in sub2api's
+// beta policy:
+//
+//   - context-1m only goes to the models that have the long context as they
+//     are (Sonnet 5 and later). Elsewhere the API refuses it, or bills the
+//     long prompt at a rate the ticket's price does not cover.
+//   - a subscription login never sends what Claude Code does not send
+//     (output-128k, computer-use): the buyer would be switching features on
+//     for the seller's account.
+//   - a request rebuilt in Claude Code's shape (rebuilt) carries Claude
+//     Code's own list, and of the buyer's only the betas that describe the
+//     request's format.
+func buyerBetas(client, model string, oauth, rebuilt bool) []string {
+	is := func(b string, families ...string) bool {
+		return slices.ContainsFunc(families, func(f string) bool { return strings.HasPrefix(b, f+"-20") })
+	}
+	var out []string
+	for _, b := range strings.Split(client, ",") {
+		b = strings.TrimSpace(b)
+		switch {
+		case b == "":
+		case is(b, "context-1m") && model != "claude-sonnet-5" && !strings.HasPrefix(model, "claude-sonnet-5-"):
+		case oauth && is(b, "output-128k", "computer-use"):
+		case rebuilt && !is(b, "structured-outputs", "mid-conversation-tool-changes", "inline-tools"):
+		default:
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// dropToolsetStreamingBeta takes fine-grained-tool-streaming off a request
+// that offers the computer or browser toolset to Sonnet 5.5 or Haiku 5.5:
+// the two do not go together, and the API refuses the request.
+func dropToolsetStreamingBeta(h http.Header, req map[string]any, model string) {
+	if model != "claude-sonnet-5-5" && model != "claude-haiku-5-5" {
+		return
+	}
+	toolset := slices.ContainsFunc(list(req["tools"]), func(t any) bool {
+		m, _ := t.(map[string]any)
+		return m["type"] == "computer_toolset_20260801" || m["type"] == "browser_toolset_20260801"
+	})
+	if !toolset {
+		return
+	}
+	var kept []string
+	for _, b := range strings.Split(h.Get("anthropic-beta"), ",") {
+		if b = strings.TrimSpace(b); b != "" && !strings.HasPrefix(b, "fine-grained-tool-streaming-20") {
+			kept = append(kept, b)
+		}
+	}
+	if len(kept) == 0 {
+		h.Del("anthropic-beta")
+		return
+	}
+	h.Set("anthropic-beta", strings.Join(kept, ","))
+}
+
+// mergeBetas adds the buyer's betas (those buyerBetas kept) to those h asks
+// for.
 func mergeBetas(h http.Header, client string) {
 	var all []string
 	seen := map[string]bool{}

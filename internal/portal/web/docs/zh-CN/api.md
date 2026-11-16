@@ -30,6 +30,7 @@
 | `GET /api/v1/jobs?role=buy&limit=20` | 最近的作业 |
 | `GET /api/v1/ledger?limit=20` | 账单 |
 | `POST /api/v1/relays/measure` | 立即重新测速，返回结果 |
+| `POST /api/v1/relays/private`、`DELETE /api/v1/relays/private` | 添加或移除[私有中继](/docs/relay)：`{"addr": "<地址>"}`；移除时也可以给中继的 ID |
 | `GET /api/v1/share` | 读取共享设置 |
 | `PUT /api/v1/share` | 修改共享设置，校验后立即生效并保存 |
 | `POST /api/v1/share/start`、`POST /api/v1/share/stop` | 打开或暂停共享 |

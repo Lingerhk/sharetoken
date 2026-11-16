@@ -288,11 +288,7 @@ await ev(`${el('#buy-note')}.className = ''`);
 await click('#buy-native');
 await waitFor(`${el('#buy-note')}.classList.contains('ok') && !${el('#buy-native')}.checked`);
 ok(buyConfig().require_native === false || buyConfig().require_native === undefined, 'and unticking it saves that too');
-ok(await ev(`${el('#buy-spot')}.checked`) && (await text('#buy-spot-hint')).length > 60, 'helping with spot checks is on by default, and explained');
-await ev(`${el('#buy-note')}.className = ''`);
-await click('#buy-spot');
-await waitFor(`${el('#buy-note')}.classList.contains('ok') && !${el('#buy-spot')}.checked`);
-ok(buyConfig().spot_checks === false && buyConfig().budget_micros === 3500000, 'unticking it saves spot_checks: false, the budget kept');
+ok(await ev(`!${el('#buy-spot')}`) && buyConfig().spot_checks === undefined, 'carrying spot checks is not a setting of the app: only config.json turns it off');
 await click('#tab-settings-general');
 await click('#nav-overview');
 

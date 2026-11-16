@@ -41,6 +41,9 @@ type Agent struct {
 	// Timing of the background work; set before Start (zero: defaults).
 	HealthEvery  time.Duration // check the path to the coordinator (10s)
 	MeasureEvery time.Duration // re-measure relays (5m)
+	// PrivateGrace is how long a sharing node waits for its private relays
+	// before it falls back to the network's (30s).
+	PrivateGrace time.Duration
 	RefreshEvery time.Duration // refresh the relay list from the portal (5m)
 	// OnLoginEnded, when set, is called once if the portal stops accepting this
 	// agent's token, or the user logs out. The agent keeps running: stopping it
@@ -72,7 +75,7 @@ type Agent struct {
 	portal   *PortalClient
 	netinfo  portal.NetworkInfo
 	coord    peer.ID
-	relays   []p2p.RelayRTT // last measurement, best first
+	relays   []p2p.RelayRTT // last measurement of the network's relays, best first
 	current  string         // relay used to reach the coordinator
 	measured time.Time
 	link     *p2p.LinkMonitor     // live pings of the current relay
@@ -82,6 +85,12 @@ type Agent struct {
 	share    *shareState
 	tokens   *provider.Tokens // OAuth logins of the providers
 	warnings map[string]string
+
+	// The user's own relays (private_relays.go), measured for the status.
+	// Kept apart from relays: nothing that chooses the path to the
+	// coordinator may see them.
+	private     []p2p.RelayRTT
+	privateDown time.Time // since when no private relay holds a reservation
 
 	passMu sync.Mutex
 	pass   *relaypass.Pass // admits this device's relay reservations
@@ -498,6 +507,9 @@ func (a *Agent) measureRelays(ctx context.Context) []p2p.RelayRTT {
 	defer a.mu.Unlock()
 	a.relays, a.measured = res, time.Now()
 	pruneAvoid(a.avoid, res, time.Now())
+	a.mu.Unlock()
+	a.measurePrivate(ctx)
+	a.mu.Lock()
 	return res
 }
 
@@ -665,15 +677,25 @@ func chooseRelay(res []p2p.RelayRTT, current string, currentFailed bool, coordin
 	return best
 }
 
-// shareRelaysLocked picks the relays to hold reservations on: the best
-// reachable ones, the coordinator's relay first.
+// shareRelaysLocked picks the relays to hold reservations on: the user's
+// private relays, and of the network's the best reachable ones, the
+// coordinator's relay first, unless a private relay does the job
+// (officialWantedLocked).
 func (a *Agent) shareRelaysLocked(sc ShareConfig) []string {
-	out := []string{}
+	private := a.privateRelaysLocked()
+	out := slices.Clone(private)
+	var rsv *p2p.Reserver
+	if a.share != nil {
+		rsv = a.share.reserver
+	}
+	if !a.officialWantedLocked(sc, private, rsv) {
+		return out
+	}
 	if a.current != "" {
 		out = append(out, a.current)
 	}
 	for _, r := range a.relays {
-		if len(out) >= sc.Relays {
+		if len(out)-len(private) >= sc.Relays {
 			break
 		}
 		if r.OK() && !slices.Contains(out, r.Addr) {
@@ -735,6 +757,7 @@ func (a *Agent) maintain() {
 			}
 		}
 		lastCheck = time.Now()
+		a.syncShareRelays()
 		if time.Since(lastRefresh) > a.RefreshEvery {
 			lastRefresh = time.Now()
 			if err := a.refreshNetwork(a.ctx); err != nil {
@@ -1060,9 +1083,11 @@ func (a *Agent) presentPass(ctx context.Context, relay peer.AddrInfo) error {
 	if p == nil {
 		return nil
 	}
-	if err := relaypass.Present(ctx, a.h, relay, p); err != nil {
+	err = relaypass.Present(ctx, a.h, relay, p)
+	if err != nil {
 		a.log.Debug("relay did not take the pass", "relay", relay.ID, "err", err)
 	}
+	a.privateRefused(relay.ID, err)
 	return nil
 }
 
@@ -1118,6 +1143,13 @@ func (a *Agent) ReloadShare() error {
 	if err != nil {
 		return err
 	}
+	if clean, err := cleanPrivateRelays(c.PrivateRelays); err != nil {
+		return err
+	} else {
+		a.mu.Lock()
+		a.cfg.PrivateRelays = clean
+		a.mu.Unlock()
+	}
 	return a.SetShare(c.Share)
 }
 
@@ -1128,5 +1160,6 @@ func (a *Agent) saveLocked() error {
 		return err
 	}
 	disk.Share = a.cfg.Share
+	disk.PrivateRelays = a.cfg.PrivateRelays
 	return SaveConfig(a.home, disk)
 }

@@ -38,6 +38,8 @@
 | `access.networks[].name` | — | — | 必填，不可重复 |
 | `access.networks[].portal_keys` | — | — | 必填。该网络门户的凭证公钥（`portal pass-key`）；密钥轮换期间可以有多把。同一把密钥不能出现在两个网络里 |
 | `access.networks[].allow_peers` | — | 空 | 不需要凭证就能预约的 peer：该网络的协调器（`coordinator id`）。同一个 peer 不能出现在两个网络里。为空时告警，因为协调器将无法在这里预约 |
+| `access.networks[].allow_accounts` | — | 空 | 让中继成为私有中继：只有本网络这些账号（`user:3`）的设备可以预约。私有中继不列 `allow_peers`。`relay init -account … -out relay.yaml` 生成这样的文件（[security.md](security.md) §2.8） |
+| `access.networks[].portal_url` | — | 空 | 该网络的门户。中继启动时以及每 6 小时从它读取凭证公钥，与 `portal_keys` 并用，无人维护的中继因此不受密钥轮换影响。只接受 https |
 | `access.networks[].max_devices_per_user` | — | 4 | 同一用户账户同时持有预约的设备数。账户只在本网络内计数 |
 | `access.networks[].max_reservations` | — | 0 | 该网络全部设备的预约合计上限；协调器不计入。0：只受 `limits.max_reservations` 限制 |
 | `limits.max_reservations` | `-max-reservations` | 4096 | 同时持有的预约数，所有网络合计 |
@@ -198,11 +200,12 @@
 | `listen` | IPv4 和 IPv6 上的 TCP 与 QUIC，端口任意 | libp2p 监听地址 |
 | `nat` | true | UPnP/NAT-PMP 和打洞 |
 | `relays` | 空 | 覆盖门户给出的中继列表 |
+| `private_relays` | 空 | 用户自己运行的中继（最多 8 个）。共享节点在上面预约；其他功能都不用它，和协调器之间的流量从不经过它（`sharetoken relays add`，[security.md](security.md) §2.8） |
 | `buy.budget_micros` | 2000000 | 每个请求冻结的额度；没用完的部分退回 |
 | `buy.max_price_in`、`buy.max_price_out` | 0（不限） | 每百万 prompt token 和 completion token 的价格上限 |
 | `buy.evidence` | true | 对可以证明有问题的单披露密钥，换取自动退款 |
 | `buy.require_tee`、`buy.tee_policy`、`buy.tee_online` | 关闭 | 只从经过证明的 TEE 节点购买；可信镜像的白名单文件；联网查询吊销状态 |
-| `buy.spot_checks` | 开启 | 协助平台抽检卖家：客户端偶尔替平台把一个很短的加密作业当作自己的作业转交给卖家。不花 credit，客户端也看不到内容（[security.md](security.md) §2.4） |
+| `buy.spot_checks` | 开启 | 协助平台抽检卖家：客户端偶尔替平台把一个很短的加密作业当作自己的作业转交给卖家。不花 credit，客户端也看不到内容（[security.md](security.md) §2.4）。只能在这里关闭，应用里没有这个开关 |
 | `buy.require_native` | 关闭 | 只从模型服务器原生支持请求接口的节点购买（[apis.md](apis.md)） |
 | `buy.queue_seconds` | 30 | 所有节点都忙时，请求等待空闲节点多久；负数：立即失败 |
 | `buy.first_byte_seconds`、`buy.idle_seconds` | 30、30 | 一单等待节点第一帧的时间上限，以及两帧之间的时间上限。模型不出声时，节点每 10 秒发一个进度帧 |
@@ -210,7 +213,8 @@
 | `share.upstream`、`share.upstream_key_env` | `http://127.0.0.1:11434/v1`、空 | 本机模型服务的 OpenAI 兼容 base URL，以及存放其 API key 的环境变量 |
 | `share.concurrency` | 2 | 并发作业数 |
 | `share.models` | 空 | 从本机模型服务共享的模型 |
-| `share.relays` | 2 | 在几个中继上持有预约 |
+| `share.relays` | 2 | 在网络的几个中继上持有预约 |
+| `share.keep_official` | false | 使用私有中继时：私有中继正常时也保留这些预约。关闭时，网络的中继只在 30 秒内没有任何私有中继可用后作为后备 |
 | `share.tee` | `off` | `off`、`auto`、`sev-snp` 或 `tdx` |
 
 `up` 和 `daemon` 的 `-http`、`-listen`、`-nat` 只在这一次运行中覆盖文件，不保存。

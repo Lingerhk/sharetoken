@@ -69,9 +69,10 @@ func (u msgUsage) json() map[string]int {
 
 // msgUsageFromOpenAI reads a Responses or chat usage object. Both count
 // cached tokens inside input_tokens (prompt_tokens); Messages does not, so
-// cache reads and writes are taken out. Cache writes are not an OpenAI field:
-// the spellings used by OpenAI-compatible upstreams (and sharetoken) are read,
-// nested ones first.
+// cache reads and writes are taken out. Cache writes are not an OpenAI field,
+// and some chat servers report cache reads outside the details: the spellings
+// used by OpenAI-compatible upstreams (and sharetoken) are read, nested ones
+// first.
 func msgUsageFromOpenAI(raw json.RawMessage) (msgUsage, bool) {
 	var u struct {
 		InputTokens      *int `json:"input_tokens"`
@@ -83,6 +84,13 @@ func msgUsageFromOpenAI(raw json.RawMessage) (msgUsage, bool) {
 		CacheWriteInputTokens    *int `json:"cache_write_input_tokens"`
 		CacheCreationTokens      *int `json:"cache_creation_tokens"`
 		CacheWriteTokens         *int `json:"cache_write_tokens"`
+
+		// Cache reads outside the details: sub2api's spellings, Kimi's
+		// cached_tokens, DeepSeek's prompt_cache_hit_tokens.
+		CacheReadInputTokens *int `json:"cache_read_input_tokens"`
+		CacheReadTokens      *int `json:"cache_read_tokens"`
+		CachedTokens         *int `json:"cached_tokens"`
+		PromptCacheHitTokens *int `json:"prompt_cache_hit_tokens"`
 
 		InputDetails  *msgOpenAITokenDetails `json:"input_tokens_details"`
 		PromptDetails *msgOpenAITokenDetails `json:"prompt_tokens_details"`
@@ -108,6 +116,9 @@ func msgUsageFromOpenAI(raw json.RawMessage) (msgUsage, bool) {
 			}
 			nested = append(nested, d.CacheWriteTokens, d.CacheCreationTokens)
 		}
+	}
+	if out.CacheRead == 0 {
+		out.CacheRead = firstPositive(u.CacheReadInputTokens, u.CacheReadTokens, u.CachedTokens, u.PromptCacheHitTokens)
 	}
 	out.CacheCreation = pick(append(nested, u.CacheCreationInputTokens, u.CacheWriteInputTokens,
 		u.CacheCreationTokens, u.CacheWriteTokens)...)

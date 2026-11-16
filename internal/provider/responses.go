@@ -67,12 +67,28 @@ func codexRequest(body []byte) (req map[string]any, limit uint64, renamed bool, 
 	if tc, ok := req["tool_choice"].(map[string]any); ok {
 		rename(tc)
 	}
+	// The backend's models know "none" for what older ones called "minimal".
+	if reasoning, ok := req["reasoning"].(map[string]any); ok && reasoning["effort"] == "minimal" {
+		reasoning["effort"] = "none"
+	}
 	// The backend cannot read a compaction item sharetoken made (from
 	// another model's summary): it becomes the summary again.
 	if input, ok := req["input"].([]any); ok {
 		out := input[:0]
 		for _, it := range input {
 			m, _ := it.(map[string]any)
+			// Nothing is stored (store=false), so the backend finds no item
+			// by its ID: a reference to one cannot be resolved, and an item
+			// sent whole is refused for the ID it had in an earlier answer
+			// ("Item with id 'rs_…' not found"). Codex sends none.
+			if m["type"] == "item_reference" {
+				continue
+			}
+			delete(m, "id")
+			// The backend takes no system messages; Codex's own are developer ones.
+			if m["role"] == "system" {
+				m["role"] = "developer"
+			}
 			switch m["type"] {
 			case "reasoning":
 				// Reasoning another model's thinking was carried in.

@@ -42,6 +42,9 @@ type Config struct {
 	Listen []string `json:"listen,omitempty"` // libp2p listen addresses
 	NAT    bool     `json:"nat"`              // UPnP/NAT-PMP and hole punching
 	Relays []string `json:"relays,omitempty"` // overrides the relays the portal lists
+	// PrivateRelays are relays the user runs: a sharing node reserves on
+	// them, nothing else uses them (private_relays.go).
+	PrivateRelays []string `json:"private_relays,omitempty"`
 
 	Buy   BuyConfig   `json:"buy"`
 	Share ShareConfig `json:"share"`
@@ -87,8 +90,11 @@ type ShareConfig struct {
 	UpstreamKeyEnv string             `json:"upstream_key_env,omitempty"` // env var holding its API key
 	Concurrency    int                `json:"concurrency"`
 	Models         []node.ModelConfig `json:"models"`
-	Relays         int                `json:"relays"`        // how many relays to hold reservations on
-	TEE            string             `json:"tee,omitempty"` // off, auto, sev-snp, tdx
+	Relays         int                `json:"relays"` // how many of the network's relays to hold reservations on
+	// KeepOfficial keeps those reservations while a private relay works too;
+	// otherwise the network's relays are only the fallback.
+	KeepOfficial bool   `json:"keep_official,omitempty"`
+	TEE          string `json:"tee,omitempty"` // off, auto, sev-snp, tdx
 }
 
 // Defaults.

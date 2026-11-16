@@ -199,17 +199,22 @@ func respToMessages(body []byte, opt Options) (*Conversion, error) {
 		}
 	}
 
-	// reasoning effort → output_config.effort, and extended thinking with a
-	// budget for the efforts above low.
-	thinking := false
+	// reasoning effort → output_config.effort, and extended thinking: at the
+	// effort for the adaptive models (which refuse a budget), with a budget
+	// for the efforts above low for the earlier ones.
 	effort := r.effort
 	switch effort {
 	case "", "none", "minimal":
+		if effort != "" && AdaptiveThinking(r.model) {
+			claudeAdaptive(out, r.model, effort, forced)
+		}
 		effort = ""
 	case "xhigh", "max":
 		effort = "max"
 	}
-	if effort != "" {
+	if effort != "" && AdaptiveThinking(r.model) {
+		claudeAdaptive(out, r.model, r.effort, forced)
+	} else if effort != "" {
 		out["output_config"] = map[string]any{"effort": effort}
 		budget := map[string]int{"medium": 4096, "high": 10240, "max": 32768}[effort]
 		if budget >= maxTokens {
@@ -217,14 +222,8 @@ func respToMessages(body []byte, opt Options) (*Conversion, error) {
 		}
 		// Thinking cannot be forced alongside a forced tool choice, and needs
 		// the last tool-using assistant turn to start with a thinking block.
-		switch {
-		case AdaptiveThinking(r.model) && !forced:
-			// These models think adaptively, at the effort; they refuse a budget.
-			out["thinking"] = map[string]any{"type": "adaptive"}
-			thinking = true
-		case budget >= 1024 && !forced && respTrailingToolTurnHasThinking(msgs):
+		if budget >= 1024 && !forced && respTrailingToolTurnHasThinking(msgs) {
 			out["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
-			thinking = true
 		}
 	}
 
@@ -238,17 +237,12 @@ func respToMessages(body []byte, opt Options) (*Conversion, error) {
 		oc["format"] = map[string]any{"type": "json_schema", "schema": schema}
 	}
 
-	if !thinking {
-		if t := r.temperature; t != nil {
-			v := *t
-			if v > 1 {
-				v = 1
-			}
-			out["temperature"] = v
-		} else if r.topP != nil {
-			out["top_p"] = *r.topP
-		}
+	if t := r.temperature; t != nil {
+		out["temperature"] = min(*t, 1)
+	} else if r.topP != nil {
+		out["top_p"] = *r.topP
 	}
+	claudeSampling(out, r.model)
 
 	// Prompt caching: Responses caches by itself, Messages only at marked
 	// breakpoints. Mark the tools and system (the stable prefix) and the
@@ -526,6 +520,11 @@ type respMsgUsage struct {
 	OutputTokens             *int `json:"output_tokens"`
 	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+	// Some relays report cache writes by lifetime only.
+	ByTTL *struct {
+		FiveMinutes int `json:"ephemeral_5m_input_tokens"`
+		OneHour     int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 type respMsgContentBlock struct {
@@ -551,6 +550,8 @@ func (t *respFromMessages) usage(u *respMsgUsage) {
 	}
 	if u.CacheCreationInputTokens != nil && *u.CacheCreationInputTokens > 0 {
 		t.cacheWrite = *u.CacheCreationInputTokens
+	} else if u.ByTTL != nil && u.ByTTL.FiveMinutes+u.ByTTL.OneHour > 0 {
+		t.cacheWrite = u.ByTTL.FiveMinutes + u.ByTTL.OneHour
 	}
 	if u.OutputTokens != nil && *u.OutputTokens > 0 {
 		t.output = *u.OutputTokens
@@ -561,7 +562,7 @@ func (t *respFromMessages) Event(payload []byte, emit func([]byte) error) error 
 	t.s.emit = emit
 	var ev respMsgEvent
 	if err := json.Unmarshal(payload, &ev); err != nil {
-		return fmt.Errorf("apicompat: parse messages event: %w", err)
+		return nil // skipped, as in msgFromChat
 	}
 	if t.s.finished && ev.Type != "error" {
 		return nil

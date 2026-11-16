@@ -237,5 +237,15 @@
   "回答合并发送并补齐长度，请求按区间补齐，中继无法再从数据包大小推测每个 token 的长度。": "Les réponses sont envoyées en trames regroupées et complétées, et les requêtes sont complétées par paliers de taille : un relais ne peut plus déduire la longueur de chaque token de la taille des paquets.",
   "性能提升": "Performances",
   "稳定性提升": "Fiabilité",
-  "安全性": "Sécurité"
+  "安全性": "Sécurité",
+  "新功能": "Nouveautés",
+  "本地端点同时提供 OpenAI Chat Completions、Anthropic Messages 和 OpenAI Responses 三种接口，Claude Code 和 Codex 可以直接使用；卖家的模型服务原生支持时原样转发，否则自动转换。": "Le point d'accès local parle trois API : OpenAI Chat Completions, Anthropic Messages et OpenAI Responses. Claude Code et Codex fonctionnent donc directement avec lui. Un vendeur dont le serveur de modèles parle l'API de la requête la transmet telle quelle ; les autres la convertissent.",
+  "私有中继：可以部署自己的中继，只为你列出的账号服务，别人访问你共享的设备时走你自己的服务器。文档提供 Linux 版中继程序和部署步骤。": "Relais privés : exploitez votre propre relais, qui ne sert que les comptes que vous indiquez, afin que les appareils depuis lesquels vous partagez soient joints via votre propre serveur. Le guide fournit le programme de relais pour Linux et les étapes.",
+  "从 prompt 缓存读出和写入缓存的 token 单独计价；每个请求的预算默认 2 credit，可以在桌面应用的设置里调整，也可以选择只用原生支持请求接口的卖家。": "Les tokens lus dans le cache de prompts et ceux qui y sont écrits ont leurs propres prix. Le budget par requête est de 2 crédits par défaut et se modifie dans les réglages de l'application de bureau, où vous pouvez aussi choisir de n'acheter qu'aux vendeurs qui parlent nativement l'API de la requête.",
+  "三种接口之间的转换更完整：并行工具调用、结构化输出、思考设置、工具返回的图片和缓存用量都能正确往返。": "La conversion entre les trois API est plus complète : appels d'outils parallèles, sortie structurée, réglages de réflexion, images renvoyées par les outils et usage du cache survivent à l'aller-retour.",
+  "模型服务临时出错（过载、5xx、连接中断）时自动重试；额度用完或登录失效的提供商会暂停接单，不再让请求一个个失败。": "Les pannes temporaires d'un serveur de modèles (surcharge, 5xx, connexion coupée) sont retentées. Un fournisseur à court de quota ou dont la connexion a expiré cesse de prendre des tâches au lieu de les faire échouer une à une.",
+  "模型服务的回答中途断开时按失败处理，不再当作完整回答计费。": "Une réponse que le serveur de modèles coupe en cours de route compte comme un échec et n'est plus facturée comme complète.",
+  "平台抽检可以由用户的客户端转交：请求和回答全程加密，转交的客户端看不到内容，也不花 credit，卖家分不清抽检和真实请求。默认开启，可以在配置文件里关闭。": "Les contrôles ponctuels peuvent être portés par les clients des utilisateurs : la requête et la réponse restent chiffrées, le client porteur ne peut pas les lire et ne paie rien, et le vendeur ne peut pas distinguer un contrôle d'une vraie requête. Activé par défaut ; le fichier de configuration le désactive.",
+  "抽检覆盖三种接口，由参考模型逐 token 核对卖家的回答。": "Les contrôles ponctuels couvrent les trois API, et un modèle de référence vérifie la réponse du vendeur token par token.",
+  "卖家节点不再执行买家请求里的托管工具；买家带来的请求头和 beta 开关按卖家的账号类型过滤。": "Les nœuds vendeurs n'exécutent plus les outils hébergés cités dans la requête d'un acheteur, et les en-têtes et options bêta envoyés par l'acheteur sont filtrés selon le type de compte du vendeur."
 }

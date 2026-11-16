@@ -45,9 +45,9 @@ func chatAggregate(payloads [][]byte) ([]byte, error) {
 			Choices           []struct {
 				Index int `json:"index"`
 				Delta struct {
-					Content           *string           `json:"content"`
+					Content           json.RawMessage   `json:"content"`
 					ReasoningContent  string            `json:"reasoning_content"`
-					Reasoning         string            `json:"reasoning"`
+					Reasoning         json.RawMessage   `json:"reasoning"`
 					Refusal           string            `json:"refusal"`
 					AnthropicThinking []json.RawMessage `json:"anthropic_thinking"`
 					ToolCalls         []struct {
@@ -55,8 +55,8 @@ func chatAggregate(payloads [][]byte) ([]byte, error) {
 						ID       string `json:"id"`
 						Type     string `json:"type"`
 						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
+							Name      string    `json:"name"`
+							Arguments looseArgs `json:"arguments"`
 						} `json:"function"`
 					} `json:"tool_calls"`
 				} `json:"delta"`
@@ -80,10 +80,9 @@ func chatAggregate(payloads [][]byte) ([]byte, error) {
 				continue // one choice is all a converted stream has
 			}
 			d := ch.Delta
-			if d.Content != nil {
-				content.WriteString(*d.Content)
-			}
-			reasoning.WriteString(d.ReasoningContent + d.Reasoning)
+			text, inline := looseContent(d.Content)
+			content.WriteString(text)
+			reasoning.WriteString(chatFirst(d.ReasoningContent, msgDeltaString(d.Reasoning), inline))
 			refusal.WriteString(d.Refusal)
 			thinking = append(thinking, d.AnthropicThinking...)
 			for j, tc := range d.ToolCalls {
@@ -109,7 +108,7 @@ func chatAggregate(payloads [][]byte) ([]byte, error) {
 					cl.Type = tc.Type
 				}
 				cl.Function.Name += tc.Function.Name
-				cl.Function.Arguments += tc.Function.Arguments
+				cl.Function.Arguments += string(tc.Function.Arguments)
 			}
 			if ch.FinishReason != nil && *ch.FinishReason != "" {
 				finish = *ch.FinishReason

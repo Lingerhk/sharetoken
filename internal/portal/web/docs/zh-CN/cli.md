@@ -76,6 +76,13 @@
 
 显示各中继的延迟。`-measure` 立即重新测速。需要客户端正在运行。
 
+| 命令 | 含义 |
+|---|---|
+| `relays` | 每个中继、延迟，以及本客户端用它做什么 |
+| `relays -measure` | 先重新测速 |
+| `relays add <地址>` | 经自己的中继共享，见[自建中继](/docs/relay) |
+| `relays remove <地址或 ID>` | 不再使用它 |
+
 ### apikey {#apikey}
 
 本地端点的 API key（见[调用模型](/docs/use-models#endpoint)）。正在运行的客户端会立即按修改生效。

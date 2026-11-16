@@ -62,6 +62,8 @@ While running:
   status                                connection, relays, sharing
   models                                models on the network, nodes and prices
   relays [-measure]                     relay round-trip times; -measure re-measures now
+  relays add <address>                  share through a relay of your own (a private relay)
+  relays remove <address|peer id>       stop using it
 
 Account (portal):
   balance                               credits and token usage
@@ -998,6 +1000,11 @@ func printRelays(rs []client.RelayView) {
 			rtt = rtt[:40] + "…"
 		}
 		use := ""
+		if r.Private {
+			// Never carries coordinator traffic, so COORD says nothing of it.
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t-\t%s\n", "private", first(relaySummary(r.Addr)), second(relaySummary(r.Addr)), rtt, map[bool]string{true: "sharing"}[r.Reserved])
+			continue
+		}
 		if r.Current {
 			use = "coordinator"
 		}
@@ -1071,7 +1078,22 @@ func cmpOr(a, b string) string {
 	return b
 }
 
+func first(a, _ string) string  { return a }
+func second(_, b string) string { return b }
+
 func (c *cmdCtx) relays(args []string) error {
+	if len(args) > 0 && (args[0] == "add" || args[0] == "remove") {
+		if len(args) != 2 {
+			return fmt.Errorf("usage: sharetoken relays %s <address>", args[0])
+		}
+		method := map[string]string{"add": http.MethodPost, "remove": http.MethodDelete}[args[0]]
+		var rs []client.RelayView
+		if err := c.daemon(method, "/api/v1/relays/private", map[string]string{"addr": args[1]}, &rs); err != nil {
+			return err
+		}
+		printRelays(rs)
+		return nil
+	}
 	fs := flag.NewFlagSet("relays", flag.ExitOnError)
 	measure := fs.Bool("measure", false, "re-measure now")
 	_ = fs.Parse(args)

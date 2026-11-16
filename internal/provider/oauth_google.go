@@ -331,10 +331,12 @@ func (u *codeAssistUpstream) Stream(ctx context.Context, r *node.Request, emit f
 	if err != nil {
 		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 	}
-	opt := geminiOptions{maxOutput: u.entry.caps()[chat.Model]}
+	// Gemini models want a thought signature on every function call of the
+	// history (Gemini 3 refuses a call without one), and a chat history has
+	// none to give back: the placeholder goes with each.
+	opt := geminiOptions{maxOutput: u.entry.caps()[chat.Model], signFunctionCalls: !strings.HasPrefix(chat.Model, "claude-")}
 	if u.antigravity {
 		opt.validated = true
-		opt.signFunctionCalls = !strings.HasPrefix(chat.Model, "claude-")
 		if opt.maxOutput == 0 {
 			opt.maxOutput = 64000
 		}

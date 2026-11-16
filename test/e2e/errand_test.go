@@ -300,7 +300,7 @@ func TestCarrierCannotDisputeOrStealAnErrand(t *testing.T) {
 	_ = cl
 }
 
-// The spot-check setting: a client that opted out never asks, so it is never
+// The spot-check setting (config.json only): a client that opted out never asks, so it is never
 // chosen; one that did not carries questions through its ordinary relayed
 // connection, under its ordinary identity.
 func TestClientsCarryAuditsUnlessOptedOut(t *testing.T) {
@@ -355,15 +355,5 @@ func TestClientsCarryAuditsUnlessOptedOut(t *testing.T) {
 		if s := p.String(); s != bob.PeerID() && s != carol.PeerID() && p != n.coordH && p != relayID {
 			t.Errorf("alice was dialled by %s", p)
 		}
-	}
-	// The setting is part of the buying settings the app shows and saves.
-	var v client.BuySettingsView
-	getJSON(t, carol, "/api/v1/buy", &v)
-	if v.SpotChecks == nil || *v.SpotChecks {
-		t.Fatalf("carol's settings: %+v", v)
-	}
-	getJSON(t, bob, "/api/v1/buy", &v)
-	if v.SpotChecks == nil || !*v.SpotChecks {
-		t.Fatalf("bob's settings: %+v", v)
 	}
 }

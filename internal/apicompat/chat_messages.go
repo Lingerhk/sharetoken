@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -185,45 +186,118 @@ func chatMessagesRequest(r *chatRequest) (map[string]any, error) {
 	return req, nil
 }
 
-// AdaptiveThinking reports whether a Claude model thinks adaptively (thinking
-// {"type":"adaptive"} with output_config.effort) and refuses a thinking
-// budget: the 5.5 generation. A model server that refuses either form says
-// so, and the Anthropic adapter switches to the other.
-func AdaptiveThinking(model string) bool {
-	model = strings.ToLower(model)
-	return strings.HasPrefix(model, "claude-") && strings.Contains(model, "-5-5")
+// claudeVersion reads a Claude model name: its family (opus, sonnet, haiku,
+// fable, mythos) and its version as major*10+minor (claude-opus-4-7 is 47,
+// claude-sonnet-4-20250514 is 40, claude-3-5-sonnet-latest is 35). ok is
+// false for any other model, which an Anthropic-compatible server may well
+// serve.
+func claudeVersion(model string) (family string, version int, ok bool) {
+	m := strings.ToLower(strings.TrimSpace(model))
+	i := strings.LastIndex(m, "claude-")
+	if i < 0 {
+		return "", 0, false
+	}
+	m, _, _ = strings.Cut(m[i+len("claude-"):], "@")
+	var nums []int
+	for _, tok := range strings.Split(strings.ReplaceAll(m, ".", "-"), "-") {
+		n, err := strconv.Atoi(tok)
+		if err != nil && family == "" {
+			family = tok // before the version, or (the 3.x names) after it
+			continue
+		}
+		// A date, a third number or a second word ends the version.
+		if err != nil || len(tok) > 2 || len(nums) == 2 {
+			break
+		}
+		nums = append(nums, n)
+	}
+	if family == "" || len(nums) == 0 {
+		return "", 0, false
+	}
+	version = nums[0] * 10
+	if len(nums) > 1 {
+		version += nums[1]
+	}
+	return family, version, true
 }
 
-// chatAnthropicThinking maps reasoning_effort to extended thinking. The 5.5
-// models think adaptively at an effort; earlier models take a budget, which
+// AdaptiveThinking reports whether a Claude model thinks adaptively (thinking
+// {"type":"adaptive"} with output_config.effort) and refuses a thinking
+// budget: Opus 4.7 and every model after it, Fable and Mythos. A model server
+// that refuses either form says so, and the Anthropic adapter switches to the
+// other.
+func AdaptiveThinking(model string) bool {
+	family, v, ok := claudeVersion(model)
+	return ok && (family == "fable" || family == "mythos" || v >= 47)
+}
+
+// claudeThinkingOff is the thinking setting closest to "no reasoning" for an
+// adaptive model: Sonnet 5.5 refuses disabled and has between_tools, Opus 5.5,
+// Fable and Mythos cannot turn thinking off, the others take disabled. All of
+// them at the lowest effort.
+func claudeThinkingOff(model string) map[string]any {
+	family, v, _ := claudeVersion(model)
+	switch {
+	case family == "sonnet" && v >= 55:
+		return map[string]any{"type": "between_tools"}
+	case family == "fable", family == "mythos", family == "opus" && v >= 55:
+		return map[string]any{"type": "adaptive"}
+	}
+	return map[string]any{"type": "disabled"}
+}
+
+// claudeAdaptive maps an OpenAI reasoning effort onto an adaptive model:
+// thinking and output_config.effort. A forced tool choice goes without the
+// thinking setting, as it does for the models with a budget.
+func claudeAdaptive(req map[string]any, model, effort string, forced bool) {
+	thinking := map[string]any{"type": "adaptive"}
+	switch effort {
+	case "none":
+		thinking, effort = claudeThinkingOff(model), "low"
+	case "minimal":
+		effort = "low"
+	case "low", "medium", "high", "xhigh", "max":
+	default:
+		effort = "medium"
+	}
+	chatOutputConfig(req)["effort"] = effort
+	if forced && thinking["type"] == "adaptive" {
+		return
+	}
+	req["thinking"] = thinking
+}
+
+// claudeSampling removes the sampling settings a Claude model refuses:
+// Opus 4.7 and the models after it take none (the 5.5 Sonnet and Haiku only
+// their defaults), and no model takes temperature with thinking on.
+func claudeSampling(req map[string]any, model string) {
+	if AdaptiveThinking(model) {
+		delete(req, "temperature")
+		delete(req, "top_p")
+		return
+	}
+	th, _ := req["thinking"].(map[string]any)
+	if th == nil || th["type"] == "disabled" {
+		return
+	}
+	delete(req, "temperature")
+	if p, ok := req["top_p"].(float64); ok && p < 0.95 {
+		delete(req, "top_p")
+	}
+}
+
+// chatAnthropicThinking maps reasoning_effort to extended thinking. The
+// adaptive models think at an effort; earlier models take a budget, which
 // must be at least 1024 tokens and is at most half of max_tokens, and refuse
 // sampling settings and a forced tool with it.
 func chatAnthropicThinking(req map[string]any, r *chatRequest, maxTokens uint64, forced bool) {
+	defer claudeSampling(req, r.Model)
 	effort := strings.ToLower(strings.TrimSpace(r.ReasoningEffort))
 	if effort == "" {
 		return
 	}
-	model := strings.ToLower(r.Model)
-	if AdaptiveThinking(model) {
-		switch effort {
-		case "none":
-			switch {
-			case strings.Contains(model, "sonnet"):
-				req["thinking"] = map[string]any{"type": "between_tools"}
-			case strings.Contains(model, "haiku"):
-				req["thinking"] = map[string]any{"type": "disabled"}
-			default:
-				req["thinking"] = map[string]any{"type": "adaptive"}
-			}
-			effort = "low"
-		case "minimal":
-			req["thinking"], effort = map[string]any{"type": "adaptive"}, "low"
-		case "low", "medium", "high", "xhigh", "max":
-			req["thinking"] = map[string]any{"type": "adaptive"}
-		default:
-			req["thinking"], effort = map[string]any{"type": "adaptive"}, "medium"
-		}
-		chatOutputConfig(req)["effort"] = effort
+	if AdaptiveThinking(r.Model) {
+		claudeAdaptive(req, r.Model, effort, forced)
 		return
 	}
 	if effort == "none" {
@@ -246,10 +320,6 @@ func chatAnthropicThinking(req map[string]any, r *chatRequest, maxTokens uint64,
 		return
 	}
 	req["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
-	delete(req, "temperature")
-	if p, ok := req["top_p"].(float64); ok && p < 0.95 {
-		delete(req, "top_p")
-	}
 }
 
 // chatOutputConfig is the request's output_config, made when there is none.
@@ -720,6 +790,19 @@ type chatMessagesUsage struct {
 	OutputTokens  uint64 `json:"output_tokens"`
 	CacheCreation uint64 `json:"cache_creation_input_tokens"`
 	CacheRead     uint64 `json:"cache_read_input_tokens"`
+	// Some relays report cache writes by lifetime only.
+	ByTTL *struct {
+		FiveMinutes uint64 `json:"ephemeral_5m_input_tokens"`
+		OneHour     uint64 `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+}
+
+// cacheCreation is the cache writes: the total, else the sum by lifetime.
+func (u *chatMessagesUsage) cacheCreation() uint64 {
+	if u.CacheCreation == 0 && u.ByTTL != nil {
+		return u.ByTTL.FiveMinutes + u.ByTTL.OneHour
+	}
+	return u.CacheCreation
 }
 
 // merge takes the counts an event reports: Anthropic sends input counts on
@@ -734,8 +817,8 @@ func (u *chatMessagesUsage) merge(v *chatMessagesUsage) {
 	if v.OutputTokens > 0 {
 		u.OutputTokens = v.OutputTokens
 	}
-	if v.CacheCreation > 0 {
-		u.CacheCreation = v.CacheCreation
+	if n := v.cacheCreation(); n > 0 {
+		u.CacheCreation = n
 	}
 	if v.CacheRead > 0 {
 		u.CacheRead = v.CacheRead
