@@ -464,9 +464,16 @@ func TestResponsesToMessagesEffortNone(t *testing.T) {
 	// minimal is not an Anthropic effort.
 	got := regBody(t, Responses, Messages, `{"model":"claude-opus-4-8","input":"hi","reasoning":{"effort":"minimal"}}`)
 	regWant(t, got, `"thinking":{"type":"adaptive"}`, `"output_config":{"effort":"low"}`)
-	// A model with a budget is as before.
-	got = regBody(t, Responses, Messages, `{"model":"claude-sonnet-4-6","input":"hi","reasoning":{"effort":"none"}}`)
-	regNot(t, got, "thinking", "output_config")
+	// A model with a budget, or one that is not Claude at all (DeepSeek's
+	// Messages endpoint thinks unless told not to), is told so outright, from
+	// Responses as from chat.
+	for _, model := range []string{"claude-sonnet-4-6", "deepseek-flash"} {
+		got = regBody(t, Responses, Messages, `{"model":"`+model+`","input":"hi","reasoning":{"effort":"none"}}`)
+		regWant(t, got, `"thinking":{"type":"disabled"}`)
+		regNot(t, got, "output_config")
+		got = regBody(t, Responses, Messages, `{"model":"`+model+`","input":"hi"}`)
+		regNot(t, got, "thinking", "output_config")
+	}
 }
 
 // Opus 4.7 and the models after it refuse temperature and top_p (400): a

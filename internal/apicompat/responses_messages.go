@@ -207,6 +207,10 @@ func respToMessages(body []byte, opt Options) (*Conversion, error) {
 	case "", "none", "minimal":
 		if effort != "" && AdaptiveThinking(r.model) {
 			claudeAdaptive(out, r.model, effort, forced)
+		} else if effort == "none" {
+			// Said, not left out: a Messages server that thinks by default
+			// (DeepSeek's) would otherwise think.
+			out["thinking"] = map[string]any{"type": "disabled"}
 		}
 		effort = ""
 	case "xhigh", "max":
