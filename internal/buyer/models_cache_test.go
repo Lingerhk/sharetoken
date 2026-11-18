@@ -144,3 +144,19 @@ func waitAsks(t *testing.T, c *modelsCache) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// A list fetched for the client's own pages is kept, so the cached list
+// handed to tools catches up with it.
+func TestModelsNowRefreshesTheCache(t *testing.T) {
+	var c modelsCache
+	old := []protocol.ModelSummary{{Model: "a"}}
+	c.put(old)
+	c.put([]protocol.ModelSummary{{Model: "a", SharedNodes: 1}})
+	got, err := c.get(context.Background(), func(context.Context) ([]protocol.ModelSummary, error) {
+		t.Fatal("fetched although the list is fresh")
+		return nil, nil
+	})
+	if err != nil || len(got) != 1 || got[0].SharedNodes != 1 {
+		t.Fatalf("got %+v %v", got, err)
+	}
+}

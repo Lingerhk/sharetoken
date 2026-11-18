@@ -1066,6 +1066,17 @@ func (c *Client) Models(ctx context.Context) ([]protocol.ModelSummary, error) {
 	return c.models.get(ctx, c.fetchModels)
 }
 
+// ModelsNow is the model list as the coordinator has it now, for the
+// client's own pages and commands: a pairing or a partnership just made
+// shows at once there, where the cached list (Models) may lag behind.
+func (c *Client) ModelsNow(ctx context.Context) ([]protocol.ModelSummary, error) {
+	list, err := c.fetchModels(ctx)
+	if err == nil {
+		c.models.put(list)
+	}
+	return list, err
+}
+
 func (c *Client) fetchModels(ctx context.Context) ([]protocol.ModelSummary, error) {
 	var resp protocol.ModelsResponse
 	err := c.call(ctx, protocol.TypeModels, struct{}{}, protocol.TypeModels, &resp)

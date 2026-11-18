@@ -92,3 +92,10 @@ func (c *modelsCache) ask(fetch func(context.Context) ([]protocol.ModelSummary, 
 		close(done)
 	}()
 }
+
+// put keeps list as the latest, fetched now.
+func (c *modelsCache) put(list []protocol.ModelSummary) {
+	c.mu.Lock()
+	c.list, c.at, c.err = slices.Clone(list), c.clock(), nil
+	c.mu.Unlock()
+}

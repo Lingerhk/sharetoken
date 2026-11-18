@@ -220,7 +220,7 @@ func localOrigin(origin string) bool {
 func (a *Agent) handleModels(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	ms, err := a.buyer.Models(network.WithAllowLimitedConn(ctx, "sharetoken-ctrl"))
+	ms, err := a.buyer.ModelsNow(network.WithAllowLimitedConn(ctx, "sharetoken-ctrl"))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
