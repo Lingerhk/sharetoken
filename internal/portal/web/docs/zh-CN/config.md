@@ -67,6 +67,7 @@
     "evidence": true,
     "require_tee": false,
     "require_native": false,
+    "loop_guard": true,
     "spot_checks": true,
     "queue_seconds": 30,
     "first_byte_seconds": 30,
@@ -83,6 +84,7 @@
 | `evidence` | 节点虚报用量时，交出这一单的密钥以自动退款 | `true` |
 | `require_tee` | 只把请求发给 TEE 节点 | `false` |
 | `require_native` | 只把请求发给模型服务器原生支持请求所用接口的节点，不做转换（见[原生和转换](/docs/use-models#native)）。单个请求也可以用请求头 `X-Sharetoken-Require-Native: true` 要求 | `false` |
+| `loop_guard` | 模型陷入循环时不再付费。推理或正文反复重复同几句话的回答会被截断，就像到了输出上限一样，卖家随即停止模型；最后 8 轮都是同一个工具调用、得到同样结果的请求，在本机用一段提示作答，不发出去。设为 `false` 关闭 | `true` |
 | `spot_checks` | 协助平台抽检卖家。平台会不定期抽查卖家是否真的在用它标称的模型；开启后，客户端偶尔替平台把一个很短的抽检请求转交给卖家，就像发你自己的请求一样，卖家因此分不清哪次是抽检。请求和回答都是加密的（本机看不到内容），也不花 credit。卖家会像对待你发的任何请求一样看到本设备的地址。默认开启，只能在这个文件里关闭，桌面端没有这个开关 | `true` |
 | `queue_seconds` | 节点全部满载时最多等多久，负数表示立即失败 | `30` |
 | `first_byte_seconds` | 等节点第一帧的时限，超时换节点。模型思考期间节点每 10 秒发一个进度帧，所以慢模型也不需要调大 | `30` |

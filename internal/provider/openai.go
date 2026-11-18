@@ -48,9 +48,11 @@ type openAIUpstream struct {
 	// Moonshot, Zhipu): such a message goes as "system".
 	systemRole bool
 	// reasoningBack: DeepSeek's thinking mode wants reasoning_content back on
-	// every assistant message of the history.
+	// every assistant message of the history. A relay of DeepSeek or Kimi is
+	// known only by its refusal, which refusedParams learns from.
 	reasoningBack bool
 	refused       refusedParams
+	seals         refusedSeals // encrypted Responses items the account refused
 }
 
 func (u *openAIUpstream) APIs() []string {
@@ -72,7 +74,14 @@ func (u *openAIUpstream) Stream(ctx context.Context, r *node.Request, emit func(
 			if err != nil {
 				return err
 			}
-			return retryWithoutReasoning(out, func(body []byte) error {
+			// OpenAI checks a tool schema's patterns with Python's re and
+			// refuses what it cannot compile: those go before the first try.
+			if strings.Contains(u.base, "api.openai.com") {
+				if cleaned, ok := withoutToolPatterns(out); ok {
+					out = cleaned
+				}
+			}
+			return u.seals.retry(sealsKey(r.Header.Get("session_id"), out), out, func(body []byte) error {
 				return u.refused.retry(body, func(body []byte) error {
 					on, ended := responsesPassthrough(emit)
 					if _, err := u.post(ctx, "/responses", body, on); err != nil {
@@ -101,6 +110,7 @@ func (u *openAIUpstream) Stream(ctx context.Context, r *node.Request, emit func(
 		if u.systemRole || u.reasoningBack {
 			out = strictChat(out, u.systemRole, u.reasoningBack)
 		}
+		out = chatCallIDs(out)
 		return u.refused.retry(out, func(body []byte) error {
 			// The answer is complete with a finish_reason or the closing [DONE]:
 			// a stream that ends before either was cut on the way.
@@ -200,7 +210,9 @@ func strictChat(body []byte, systemRole, reasoningBack bool) []byte {
 // nearest one it has. And a chat API without structured output (DeepSeek:
 // "This response_format type is unavailable now") gets JSON mode with the
 // schema in a system message, which is how such a model is asked for one.
-// Gemini's "none" becomes "minimal" the same way.
+// Gemini's "none" becomes "minimal" the same way, and "low" for a model that
+// has no "minimal" either. The shapes a strict OpenAI-compatible server
+// refuses are repaired too (chat_repairs.go).
 type refusedParams struct {
 	mu      sync.Mutex
 	byModel map[string]*modelRepairs
@@ -210,6 +222,12 @@ type modelRepairs struct {
 	drop      []string
 	effort    map[string]string // an effort the model refused -> the one sent instead
 	plainJSON bool              // json_schema goes as json_object
+	// The shapes a strict server refused (chat_repairs.go).
+	noToolStrict  bool   // tools go without "strict"
+	textAsString  bool   // text parts go as one string
+	userLast      bool   // a conversation ending with the assistant gets a user turn
+	reasoningBack bool   // assistant messages get a blank reasoning_content
+	tokenField    string // the output limit's name the server reads
 }
 
 // droppable are the settings a request may lose: the model then uses the
@@ -240,6 +258,7 @@ func dropParam(req map[string]json.RawMessage, name string) {
 var (
 	refusedParamPattern  = regexp.MustCompile(`(?i)(?:unsupported (?:parameter|value): '([a-z_.]+)'|unrecognized request argument supplied: ([a-z_.]+))`)
 	refusedEffortPattern = regexp.MustCompile(`(?i)unsupported value: '([a-z]+)' is not supported with [^.]*model\. supported values are: ([^.]*)\.`)
+	refusedLevelPattern  = regexp.MustCompile(`(?i)thinking level ([a-z]+) is not supported`)
 	quotedWord           = regexp.MustCompile(`'([a-z]+)'`)
 )
 
@@ -320,6 +339,20 @@ func plainJSON(req map[string]json.RawMessage) bool {
 	return true
 }
 
+// replaceEffort notes that the model takes to in place of from, also for the
+// efforts that were already being replaced by from.
+func (m *modelRepairs) replaceEffort(from, to string) {
+	if m.effort == nil {
+		m.effort = map[string]string{}
+	}
+	for k, v := range m.effort {
+		if v == from {
+			m.effort[k] = to
+		}
+	}
+	m.effort[from] = to
+}
+
 // apply makes the repairs known for the model. It reports whether req changed.
 func (m *modelRepairs) apply(req map[string]json.RawMessage) bool {
 	if m == nil {
@@ -339,12 +372,48 @@ func (m *modelRepairs) apply(req map[string]json.RawMessage) bool {
 	if m.plainJSON && plainJSON(req) {
 		changed = true
 	}
+	for _, fix := range []struct {
+		on  bool
+		fix func(map[string]json.RawMessage) bool
+	}{{m.noToolStrict, dropToolStrict}, {m.textAsString, joinTextParts}, {m.userLast, continueAfterAssistant}, {m.reasoningBack, reasoningBack}} {
+		if fix.on && fix.fix(req) {
+			changed = true
+		}
+	}
+	if m.tokenField != "" && withTokenField(req, m.tokenField) {
+		changed = true
+	}
 	return changed
+}
+
+// merge adds what learnt found to m.
+func (m *modelRepairs) merge(learnt *modelRepairs) {
+	for _, name := range learnt.drop {
+		if !slices.Contains(m.drop, name) {
+			m.drop = append(m.drop, name)
+		}
+	}
+	for from, to := range learnt.effort {
+		m.replaceEffort(from, to)
+	}
+	m.plainJSON = m.plainJSON || learnt.plainJSON
+	m.noToolStrict = m.noToolStrict || learnt.noToolStrict
+	m.textAsString = m.textAsString || learnt.textAsString
+	m.userLast = m.userLast || learnt.userLast
+	m.reasoningBack = m.reasoningBack || learnt.reasoningBack
+	if learnt.tokenField != "" {
+		m.tokenField = learnt.tokenField
+	}
 }
 
 // repair changes req the way the refusal asks, and notes it in learnt. It
 // reports whether there was anything to change.
 func repairRefused(req map[string]json.RawMessage, refusal string, learnt *modelRepairs) bool {
+	// "Unsupported parameter: 'max_tokens' … Use 'max_completion_tokens'
+	// instead" names a parameter too, which is renamed rather than dropped.
+	if repairShape(req, refusal, learnt) {
+		return true
+	}
 	if m := refusedEffortPattern.FindStringSubmatch(refusal); m != nil {
 		from := strings.ToLower(m[1])
 		var have []string
@@ -372,14 +441,24 @@ func repairRefused(req map[string]json.RawMessage, refusal string, learnt *model
 		}
 		return false
 	}
+	// Gemini names the thinking level a model does not have ("Thinking level
+	// MINIMAL is not supported for this model", of its Pro models), not the
+	// ones it has: the next one up is tried.
+	if m := refusedLevelPattern.FindStringSubmatch(refusal); m != nil {
+		from := strings.ToLower(m[1])
+		at := slices.Index(efforts, from)
+		if at < 0 || at+1 >= len(efforts) || requestEffort(req) != from {
+			return false
+		}
+		setRequestEffort(req, efforts[at+1])
+		learnt.replaceEffort(from, efforts[at+1])
+		return true
+	}
 	// Gemini 3 cannot think less than "minimal", and says of "none" only
 	// that an argument is invalid.
 	if strings.Contains(refusal, "INVALID_ARGUMENT") && requestEffort(req) == "none" {
 		setRequestEffort(req, "minimal")
-		if learnt.effort == nil {
-			learnt.effort = map[string]string{}
-		}
-		learnt.effort["none"] = "minimal"
+		learnt.replaceEffort("none", "minimal")
 		return true
 	}
 	if strings.Contains(refusal, "response_format") && !learnt.plainJSON && plainJSON(req) {
@@ -406,7 +485,7 @@ func (p *refusedParams) retry(body []byte, do func([]byte) error) error {
 	learnt := &modelRepairs{}
 	repaired := false
 	err := do(body)
-	for range len(droppable) + 2 {
+	for range len(droppable) + 8 {
 		var se *node.StatusError
 		if !errors.As(err, &se) || se.Status != http.StatusBadRequest || !repairRefused(req, se.Body, learnt) {
 			break
@@ -428,18 +507,7 @@ func (p *refusedParams) retry(body []byte, do func([]byte) error) error {
 			m = &modelRepairs{}
 			p.byModel[model] = m
 		}
-		for _, name := range learnt.drop {
-			if !slices.Contains(m.drop, name) {
-				m.drop = append(m.drop, name)
-			}
-		}
-		for from, to := range learnt.effort {
-			if m.effort == nil {
-				m.effort = map[string]string{}
-			}
-			m.effort[from] = to
-		}
-		m.plainJSON = m.plainJSON || learnt.plainJSON
+		m.merge(learnt)
 		p.mu.Unlock()
 	}
 	return err
@@ -562,10 +630,12 @@ func chatError(data []byte) (string, bool) {
 func responsesPassthrough(emit func([]byte) error) (on func([]byte) error, ended func() bool) {
 	done := false
 	on = func(data []byte) error {
-		typ, msg := eventType(data)
+		typ, _ := eventType(data)
 		switch typ {
 		case "error", "response.failed":
-			return &node.StatusError{Status: http.StatusBadGateway, Body: clip(typ+": "+msg, 300)}
+			// by its code: a prompt too long (400, for the client to
+			// compact), an overload (503), a limit (429), else 502
+			return responsesStreamError(data)
 		case "response.completed", "response.incomplete", "response.done":
 			done = true
 		}

@@ -69,6 +69,8 @@ type respStream struct {
 	msg       *respMsgState
 	reasoning *respReasoningState
 	calls     []*respCallState // open calls
+
+	held []map[string]any // events waiting on a message's phase (responses_phase.go)
 }
 
 type respMsgState struct {
@@ -114,13 +116,18 @@ func respNewID(prefix string) string {
 }
 
 func (s *respStream) send(ev map[string]any) error {
-	ev["sequence_number"] = s.seq
-	s.seq++
-	b, err := respMarshal(ev)
-	if err != nil {
-		return err
+	for _, ev := range s.phaseEvent(ev) {
+		ev["sequence_number"] = s.seq
+		s.seq++
+		b, err := respMarshal(ev)
+		if err != nil {
+			return err
+		}
+		if err := s.emit(b); err != nil {
+			return err
+		}
 	}
-	return s.emit(b)
+	return nil
 }
 
 // produced reports whether the client got any output item.
@@ -573,6 +580,12 @@ func respAggregate(payloads [][]byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		terminal["output"] = b
+	}
+	// Its messages say their phase, as a stream's do.
+	var status string
+	_ = json.Unmarshal(terminal["status"], &status)
+	if b, ok := phaseRawOutput(terminal["output"], status == "completed" || status == ""); ok {
 		terminal["output"] = b
 	}
 	return respMarshal(terminal)

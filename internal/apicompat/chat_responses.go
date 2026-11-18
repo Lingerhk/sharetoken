@@ -133,9 +133,15 @@ func chatResponsesRequest(r *chatRequest) (map[string]any, error) {
 		if rf.description != "" {
 			format["description"] = rf.description
 		}
+		// Chat Completions checks a schema loosely unless told strict; the
+		// Responses API checks it strictly unless told not to, and refuses
+		// (400 invalid_json_schema) a schema without additionalProperties:
+		// false. A client that said nothing meant chat's default.
+		strict := false
 		if rf.strict != nil {
-			format["strict"] = *rf.strict
+			strict = *rf.strict
 		}
+		format["strict"] = strict
 		req["text"] = map[string]any{"format": format}
 	}
 	if tools := chatResponsesTools(r.Tools); len(tools) > 0 {

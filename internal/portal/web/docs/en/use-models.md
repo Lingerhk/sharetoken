@@ -200,6 +200,18 @@ wire_api = "responses"
 supports_websockets = true     # optional: one connection for the whole session
 ```
 
+Codex reads a custom provider's models (context window, reasoning levels, when to compact) only from a catalog file; without one it warns "Model metadata … not found" and guesses. Write the network's models to one and name it at the top of `config.toml`:
+
+```bash
+{{exe}} models -codex ~/.codex/sharetoken-models.json
+```
+
+```toml
+model_catalog_json = "/Users/you/.codex/sharetoken-models.json"   # the path the command printed
+```
+
+Run the command again when the models you use change: Codex reads the file when it starts.
+
 Then give Codex the key and start it:
 
 ::: macos linux
@@ -216,7 +228,7 @@ codex
 ```
 :::
 
-Tool calls (`apply_patch` included), reasoning and context compaction work with any model on the network. Over a WebSocket, Codex sends only what is new in each request; the client keeps the conversation of the connection and sends it whole, since a node keeps nothing between requests. The client answers `previous_response_id` only on such a connection: over HTTP, send the whole conversation (`store: false`, as Codex does). Codex's `/v1/responses/compact` is supported: a node with a ChatGPT login compacts natively, any other one has its model write a summary. As with Claude Code, raise `buy.budget_micros` if requests fail with `budget`.
+Tool calls (`apply_patch` included), reasoning and context compaction work with any model on the network. Over a WebSocket, Codex sends only what is new in each request; the client keeps the conversation of the connection and sends it whole, since a node keeps nothing between requests. Over HTTP the client also answers `previous_response_id` (for tools such as the OpenAI Agents SDK): it keeps the last responses of each API key in memory for an hour and sends the conversation they make up; an id it does not have is refused with `previous_response_not_found`, and nothing is kept for a request with `store: false`. Codex's `/v1/responses/compact` is supported: a node with a ChatGPT login compacts natively, any other one has its model write a summary. As with Claude Code, raise `buy.budget_micros` if requests fail with `budget`.
 
 To have Claude Code or Codex check the client, call models and manage sharing for you, see [Use with coding agents](/docs/agents).
 

@@ -38,6 +38,7 @@ import (
 
 	"sharetoken/internal/accounts"
 	"sharetoken/internal/agentskill"
+	"sharetoken/internal/buyer"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/client"
 	"sharetoken/internal/node"
@@ -1120,12 +1121,18 @@ func (c *cmdCtx) relays(args []string) error {
 	return nil
 }
 
-func (c *cmdCtx) models([]string) error {
+func (c *cmdCtx) models(args []string) error {
+	fs := flag.NewFlagSet("models", flag.ExitOnError)
+	codex := fs.String("codex", "", "write the models as a Codex model catalog to this file (model_catalog_json in ~/.codex/config.toml)")
+	_ = fs.Parse(args)
 	var out struct {
 		Models []protocol.ModelSummary `json:"models"`
 	}
 	if err := c.daemon(http.MethodGet, "/api/v1/models", nil, &out); err != nil {
 		return err
+	}
+	if *codex != "" {
+		return writeCodexCatalog(*codex, out.Models)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "MODEL\tNODES\tTEE\tMIN IN/Mtok\tMIN OUT/Mtok")
@@ -1133,6 +1140,29 @@ func (c *cmdCtx) models([]string) error {
 		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\n", m.Model, m.Nodes, m.AttestedNodes, m.MinPriceIn, m.MinPriceOut)
 	}
 	return tw.Flush()
+}
+
+// writeCodexCatalog writes ms to path as a Codex model catalog and says how
+// to use it. Codex reads the file when it starts, so it is written again
+// when the models change.
+func writeCodexCatalog(path string, ms []protocol.ModelSummary) error {
+	data, err := json.MarshalIndent(buyer.CodexCatalog(ms), "", "  ")
+	if err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	tmp := abs + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, abs); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %d models to %s\nin ~/.codex/config.toml, at the top level:\n  model_catalog_json = %q\n", len(ms), abs, abs)
+	return nil
 }
 
 // ---- sharing ----
@@ -1530,7 +1560,7 @@ func addProviderOptionFlags(fs *flag.FlagSet) providerOptionFlags {
 		proxyMode:       fs.String("proxy-mode", "", "environment, direct or custom"),
 		proxyURL:        fs.String("proxy", "", "proxy URL; use SHARETOKEN_PROVIDER_PROXY for a URL containing a password"),
 		profile:         fs.String("profile", "", "Anthropic: standard or claude-code OAuth request profile"),
-		sampling:        fs.String("sampling", "", "Anthropic: strict, or default to ignore unsupported sampling parameters"),
+		sampling:        fs.String("sampling", "", "Anthropic: default (leave out sampling parameters a model refuses), or strict to refuse the request"),
 		tlsProfile:      fs.String("tls-profile", "", "inference TLS transport: native or chrome"),
 		tokenTLSProfile: fs.String("token-tls-profile", "", "login and refresh TLS transport: native or chrome"),
 	}

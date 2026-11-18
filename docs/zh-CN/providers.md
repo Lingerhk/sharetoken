@@ -115,6 +115,8 @@
 
 模型条目的字段与 `config.json` 里本机模型的相同（`node.ModelConfig`）。
 
+节点报价里每个模型的元数据（上下文窗口、输出上限、是否推理及推理档位）来自内置的常见模型表（Claude、GPT/Codex、Gemini、DeepSeek、Grok，见 [`internal/modelinfo`](../../internal/modelinfo/modelinfo.go)），先按厂商侧的模型名查，再按网络 ID 查。模型条目可以用可选的 `meta` 自己设置，写了的字段优先于内置表：`{"context_window": 400000, "max_output_tokens": 32000, "reasoning": true, "reasoning_levels": ["low", "medium", "high"]}`。`max_output` 也会压低对外公布的输出上限。买家在 `/v1/models` 和 Codex 的模型目录里看到这些信息；两边都不知道的模型不带这些字段。
+
 所有修改都经过 `provider.Update`：它重新读取文件、应用修改再写回（使用操作系统文件锁，在 CLI 和 daemon 进程之间串行），所以运行中的客户端续期的令牌和命令修改的设置不会互相覆盖。
 
 ## 5. 命令行
@@ -230,6 +232,8 @@ Anthropic 必须带 `max_tokens`；`anthropicMaxOutput` 给出默认值。
 
 适用于所有 provider，登录和 API key 都一样。上游返回 HTTP 429 时，该 provider 按 `Retry-After` 冷却，缺失时默认一分钟。节点立即重新报价：冷却中的 provider 的模型不在报价里；全部 provider 都在冷却时撤下报价。冷却到期后，下一次报价（`OfferInterval` 内，默认 15 秒）恢复这些模型。按旧报价签发的 Ticket 返回 `busy`，不再请求上游，也不归咎于买方。本机 provider View 返回最近的上游 HTTP 状态、request ID 和冷却截止时间。该状态只在 daemon 进程内维护，重启后清空。
 
+针对单个请求、而不是针对账号的 429 不会让 provider 冷却：OpenAI 的 "Request too large … on tokens per min (TPM): Limit 30000, Requested 45000"（这一个请求就超过了账号每分钟的额度）让这个作业以 HTTP 413 失败；用 429 表达的上下文超长让作业以 400 失败，买家按上下文超长告诉客户端。额度用完、套餐限额和普通限流仍然让 provider 冷却。
+
 ## 9. 验证情况
 
 | 项目 | 状态 |
@@ -283,7 +287,7 @@ sharetoken provider test claude -model claude-sonnet-4-6
 
 **账号与授权。** `oauth.account_id` 仍表示组织 UUID，`oauth.account_uuid` 表示用户 UUID。启用兼容配置前，旧登录若缺用户 UUID，需要刷新或重新登录。刷新、重启和同账号重新登录保留设备身份；同一真实 Anthropic 账号不能重复加入两个 provider。Cookie 只用于查询组织和交换授权码，不保存到 `providers.json`，也不发送给 token 或 Messages 端点。
 
-**模型与参数。** 兜底表包含 Fable 5.2、Mythos 5.2。模型查询成功只验证列模型权限；`source=fallback` 明确表示本地目录。401/403 不会被兜底掩盖，inference-only 凭据若没有列模型权限，可保存后手动指定模型做推理测试。Sonnet 5.5、Haiku 5.5、Fable/Mythos 5.2 的显式采样参数按能力表检查；`sampling=default` 对这些模型省略 temperature/top_p，交给上游默认值。Opus/Sonnet 5.5 和 Fable/Mythos 5.2 的强制工具调用明确报错，不静默降为 auto。API key 模式共用参数校验。
+**模型与参数。** 兜底表包含 Fable 5.2、Mythos 5.2。模型查询成功只验证列模型权限；`source=fallback` 明确表示本地目录。401/403 不会被兜底掩盖，inference-only 凭据若没有列模型权限，可保存后手动指定模型做推理测试。Sonnet 5.5、Haiku 5.5、Fable/Mythos 5.2 只接受部分采样参数：默认（`sampling=default`）省略它们不接受的 temperature/top_p，交给上游默认值；`sampling=strict` 则直接拒绝这样的请求。Opus/Sonnet 5.5 和 Fable/Mythos 5.2 的强制工具调用明确报错，不静默降为 auto。API key 模式共用参数校验。
 
 **会话。** 买方可在 OpenAI 请求顶层附加 `session_id`（最多 256 字节）。它经加密请求到达卖方，通过本地 context 交给适配器，不作为普通 OpenAI 上游字段发送。派生后的 ID 按卖方 provider、已认证买方和会话隔离；没有显式 ID 时，用首条 user 文本近似，同一买方相同开场的两段对话仍可能共用 ID。实际买方 peer ID 不发往 Anthropic。
 

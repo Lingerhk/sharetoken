@@ -387,12 +387,23 @@ func (e *Engine) UpsertOffer(o *protocol.Offer) error {
 		if at, ok := e.withdrawn[o.Node]; ok && o.IssuedAt <= at {
 			return nil
 		}
-		e.offers[o.Node] = &offerEntry{offer: *o, acct: acct, tee: tee}
+		e.offers[o.Node] = &offerEntry{offer: saneOffer(o), acct: acct, tee: tee}
 		if err := accounts.SetDeviceVersionTx(tx, o.Node, o.ClientVersion); err != nil {
 			return err
 		}
 		return accounts.TouchDevice(tx, o.Node, now, 5*time.Minute)
 	})
+}
+
+// saneOffer is a copy of o whose model metadata, which is not signed, holds
+// only what a model could have (protocol.ModelMeta.Sane).
+func saneOffer(o *protocol.Offer) protocol.Offer {
+	out := *o
+	out.Models = slices.Clone(o.Models)
+	for i := range out.Models {
+		out.Models[i].Meta = out.Models[i].Meta.Sane()
+	}
+	return out
 }
 
 // WithdrawOffer removes node's offer at once: the node stopped sharing, and
@@ -567,6 +578,7 @@ func (e *Engine) models(show, shared func(acct string) bool) []protocol.ModelSum
 			if oe.tee != "" {
 				s.AttestedNodes++
 			}
+			s.Meta = protocol.MergeMeta(s.Meta, m.Meta)
 			s.MinPriceIn = min(s.MinPriceIn, m.PriceInMicros)
 			s.MinPriceOut = min(s.MinPriceOut, m.PriceOutMicros)
 			for _, api := range m.APIs {

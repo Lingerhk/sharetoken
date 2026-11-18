@@ -45,8 +45,18 @@ type Proxy struct {
 	// request's API natively (no conversion). A request can also ask for it
 	// with the header X-Sharetoken-Require-Native: true.
 	RequireNative bool
+	// NoLoopGuard turns the loop guard off (loopguard.go, toolloop.go): with
+	// it on, an answer whose reasoning or text goes round in a loop is cut
+	// as a length stop, and a request whose last turns are the same tool
+	// call with the same result is answered here and sent nowhere.
+	NoLoopGuard bool
 
 	mu sync.RWMutex // guards BudgetMicros and RequireNative once serving (SetBuy)
+
+	// prev keeps recent Responses answers for previous_response_id over
+	// HTTP; compactFails counts each conversation's failed compactions
+	prev         prevStore
+	compactFails compactFails
 }
 
 // SetBuy changes the budget and RequireNative of a running proxy.
@@ -60,6 +70,9 @@ const maxProxyBody = protocol.MaxRequestBody
 
 // HeaderRequireNative asks for a node that needs no conversion.
 const HeaderRequireNative = "X-Sharetoken-Require-Native"
+
+// headerCodexTurn carries Codex's turn_id to the seller (codexTurnID).
+const headerCodexTurn = "x-codex-turn-id"
 
 // HeaderNode asks for one node only (by peer ID): to try or debug a seller.
 const HeaderNode = "X-Sharetoken-Node"
@@ -91,13 +104,48 @@ func (p *Proxy) request(r *http.Request, api, model string, body []byte) ChatReq
 	p.mu.RLock()
 	budget, native := p.BudgetMicros, p.RequireNative
 	p.mu.RUnlock()
+	header := forwardHeader(api, r.Header)
+	if api == protocol.APIResponses {
+		if turn := codexTurnID(r.Header, body); turn != "" {
+			header[headerCodexTurn] = turn
+		}
+	}
 	return ChatRequest{
-		Model: model, API: api, Header: forwardHeader(api, r.Header), Body: body,
+		Model: model, API: api, Header: header, Body: body,
 		BudgetMicros: budget, MaxTokens: protocol.RequestedOutput(api, body),
 		MaxPriceIn: p.MaxPriceIn, MaxPriceOut: p.MaxPriceOut, RequireTEE: p.RequireTEE,
 		RequireNative: native || truthy(r.Header.Get(HeaderRequireNative)),
 		Node:          strings.TrimSpace(r.Header.Get(HeaderNode)),
 	}
+}
+
+// codexTurnID is the turn Codex names for a Responses request: in the body's
+// client_metadata (as it sends it), or in its x-codex-turn-metadata header.
+// The node drops client_metadata, and the seller keeps the ChatGPT backend's
+// turn state by it, so it goes as a header of its own.
+func codexTurnID(h http.Header, body []byte) string {
+	var q struct {
+		Meta map[string]json.RawMessage `json:"client_metadata"`
+	}
+	_ = json.Unmarshal(body, &q)
+	var turn string
+	_ = json.Unmarshal(q.Meta["turn_id"], &turn)
+	if turn != "" {
+		return turn
+	}
+	raw := q.Meta["x-codex-turn-metadata"]
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		raw = []byte(text)
+	}
+	if len(raw) == 0 {
+		raw = []byte(h.Get("x-codex-turn-metadata"))
+	}
+	var m struct {
+		Turn string `json:"turn_id"`
+	}
+	_ = json.Unmarshal(raw, &m)
+	return m.Turn
 }
 
 func truthy(s string) bool {
@@ -132,9 +180,75 @@ type sseWriter struct {
 	w       http.ResponseWriter
 	api     string
 	started bool
+	// keepalives: the client's (Codex takes a keepalive event), when the
+	// request came, and when the client last got anything
+	codex     bool
+	begun     time.Time
+	lastWrite time.Time
+	// tidy keeps a Responses client that is not Codex to the standard
+	// events; watch sees each event as the client gets it
+	tidy  *respTidy
+	watch func([]byte)
+}
+
+// keepaliveEvery is the least time between two keepalives; a stream with no
+// headers sent yet is opened for them only after keepaliveOpen, so that an
+// error before it is still told with its status.
+const (
+	keepaliveEvery = 15 * time.Second
+	keepaliveOpen  = 30 * time.Second
+)
+
+// keepalive tells a client waiting on a slow model that the answer is on
+// its way (after magpie's keepAlive): Claude Code gives up on a stream after
+// 300s without a byte, Codex after 300s without an event (comments do not
+// count for it), and local proxies sooner. A Messages client gets a ping
+// event, Codex the keepalive event its backend sends, others a comment.
+func (s *sseWriter) keepalive() {
+	now := time.Now()
+	if !s.started && now.Sub(s.begun) < keepaliveOpen || now.Sub(s.lastWrite) < keepaliveEvery {
+		return
+	}
+	if !s.started {
+		s.w.Header().Set("Content-Type", "text/event-stream")
+		s.w.Header().Set("Cache-Control", "no-cache")
+		s.w.WriteHeader(http.StatusOK)
+		s.started = true
+	}
+	switch {
+	case s.api == protocol.APIMessages:
+		_, _ = fmt.Fprint(s.w, "event: ping\ndata: {\"type\":\"ping\"}\n\n")
+	case s.api == protocol.APIResponses && s.codex:
+		_, _ = fmt.Fprint(s.w, "event: keepalive\ndata: {\"type\":\"keepalive\"}\n\n")
+	default:
+		_, _ = fmt.Fprint(s.w, ": keepalive\n\n")
+	}
+	s.lastWrite = now
+	s.flush()
+}
+
+// codexClient reports whether r comes from Codex (its originator header or
+// user agent).
+func codexClient(r *http.Request) bool {
+	o := strings.ToLower(r.Header.Get("originator") + " " + r.Header.Get("User-Agent"))
+	return strings.Contains(o, "codex")
 }
 
 func (s *sseWriter) event(payload []byte) error {
+	if s.tidy != nil {
+		var what tidyResult
+		if payload, what = s.tidy.event(payload); what != tidyKeep {
+			if what == tidyComment && s.started {
+				_, _ = fmt.Fprint(s.w, ": keepalive\n\n")
+				s.lastWrite = time.Now()
+				s.flush()
+			}
+			return nil
+		}
+	}
+	if s.watch != nil {
+		s.watch(payload)
+	}
 	if !s.started {
 		s.w.Header().Set("Content-Type", "text/event-stream")
 		s.w.Header().Set("Cache-Control", "no-cache")
@@ -149,6 +263,7 @@ func (s *sseWriter) event(payload []byte) error {
 	if _, err := fmt.Fprintf(s.w, "data: %s\n\n", payload); err != nil {
 		return err
 	}
+	s.lastWrite = time.Now()
 	s.flush()
 	return nil
 }
@@ -161,16 +276,41 @@ func (s *sseWriter) flush() {
 
 // stream runs a streaming request and writes its events as they arrive.
 func (p *Proxy) stream(w http.ResponseWriter, r *http.Request, req ChatRequest) {
-	out := &sseWriter{w: w, api: req.API}
-	res, err := p.Client.Chat(r.Context(), req, out.event)
+	_ = p.streamWith(w, r, req, nil)
+}
+
+// streamWith is stream that shows watch each event the client gets, and
+// returns the request's error.
+func (p *Proxy) streamWith(w http.ResponseWriter, r *http.Request, req ChatRequest, watch func([]byte)) error {
+	now := time.Now()
+	out := &sseWriter{w: w, api: req.API, codex: codexClient(r), begun: now, lastWrite: now, watch: watch}
+	if req.API == protocol.APIResponses && !out.codex {
+		out.tidy = &respTidy{}
+	}
+	req.OnProgress = out.keepalive
+	if p.answeredToolLoop(w, req, true) {
+		return nil
+	}
+	deliver, guard := p.guardStream(req.API, out.codex, out.event)
+	res, err := p.Client.Chat(r.Context(), req, deliver)
+	if guard.cut(err) {
+		endCut(out, req.API, guard)
+		return nil
+	}
 	if !out.started {
 		if err == nil {
 			err = errors.New("empty response")
 		}
+		if tooLong(err) {
+			writeTooLong(w, req.API, true, err.Error())
+			return err
+		}
 		writeAPIError(w, req.API, statusFor(err), err.Error(), codeFor(err))
-		return
+		return err
 	}
-	if err != nil {
+	if err != nil && tooLong(err) {
+		_ = out.event(tooLongEvent(req.API, err.Error()))
+	} else if err != nil {
 		// Streamed content cannot be recalled; flag the failed verification.
 		_ = out.event(streamErrorJSON(req.API, err.Error(), codeFor(err)))
 	} else {
@@ -182,25 +322,40 @@ func (p *Proxy) stream(w http.ResponseWriter, r *http.Request, req ChatRequest) 
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	}
 	out.flush()
+	return err
 }
 
 // aggregate runs a request whose tool wants one JSON answer: the events are
 // collected and turned into it (apicompat.Aggregate) once the receipt checks.
 func (p *Proxy) aggregate(w http.ResponseWriter, r *http.Request, req ChatRequest) {
+	_, _ = p.aggregateBody(w, r, req)
+}
+
+// aggregateBody is aggregate that returns the answer it wrote, or the
+// request's error (already told to the client).
+func (p *Proxy) aggregateBody(w http.ResponseWriter, r *http.Request, req ChatRequest) ([]byte, error) {
 	req.Collect = true
+	if p.answeredToolLoop(w, req, false) {
+		return nil, nil
+	}
 	res, err := p.Client.Chat(r.Context(), req, nil)
+	if err != nil && tooLong(err) {
+		writeTooLong(w, req.API, false, err.Error())
+		return nil, err
+	}
 	if err != nil {
 		writeAPIError(w, req.API, statusFor(err), err.Error(), codeFor(err))
-		return
+		return nil, err
 	}
 	body, err := apicompat.Aggregate(req.API, res.Payloads)
 	if err != nil {
 		writeAPIError(w, req.API, http.StatusBadGateway, "the answer cannot be read: "+err.Error(), "upstream_error")
-		return
+		return nil, err
 	}
 	setJobHeaders(w.Header(), res)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
+	return body, nil
 }
 
 func (p *Proxy) chat(w http.ResponseWriter, r *http.Request) {
@@ -227,8 +382,14 @@ func (p *Proxy) chat(w http.ResponseWriter, r *http.Request) {
 		p.stream(w, r, req)
 		return
 	}
-
+	if p.answeredToolLoop(w, req, false) {
+		return
+	}
 	res, err := p.Client.Chat(r.Context(), req, nil)
+	if err != nil && tooLong(err) {
+		writeTooLong(w, protocol.APIChat, false, err.Error())
+		return
+	}
 	if err != nil {
 		writeError(w, statusFor(err), err.Error(), codeFor(err))
 		return

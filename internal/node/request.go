@@ -308,6 +308,10 @@ func upstreamHeader(api string, in protocol.RequestHeader) protocol.RequestHeade
 		if v := in.Get("session_id"); headerToken(v, 128) {
 			out["session_id"] = v
 		}
+		// Codex's turn, by which a ChatGPT seller keeps the backend's turn state.
+		if v := in.Get("x-codex-turn-id"); headerToken(v, 128) {
+			out["x-codex-turn-id"] = v
+		}
 	}
 	return out
 }

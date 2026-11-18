@@ -62,6 +62,11 @@ type BuyConfig struct {
 	// OpenAI Responses), never converted. Off, such nodes are preferred and
 	// others convert when none is free.
 	RequireNative bool `json:"require_native,omitempty"`
+	// LoopGuard stops paying for a model stuck in a loop: an answer whose
+	// reasoning or text goes round in place is ended as a length stop, and
+	// a request whose last eight turns are the same tool call with the same
+	// result is answered locally and sent nowhere. Unset means on.
+	LoopGuard *bool `json:"loop_guard,omitempty"`
 	// SpotChecks lets the platform's audits of sellers travel through this
 	// client (buyer.RunErrands): now and then it carries one short, sealed
 	// job to a seller as if it were its own. It cannot read the job, pays

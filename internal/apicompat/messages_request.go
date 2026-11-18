@@ -24,6 +24,10 @@ type msgRequest struct {
 	Temperature   *float64        `json:"temperature"`
 	TopP          *float64        `json:"top_p"`
 	MaxTokens     int             `json:"max_tokens"`
+
+	// held is every tool_use id of the history: a call the upstream names
+	// so again goes to the client salted (messages_tool_ids.go).
+	held map[string]bool
 }
 
 type msgThinking struct {
@@ -110,6 +114,7 @@ func msgParseRequest(body []byte) (*msgRequest, error) {
 	if r.Model == "" {
 		return nil, fmt.Errorf("apicompat: messages request has no model")
 	}
+	r.held = msgUnsaltIDs(&r)
 	return &r, nil
 }
 

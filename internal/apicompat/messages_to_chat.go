@@ -114,7 +114,9 @@ func msgToChat(body []byte, opt Options) (*Conversion, error) {
 	if model == "" {
 		model = r.Model
 	}
-	return &Conversion{Body: b, Translator: newMsgFromChat(model, names)}, nil
+	t := newMsgFromChat(model, names)
+	t.w.held = r.held
+	return &Conversion{Body: b, Translator: t}, nil
 }
 
 func msgChatText(text string) map[string]any { return map[string]any{"type": "text", "text": text} }

@@ -3,8 +3,6 @@ package buyer
 import (
 	"encoding/json"
 	"net/http"
-	"slices"
-	"strings"
 
 	"sharetoken/internal/protocol"
 )
@@ -69,8 +67,6 @@ func (h *responsesHead) check() string {
 		return "body must be a JSON Responses request with a model"
 	case len(h.Input) == 0 || string(h.Input) == "null":
 		return "input is required"
-	case h.PreviousResponseID != "":
-		return "previous_response_id is not supported over HTTP: send the whole conversation (store=false)"
 	}
 	return ""
 }
@@ -91,17 +87,64 @@ func (p *Proxy) responses(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, api, http.StatusBadRequest, msg, protocol.CodeBadRequest)
 		return
 	}
-	req := p.request(r, api, head.Model, body)
-	if head.Stream {
-		p.stream(w, r, req)
+	scope := prevScope(r)
+	var prior *wsTurn
+	if head.PreviousResponseID != "" {
+		if prior = p.prev.get(scope, head.PreviousResponseID); prior == nil {
+			writePrevNotFound(w, head.PreviousResponseID)
+			return
+		}
+	}
+	// What is kept of this answer for a later previous_response_id: nothing
+	// when the client asks that nothing be stored.
+	keep := !storeOff(body)
+	var input []json.RawMessage
+	var err error
+	switch {
+	case prior != nil:
+		body, input, err = prevExpand(body, prior)
+	case keep:
+		input, err = inputItems(head.Input)
+	}
+	if err != nil {
+		writeAPIError(w, api, http.StatusBadRequest, "input: "+err.Error(), protocol.CodeBadRequest)
 		return
 	}
-	p.aggregate(w, r, req)
+	req := p.request(r, api, head.Model, body)
+	if head.Stream {
+		var watch turnWatch
+		see := watch.see
+		if !keep {
+			see = nil
+		}
+		if err := p.streamWith(w, r, req, see); err == nil && keep {
+			p.prev.put(scope, watch.turn(input))
+		}
+		return
+	}
+	answer, err := p.aggregateBody(w, r, req)
+	if err == nil && keep {
+		p.prev.put(scope, answerTurn(answer, input))
+	}
+}
+
+// answerTurn is what is kept of a whole Responses answer, after input.
+func answerTurn(answer []byte, input []json.RawMessage) *wsTurn {
+	var res struct {
+		ID     string            `json:"id"`
+		Output []json.RawMessage `json:"output"`
+	}
+	if json.Unmarshal(answer, &res) != nil {
+		return nil
+	}
+	w := turnWatch{id: res.ID, output: res.Output}
+	return w.turn(input)
 }
 
 // compact serves POST /v1/responses/compact: Codex asks for its
 // conversation to be compacted, and gets a response whose output is one
-// compaction item.
+// compaction item. A conversation whose compactions keep failing is told so
+// at once for a while (compactFails).
 func (p *Proxy) compact(w http.ResponseWriter, r *http.Request) {
 	const api = protocol.APIResponses
 	body, ok := readBody(w, r)
@@ -113,18 +156,31 @@ func (p *Proxy) compact(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &head); err != nil {
 		head = responsesHead{}
 	}
-	if msg := head.check(); msg != "" {
+	msg := head.check()
+	if msg == "" && head.PreviousResponseID != "" {
+		msg = "previous_response_id is not supported for compaction: send the whole conversation"
+	}
+	if msg != "" {
+		writeAPIError(w, api, http.StatusBadRequest, msg, protocol.CodeBadRequest)
+		return
+	}
+	key := compactKey(body)
+	if msg, held := p.compactFails.held(key, head.Model); held {
 		writeAPIError(w, api, http.StatusBadRequest, msg, protocol.CodeBadRequest)
 		return
 	}
 	req := p.request(r, api, head.Model, body)
 	req.Header[protocol.HeaderOp] = protocol.OpCompact
-	p.aggregate(w, r, req)
+	if _, err := p.aggregateBody(w, r, req); err != nil {
+		p.compactFails.failed(key, err)
+		return
+	}
+	p.compactFails.done(key)
 }
 
 // models serves GET /v1/models: in OpenAI's list format with Anthropic's
-// fields as well (both read their own), or as Codex's model manifest when
-// Codex asks (?client_version=).
+// fields as well (both read their own, modelObject), or as Codex's model
+// manifest when Codex asks (?client_version=).
 func (p *Proxy) models(w http.ResponseWriter, r *http.Request) {
 	ms, err := p.Client.Models(r.Context())
 	if err != nil {
@@ -138,69 +194,11 @@ func (p *Proxy) models(w http.ResponseWriter, r *http.Request) {
 	}
 	data := make([]map[string]any, 0, len(ms))
 	for _, m := range ms {
-		apis := m.APIs
-		if apis == nil {
-			apis = []string{}
-		}
-		data = append(data, map[string]any{
-			"id": m.Model, "object": "model", "owned_by": "sharetoken", "created": 0,
-			"type": "model", "display_name": m.Model, "created_at": "1970-01-01T00:00:00Z",
-			"nodes": m.Nodes, "min_price_in": m.MinPriceIn, "min_price_out": m.MinPriceOut,
-			"shared_nodes": m.SharedNodes, "apis": apis,
-		})
+		data = append(data, modelObject(m))
 	}
 	resp := map[string]any{"object": "list", "data": data, "has_more": false}
 	if len(data) > 0 {
 		resp["first_id"], resp["last_id"] = data[0]["id"], data[len(data)-1]["id"]
 	}
 	_ = json.NewEncoder(w).Encode(resp)
-}
-
-// codexManifest lists the models in the shape Codex's model picker reads:
-// every field it requires is present, with neutral values. A model whose
-// name says it reasons offers the usual reasoning levels.
-func codexManifest(ms []protocol.ModelSummary) map[string]any {
-	models := make([]map[string]any, 0, len(ms))
-	for i, m := range ms {
-		levels := []map[string]string{{"effort": "none", "description": "No reasoning"}}
-		def := "none"
-		if reasons(m.Model) {
-			levels = []map[string]string{
-				{"effort": "low", "description": "Fast responses with lighter reasoning"},
-				{"effort": "medium", "description": "Balances speed and reasoning depth"},
-				{"effort": "high", "description": "Greater reasoning depth for complex problems"},
-			}
-			def = "medium"
-		}
-		desc := "Served through sharetoken"
-		if slices.Contains(m.APIs, protocol.APIResponses) {
-			desc += " (native Responses)"
-		}
-		models = append(models, map[string]any{
-			"slug": m.Model, "display_name": m.Model, "description": desc,
-			"default_reasoning_level": def, "supported_reasoning_levels": levels,
-			"shell_type": "shell_command", "visibility": "list", "supported_in_api": true, "priority": i,
-			"additional_speed_tiers": []string{}, "service_tiers": []any{}, "default_service_tier": nil,
-			"availability_nux": nil, "upgrade": nil, "model_messages": nil, "base_instructions": nil,
-			"supports_reasoning_summary_parameter": reasons(m.Model), "default_reasoning_summary": "auto",
-			"support_verbosity": false, "default_verbosity": nil, "apply_patch_tool_type": "freeform",
-			"web_search_tool_type": "text", "truncation_policy": map[string]any{"mode": "bytes", "limit": 10000},
-			"supports_image_detail_original": false, "supports_parallel_tool_calls": true,
-			"context_window": 200000, "max_context_window": 200000, "auto_compact_token_limit": nil,
-			"effective_context_window_percent": 95, "experimental_supported_tools": []string{},
-			"input_modalities": []string{"text", "image"}, "supports_search_tool": false,
-		})
-	}
-	return map[string]any{"models": models}
-}
-
-// reasons guesses whether a model reasons from its name.
-func reasons(model string) bool {
-	m := strings.ToLower(model)
-	for _, s := range []string{"gpt-5", "o1", "o3", "o4", "codex", "claude", "reason", "think", "r1", "deepseek-v4", "gemini-2.5", "gemini-3", "grok-4"} {
-		if strings.Contains(m, s) {
-			return true
-		}
-	}
-	return false
 }

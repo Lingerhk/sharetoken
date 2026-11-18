@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net"
@@ -101,6 +102,7 @@ type Client struct {
 	log       *slog.Logger
 	bg        sync.WaitGroup // disputes being delivered in the background
 	sticky    stickyNodes
+	models    modelsCache
 }
 
 // Attestation is the buyer's TEE trust configuration.
@@ -142,6 +144,11 @@ type ChatRequest struct {
 	// session_id, else its first messages). The node that served the
 	// session last is asked for again while it is available.
 	Session string
+	// OnProgress, when set, is called for each heartbeat of the node while
+	// the job runs (every few seconds while the model thinks or queues), on
+	// the goroutine that delivers the events: the endpoint keeps its client's
+	// connection alive with it.
+	OnProgress func()
 	// PreferNode is set by Chat from the session; callers leave it empty.
 	PreferNode string
 }
@@ -205,6 +212,8 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 		lastRes  *Result
 		rejected int // nodes that refused the request as invalid
 		timing   Timing
+		// asked again: the node whose path broke was asked once more
+		askedAgain bool
 	)
 	start := time.Now()
 	// Compress the request while the coordinator picks a node: sealing needs
@@ -292,10 +301,57 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 			c.background(func() { c.fileDispute(jobID, "job failed before delivering output: "+err.Error()) })
 		}
 		lastErr, lastRes = err, res
+		// The path to the node broke (a reset stream, a closed connection
+		// or transport): the node itself may be fine, and may be the only
+		// one offering the model. It is asked once more, over a new stream
+		// (a new connection if the old one is gone), after a short pause,
+		// as magpie sends again a request whose connection was closed under
+		// it; a second break moves on to another node.
+		if !askedAgain && pathBroke(err) {
+			askedAgain = true
+			prefer = tr.Ticket.Node
+			c.log.Warn("the path to the node broke before any output reached the caller; asking it again", "node", tr.Ticket.Node, "err", err)
+			select {
+			case <-ctx.Done():
+				return lastRes, lastErr
+			case <-time.After(pathRetryPause):
+			}
+			continue
+		}
 		exclude = append(exclude, tr.Ticket.Node)
 		c.log.Warn("node failed before any output reached the caller; failing over", "node", tr.Ticket.Node, "err", err)
 	}
 	return lastRes, lastErr
+}
+
+// maxOpening bounds the opening events held back before an answer.
+const maxOpening = 32
+
+// pathRetryPause is the pause before a node whose path broke is asked again.
+const pathRetryPause = 250 * time.Millisecond
+
+// pathBroke reports whether err is the stream or connection to the node
+// failing (libp2p's stream reset, a closed QUIC transport or connection,
+// a network error such as "can't assign requested address" after a route
+// change), not something the node answered.
+func pathBroke(err error) bool {
+	if err == nil || protocol.CodeOf(err) != "" {
+		return false
+	}
+	if errors.Is(err, network.ErrReset) || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && !ne.Timeout() {
+		return true
+	}
+	msg := err.Error()
+	for _, w := range []string{"stream reset", "transport closed", "connection closed", "connection reset", "can't assign requested address", "network is unreachable", "no route to host", "broken pipe"} {
+		if strings.Contains(msg, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // background runs fn as a tracked background task (dispute delivery).
@@ -509,8 +565,12 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 	defer func() { tm.UpBytes, tm.DownBytes = js.totals() }()
 	defer func() { _ = js.cur().Close() }()
 	// A caller that goes away (the HTTP client closed the connection) stops
-	// the job: the node stops its model and bills what was delivered.
-	defer context.AfterFunc(ctx, js.cancel)()
+	// the job: the node stops its model and bills what was delivered. Once
+	// the caller has the response's last event it may go (Codex over HTTP
+	// closes at response.completed): the job then runs to its receipt, and
+	// the ack goes out, as if the caller had stayed.
+	stopCancel := context.AfterFunc(ctx, js.cancel)
+	defer stopCancel()
 	st := js.cur()
 	tm.Relayed = p2p.IsRelayed(raw.Conn())
 	tm.Via = ""
@@ -566,8 +626,10 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 	dec := protocol.NewResponseDecoder()
 	frames := 0
 	lastData := sent
-	resumedAt := 0 // frames received when the stream was last replaced
-	carried := 0   // bytes of a carried job's frames
+	resumedAt := 0       // frames received when the stream was last replaced
+	carried := 0         // bytes of a carried job's frames
+	answered := false    // the caller has the response's last event
+	var opening [][]byte // opening events held back until the first with content
 recv:
 	for {
 		wait := c.IdleTimeout
@@ -607,6 +669,9 @@ recv:
 		switch {
 		case f.Env == nil && f.Kind == protocol.BinProgress:
 			tm.Progress++
+			if req.OnProgress != nil && !answered {
+				req.OnProgress()
+			}
 			if c.MaxSilence > 0 && time.Since(lastData) > c.MaxSilence {
 				js.cancel()
 				return nil, delivered, fmt.Errorf("node stalled: no response data for %v", c.MaxSilence.Round(time.Second))
@@ -662,12 +727,29 @@ recv:
 						finish = info.FinishReason
 					}
 				}
-				if onChunk != nil {
-					delivered = true
-					if err := onChunk(payload); err != nil {
-						js.cancel()
-						return nil, true, err
+				if onChunk != nil && !answered {
+					// Events that only open the answer are held until one
+					// with content: a node that fails right after them has
+					// delivered nothing, and another node is asked
+					// (sub2api's opening buffer).
+					if !delivered && protocol.OpeningEvent(payload) && len(opening) < maxOpening {
+						opening = append(opening, append([]byte(nil), payload...))
+						continue
 					}
+					// The last event: from here the caller may go without
+					// stopping the job (checked before it is handed over, so
+					// a caller that leaves at once cannot race the ack).
+					if protocol.TerminalEvent(t.API, payload) && stopCancel() {
+						answered = true
+					}
+					delivered = true
+					for _, p := range append(opening, payload) {
+						if err := onChunk(p); err != nil {
+							js.cancel()
+							return nil, true, err
+						}
+					}
+					opening = nil
 				}
 			}
 		case f.Env != nil && f.Env.Type == protocol.TypeReceipt:
@@ -701,6 +783,16 @@ recv:
 		tr.corrupt = errors.New("the response ended without its final frame")
 	}
 
+	if onChunk != nil && len(opening) > 0 && !answered {
+		// an answer of opening events alone: the caller still gets them
+		for _, p := range opening {
+			if err := onChunk(p); err != nil {
+				js.cancel()
+				return nil, true, err
+			}
+		}
+		delivered = true
+	}
 	res = &Result{Ticket: *t, Receipt: sr, Content: content.String(), Reasoning: reasoning.String(), Text: all.String(), ToolCalls: tools.Calls(), FinishReason: finish, Payloads: payloads}
 	res.AnthropicThinking = thinking
 	if err := c.checkReceipt(t, &sr, tr, req.Body, all.String(), meter.Hidden()); err != nil {
@@ -968,8 +1060,13 @@ func (c *Client) Dispute(ctx context.Context, jobID, reason string) error {
 		protocol.DisputeRequest{JobID: jobID, Reason: reason}, protocol.TypeOK, nil)
 }
 
-// Models lists models with live offers.
+// Models lists models with live offers, as the coordinator said within the
+// last minute or so (modelsCache): tools ask often and want it at once.
 func (c *Client) Models(ctx context.Context) ([]protocol.ModelSummary, error) {
+	return c.models.get(ctx, c.fetchModels)
+}
+
+func (c *Client) fetchModels(ctx context.Context) ([]protocol.ModelSummary, error) {
 	var resp protocol.ModelsResponse
 	err := c.call(ctx, protocol.TypeModels, struct{}{}, protocol.TypeModels, &resp)
 	return resp.Models, err

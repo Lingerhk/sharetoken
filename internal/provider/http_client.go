@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"sharetoken/internal/node"
+	"sharetoken/internal/protocol"
 )
 
 // TransportOptions controls a provider's outbound connections. An empty mode
@@ -148,6 +149,7 @@ var makeProviderHTTPClient = func(o TransportOptions) *http.Client {
 		return chromeHTTPClient(o)
 	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = providerDialer().DialContext
 	tr.ResponseHeaderTimeout = headerTimeout
 	if o.ProxyMode == "direct" {
 		tr.Proxy = nil
@@ -194,7 +196,7 @@ func (u *outboundUpstream) Stream(ctx context.Context, r *node.Request, emit fun
 		return err
 	}
 	err := retryTransient(ctx, emit, func(emit func([]byte) error) error {
-		return u.up.Stream(withHTTPClient(ctx, u.client), r, emit)
+		return requestLimited(u.up.Stream(withHTTPClient(ctx, u.client), r, emit))
 	})
 	recordProviderStatus(u.owner, err)
 	return err
@@ -215,16 +217,47 @@ var (
 // that passes (overloaded, a gateway error, a broken connection, a rate
 // limit of a few seconds) before any of its answer was passed on. A node has
 // one account per model: without this, every such moment is a failed job.
+//
+// The events that only open an answer (message_start, response.created, a
+// chat chunk with the role alone, pings) are held back until the first one
+// with content: an overload told right after them (Anthropic's in-stream
+// overloaded_error, the ChatGPT backend's response.failed) is still a
+// failure before any answer, and sent again (sub2api 38eb97bd7, f1013f177).
 func retryTransient(ctx context.Context, emit func([]byte) error, do func(emit func([]byte) error) error) error {
 	sent := false
+	var held [][]byte
+	flush := func() error {
+		for _, h := range held {
+			if err := emit(h); err != nil {
+				return err
+			}
+		}
+		held = nil
+		return nil
+	}
 	out := func(p []byte) error {
+		if !sent && openingEvent(p) && len(held) < maxHeldOpening {
+			held = append(held, append([]byte(nil), p...))
+			return nil
+		}
 		sent = true
+		if err := flush(); err != nil {
+			return err
+		}
 		return emit(p)
 	}
 	for attempt := 0; ; attempt++ {
+		held = nil
 		err := do(out)
 		wait, again := transientWait(err, attempt)
 		if !again || sent || attempt >= transientRetries || ctx.Err() != nil {
+			if !sent {
+				// An answer of opening events alone, or a failure that
+				// is not tried again: the buyer still gets what came.
+				if ferr := flush(); err == nil {
+					err = ferr
+				}
+			}
 			return err
 		}
 		select {
@@ -234,6 +267,12 @@ func retryTransient(ctx context.Context, emit func([]byte) error, do func(emit f
 		}
 	}
 }
+
+// maxHeldOpening bounds the opening events held back before an answer.
+const maxHeldOpening = 32
+
+// openingEvent: see protocol.OpeningEvent.
+func openingEvent(p []byte) bool { return protocol.OpeningEvent(p) }
 
 // transientWait tells whether err is worth another try, and after how long.
 func transientWait(err error, attempt int) (time.Duration, bool) {
@@ -272,7 +311,7 @@ func (u outboundCompactor) Compact(ctx context.Context, r *node.Request, emit fu
 		return err
 	}
 	err := retryTransient(ctx, emit, func(emit func([]byte) error) error {
-		return u.up.(node.Compactor).Compact(withHTTPClient(ctx, u.client), r, emit)
+		return requestLimited(u.up.(node.Compactor).Compact(withHTTPClient(ctx, u.client), r, emit))
 	})
 	recordProviderStatus(u.owner, err)
 	return err

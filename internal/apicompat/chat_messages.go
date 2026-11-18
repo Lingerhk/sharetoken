@@ -147,9 +147,8 @@ func chatMessagesRequest(r *chatRequest) (map[string]any, error) {
 	if s := slices.DeleteFunc(r.stops(), func(s string) bool { return strings.TrimSpace(s) == "" }); len(s) > 0 {
 		req["stop_sequences"] = s
 	}
-	if r.User != "" {
-		req["metadata"] = map[string]any{"user_id": r.User}
-	}
+	// The chat request's user goes nowhere: it names the buyer's own user,
+	// and the seller's model server has no business knowing it.
 
 	forced := false
 	tools, err := chatAnthropicTools(r.Tools)
@@ -180,10 +179,75 @@ func chatMessagesRequest(r *chatRequest) (map[string]any, error) {
 		if choice != nil {
 			req["tool_choice"] = choice
 		}
+	} else {
+		var called calledTools
+		for _, m := range msgs {
+			blocks, _ := m["content"].([]any)
+			for _, b := range blocks {
+				if block, ok := b.(map[string]any); ok {
+					called.add(block)
+				}
+			}
+		}
+		called.declare(req)
 	}
 	chatAnthropicThinking(req, r, maxTokens, forced)
+	if _, _, claude := claudeVersion(r.Model); claude {
+		chatAutoCache(req) // other vendors' Messages endpoints cache by themselves
+	}
 	chatNormalizeCache(req)
 	return req, nil
+}
+
+// chatAutoCache marks cache breakpoints on a request whose client marked
+// none (OpenCode, Cline and most chat clients know nothing of them): the
+// tools, the system prompt and the newest content, as the Responses
+// conversion does, so each turn reads what the last one wrote instead of
+// paying the whole prompt at the full price (magpie marks them the same
+// way). A client's own breakpoints are kept as they are.
+func chatAutoCache(req map[string]any) {
+	marked := func(b map[string]any) bool { _, ok := b["cache_control"]; return ok }
+	tools, _ := req["tools"].([]any)
+	system, _ := req["system"].([]any)
+	msgs, _ := req["messages"].([]map[string]any)
+	for _, list := range [][]any{tools, system} {
+		for _, it := range list {
+			if b, ok := it.(map[string]any); ok && marked(b) {
+				return
+			}
+		}
+	}
+	for _, m := range msgs {
+		blocks, _ := m["content"].([]any)
+		for _, it := range blocks {
+			if b, ok := it.(map[string]any); ok && marked(b) {
+				return
+			}
+		}
+	}
+	mark := func(b map[string]any) { b["cache_control"] = map[string]any{"type": "ephemeral"} }
+	if n := len(tools); n > 0 {
+		if b, ok := tools[n-1].(map[string]any); ok {
+			mark(b)
+		}
+	}
+	if n := len(system); n > 0 {
+		if b, ok := system[n-1].(map[string]any); ok {
+			mark(b)
+		}
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		blocks, _ := msgs[i]["content"].([]any)
+		for j := len(blocks) - 1; j >= 0; j-- {
+			if b, ok := blocks[j].(map[string]any); ok {
+				switch b["type"] {
+				case "text", "image", "document", "tool_use", "tool_result":
+					mark(b)
+					return
+				}
+			}
+		}
+	}
 }
 
 // claudeVersion reads a Claude model name: its family (opus, sonnet, haiku,
@@ -244,6 +308,127 @@ func claudeThinkingOff(model string) map[string]any {
 		return map[string]any{"type": "adaptive"}
 	}
 	return map[string]any{"type": "disabled"}
+}
+
+// ClaudeThinkingOffAsTaken rewrites a native Messages request that turns
+// thinking off (thinking.type disabled or between_tools) into the form the
+// model takes, by Anthropic's rules for each line (after magpie's
+// thinkingOffAsTaken):
+//
+//   - Sonnet 5.5 refuses disabled ("To turn thinking off on this model, send
+//     "thinking": {"type": "between_tools"} instead of {"type": "disabled"}")
+//     and takes between_tools alone in thinking, at effort high or below;
+//   - Opus 5.5, Fable 5 and Mythos 5 cannot turn thinking off: thinking is left
+//     out (they think adaptively), at effort low unless one is asked, with
+//     room for a short answer on top of the thinking;
+//   - Opus 5 and Haiku 5.5 take disabled at effort high or below;
+//   - older Claudes and Sonnet/Haiku 5 take disabled (between_tools becomes
+//     disabled).
+//
+// Claude Code turns thinking off for side requests (titles, classifiers)
+// whenever it cannot tell the model refuses it, and a model reached through
+// a gateway is one. A model these rules do not know is left as sent. It
+// reports whether req changed.
+func ClaudeThinkingOffAsTaken(req map[string]any, model string) bool {
+	th, _ := req["thinking"].(map[string]any)
+	t, _ := th["type"].(string)
+	if t != "disabled" && t != "between_tools" {
+		return false
+	}
+	family, v, ok := claudeVersion(model)
+	if !ok {
+		return false
+	}
+	oc, _ := req["output_config"].(map[string]any)
+	effort, _ := oc["effort"].(string)
+	aboveHigh := effort == "xhigh" || effort == "max"
+	const (
+		taken = iota
+		upToHigh
+		betweenTools
+		never
+	)
+	rule := -1
+	switch {
+	case (family == "fable" || family == "mythos") && v >= 50 && v < 60:
+		rule = never
+	case family == "fable" || family == "mythos":
+	case v < 50:
+		rule = taken
+	case v == 50 && family == "opus":
+		rule = upToHigh
+	case v == 50:
+		rule = taken
+	case v == 55 && family == "sonnet":
+		rule = betweenTools
+	case v == 55 && family == "opus":
+		rule = never
+	case v == 55 && family == "haiku":
+		rule = upToHigh
+	}
+	effortTo := ""
+	switch rule {
+	case taken:
+		if t == "disabled" {
+			return false
+		}
+		req["thinking"] = map[string]any{"type": "disabled"}
+	case upToHigh:
+		if t == "disabled" && !aboveHigh && len(th) == 1 {
+			return false
+		}
+		req["thinking"] = map[string]any{"type": "disabled"}
+		if aboveHigh {
+			effortTo = "high"
+		}
+	case betweenTools:
+		if t == "between_tools" && len(th) == 1 && !aboveHigh {
+			return false
+		}
+		// between_tools takes no other field (display, budget_tokens)
+		req["thinking"] = map[string]any{"type": "between_tools"}
+		if aboveHigh {
+			effortTo = "high"
+		}
+	case never:
+		delete(req, "thinking")
+		if effort == "" {
+			effortTo = "low"
+		}
+		if n := maxTokensOf(req["max_tokens"]); n > 0 && n < claudeThinkingRoom {
+			req["max_tokens"] = json.Number(strconv.FormatInt(n+claudeThinkingRoom, 10))
+		}
+	default:
+		return false
+	}
+	if effortTo != "" {
+		if oc == nil {
+			oc = map[string]any{}
+			req["output_config"] = oc
+		}
+		oc["effort"] = effortTo
+	}
+	return true
+}
+
+// claudeThinkingRoom is what a model that always thinks is given on top of a
+// short answer's max_tokens when thinking off is left out for it, as Claude
+// Code gives its classifier (magpie: classifierRoom).
+const claudeThinkingRoom = 2048
+
+func maxTokensOf(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	}
+	return 0
 }
 
 // claudeAdaptive maps an OpenAI reasoning effort onto an adaptive model:

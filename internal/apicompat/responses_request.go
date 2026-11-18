@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -244,6 +246,10 @@ func respLowerItems(raw []map[string]json.RawMessage, tools *respTools) []respIt
 		case "function_call_output", "custom_tool_call_output", "tool_search_output",
 			"local_shell_call_output", "mcp_tool_call_output":
 			callID := respString(m["call_id"])
+			if text, ok := ExternalContext(typ, respString(m["namespace"]), callID, respString(m["name"]), respString(m["output"])); ok {
+				items = append(items, respItem{kind: respItemMessage, role: "user", parts: []respPart{{kind: "text", text: text}}})
+				continue
+			}
 			if callID == "" || skipped[callID] {
 				continue
 			}
@@ -272,6 +278,75 @@ func respLowerItems(raw []map[string]json.RawMessage, tools *respTools) []respIt
 		}
 	}
 	return items
+}
+
+// Codex hands the model context from outside the conversation (the page a
+// browser shows, the goal it works on, text it does not trust) as a
+// function_call_output of namespace "agent" with no call_id: an output no
+// call asked for. The Responses API over HTTP refuses such an output, and
+// the other APIs have nowhere to put it, so it goes as what older Codex
+// versions sent: a user message with the text in <external_NAME> tags.
+var codexSelectedPage = regexp.MustCompile(`^codex_apps_selected_page_part_([1-9][0-9]*)_of_([1-9][0-9]*)$`)
+
+// ExternalContext returns the user message text an input item of type typ
+// stands for when it is such external context, and false when it is not
+// (an ordinary tool output, or one whose content is not what Codex writes
+// for that name).
+func ExternalContext(typ, namespace, callID, name, output string) (string, bool) {
+	if typ != "function_call_output" || namespace != "agent" || strings.TrimSpace(callID) != "" {
+		return "", false
+	}
+	switch name {
+	case "browser_info", "goal_objective", "untrusted_context":
+		if strings.TrimSpace(output) == "" {
+			return "", false
+		}
+		return "<external_" + name + ">" + output + "</external_" + name + ">", true
+	}
+	if !externalPage(name, output) {
+		return "", false
+	}
+	return "<external_" + name + ">\n" + output + "\n</external_" + name + ">", true
+}
+
+// externalPage tells whether output is a page snapshot Codex sends under
+// name: a JSON object with a page_id, whole or in numbered parts.
+func externalPage(name, output string) bool {
+	if name == "codex_apps_open_page" {
+		return externalSnapshot(output)
+	}
+	m := codexSelectedPage.FindStringSubmatch(name)
+	if m == nil {
+		return false
+	}
+	part, err1 := strconv.Atoi(m[1])
+	total, err2 := strconv.Atoi(m[2])
+	if err1 != nil || err2 != nil || part > total {
+		return false
+	}
+	header, snapshot, ok := strings.Cut(output, "\n")
+	if !ok || strings.TrimSuffix(header, "\r") != fmt.Sprintf("Companion Page snapshot part %d of %d:", part, total) || strings.TrimSpace(snapshot) == "" {
+		return false
+	}
+	// A snapshot in several parts may be cut inside a JSON string: each part
+	// goes as it is.
+	return total > 1 || externalSnapshot(snapshot)
+}
+
+func externalSnapshot(text string) bool {
+	var snapshot map[string]json.RawMessage
+	if json.Unmarshal([]byte(text), &snapshot) != nil {
+		return false
+	}
+	id, ok := snapshot["page_id"]
+	if !ok {
+		return false
+	}
+	if strings.TrimSpace(string(id)) == "null" {
+		return true
+	}
+	var s string
+	return json.Unmarshal(id, &s) == nil && strings.TrimSpace(s) != ""
 }
 
 // respParseContent reads message content: a string or an array of parts.

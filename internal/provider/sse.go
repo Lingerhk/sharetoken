@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"sharetoken/internal/node"
 )
 
 // httpClient has no overall timeout: streams run long. The job's context
@@ -37,6 +39,12 @@ func postSSEDone(ctx context.Context, url string, header http.Header, body []byt
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "text/event-stream")
 	}
+	// An idempotency key with no value is never sent, but lets Go's transport
+	// send the request again on a new connection when the reused keep-alive
+	// one turns out closed by the server before the request went out
+	// ("EOF", "broken pipe"): the server never had it (after magpie's
+	// replayable).
+	req.Header["X-Idempotency-Key"] = nil
 	resp, err := clientForContext(ctx).Do(req)
 	if err != nil {
 		return false, err
@@ -46,11 +54,29 @@ func postSSEDone(ctx context.Context, url string, header http.Header, body []byt
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return false, responseStatus(resp, string(msg))
 	}
+	// A 200 that is one JSON document, not a stream: an error some servers
+	// send this way, or an answer from a server that did not stream. Either
+	// is told as it is rather than as a stream that ended early.
+	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "application/json") {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if e := bareError(resp, msg); e != nil {
+			return false, e
+		}
+		return false, &node.StatusError{Status: http.StatusBadGateway, Body: "the model server answered with JSON, not a stream: " + clip(strings.TrimSpace(string(msg)), 300)}
+	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), maxSSELine)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if !bytes.HasPrefix(line, []byte("data:")) {
+			// An error written as a bare JSON line between the events
+			// (Code Assist does), not as data: it would otherwise be skipped
+			// and the job fail as "the stream ended" (magpie: sse_bare.go).
+			if bytes.HasPrefix(bytes.TrimSpace(line), []byte("{")) {
+				if e := bareError(resp, line); e != nil {
+					return done, e
+				}
+			}
 			continue
 		}
 		data := bytes.TrimSpace(line[len("data:"):])
@@ -66,6 +92,41 @@ func postSSEDone(ctx context.Context, url string, header http.Header, body []byt
 		}
 	}
 	return done, sc.Err()
+}
+
+// bareError reads a JSON error object ({"error": {...}} or {"error": "…"})
+// as the model server's refusal: its status from the error's numeric code
+// (Google's), else from its type, else 502. nil when b is no error.
+func bareError(resp *http.Response, b []byte) *node.StatusError {
+	var v struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(b), &v) != nil || len(v.Error) == 0 || string(v.Error) == "null" {
+		return nil
+	}
+	var obj struct {
+		Code    any    `json:"code"`
+		Type    string `json:"type"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	status := http.StatusBadGateway
+	if json.Unmarshal(v.Error, &obj) == nil {
+		if c, ok := obj.Code.(float64); ok && c >= 400 && c < 600 {
+			status = int(c)
+		} else if strings.Contains(obj.Type, "invalid_request") || obj.Status == "INVALID_ARGUMENT" {
+			status = http.StatusBadRequest
+		} else if strings.Contains(obj.Type, "rate_limit") || obj.Status == "RESOURCE_EXHAUSTED" {
+			status = http.StatusTooManyRequests
+		} else if strings.Contains(obj.Type, "overloaded") || obj.Status == "UNAVAILABLE" {
+			status = http.StatusServiceUnavailable
+		}
+	}
+	e := &node.StatusError{Status: status, Body: clip(strings.TrimSpace(string(b)), 1000)}
+	if status == http.StatusTooManyRequests {
+		e.RetryAt = limitReset(resp.Header, string(b), time.Now())
+	}
+	return e
 }
 
 // getJSON fetches url and decodes the JSON answer.

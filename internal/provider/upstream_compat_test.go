@@ -200,6 +200,17 @@ func TestTransientFailuresAreRetried(t *testing.T) {
 	if n, err := run(scripted{Status: 200, Body: `{"error":{"message":"overloaded"}}`}, ok); err != nil || n != 2 {
 		t.Errorf("failure before the answer: %d requests, %v", n, err)
 	}
+	// The same error after a chunk that carries the role alone: still before
+	// any answer, and the role chunk is not passed on twice.
+	var got []string
+	srv0, sent0 := scriptedServer(t, scripted{Status: 200, Body: `{"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}` + "\n" + `{"error":{"message":"overloaded"}}`}, ok)
+	up0 := &outboundUpstream{up: &openAIUpstream{base: srv0.URL, header: http.Header{}}, client: http.DefaultClient, owner: t.Name() + "opening"}
+	if err := up0.Stream(context.Background(), &node.Request{API: protocol.APIChat, Body: []byte(`{"model":"m","messages":[]}`)}, func(p []byte) error { got = append(got, string(p)); return nil }); err != nil || len(*sent0) != 2 || strings.Count(strings.Join(got, ""), `"role"`) > 1 {
+		t.Errorf("failure after the opening chunk: %d requests, %v, %q", len(*sent0), err, got)
+	}
+	if !openingEvent([]byte(`{"type":"message_start","message":{}}`)) || !openingEvent([]byte(`{"type":"response.created","response":{}}`)) || openingEvent([]byte(`{"type":"content_block_delta"}`)) || openingEvent([]byte(`{"choices":[{"delta":{"content":"x"}}]}`)) {
+		t.Error("opening events")
+	}
 	// A connection that breaks before the answer.
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -536,6 +547,18 @@ func TestRefusedEffortAndSchemaAreRepaired(t *testing.T) {
 	up = &openAIUpstream{base: srv.URL, header: http.Header{}, tokensField: "max_tokens"}
 	if err := up.Stream(context.Background(), &node.Request{API: protocol.APIChat, Body: []byte(`{"model":"gemini-x","max_tokens":10,"stream":true,"reasoning_effort":"none","messages":[]}`)}, discard); err != nil || len(*sent) != 2 || (*sent)[1]["reasoning_effort"] != "minimal" {
 		t.Fatalf("gemini: %v %s", err, asJSON(t, *sent))
+	}
+
+	// A Gemini Pro model has no "minimal" either: "none" ends at "low", at
+	// once from then on.
+	noMinimal := scripted{Status: 400, Body: `[{"error":{"code":400,"message":"Thinking level MINIMAL is not supported for this model. Please retry with other thinking level.","status":"INVALID_ARGUMENT"}}]`}
+	srv, sent = scriptedServer(t, scripted{Status: 400, Body: `[{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}]`}, noMinimal, scripted{Status: 200, Body: chatOK}, scripted{Status: 200, Body: chatOK}, scripted{Status: 200, Body: chatOK})
+	up = &openAIUpstream{base: srv.URL, header: http.Header{}, tokensField: "max_tokens"}
+	for i, effort := range []string{"none", "none", "minimal"} {
+		body := []byte(`{"model":"gemini-pro-x","max_tokens":10,"stream":true,"reasoning_effort":"` + effort + `","messages":[]}`)
+		if err := up.Stream(context.Background(), &node.Request{API: protocol.APIChat, Body: body}, discard); err != nil || len(*sent) != 3+i || (*sent)[2+i]["reasoning_effort"] != "low" {
+			t.Fatalf("gemini pro, request %d: %v %s", i, err, asJSON(t, *sent))
+		}
 	}
 
 	// A chat API without structured output: JSON mode, the schema in a system

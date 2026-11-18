@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -71,20 +72,46 @@ func codexRequest(body []byte) (req map[string]any, limit uint64, renamed bool, 
 	if reasoning, ok := req["reasoning"].(map[string]any); ok && reasoning["effort"] == "minimal" {
 		reasoning["effort"] = "none"
 	}
+	// The backend checks tool schemas' regular expressions as Python does.
+	cleanToolPatterns(req)
 	// The backend cannot read a compaction item sharetoken made (from
 	// another model's summary): it becomes the summary again.
 	if input, ok := req["input"].([]any); ok {
+		declared := additionalToolsIDs(input)
 		out := input[:0]
 		for _, it := range input {
 			m, _ := it.(map[string]any)
 			// Nothing is stored (store=false), so the backend finds no item
 			// by its ID: a reference to one cannot be resolved, and an item
 			// sent whole is refused for the ID it had in an earlier answer
-			// ("Item with id 'rs_…' not found"). Codex sends none.
+			// ("Item with id 'rs_…' not found"). Codex sends none, but for
+			// the additional_tools declarations of this same request: their
+			// IDs name what is declared here, not something stored, and
+			// without them the backend's native tool discovery falls back to
+			// plain function calls.
 			if m["type"] == "item_reference" {
+				id, _ := m["id"].(string)
+				if to, ok := declared[id]; ok {
+					m["id"] = to
+					out = append(out, it)
+				}
 				continue
 			}
-			delete(m, "id")
+			if m["type"] == "additional_tools" {
+				if id, ok := m["id"].(string); ok {
+					m["id"] = declared[id]
+				}
+			} else {
+				delete(m, "id")
+			}
+			// Context Codex gives from outside the conversation, as an
+			// output without a call: the backend refuses that over HTTP.
+			if text, ok := codexExternalContext(m); ok {
+				it = map[string]any{"type": "message", "role": "user", "content": []any{
+					map[string]any{"type": "input_text", "text": text}}}
+				out = append(out, it)
+				continue
+			}
 			// The backend takes no system messages; Codex's own are developer ones.
 			if m["role"] == "system" {
 				m["role"] = "developer"
@@ -109,6 +136,48 @@ func codexRequest(body []byte) (req map[string]any, limit uint64, renamed bool, 
 		req["input"] = out
 	}
 	return req, limit, renamed, nil
+}
+
+// additionalToolsIDs maps the ID of each additional_tools item in input to
+// the one it goes with: a UUID-shaped one (at_ and 8-4-4-4-12 hex digits)
+// as the 32 digits without dashes, which is how the backend takes it, the
+// others as they are.
+func additionalToolsIDs(input []any) map[string]string {
+	ids := map[string]string{}
+	for _, it := range input {
+		if m, _ := it.(map[string]any); m["type"] == "additional_tools" {
+			if id, ok := m["id"].(string); ok {
+				ids[id] = compactToolsID(id)
+			}
+		}
+	}
+	return ids
+}
+
+func compactToolsID(id string) string {
+	if len(id) != 39 || !strings.HasPrefix(id, "at_") || id[11] != '-' || id[16] != '-' || id[21] != '-' || id[26] != '-' {
+		return id
+	}
+	hex := strings.ReplaceAll(id[3:], "-", "")
+	for _, r := range hex {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return id
+		}
+	}
+	return "at_" + hex
+}
+
+// codexExternalContext is apicompat.ExternalContext of an input item.
+func codexExternalContext(m map[string]any) (string, bool) {
+	str := func(k string) string { s, _ := m[k].(string); return s }
+	callID := str("call_id")
+	if v, ok := m["call_id"]; ok && v != nil && callID == "" {
+		if _, isString := v.(string); !isString {
+			return "", false // a call_id of another kind is no missing one
+		}
+	}
+	typ, _ := m["type"].(string)
+	return apicompat.ExternalContext(typ, str("namespace"), callID, str("name"), str("output"))
 }
 
 // codexStream passes the backend's events on. It puts the reserved tool name
@@ -175,8 +244,7 @@ func (s *codexStream) event(data []byte) error {
 	s.seq = max(s.seq, ev.Seq)
 	switch ev.Type {
 	case "error", "response.failed":
-		_, msg := eventType(data)
-		return &node.StatusError{Status: http.StatusBadGateway, Body: clip(ev.Type+": "+msg, 300)}
+		return responsesStreamError(data)
 	case "response.created":
 		s.response = ev.Response
 	case "response.output_item.added":
@@ -344,7 +412,7 @@ func streamCodex(ctx context.Context, url string, header http.Header, body []byt
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	st := &codexStream{emit: emit, renamed: renamed, limit: limit, estPrompt: estPrompt}
-	err = postSSE(ctx, url, header, out, st.event)
+	err = edgeReset(postSSE(ctx, url, header, out, st.event))
 	switch {
 	case err == errOutputLimit:
 		return st.end()
@@ -389,7 +457,7 @@ func compactCodex(ctx context.Context, url string, header http.Header, body []by
 		return err
 	}
 	if res.StatusCode != http.StatusOK {
-		return responseStatus(res, clip(strings.TrimSpace(string(raw)), 4096))
+		return edgeReset(responseStatus(res, clip(strings.TrimSpace(string(raw)), 4096)))
 	}
 	var resp map[string]any
 	if err := json.Unmarshal(raw, &resp); err != nil {
@@ -411,17 +479,162 @@ func compactCodex(ctx context.Context, url string, header http.Header, body []by
 // that moved from another seller carries that seller's. The reasoning items
 // go first; if the request is refused again, so do the backend's compaction
 // items (those sharetoken made hold a readable summary and stay).
+//
+// A request refused for a tool schema's regular expression (OpenAI reads
+// them as Python does, and MCP servers write them for JavaScript) goes again
+// first, without the expressions Python cannot read.
 func retryWithoutReasoning(body []byte, do func([]byte) error) error {
+	return retryWithoutReasoningNoting(body, do, nil)
+}
+
+// retryWithoutReasoningNoting is retryWithoutReasoning that tells refused,
+// when the request without some items was answered, what was sent and what
+// went in its place: those items are the ones the upstream could not read
+// (refusedSeals remembers them).
+func retryWithoutReasoningNoting(body []byte, do func([]byte) error, refused func(sent, left []byte)) error {
 	err := do(body)
-	for _, strip := range []func([]byte) ([]byte, bool){withoutReasoning, withoutForeignCompaction} {
-		var se *node.StatusError
-		if !errors.As(err, &se) || se.Status != http.StatusBadRequest || !strings.Contains(strings.ToLower(se.Body), "encrypted") {
-			return err
-		}
-		if stripped, ok := strip(body); ok {
-			body = stripped
+	if refusedPattern(err) {
+		if cleaned, ok := withoutToolPatterns(body); ok {
+			body = cleaned
 			err = do(body)
 		}
+	}
+	first := body
+	stripped := false
+	for _, strip := range []func([]byte) ([]byte, bool){withoutReasoning, withoutForeignCompaction} {
+		if !refusedForeignReasoning(err) {
+			break
+		}
+		if less, ok := strip(body); ok {
+			body, stripped = less, true
+			err = do(body)
+		}
+	}
+	if stripped && err == nil && refused != nil {
+		refused(first, body)
+	}
+	return err
+}
+
+// foreignReasoning is how upstreams refuse encrypted content another account
+// made: OpenAI's "The encrypted content for item rs_… could not be verified"
+// (invalid_encrypted_content), and "Encrypted content could not be decrypted
+// or parsed" for another account's web search; xAI's "Could not decrypt the
+// provided encrypted_content"; Azure's "invalid encrypted summary"; and xAI's
+// "Could not decode the compaction blob", which says nothing of encrypted
+// content.
+var foreignReasoning = regexp.MustCompile(`(?i)invalid_encrypted_content|invalid[ _]encrypted[ _](summary|content)|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content|could not (decode|decrypt).{0,20}compaction[ _]blob`)
+
+// refusedForeignReasoning tells whether err is a refusal of the request's
+// encrypted content.
+func refusedForeignReasoning(err error) bool {
+	var se *node.StatusError
+	if !errors.As(err, &se) || se.Status != http.StatusBadRequest {
+		return false
+	}
+	return foreignReasoning.MatchString(se.Body) || strings.Contains(strings.ToLower(se.Body), "encrypted")
+}
+
+// refusedPattern tells whether err is a refusal of a tool schema's regular
+// expression.
+func refusedPattern(err error) bool {
+	var se *node.StatusError
+	if !errors.As(err, &se) || se.Status != http.StatusBadRequest {
+		return false
+	}
+	b := strings.ToLower(se.Body)
+	return strings.Contains(b, "regex") || strings.Contains(b, "regular expression") ||
+		strings.Contains(b, "look-behind") || strings.Contains(b, "lookbehind") ||
+		strings.Contains(b, "pattern") && strings.Contains(b, "invalid") && strings.Contains(b, "schema")
+}
+
+// responsesStreamError is the error a Responses stream's error or
+// response.failed event stands for. Most are the server's failure (502),
+// but some say what the buyer should do, and keep the upstream's code in
+// a JSON body as an HTTP answer would carry it:
+//
+//   - context_length_exceeded, context_too_large: 400. The conversation is
+//     too long for the model on any seller; the client compacts it when it
+//     reads that code (Codex does), and another seller would only fail the
+//     same way.
+//   - server_is_overloaded, slow_down: 503, the server sheds load for a while.
+//   - rate limits and usage limits: 429, until the reset the error tells.
+func responsesStreamError(data []byte) *node.StatusError {
+	var ev struct {
+		Type     string         `json:"type"`
+		Code     any            `json:"code"`
+		Message  any            `json:"message"`
+		Error    map[string]any `json:"error"`
+		Response struct {
+			Error map[string]any `json:"error"`
+		} `json:"response"`
+	}
+	_ = json.Unmarshal(data, &ev)
+	// The error is the event's error, the failed response's, or the event
+	// itself (the API's error event has code and message at its top).
+	e := ev.Error
+	if errCode(e) == "" && errCode(ev.Response.Error) != "" {
+		e = ev.Response.Error
+	}
+	if errCode(e) == "" && ev.Code != nil {
+		e = map[string]any{"code": ev.Code, "message": ev.Message}
+	}
+	code := errCode(e)
+	msg, _ := e["message"].(string)
+	text := strings.ToLower(code + " " + msg)
+	status := http.StatusBadGateway
+	switch {
+	case code == "context_length_exceeded" || code == "context_too_large" ||
+		strings.Contains(text, "context_length_exceeded") || strings.Contains(text, "context_too_large"):
+		status = http.StatusBadRequest
+	case code == "server_is_overloaded" || code == "slow_down":
+		status = http.StatusServiceUnavailable
+	case strings.Contains(code, "rate_limit") || strings.Contains(code, "usage_limit"):
+		status = http.StatusTooManyRequests
+	default:
+		_, m := eventType(data)
+		return &node.StatusError{Status: http.StatusBadGateway, Body: clip(ev.Type+": "+m, 300)}
+	}
+	out := make(map[string]any, len(e))
+	for k, v := range e {
+		out[k] = v
+	}
+	out["code"], out["message"] = code, clip(msg, 2000)
+	body, _ := json.Marshal(map[string]any{"error": out})
+	se := &node.StatusError{Status: status, Body: string(body)}
+	if status == http.StatusTooManyRequests {
+		// limitReset reads the reset of a limit by the error's type, which
+		// in a stream may come as its code only.
+		if code == "usage_limit_reached" || code == "rate_limit_exceeded" {
+			out["type"] = code
+		}
+		doc, _ := json.Marshal(map[string]any{"error": out})
+		se.RetryAt = limitReset(nil, string(doc), timeNow())
+	}
+	return se
+}
+
+// errCode is an error object's code, or its type when it has none.
+func errCode(e map[string]any) string {
+	if c, ok := e["code"].(string); ok && strings.TrimSpace(c) != "" {
+		return strings.ToLower(strings.TrimSpace(c))
+	}
+	t, _ := e["type"].(string)
+	return strings.ToLower(strings.TrimSpace(t))
+}
+
+// ChatGPT's edge (Envoy) answers for the backend when it closed the
+// connection before replying: 503 "upstream connect error or
+// disconnect/reset before headers", or, when the request was too large for
+// Envoy to keep for its own retry, 507 "exceeded request buffer limit while
+// retrying upstream". Both are that same reset, which passes when asked
+// again; the 507 is read as a 503 so that it is.
+var edgeUnbuffered = regexp.MustCompile(`(?i)exceeded request buffer limit while retrying`)
+
+func edgeReset(err error) error {
+	var se *node.StatusError
+	if errors.As(err, &se) && se.Status == http.StatusInsufficientStorage && edgeUnbuffered.MatchString(se.Body) {
+		se.Status = http.StatusServiceUnavailable
 	}
 	return err
 }
@@ -470,9 +683,10 @@ func withoutItems(body []byte, drop func(map[string]any) bool) ([]byte, bool) {
 
 // dropConvertedReasoning removes from a Responses request the reasoning
 // items sharetoken's conversions made: an OpenAI model server cannot read
-// them.
+// them. Codex's external context, an output without a call it refuses,
+// goes as the user message it stands for.
 func dropConvertedReasoning(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"sharetoken-`)) {
+	if !bytes.Contains(body, []byte(`"sharetoken-`)) && !bytes.Contains(body, []byte(`"agent"`)) {
 		return body
 	}
 	req, err := decodeObject(body)
@@ -482,10 +696,15 @@ func dropConvertedReasoning(body []byte) []byte {
 	input, _ := req["input"].([]any)
 	out := input[:0]
 	for _, it := range input {
-		if m, _ := it.(map[string]any); m["type"] == "reasoning" {
+		m, _ := it.(map[string]any)
+		if m["type"] == "reasoning" {
 			if enc, _ := m["encrypted_content"].(string); apicompat.IsConverted(enc) {
 				continue
 			}
+		}
+		if text, ok := codexExternalContext(m); ok {
+			it = map[string]any{"type": "message", "role": "user", "content": []any{
+				map[string]any{"type": "input_text", "text": text}}}
 		}
 		out = append(out, it)
 	}
@@ -495,4 +714,155 @@ func dropConvertedReasoning(body []byte) []byte {
 		return body
 	}
 	return b
+}
+
+// OpenAI checks a tool schema's "pattern" with Python's re, which refuses
+// what JavaScript's and other engines take: lookaround, (?<name>…) and
+// (?'name'…) groups, and backslash escapes of letters it does not know
+// (\p{L}, \R, …). Clients write such schemas (zod for MCP servers), and the
+// whole request is refused for one. Such a pattern is dropped, and so is a
+// patternProperties key that is one; an object that lost such a key no
+// longer refuses other properties (additionalProperties: false would now
+// refuse what the dropped key allowed). As sub2api does.
+
+// unsupportedPattern tells whether Python's re refuses pattern.
+func unsupportedPattern(pattern string) bool {
+	inClass := false
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '\\':
+			if i+1 >= len(pattern) {
+				return true
+			}
+			c := pattern[i+1]
+			if (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') && !strings.ContainsRune("abfnrtvdDsSwWAZBNuUx", rune(c)) {
+				return true
+			}
+			i++
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '(':
+			if inClass || i+1 >= len(pattern) || pattern[i+1] != '?' {
+				continue
+			}
+			if i+2 >= len(pattern) {
+				return true
+			}
+			switch pattern[i+2] {
+			case '=', '!', '<', '\'':
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// cleanToolPatterns removes from a decoded Responses request's tool schemas
+// the patterns Python cannot read: those of its tools, and of the tools
+// additional_tools input items declare. It tells whether it changed any.
+func cleanToolPatterns(req map[string]any) bool {
+	changed := patternTools(req["tools"])
+	input, _ := req["input"].([]any)
+	for _, it := range input {
+		if m, _ := it.(map[string]any); m != nil {
+			changed = patternTools(m["tools"]) || changed
+		}
+	}
+	return changed
+}
+
+// withoutToolPatterns is cleanToolPatterns of a request body; false when
+// nothing changed.
+func withoutToolPatterns(body []byte) ([]byte, bool) {
+	req, err := decodeObject(body)
+	if err != nil || !cleanToolPatterns(req) {
+		return nil, false
+	}
+	b, err := json.Marshal(req)
+	return b, err == nil
+}
+
+// patternTools cleans a list of tools: a function's parameters (also under
+// "function", as chat writes it, or input_schema), and the tools of a
+// namespace.
+func patternTools(v any) bool {
+	tools, _ := v.([]any)
+	changed := false
+	for _, t := range tools {
+		m, _ := t.(map[string]any)
+		if m == nil {
+			continue
+		}
+		for _, k := range []string{"parameters", "input_schema"} {
+			changed = patternSchema(m[k], 0) || changed
+		}
+		if f, _ := m["function"].(map[string]any); f != nil {
+			changed = patternSchema(f["parameters"], 0) || changed
+			changed = patternTools(f["tools"]) || changed
+		}
+		changed = patternTools(m["tools"]) || changed
+	}
+	return changed
+}
+
+// maxSchemaDepth bounds the walk of a schema a client wrote.
+const maxSchemaDepth = 128
+
+// patternSchema cleans one schema and those inside it. It does not look into
+// keywords whose values are instances, not schemas (default, examples,
+// const, enum).
+func patternSchema(v any, depth int) bool {
+	s, _ := v.(map[string]any)
+	if s == nil || depth > maxSchemaDepth {
+		return false
+	}
+	changed := false
+	if p, ok := s["pattern"].(string); ok && unsupportedPattern(p) {
+		delete(s, "pattern")
+		changed = true
+	}
+	if pp, ok := s["patternProperties"].(map[string]any); ok {
+		lost := false
+		for k, sub := range pp {
+			if unsupportedPattern(k) {
+				delete(pp, k)
+				lost = true
+				continue
+			}
+			changed = patternSchema(sub, depth+1) || changed
+		}
+		if lost {
+			changed = true
+			if len(pp) == 0 {
+				delete(s, "patternProperties")
+			}
+			if ap, ok := s["additionalProperties"]; ok && ap != true {
+				s["additionalProperties"] = true
+			}
+		}
+	}
+	for _, k := range []string{"additionalProperties", "additionalItems", "contains", "not", "if", "then", "else",
+		"propertyNames", "unevaluatedProperties", "unevaluatedItems", "contentSchema"} {
+		changed = patternSchema(s[k], depth+1) || changed
+	}
+	for _, k := range []string{"items", "anyOf", "oneOf", "allOf", "prefixItems"} {
+		switch sub := s[k].(type) {
+		case map[string]any:
+			changed = patternSchema(sub, depth+1) || changed
+		case []any:
+			for _, x := range sub {
+				changed = patternSchema(x, depth+1) || changed
+			}
+		}
+	}
+	for _, k := range []string{"properties", "$defs", "definitions", "dependentSchemas", "dependencies"} {
+		if m, ok := s[k].(map[string]any); ok {
+			for _, sub := range m {
+				changed = patternSchema(sub, depth+1) || changed
+			}
+		}
+	}
+	return changed
 }

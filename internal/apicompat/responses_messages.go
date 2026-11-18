@@ -52,9 +52,11 @@ func respDecodeThinking(enc string) (respThinkingBlock, bool) {
 	return b, true
 }
 
-// respDefaultMaxTokens is used when a request carries no output limit;
-// Messages requires one.
-const respDefaultMaxTokens = 8192
+// A Responses request without an output limit (Codex sends none) is asked
+// the model's own limit, as a chat request is (chatAnthropicMaxOutput): a
+// fixed 8192 ran out in a long thinking and tool-calling turn, and Codex
+// showed "Incomplete response … max_output_tokens" (magpie #1792). The node
+// caps it at the job's output limit.
 
 type respMsgMessage struct {
 	Role    string           `json:"role"`
@@ -170,9 +172,10 @@ func respToMessages(body []byte, opt Options) (*Conversion, error) {
 	}
 
 	out := map[string]any{"model": r.model, "messages": msgs, "stream": true}
-	maxTokens := r.maxOutput
+	limit := int(chatAnthropicMaxOutput(r.model))
+	maxTokens := int(r.maxOutput)
 	if maxTokens <= 0 {
-		maxTokens = respDefaultMaxTokens
+		maxTokens = limit // a limit the client asked for stays: the seller caps it
 	}
 	out["max_tokens"] = maxTokens
 
@@ -197,6 +200,14 @@ func respToMessages(body []byte, opt Options) (*Conversion, error) {
 		if choice != nil {
 			out["tool_choice"] = choice
 		}
+	} else {
+		var called calledTools
+		for _, m := range msgs {
+			for _, b := range m.Content {
+				called.add(b)
+			}
+		}
+		called.declare(out)
 	}
 
 	// reasoning effort → output_config.effort, and extended thinking: at the

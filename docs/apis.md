@@ -10,7 +10,7 @@ A buyer's local endpoint serves three APIs, and the network carries each one as 
 | Claude Code | Anthropic Messages (`messages`) | `POST /v1/messages`, `POST /v1/messages/count_tokens` |
 | Codex | OpenAI Responses (`responses`) | `POST /v1/responses`, `GET /v1/responses` (WebSocket), `POST /v1/responses/compact` |
 
-`GET /v1/models` lists the models with the APIs they are served in natively (`apis`), or Codex's model manifest when called with `?client_version=`.
+`GET /v1/models` lists the models with the APIs they are served in natively (`apis`) and, where the sellers know them, `context_window` (also `context_length`, `max_input_tokens`), `max_output_tokens` (also `max_tokens`), `reasoning`, `supported_reasoning_levels`/`reasoning_levels` and Anthropic's `capabilities`; or Codex's model manifest when called with `?client_version=`, with the same window, levels and Codex's own instructions for a model it does not know. The buyer keeps the list a minute and refreshes it in the background after that, so the answer comes at once.
 
 The design follows sub2api (a gateway that does the same): **pass the request through when the model server speaks its API, convert it only when it does not**. sub2api knows its upstream when a request arrives; a sharetoken buyer does not know which node it will be matched to. So the buyer sends the request in the API it came in, the coordinator prefers nodes that speak it, and the node converts when its model server does not.
 

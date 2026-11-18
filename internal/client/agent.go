@@ -460,7 +460,8 @@ func (a *Agent) setupBuyer() error {
 	}
 	a.buyer = b
 	a.proxy = &buyer.Proxy{Client: b, BudgetMicros: a.cfg.Buy.BudgetMicros, MaxPriceIn: a.cfg.Buy.MaxPriceIn,
-		MaxPriceOut: a.cfg.Buy.MaxPriceOut, RequireTEE: a.cfg.Buy.RequireTEE, RequireNative: a.cfg.Buy.RequireNative}
+		MaxPriceOut: a.cfg.Buy.MaxPriceOut, RequireTEE: a.cfg.Buy.RequireTEE, RequireNative: a.cfg.Buy.RequireNative,
+		NoLoopGuard: a.cfg.Buy.LoopGuard != nil && !*a.cfg.Buy.LoopGuard}
 	return nil
 }
 

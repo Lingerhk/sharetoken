@@ -10,7 +10,7 @@
 | Claude Code | Anthropic Messages（`messages`） | `POST /v1/messages`、`POST /v1/messages/count_tokens` |
 | Codex | OpenAI Responses（`responses`） | `POST /v1/responses`、`GET /v1/responses`（WebSocket）、`POST /v1/responses/compact` |
 
-`GET /v1/models` 列出模型和它们原生支持的接口（`apis`）；带 `?client_version=` 时返回 Codex 的模型清单。
+`GET /v1/models` 列出模型和它们原生支持的接口（`apis`），卖家知道时还带 `context_window`（以及 `context_length`、`max_input_tokens`）、`max_output_tokens`（以及 `max_tokens`）、`reasoning`、`supported_reasoning_levels`/`reasoning_levels` 和 Anthropic 格式的 `capabilities`；带 `?client_version=` 时返回 Codex 的模型清单，包含同样的窗口和推理档位，以及 Codex 自己给未知模型用的指令。买家把列表保留一分钟，之后在后台刷新，所以总能立即返回。
 
 设计参考 sub2api（做同样事情的网关）：**模型服务器支持请求所用的接口就原样透传，不支持才转换**。sub2api 收到请求时就知道上游是谁，sharetoken 的买家却不知道会匹配到哪个节点。所以买家按原接口发出请求，协调器优先匹配原生支持该接口的节点，节点在模型服务器不支持时转换。
 

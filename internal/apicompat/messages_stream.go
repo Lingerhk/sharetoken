@@ -168,6 +168,8 @@ type msgWriter struct {
 
 	blocks  int  // blocks started
 	toolUse bool // a tool_use block was opened
+	// held are the tool_use ids the client holds (clientID).
+	held map[string]bool
 }
 
 func newMsgWriter(model string) *msgWriter {
@@ -319,6 +321,7 @@ func (w *msgWriter) startBlock(b *msgBlock) {
 	case msgKindThinking:
 		cb = map[string]any{"type": "thinking", "thinking": "", "signature": ""}
 	case msgKindToolUse:
+		b.id = w.clientID(b.id)
 		cb = map[string]any{"type": "tool_use", "id": b.id, "name": b.name, "input": map[string]any{}}
 	}
 	w.put(map[string]any{"type": "content_block_start", "index": b.index, "content_block": cb})

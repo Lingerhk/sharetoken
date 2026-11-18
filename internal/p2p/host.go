@@ -76,7 +76,7 @@ func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	opts = append(opts, libp2p.ResourceManager(rm))
+	opts = append(opts, libp2p.ResourceManager(rm), tolerantQUIC())
 	opts = append(opts, cfg.Options...)
 	return libp2p.New(opts...)
 }

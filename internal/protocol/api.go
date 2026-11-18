@@ -446,3 +446,76 @@ func SplitRequest(plain []byte) (RequestHeader, []byte, error) {
 
 // Get returns a header's value; names are case-insensitive.
 func (h RequestHeader) Get(name string) string { return h[strings.ToLower(name)] }
+
+// TerminalEvent reports whether payload is the event that ends a response of
+// api for its client: Messages' message_stop, Responses' response.completed,
+// response.incomplete or response.failed. A client may leave right after it
+// (Codex over HTTP closes the connection at response.completed). Chat has
+// none: its clients read on to [DONE], which the buyer writes after the
+// receipt.
+func TerminalEvent(api string, payload []byte) bool {
+	var typ string
+	switch NormalAPI(api) {
+	case APIMessages:
+		if !bytes.Contains(payload, []byte(`message_stop`)) {
+			return false
+		}
+		typ = eventTypeOf(payload)
+		return typ == "message_stop"
+	case APIResponses:
+		if !bytes.Contains(payload, []byte(`"response.`)) {
+			return false
+		}
+		switch eventTypeOf(payload) {
+		case "response.completed", "response.incomplete", "response.failed":
+			return true
+		}
+	}
+	return false
+}
+
+func eventTypeOf(payload []byte) string {
+	var ev struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(payload, &ev)
+	return ev.Type
+}
+
+// OpeningEvent reports whether p only opens an answer or keeps it alive:
+// Messages' message_start and ping, Responses' response.created,
+// response.in_progress, response.queued and keepalive, a chat chunk that
+// carries the role alone. Such events are no answer yet: a failure after
+// them can still be tried again, or on another node, unseen by the client.
+func OpeningEvent(p []byte) bool {
+	if len(p) > 4096 {
+		return false
+	}
+	var ev struct {
+		Type    string `json:"type"`
+		Choices []struct {
+			Delta        map[string]json.RawMessage `json:"delta"`
+			FinishReason *string                    `json:"finish_reason"`
+		} `json:"choices"`
+		Usage json.RawMessage `json:"usage"`
+	}
+	if json.Unmarshal(p, &ev) != nil {
+		return false
+	}
+	switch ev.Type {
+	case "message_start", "ping", "response.created", "response.in_progress", "response.queued", "keepalive":
+		return true
+	case "":
+	default:
+		return false
+	}
+	if len(ev.Choices) != 1 || ev.Choices[0].FinishReason != nil || (len(ev.Usage) > 0 && string(ev.Usage) != "null") {
+		return false
+	}
+	for k, v := range ev.Choices[0].Delta {
+		if k != "role" && string(v) != "null" && string(v) != `""` {
+			return false
+		}
+	}
+	return true
+}

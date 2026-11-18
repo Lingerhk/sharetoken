@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"sharetoken/internal/apicompat"
 	"sharetoken/internal/node"
 )
 
@@ -19,10 +21,24 @@ type geminiOptions struct {
 	// validated asks for validated function calling, which Antigravity wants
 	// whenever a request has tools.
 	validated bool
-	// signFunctionCalls adds the placeholder thought signature the backend
-	// wants on function calls replayed from the conversation.
+	// signFunctionCalls gives each function call replayed from the
+	// conversation a thought signature, which the backend wants: the one
+	// the model gave (carried in the call's id, signedID), or the
+	// placeholder for a call it did not sign.
 	signFunctionCalls bool
-	maxOutput         uint64
+	// signatures is the store the long signatures of this provider are
+	// kept in; dropSignatures sends none of them back, only placeholders
+	// (the backend refused one).
+	signatures     *sigStore
+	dropSignatures bool
+	// jsonSchema sends tool parameters as parametersJsonSchema, full JSON
+	// Schema (the Gemini CLI's backend); otherwise they are reduced to the
+	// Schema object (cleanSchema), which Antigravity wants.
+	jsonSchema bool
+	maxOutput  uint64
+	// effort is the reasoning effort the request asked for (chat's
+	// reasoning_effort), which the chat request type does not keep.
+	effort string
 }
 
 const skipThoughtSignature = "skip_thought_signature_validator"
@@ -51,23 +67,15 @@ func geminiRequest(chat *chatRequest, opt geminiOptions) (map[string]any, error)
 				system = append(system, map[string]any{"text": t})
 			}
 		case "assistant":
-			parts := geminiParts(m)
-			for _, tc := range m.ToolCalls {
-				callName[tc.ID] = tc.Function.Name
-				fc := map[string]any{"functionCall": map[string]any{"name": tc.Function.Name, "args": rawObject(tc.Function.Arguments), "id": tc.ID}}
-				if opt.signFunctionCalls {
-					fc["thoughtSignature"] = skipThoughtSignature
-				}
-				parts = append(parts, fc)
-			}
-			add("model", parts...)
+			add("model", append(geminiParts(m), geminiCalls(m.ToolCalls, callName, opt)...)...)
 		case "tool":
-			name := callName[m.ToolCallID]
+			id, _ := unsignedID(m.ToolCallID, nil)
+			name := callName[id]
 			if name == "" {
 				name = m.Name
 			}
 			add("user", map[string]any{"functionResponse": map[string]any{
-				"name": name, "id": m.ToolCallID, "response": map[string]any{"result": m.text()},
+				"name": name, "id": id, "response": map[string]any{"result": m.text()},
 			}})
 		default:
 			add("user", geminiParts(m)...)
@@ -82,7 +90,8 @@ func geminiRequest(chat *chatRequest, opt geminiOptions) (map[string]any, error)
 	}
 
 	gen := map[string]any{}
-	if limit := chat.MaxTokens; limit > 0 {
+	limit := chat.MaxTokens
+	if limit > 0 {
 		if opt.maxOutput > 0 && limit > opt.maxOutput {
 			limit = opt.maxOutput
 		}
@@ -97,14 +106,8 @@ func geminiRequest(chat *chatRequest, opt geminiOptions) (map[string]any, error)
 	if s := chat.stops(); len(s) > 0 {
 		gen["stopSequences"] = s
 	}
-	if wantJSON, _, schema := chat.jsonSchema(); wantJSON {
-		gen["responseMimeType"] = "application/json"
-		if len(schema) > 0 {
-			gen["responseSchema"] = cleanSchema(schema)
-		}
-	}
-	if len(gen) > 0 {
-		req["generationConfig"] = gen
+	if tc := geminiThinking(chat.Model, opt.effort, limit); tc != nil {
+		gen["thinkingConfig"] = tc
 	}
 
 	mode, name := chat.toolChoice()
@@ -115,7 +118,11 @@ func geminiRequest(chat *chatRequest, opt geminiOptions) (map[string]any, error)
 		}
 		d := map[string]any{"name": t.Function.Name, "description": t.Function.Description}
 		if len(t.Function.Parameters) > 0 && string(t.Function.Parameters) != "null" {
-			d["parameters"] = cleanSchema(t.Function.Parameters)
+			if opt.jsonSchema {
+				d["parametersJsonSchema"] = geminiToolSchema(t.Function.Parameters)
+			} else {
+				d["parameters"] = cleanSchema(t.Function.Parameters)
+			}
 		}
 		decls = append(decls, d)
 	}
@@ -136,7 +143,182 @@ func geminiRequest(chat *chatRequest, opt geminiOptions) (map[string]any, error)
 			req["toolConfig"] = map[string]any{"functionCallingConfig": cfg}
 		}
 	}
+	// A JSON answer and function calling don't go together: the backend
+	// refuses a JSON mime type next to tools (400 on Gemini 2.x), so a
+	// request with tools gets neither. The schema goes as given, in
+	// responseJsonSchema (full JSON Schema, Gemini 2.5 and later), not
+	// reduced to the OpenAPI subset of responseSchema, which lost every
+	// constraint but enum. As raw JSON it also keeps the schema's key order,
+	// which the model follows when it writes the object.
+	if req["tools"] == nil {
+		if wantJSON, _, schema := chat.jsonSchema(); wantJSON {
+			gen["responseMimeType"] = "application/json"
+			if len(schema) > 0 && string(schema) != "null" {
+				gen["responseJsonSchema"] = schema
+			}
+		}
+	}
+	if len(gen) > 0 {
+		req["generationConfig"] = gen
+	}
 	return req, nil
+}
+
+// geminiThinking is the thinkingConfig for a reasoning effort, or nil to
+// leave the model's default (no effort asked, an effort not known, a model
+// that does not think or whose id already names its level).
+//
+// Gemini 3 and later take a thinkingLevel (Gemini 4 refuses a budget), and
+// not every level: medium goes to Flash, 3.1 Pro and Gemini 4 only (3 Pro
+// had low and high), the rest are asked high. Minimal goes nowhere: 3.7
+// and 3.8 Flash refuse it, and Gemini CLI's older Flash ids may be served
+// by those. Gemini 3 cannot stop thinking, so effort "none" is its lowest
+// level, low, which every Gemini 3 text model takes.
+//
+// Gemini 2.5 takes a thinkingBudget, within each model's bounds: Pro thinks
+// at least 128 tokens and at most 32768, Flash 0 (off) to 24576, Flash-Lite
+// 0 or 512 to 24576. A budget is kept under max_tokens, which counts the
+// thoughts as well: half of it is left for the answer.
+//
+// Thoughts are asked back (includeThoughts) whenever the request asked for
+// reasoning, so they reach the buyer as reasoning_content; not when it
+// turned reasoning off.
+func geminiThinking(model, effort string, maxOutput uint64) map[string]any {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	off := false
+	switch effort {
+	case "none", "off", "disabled":
+		off = true
+	case "minimal", "low", "medium", "high", "xhigh", "max":
+	default:
+		return nil
+	}
+	m := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "models/")
+	major, minor, ok := geminiVersion(m)
+	if !ok {
+		return nil
+	}
+	for _, kind := range []string{"image", "tts", "embedding", "live", "audio"} {
+		if strings.Contains(m, kind) {
+			return nil
+		}
+	}
+	tc := map[string]any{}
+	switch {
+	case major >= 3:
+		// Antigravity's gemini-3-pro-low and the like: the id picks the level.
+		if !geminiLevelInID(m) {
+			level := "high"
+			switch effort {
+			case "none", "off", "disabled", "minimal", "low":
+				level = "low"
+			case "medium":
+				if strings.Contains(m, "flash") || strings.HasPrefix(m, "gemini-3.1-pro") || major >= 4 {
+					level = "medium"
+				}
+			}
+			tc["thinkingLevel"] = level
+		}
+	case major == 2 && minor >= 5:
+		offBudget, least, most := 0, 1, 24576
+		switch {
+		case strings.Contains(m, "pro"):
+			offBudget, least, most = 128, 128, 32768
+		case strings.Contains(m, "flash-lite"):
+			least = 512
+		}
+		budget := most
+		switch effort {
+		case "none", "off", "disabled", "minimal":
+			budget = offBudget
+		case "low":
+			budget = 1024
+		case "medium":
+			budget = 8192
+		}
+		if budget > 0 {
+			if maxOutput > 0 && uint64(budget) >= maxOutput {
+				budget = int(maxOutput / 2)
+			}
+			budget = min(max(budget, least), most)
+		}
+		tc["thinkingBudget"] = budget
+		off = off || budget == 0
+	default:
+		return nil
+	}
+	if !off {
+		tc["includeThoughts"] = true
+	}
+	if len(tc) == 0 {
+		return nil
+	}
+	return tc
+}
+
+// geminiVersion reads the version of a Gemini model id: gemini-2.5-pro is
+// 2.5, gemini-4-argon 4.0.
+func geminiVersion(model string) (major, minor int, ok bool) {
+	rest, found := strings.CutPrefix(model, "gemini-")
+	if !found {
+		return 0, 0, false
+	}
+	version, _, _ := strings.Cut(rest, "-")
+	majorText, minorText, _ := strings.Cut(version, ".")
+	major, err := strconv.Atoi(majorText)
+	if err != nil {
+		return 0, 0, false
+	}
+	if minorText != "" {
+		if minor, err = strconv.Atoi(minorText); err != nil {
+			return 0, 0, false
+		}
+	}
+	return major, minor, true
+}
+
+// geminiLevelInID tells an id that names its thinking level, as
+// Antigravity's variants do (gemini-3.1-pro-high, gemini-3.8-flash-tiered).
+func geminiLevelInID(model string) bool {
+	for _, suffix := range []string{"-minimal", "-low", "-medium", "-high", "-xhigh", "-tiered"} {
+		if strings.HasSuffix(model, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// geminiCalls are an assistant message's tool calls as functionCall parts,
+// their ids without the signature signedID put in them. Gemini signs the
+// first call of a step: a step with a signature restored sends the others
+// as they came, and a step with none gets the placeholder on each call, as
+// history the model did not sign (another seller's answer, or a signature
+// this one no longer keeps).
+func geminiCalls(calls []chatToolCall, callName map[string]string, opt geminiOptions) []any {
+	ids, sigs := make([]string, len(calls)), make([]string, len(calls))
+	signed := false
+	for i, tc := range calls {
+		ids[i], sigs[i] = unsignedID(tc.ID, opt.signatures)
+		if opt.dropSignatures {
+			sigs[i] = ""
+		}
+		signed = signed || sigs[i] != ""
+	}
+	var out []any
+	for i, tc := range calls {
+		callName[ids[i]] = tc.Function.Name
+		fc := map[string]any{"functionCall": map[string]any{"name": tc.Function.Name, "args": rawObject(tc.Function.Arguments), "id": ids[i]}}
+		if opt.signFunctionCalls {
+			switch {
+			case sigs[i] != "":
+				fc["thoughtSignature"] = sigs[i]
+			case !signed:
+				fc["thoughtSignature"] = skipThoughtSignature
+			}
+		}
+		out = append(out, fc)
+	}
+	return out
 }
 
 func geminiParts(m *chatMessage) []any {
@@ -154,6 +336,26 @@ func geminiParts(m *chatMessage) []any {
 		}
 	}
 	return out
+}
+
+// geminiToolSchema is a tool's parameters for parametersJsonSchema, which
+// takes JSON Schema whole: unions keep every branch (cleanSchema keeps the
+// first), and the constraints stay. The root alone has to be an object;
+// one that is a union, has no type or another type is folded into one
+// (apicompat.ObjectRootSchema). Parameters already fit go byte for byte,
+// in their own key order, which the model follows when it writes the args.
+func geminiToolSchema(raw json.RawMessage) json.RawMessage {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(raw, &root) != nil || root == nil {
+		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	_, any1 := root["anyOf"]
+	_, one := root["oneOf"]
+	_, all := root["allOf"]
+	if string(root["type"]) == `"object"` && !any1 && !one && !all {
+		return raw
+	}
+	return apicompat.ObjectRootSchema(raw)
 }
 
 // schemaKeys are the JSON Schema keywords the backend takes; it refuses
@@ -246,9 +448,16 @@ func cleanSchemaValue(v any) any {
 		out["description"] = desc
 	}
 	if _, ok := out["type"]; !ok {
-		if _, ok := out["properties"]; ok {
+		// The Schema object needs a type on every node: the one its
+		// keywords say (properties an object, items an array), else a
+		// string, the value that carries anything (and the only type an
+		// enum here can have, its values written as strings).
+		switch {
+		case out["properties"] != nil:
 			out["type"] = "object"
-		} else {
+		case out["items"] != nil:
+			out["type"] = "array"
+		default:
 			out["type"] = "string"
 		}
 	}
@@ -269,6 +478,12 @@ func cleanSchemaValue(v any) any {
 	if out["type"] == "array" && out["items"] == nil {
 		out["items"] = map[string]any{"type": "string"}
 	}
+	// Only an array may have items: the backend refuses them on any other
+	// type, which a node can end up with after anyOf or a type list picked
+	// another shape than the one the items were written for.
+	if out["type"] != "array" {
+		delete(out, "items")
+	}
 	return out
 }
 
@@ -282,6 +497,11 @@ type geminiStream struct {
 	reason   string
 	blocked  bool // the prompt was refused: there is no candidate, and no finishReason
 	received bool
+	content  bool // the answer has text or a tool call (thoughts alone are not an answer)
+	// sigs keeps the long thought signatures the calls' ids name.
+	sigs *sigStore
+	// pending is a call whose args are coming in pieces (gemini_toolcall.go).
+	pending *pendingCall
 }
 
 func (s *geminiStream) event(data []byte) error {
@@ -313,13 +533,10 @@ func (s *geminiStream) event(data []byte) error {
 		Candidates []struct {
 			Content struct {
 				Parts []struct {
-					Text         string `json:"text"`
-					Thought      bool   `json:"thought"`
-					FunctionCall *struct {
-						Name string          `json:"name"`
-						Args json.RawMessage `json:"args"`
-						ID   string          `json:"id"`
-					} `json:"functionCall"`
+					Text             string      `json:"text"`
+					Thought          bool        `json:"thought"`
+					ThoughtSignature string      `json:"thoughtSignature"`
+					FunctionCall     *geminiCall `json:"functionCall"`
 				} `json:"parts"`
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
@@ -348,24 +565,27 @@ func (s *geminiStream) event(data []byte) error {
 	}
 	c := r.Candidates[0]
 	for _, p := range c.Content.Parts {
-		switch {
-		case p.FunctionCall != nil:
-			id := p.FunctionCall.ID
-			if id == "" {
-				id = "call_" + randomHex(12)
-			}
-			args := string(p.FunctionCall.Args)
-			if args == "" || args == "null" {
-				args = "{}"
-			}
-			if _, err := s.out.toolStart(id, p.FunctionCall.Name, args); err != nil {
+		if p.FunctionCall != nil {
+			if err := s.functionCall(p.FunctionCall, p.ThoughtSignature); err != nil {
 				return err
 			}
+			continue
+		}
+		// A signature on a text or a thought has nowhere to go in a chat
+		// answer, and the backend does not need it back: it goes.
+		if p.Text == "" {
+			continue
+		}
+		if err := s.flushCall(); err != nil {
+			return err
+		}
+		switch {
 		case p.Thought:
 			if err := s.out.reasoning(p.Text); err != nil {
 				return err
 			}
 		default:
+			s.content = s.content || p.Text != ""
 			if err := s.out.text(p.Text); err != nil {
 				return err
 			}
@@ -380,6 +600,9 @@ func (s *geminiStream) event(data []byte) error {
 // end closes the answer once the stream is over: the token counts come with
 // the last answers, so there is nothing to close before.
 func (s *geminiStream) end() error {
+	if err := s.flushCall(); err != nil {
+		return err
+	}
 	if !s.received {
 		return fmt.Errorf("the provider answered with an empty stream")
 	}
@@ -399,20 +622,26 @@ func (s *geminiStream) end() error {
 	case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL":
 		// The model wrote a tool call the backend could not read and gave
 		// nothing else: a failure worth another try, not an empty answer.
-		if !s.out.started {
+		if !s.content {
 			return &node.StatusError{Status: http.StatusBadGateway, Body: "the model server could not read the model's tool call (" + s.reason + ")"}
 		}
+	}
+	// Gemini 3 sometimes ends with STOP having written nothing, most often
+	// on a long context. That is no answer to bill as one: a 502 lets the
+	// seller try again or the buyer go to another node.
+	if reason == "stop" && !s.content {
+		return &node.StatusError{Status: http.StatusBadGateway, Body: "the model ended its answer (" + s.reason + ") without any text or tool call"}
 	}
 	return s.out.finishDetailed(reason, s.prompt, s.output, s.cached, s.thoughts)
 }
 
 // streamGemini posts an enveloped request and writes the answer as chunks.
-func streamGemini(ctx context.Context, url string, header http.Header, envelope map[string]any, model string, emit func([]byte) error) error {
+func streamGemini(ctx context.Context, url string, header http.Header, envelope map[string]any, model string, sigs *sigStore, emit func([]byte) error) error {
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		return err
 	}
-	st := &geminiStream{out: newChunks(model, emit)}
+	st := &geminiStream{out: newChunks(model, emit), sigs: sigs}
 	if err := postSSE(ctx, url, header, body, st.event); err != nil {
 		return err
 	}

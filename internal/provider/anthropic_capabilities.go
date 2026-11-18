@@ -42,7 +42,11 @@ func validateAnthropicRequest(req map[string]any, model, sampling string) error 
 	if !caps.lockedSampling {
 		return nil
 	}
-	if sampling == "default" {
+	// A buyer's tool cannot know each model's rules: the settings these
+	// models refuse are left out and the model samples at its default, as
+	// magpie does (samplingRefused). A seller that wants the buyer told
+	// configures sampling=strict.
+	if sampling != "strict" {
 		delete(req, "temperature")
 		delete(req, "top_p")
 		return nil

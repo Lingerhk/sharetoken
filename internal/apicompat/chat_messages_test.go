@@ -282,7 +282,7 @@ func TestChatToMessagesRequest(t *testing.T) {
 		{name: "temperature is clamped", rest: `"temperature":1.5,"messages":[` + user + `]`, want: []string{`"temperature":1`}},
 		{name: "temperature wins over top_p", rest: `"temperature":0.2,"top_p":0.5,"messages":[` + user + `]`, want: []string{`"temperature":0.2`}, not: []string{"top_p"}},
 		{name: "top_p alone", rest: `"top_p":0.5,"messages":[` + user + `]`, want: []string{`"top_p":0.5`}},
-		{name: "user and stop", rest: `"user":"u-1","stop":"END","messages":[` + user + `]`, want: []string{`"metadata":{"user_id":"u-1"}`, `"stop_sequences":["END"]`}},
+		{name: "user and stop", rest: `"user":"u-1","stop":"END","messages":[` + user + `]`, want: []string{`"stop_sequences":["END"]`}, not: []string{"metadata", "u-1"}},
 		{name: "fields Messages lacks are dropped", rest: `"seed":3,"presence_penalty":1,"frequency_penalty":1,"session_id":"s","messages":[` + user + `]`,
 			not: []string{"seed", "penalty", "session"}},
 		{name: "system and developer are the system", rest: `"messages":[{"role":"system","content":[{"type":"text","text":"A","cache_control":{"type":"ephemeral"}}]},{"role":"developer","content":"B"},` + user + `]`,
@@ -352,6 +352,12 @@ func TestChatToMessagesRequest(t *testing.T) {
 			}
 			req, _ := chatConvert(t, Messages, chatBody(t, model, tc.rest), "")
 			got := chatJSON(t, req)
+			if !strings.Contains(tc.rest, "cache_control") {
+				// the breakpoints a request without any gets
+				// (TestChatAutoCacheBreakpoints) are not what these cases test
+				got = strings.ReplaceAll(got, `"cache_control":{"type":"ephemeral"},`, "")
+				got = strings.ReplaceAll(got, `,"cache_control":{"type":"ephemeral"}`, "")
+			}
 			chatWant(t, got, tc.want...)
 			chatWantNot(t, got, tc.not...)
 		})
@@ -376,5 +382,29 @@ func TestChatConversionsAreRegistered(t *testing.T) {
 	}
 	if got, ok := Target(Chat, []string{Messages}); !ok || got != Messages {
 		t.Fatalf("target %s", got)
+	}
+}
+
+// A chat request with no cache breakpoints to a Claude gets them on the
+// tools, the system prompt and the newest content; one with breakpoints of
+// its own keeps them alone; another vendor's model gets none.
+func TestChatAutoCacheBreakpoints(t *testing.T) {
+	rest := `"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"again"}],"tools":[{"type":"function","function":{"name":"f"}},{"type":"function","function":{"name":"g"}}]`
+	req, _ := chatConvert(t, Messages, chatBody(t, "claude-sonnet-4-6", rest), "")
+	got := chatJSON(t, req)
+	if n := strings.Count(got, "cache_control"); n != 3 {
+		t.Fatalf("%d breakpoints: %s", n, got)
+	}
+	chatWant(t, got, `{"cache_control":{"type":"ephemeral"},"input_schema":{"properties":{},"type":"object"},"name":"g"}`,
+		`"system":[{"cache_control":{"type":"ephemeral"},"text":"be brief","type":"text"}]`,
+		`{"cache_control":{"type":"ephemeral"},"text":"again","type":"text"}`)
+	own := `"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}},{"type":"text","text":"more"}]}]`
+	req, _ = chatConvert(t, Messages, chatBody(t, "claude-sonnet-4-6", own), "")
+	if got := chatJSON(t, req); strings.Count(got, "cache_control") != 1 {
+		t.Fatalf("the client's own breakpoints changed: %s", got)
+	}
+	req, _ = chatConvert(t, Messages, chatBody(t, "deepseek-v4", rest), "")
+	if got := chatJSON(t, req); strings.Contains(got, "cache_control") {
+		t.Fatalf("breakpoints for another vendor: %s", got)
 	}
 }

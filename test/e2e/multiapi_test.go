@@ -12,6 +12,7 @@ package e2e
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -70,6 +72,20 @@ func (s *scripted) serve(w http.ResponseWriter, r *http.Request) {
 	text := string(raw)
 	summary := strings.Contains(text, "summary of the conversation")
 	_, hasTools := req["tools"]
+	if strings.Contains(text, "TOO-LONG-PROMPT") {
+		// each vendor's words for a prompt past the model's window
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		switch r.URL.Path {
+		case "/anthropic/v1/messages":
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 212345 tokens > 200000 maximum"}}`)
+		case "/codex/responses":
+			_, _ = io.WriteString(w, `{"error":{"message":"Your input exceeds the context window of this model.","type":"invalid_request_error","code":"context_length_exceeded"}}`)
+		default:
+			_, _ = io.WriteString(w, `{"error":{"message":"This model's maximum context length is 128000 tokens.","type":"invalid_request_error","code":"context_length_exceeded"}}`)
+		}
+		return
+	}
 	switch r.URL.Path {
 	case "/anthropic/v1/messages":
 		msgs, _ := req["messages"].([]any)
@@ -877,4 +893,135 @@ func TestSmallBalanceHoldsWhatThereIs(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A client may go as soon as it has the response's last event: Codex over
+// HTTP closes the connection at response.completed. The job still runs to
+// its receipt and is acked (final at once, not pending until the dispute
+// window), whatever the API of the client and the seller. A client that
+// goes before the last event still stops the job.
+func TestClientLeavingAtTheLastEventStillAcks(t *testing.T) {
+	m := newAPIMarket(t)
+	for _, api := range []string{protocol.APIMessages, protocol.APIResponses} {
+		for _, seller := range protocol.AllAPIs {
+			t.Run(api+" client, "+seller+" seller", func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				body, _ := json.Marshal(firstTurn(api, true))
+				res, err := m.cl.Chat(ctx, buyer.ChatRequest{Model: model, API: api, Body: body, BudgetMicros: 1_000_000, Node: m.nodeOf[seller].ID()},
+					func(payload []byte) error {
+						if protocol.TerminalEvent(api, payload) {
+							cancel() // the client leaves the moment it has it
+						}
+						return nil
+					})
+				if err != nil || !res.Verified {
+					t.Fatalf("%v (result %+v)", err, res)
+				}
+				m.waitStatus(res.Ticket.JobID, coordinator.StatusFinal)
+			})
+		}
+	}
+	// Over the local endpoint, as Codex does it: read up to the last event,
+	// then hang up.
+	before := map[string]bool{}
+	rows, err := m.db.Query(`SELECT job_id FROM jobs`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		_ = rows.Scan(&id)
+		before[id] = true
+	}
+	_ = rows.Close()
+	for _, api := range []string{protocol.APIMessages, protocol.APIResponses} {
+		b, _ := json.Marshal(firstTurn(api, true))
+		tr := &http.Transport{DisableKeepAlives: true}
+		resp, err := (&http.Client{Transport: tr}).Post(m.endpoint+apiPath[api], "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(make([]byte, 1<<20), 8<<20)
+		for sc.Scan() {
+			if d, ok := strings.CutPrefix(sc.Text(), "data: "); ok && protocol.TerminalEvent(api, []byte(d)) {
+				break
+			}
+		}
+		_ = resp.Body.Close()
+		tr.CloseIdleConnections()
+	}
+	waitFor(t, 10*time.Second, "both jobs final", func() bool {
+		rows, err := m.db.Query(`SELECT job_id, status FROM jobs`)
+		if err != nil {
+			return false
+		}
+		defer rows.Close()
+		final := 0
+		for rows.Next() {
+			var id, st string
+			_ = rows.Scan(&id, &st)
+			if !before[id] && st == string(coordinator.StatusFinal) {
+				final++
+			}
+		}
+		return final == 2
+	})
+	if err := m.coord.Engine.CheckBooks(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A prompt too long for the seller's model reaches each client in the words
+// it compacts on: Codex a response.failed event with context_length_exceeded
+// in its stream (also when nothing was streamed yet), Claude Code an
+// invalid_request_error saying "prompt is too long", a chat client the code
+// context_length_exceeded.
+func TestTooLongIsToldTheWayEachClientCompacts(t *testing.T) {
+	m := newAPIMarket(t)
+	for _, api := range protocol.AllAPIs {
+		for _, seller := range protocol.AllAPIs {
+			for _, stream := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s client, %s seller, stream=%t", api, seller, stream), func(t *testing.T) {
+					req := firstTurn(api, stream)
+					b, _ := json.Marshal(req)
+					_ = json.Unmarshal([]byte(strings.ReplaceAll(string(b), "What is the answer?", "TOO-LONG-PROMPT")), &req)
+					hr, _ := http.NewRequest(http.MethodPost, m.endpoint+apiPath[api], bytes.NewReader(mustJSON(t, req)))
+					hr.Header.Set("Content-Type", "application/json")
+					hr.Header.Set(buyer.HeaderNode, m.nodeOf[seller].ID())
+					resp, err := http.DefaultClient.Do(hr)
+					if err != nil {
+						t.Fatal(err)
+					}
+					body, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					got := string(body)
+					switch {
+					case api == protocol.APIResponses && stream:
+						if resp.StatusCode != 200 || !strings.Contains(got, "event: response.failed") || !strings.Contains(got, `"code":"context_length_exceeded"`) {
+							t.Fatalf("%d %s", resp.StatusCode, got)
+						}
+					case api == protocol.APIMessages:
+						if resp.StatusCode != 400 || !strings.Contains(got, `"type":"invalid_request_error"`) || !strings.Contains(got, "prompt is too long") {
+							t.Fatalf("%d %s", resp.StatusCode, got)
+						}
+					default:
+						if resp.StatusCode != 400 || !strings.Contains(got, `"code":"context_length_exceeded"`) {
+							t.Fatalf("%d %s", resp.StatusCode, got)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

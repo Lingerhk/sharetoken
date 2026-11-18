@@ -33,6 +33,7 @@ import (
 
 	"sharetoken/internal/attest"
 	"sharetoken/internal/box"
+	"sharetoken/internal/modelinfo"
 	"sharetoken/internal/p2p"
 	"sharetoken/internal/protocol"
 	"sharetoken/internal/receipt"
@@ -66,6 +67,11 @@ type ModelConfig struct {
 	// MaxOutputTokens caps a job's output below the node-wide limit, for a
 	// model whose server refuses larger requests (0: no cap of its own).
 	MaxOutputTokens uint64 `json:"max_output,omitempty"`
+	// Meta overrides what the node says of the model in its offer: each
+	// field set wins over the built-in table of known models
+	// (modelinfo.Lookup), for a model the table does not know or a server
+	// that serves it with other limits.
+	Meta *protocol.ModelMeta `json:"meta,omitempty"`
 	// Upstream serves this model instead of Config.Upstream: a node can sell
 	// models of several servers at once.
 	Upstream Upstream `json:"-"`
@@ -99,7 +105,32 @@ func (m ModelConfig) Price() protocol.ModelPrice {
 			}
 		}
 	}
+	p.Meta = m.meta()
 	return p
+}
+
+// meta is what the offer says of the model: the table's facts for the
+// upstream's name of it (else the network's), with the seller's own
+// settings over them, and the output no more than a job may have (the
+// network's limit, and the node's cap for the model).
+func (m ModelConfig) meta() *protocol.ModelMeta {
+	known := modelinfo.Lookup(m.UpstreamModel)
+	if known == nil {
+		known = modelinfo.Lookup(m.ID)
+	}
+	meta := modelinfo.Merge(known, m.Meta)
+	if c := m.MaxOutputTokens; c > 0 {
+		if meta == nil {
+			meta = &protocol.ModelMeta{}
+		}
+		if meta.MaxOutputTokens == 0 || c < meta.MaxOutputTokens {
+			meta.MaxOutputTokens = c
+		}
+	}
+	if meta != nil {
+		meta.MaxOutputTokens = min(meta.MaxOutputTokens, protocol.HardMaxOutput(protocol.APIResponses))
+	}
+	return meta
 }
 
 // Config configures a node. Zero durations get defaults.

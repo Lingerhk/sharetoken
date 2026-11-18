@@ -200,6 +200,18 @@ wire_api = "responses"
 supports_websockets = true     # optional: one connection for the whole session
 ```
 
+Codex 只从目录文件里读取自定义 provider 的模型信息（上下文窗口、推理档位、何时压缩）；没有这个文件时，它会提示 "Model metadata … not found" 并自行猜测。把网络上的模型写进一个目录文件，并在 `config.toml` 顶层指向它：
+
+```bash
+{{exe}} models -codex ~/.codex/sharetoken-models.json
+```
+
+```toml
+model_catalog_json = "/Users/you/.codex/sharetoken-models.json"   # the path the command printed
+```
+
+Codex 只在启动时读这个文件，用的模型有变化时请重新运行一次命令。
+
 然后把 key 交给 Codex 并启动：
 
 ::: macos linux
@@ -216,7 +228,7 @@ codex
 ```
 :::
 
-工具调用（包括 `apply_patch`）、推理和上下文压缩，对网络上的任何模型都能用。走 WebSocket 时，Codex 每次只发新增的内容；节点在请求之间不保存任何东西，所以由客户端记住这条连接上的对话，再整段发出。`previous_response_id` 只在这种连接上可用，走 HTTP 时请发送完整对话（`store: false`，Codex 默认如此）。Codex 的 `/v1/responses/compact` 也支持：ChatGPT 登录的节点原生压缩，其他节点让模型写一段摘要。和 Claude Code 一样，请求返回 `budget` 错误时请调高 `buy.budget_micros`。
+工具调用（包括 `apply_patch`）、推理和上下文压缩，对网络上的任何模型都能用。走 WebSocket 时，Codex 每次只发新增的内容；节点在请求之间不保存任何东西，所以由客户端记住这条连接上的对话，再整段发出。走 HTTP 时客户端同样支持 `previous_response_id`（供 OpenAI Agents SDK 等工具使用）：它在内存里按 API key 保存最近的回答一小时，再把它们组成的对话整段发出；不认识的 id 返回 `previous_response_not_found`，`store: false` 的请求不保存。Codex 的 `/v1/responses/compact` 也支持：ChatGPT 登录的节点原生压缩，其他节点让模型写一段摘要。和 Claude Code 一样，请求返回 `budget` 错误时请调高 `buy.budget_micros`。
 
 想让 Claude Code 或 Codex 替你查看客户端、调用模型、管理共享，见[在编程助手中使用](/docs/agents)。
 

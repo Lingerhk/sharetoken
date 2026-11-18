@@ -53,7 +53,10 @@ func msgToResponses(body []byte, opt Options) (*Conversion, error) {
 	// The Responses API has no stop parameter: the request's stop_sequences
 	// are not sent, and the answer does not end at them.
 	if schema := msgOutputSchema(r); schema != nil {
-		out["text"] = map[string]any{"format": map[string]any{"type": "json_schema", "name": msgSchemaName, "schema": schema}}
+		// strict:false: the Responses API is strict by default, which wants
+		// every property in required and additionalProperties:false; an
+		// Anthropic output schema needs neither, and would be refused.
+		out["text"] = map[string]any{"format": map[string]any{"type": "json_schema", "name": msgSchemaName, "schema": schema, "strict": false}}
 	}
 	if !msgReasoningOnly(r.Model) {
 		if r.Temperature != nil {
@@ -101,7 +104,9 @@ func msgToResponses(body []byte, opt Options) (*Conversion, error) {
 	if model == "" {
 		model = r.Model
 	}
-	return &Conversion{Body: b, Translator: newMsgFromResponses(model, names)}, nil
+	t := newMsgFromResponses(model, names)
+	t.w.held = r.held
+	return &Conversion{Body: b, Translator: t}, nil
 }
 
 // msgToolChoice maps tool_choice: auto → auto, any → required, none → none,

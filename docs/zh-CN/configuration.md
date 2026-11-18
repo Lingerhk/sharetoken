@@ -207,6 +207,7 @@
 | `buy.require_tee`、`buy.tee_policy`、`buy.tee_online` | 关闭 | 只从经过证明的 TEE 节点购买；可信镜像的白名单文件；联网查询吊销状态 |
 | `buy.spot_checks` | 开启 | 协助平台抽检卖家：客户端偶尔替平台把一个很短的加密作业当作自己的作业转交给卖家。不花 credit，客户端也看不到内容（[security.md](security.md) §2.4）。只能在这里关闭，应用里没有这个开关 |
 | `buy.require_native` | 关闭 | 只从模型服务器原生支持请求接口的节点购买（[apis.md](apis.md)） |
+| `buy.loop_guard` | 开启 | 模型陷入循环时不再付费：流式回答的推理或正文原地打转（最近 256 行和句子都在同样的 24 种之内）时截断，按达到输出上限结束（`finish_reason` `length`、`stop_reason` `max_tokens`、`response.incomplete`），节点随即停止模型；请求的最后 8 轮都是同一个工具调用、得到同样的结果时，在本机用一段提示作答，不发给任何节点。动作时响应头 `X-Sharetoken-Loop-Guard` 或流里的注释 `loop_guard=` 会注明。设为 `false` 两项都关闭 |
 | `buy.queue_seconds` | 30 | 所有节点都忙时，请求等待空闲节点多久；负数：立即失败 |
 | `buy.first_byte_seconds`、`buy.idle_seconds` | 30、30 | 一单等待节点第一帧的时间上限，以及两帧之间的时间上限。模型不出声时，节点每 10 秒发一个进度帧 |
 | `share.enabled` | false | 共享的开关 |

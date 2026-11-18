@@ -104,6 +104,12 @@ type ModelPrice struct {
 	// them, converting the others; buyers prefer a node that needs no
 	// conversion.
 	APIs []string `json:"apis"`
+	// Meta is what the node knows of the model (its window, output limit,
+	// reasoning), for clients' model lists; nil when it knows nothing. It
+	// is advisory and not signed (signingBytes): the coordinator's model
+	// list, where buyers read it, is not signed either, and a peer of an
+	// older release that drops the field still verifies the offer.
+	Meta *ModelMeta `json:"meta,omitempty"`
 }
 
 // Prices are the rates a ticket charges.
@@ -440,6 +446,8 @@ type ModelSummary struct {
 	// SharedNodes counts the nodes of the asker's share partners among Nodes:
 	// the asker uses them for free, before the market.
 	SharedNodes int `json:"shared_nodes,omitempty"`
+	// Meta is what the offering nodes say of the model, merged (MergeMeta).
+	Meta *ModelMeta `json:"meta,omitempty"`
 }
 
 // ModelsResponse lists models with live offers.

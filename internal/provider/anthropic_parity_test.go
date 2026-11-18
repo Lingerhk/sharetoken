@@ -21,7 +21,7 @@ func TestAnthropicModelCapabilities(t *testing.T) {
 	for _, model := range []string{"claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2", "claude-mythos-5-2"} {
 		t.Run(model, func(t *testing.T) {
 			for _, value := range []string{"0", "0.7", "1.5"} {
-				if validateAnthropicRequest(req(`"temperature":`+value), model, "") == nil {
+				if validateAnthropicRequest(req(`"temperature":`+value), model, "strict") == nil {
 					t.Errorf("accepted temperature %v", value)
 				}
 				r := req(`"temperature":` + value)
@@ -29,16 +29,16 @@ func TestAnthropicModelCapabilities(t *testing.T) {
 					t.Errorf("default sampling: %v", err)
 				}
 			}
-			if err := validateAnthropicRequest(req(`"temperature":1`), model, ""); err != nil {
+			if err := validateAnthropicRequest(req(`"temperature":1`), model, "strict"); err != nil {
 				t.Fatal(err)
 			}
-			if err := validateAnthropicRequest(req(`"top_p":0.99`), model, ""); err != nil {
+			if err := validateAnthropicRequest(req(`"top_p":0.99`), model, "strict"); err != nil {
 				t.Fatal(err)
 			}
-			if validateAnthropicRequest(req(`"temperature":1,"top_p":0.99`), model, "") == nil {
+			if validateAnthropicRequest(req(`"temperature":1,"top_p":0.99`), model, "strict") == nil {
 				t.Fatal("accepted both sampling fields")
 			}
-			err := validateAnthropicRequest(req(`"top_p":1`), model, "")
+			err := validateAnthropicRequest(req(`"top_p":1`), model, "strict")
 			if (err == nil) != (model == "claude-sonnet-5-5") {
 				t.Fatalf("top_p=1: %v", err)
 			}

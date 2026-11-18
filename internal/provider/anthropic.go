@@ -37,6 +37,8 @@ type anthropicUpstream struct {
 	// passback: the server is another vendor's Messages endpoint (DeepSeek's),
 	// which signs no thinking and wants every thinking block back as it was.
 	passback bool
+	// shapes: what each model refused before (anthropic_shapes.go)
+	shapes anthropicShapes
 }
 
 func (u *anthropicUpstream) APIs() []string { return []string{protocol.APIMessages} }
@@ -68,7 +70,12 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 	// The seller pays for instructions a subscription login has to add to a
 	// request that is not Claude Code's own.
 	injected := u.oauth && !isClaudeCodeRequest(head)
-	body := r.Body
+	// A tool exchange that does not pair is mended before it is sent
+	// (anthropic_tool_pairs.go); one that pairs goes as it came.
+	body := pairedToolBlocks(r.Body)
+	// The request as last sent, for learning from a refusal.
+	var sentModel string
+	var sentReq map[string]any
 	err = u.limits.retry(func() error {
 		send := func(tok *Token) error {
 			// A fresh copy each time: the adaptations below change it.
@@ -86,6 +93,13 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 				dropForeignThinking(req)
 			}
 			dropEmptyText(req)
+			// Thinking off in the form the model takes, and without what it
+			// refused before.
+			apicompat.ClaudeThinkingOffAsTaken(req, model)
+			u.shapes.apply(model, req)
+			// Images as Claude takes them; another vendor's endpoint has
+			// sides of its own, and only its cap is learnt.
+			fitClaudeImages(req, u.shapes.imageCap(model), !u.passback)
 			if err := validateAnthropicRequest(req, model, sampling); err != nil {
 				return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 			}
@@ -127,6 +141,8 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 			if err != nil {
 				return err
 			}
+			sentModel, sentReq = model, nil
+			_ = json.Unmarshal(out, &sentReq)
 			if injected {
 				node.BillingOf(ctx).PromptDiscount = injectedPrompt(plain, out)
 			}
@@ -161,10 +177,18 @@ func (u *anthropicUpstream) stream(ctx context.Context, r *node.Request, emit fu
 	// model, a conversion) is sent once more in the one asked for.
 	// A client that takes the model for a newer one may send what it does
 	// not take: mid-conversation system messages go into the user turns.
-	if errors.As(err, &se) && se.Status == http.StatusBadRequest && fixes < 2 {
+	if errors.As(err, &se) && se.Status == http.StatusBadRequest && fixes < 3 {
+		// What the model refused is learnt and left out from now on: the
+		// same request goes again, sent without it.
+		if sentReq != nil && u.shapes.learn(sentModel, se.Body, sentReq) {
+			return u.stream(ctx, r, emit, fixes+1)
+		}
 		fixed, ok := swapThinking(r.Body, se.Body)
 		if !ok {
 			fixed, ok = systemToUser(r.Body, se.Body)
+		}
+		if !ok && asksBetweenTools.MatchString(se.Body) {
+			fixed, ok = withBetweenTools(r.Body)
 		}
 		if ok {
 			return u.stream(ctx, &node.Request{API: r.API, Header: r.Header, Body: fixed, Op: r.Op, Limit: r.Limit}, emit, fixes+1)
@@ -496,7 +520,11 @@ func eventType(data []byte) (typ, msg string) {
 //     for the seller's account.
 //   - a request rebuilt in Claude Code's shape (rebuilt) carries Claude
 //     Code's own list, and of the buyer's only the betas that describe the
-//     request's format.
+//     request's format. Among them per-turn-control and
+//     mid-conversation-output-config, which let a message carry its own
+//     output_config (the effort of one turn): without them the API refuses
+//     such a message and the request is sent again without it
+//     (anthropic_shapes.go), a refused job the beta saves.
 func buyerBetas(client, model string, oauth, rebuilt bool) []string {
 	is := func(b string, families ...string) bool {
 		return slices.ContainsFunc(families, func(f string) bool { return strings.HasPrefix(b, f+"-20") })
@@ -508,7 +536,7 @@ func buyerBetas(client, model string, oauth, rebuilt bool) []string {
 		case b == "":
 		case is(b, "context-1m") && model != "claude-sonnet-5" && !strings.HasPrefix(model, "claude-sonnet-5-"):
 		case oauth && is(b, "output-128k", "computer-use"):
-		case rebuilt && !is(b, "structured-outputs", "mid-conversation-tool-changes", "inline-tools"):
+		case rebuilt && !is(b, "structured-outputs", "mid-conversation-tool-changes", "inline-tools", "per-turn-control", "mid-conversation-output-config"):
 		default:
 			out = append(out, b)
 		}

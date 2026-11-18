@@ -115,6 +115,8 @@ The file is `providers.json` in the client's state directory, mode 0600, written
 
 A model entry has the same fields as a local model in `config.json` (`node.ModelConfig`).
 
+What a node's offer says of each model (context window, output limit, reasoning and its levels) comes from a built-in table of well-known Claude, GPT/Codex, Gemini, DeepSeek and Grok models ([`internal/modelinfo`](../internal/modelinfo/modelinfo.go)), looked up by the vendor's model name, then the network ID. A model entry's optional `meta` sets its own, each field given winning over the table: `{"context_window": 400000, "max_output_tokens": 32000, "reasoning": true, "reasoning_levels": ["low", "medium", "high"]}`. `max_output` also caps the advertised output limit. Buyers see the result in `/v1/models` and Codex's model catalog; a model neither knows is listed without them.
+
 Every change goes through `provider.Update`, which re-reads the file, applies the change and writes it back (serialized across CLI and daemon processes with OS file locks), so a token renewed by the running client and a setting changed by a command do not undo each other.
 
 ## 5. Command line
@@ -230,6 +232,8 @@ When the upstream answers 401 or 403 (credentials refused) or 402 (out of balanc
 
 This applies to every provider, whether signed in or using an API key. When the upstream answers HTTP 429, the provider cools down until `Retry-After`, or for one minute when the header is missing. The node announces a new offer at once: the cooling provider's models are left out, and if every provider is cooling down the node withdraws its offer. The models come back with the first offer after the cooldown ends (within `OfferInterval`, 15 s by default). A ticket issued against an older offer gets `busy` without another upstream call and without blaming the buyer. Provider views report the last upstream HTTP status, request ID and cooldown deadline. This state lives in the daemon only and resets at restart.
 
+A 429 that is about one request rather than the account does not cool the provider down: OpenAI's "Request too large … on tokens per min (TPM): Limit 30000, Requested 45000" (the request alone is larger than the account's allowance per minute) fails that job as HTTP 413, and a prompt past the model's context told with a 429 fails it as 400, which the buyer reports to its client as a prompt too long. Quotas, plan limits and ordinary rate limits still cool the provider down.
+
 ## 9. What is verified
 
 | Item | State |
@@ -276,7 +280,7 @@ The desktop connection settings expose the same options. Partial `transport` upd
 
 **Identity and login.** `oauth.account_id` remains the organization UUID; `oauth.account_uuid` is the user UUID. An old login missing the latter needs a refresh or a new sign-in before using the compatibility profile. Refreshes, restarts and signing back into the same account preserve device identity. Duplicate providers for the same Anthropic account are rejected. Cookie login selects an organization explicitly and uses the cookie only for authorization; the cookie is never stored or sent to token or Messages endpoints. Inference-only authorization uses the returned expiry and refresh token, not an assumed unlimited lifetime.
 
-**Models and parameters.** The fallback catalogue includes Fable 5.2 and Mythos 5.2 and is marked `source=fallback`. Listing models verifies model-list access only. HTTP 401/403 are preserved; an inference-only credential without listing permission can still be saved and tested against an explicitly named model. Sonnet 5.5, Haiku 5.5 and Fable/Mythos 5.2 validate explicit sampling settings; `sampling=default` omits temperature/top_p for those models. Forced tool choices on Opus/Sonnet 5.5 and Fable/Mythos 5.2 fail explicitly instead of silently becoming auto. API keys share these parameter rules.
+**Models and parameters.** The fallback catalogue includes Fable 5.2 and Mythos 5.2 and is marked `source=fallback`. Listing models verifies model-list access only. HTTP 401/403 are preserved; an inference-only credential without listing permission can still be saved and tested against an explicitly named model. Sonnet 5.5, Haiku 5.5 and Fable/Mythos 5.2 take only some sampling settings: by default (`sampling=default`) the ones they refuse are omitted and the model samples at its default; `sampling=strict` refuses such a request instead. Forced tool choices on Opus/Sonnet 5.5 and Fable/Mythos 5.2 fail explicitly instead of silently becoming auto. API keys share these parameter rules.
 
 **Sessions.** Buyers may supply a top-level OpenAI `session_id` of at most 256 bytes. It travels inside the encrypted request and reaches the adapter through local context, without being forwarded as a normal OpenAI upstream field. The derived identity is scoped to the seller's provider, authenticated buyer and conversation. Without an explicit ID, the first user text is an approximation: two conversations from one buyer with the same opening can share a session. The actual buyer peer ID is not sent to Anthropic.
 

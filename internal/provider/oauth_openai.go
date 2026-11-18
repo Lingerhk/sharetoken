@@ -143,6 +143,10 @@ func codexHeader(tok *Token) http.Header {
 type codexUpstream struct {
 	base string
 	ts   TokenSource
+	// seals: the encrypted items this account refused, by conversation;
+	// turns: the backend's x-codex-turn-state of each turn in progress
+	seals refusedSeals
+	turns codexTurnStates
 }
 
 func (u *codexUpstream) APIs() []string { return []string{protocol.APIResponses} }
@@ -152,10 +156,19 @@ func (u *codexUpstream) Stream(ctx context.Context, r *node.Request, emit func([
 		return fmt.Errorf("codex: cannot send a %s request", r.API)
 	}
 	session := u.session(r)
+	seals := sealsKey(r.Header.Get("session_id"), r.Body)
 	return withToken(ctx, u.ts, func(tok *Token) error {
 		h := codexHeader(tok)
 		h.Set("session_id", session)
-		return retryWithoutReasoning(r.Body, func(body []byte) error {
+		turn := codexTurnKey(tok.AccountID, r.Header.Get("session_id"), r.Header.Get("x-codex-turn-id"))
+		if st := u.turns.get(turn); st != "" {
+			h.Set("x-codex-turn-state", st)
+		}
+		ctx := ctx
+		if turn != "" {
+			ctx = withHTTPClient(ctx, turnStateTap{next: clientForContext(ctx), heard: func(st string) { u.turns.put(turn, st) }})
+		}
+		return u.seals.retry(seals, r.Body, func(body []byte) error {
 			return streamCodex(ctx, u.base+"/responses", h, body, emit)
 		})
 	})
@@ -164,10 +177,11 @@ func (u *codexUpstream) Stream(ctx context.Context, r *node.Request, emit func([
 // Compact implements node.Compactor with the backend's /responses/compact.
 func (u *codexUpstream) Compact(ctx context.Context, r *node.Request, emit func([]byte) error) error {
 	session := u.session(r)
+	seals := sealsKey(r.Header.Get("session_id"), r.Body)
 	return withToken(ctx, u.ts, func(tok *Token) error {
 		h := codexHeader(tok)
 		h.Set("session_id", session)
-		return retryWithoutReasoning(r.Body, func(body []byte) error {
+		return u.seals.retry(seals, r.Body, func(body []byte) error {
 			return compactCodex(ctx, u.base+"/responses/compact", h, body, emit)
 		})
 	})

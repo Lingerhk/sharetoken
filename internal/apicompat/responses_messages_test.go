@@ -120,8 +120,8 @@ func TestResponsesToMessagesStringInputAndDefaults(t *testing.T) {
 	if len(msgs) != 1 || msgs[0]["role"] != "user" || respBlocks(msgs[0])[0]["text"] != "just text" {
 		t.Fatalf("messages: %v", msgs)
 	}
-	if respNum(m, "max_tokens") != respDefaultMaxTokens {
-		t.Errorf("max_tokens defaults to %d: %v", respDefaultMaxTokens, m["max_tokens"])
+	if respNum(m, "max_tokens") != int(chatAnthropicMaxOutput(m["model"].(string))) {
+		t.Errorf("max_tokens defaults to the model's limit: %v", m["max_tokens"])
 	}
 	if _, err := Convert(Responses, Messages, []byte(`{"model":"m","input":[]}`), Options{}); err == nil {
 		t.Errorf("a request with nothing to send must fail")

@@ -332,7 +332,7 @@ func TestResponsesFromChatToolCalls(t *testing.T) {
 	)
 	out := respOutput(evs)
 	want := []string{
-		`{"content":[{"annotations":[],"logprobs":[],"text":"Let me run it.","type":"output_text"}],"role":"assistant","status":"completed","type":"message"}`,
+		`{"content":[{"annotations":[],"logprobs":[],"text":"Let me run it.","type":"output_text"}],"phase":"commentary","role":"assistant","status":"completed","type":"message"}`,
 		`{"arguments":"{\"cmd\":\"ls\"}","call_id":"call_a","name":"exec","status":"completed","type":"function_call"}`,
 		`{"arguments":"{\"ms\":5}","call_id":"call_b","name":"wait","namespace":"functions","status":"completed","type":"function_call"}`,
 		`{"call_id":"call_c","input":"*** Begin Patch","name":"apply_patch","status":"completed","type":"custom_tool_call"}`,
