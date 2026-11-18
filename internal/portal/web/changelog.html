@@ -39,10 +39,38 @@
   <p class="lead">ShareToken 每个版本带来的功能。</p>
 
   <!-- 新版本加在最上面：复制一个 article，文案翻译进 i18n/site/ 的每个字典 -->
+  <article class="release" id="v1.0.4">
+    <header class="release-head">
+      <h2>1.0.4</h2>
+      <span class="release-tag">最新版本</span>
+      <time datetime="2026-11-18">2026-11-18</time>
+    </header>
+
+    <h3>新功能</h3>
+    <ul>
+      <li>运行 sharetoken models -codex 生成模型目录文件并在 Codex 配置里引用后，Codex 能拿到网络上模型的真实上下文窗口和推理档位，按时压缩对话。</li>
+      <li>本地端点在 HTTP 上也支持 previous_response_id，OpenAI Agents SDK 等工具可以直接接入；Codex 的 WebSocket 会话可以中途打断。</li>
+      <li>循环检测：模型原地重复输出，或反复调用同一个工具得到相同结果时自动截断，不再白白花费 credit。默认开启，可以在配置文件里关闭。</li>
+    </ul>
+
+    <h3>稳定性提升</h3>
+    <ul>
+      <li>Codex 走 HTTP 时，任务完成后立即结算，不再等待 24 小时的争议期。</li>
+      <li>上下文超长时按各客户端能识别的方式回报，Claude Code 和 Codex 会自动压缩对话后继续。</li>
+      <li>修复网络接口不可达时整个 QUIC 连接被关闭的问题；卖家刚开始回答就出错、或连接中断时自动换节点重试，慢模型靠心跳保持连接。</li>
+      <li>与 Claude、Codex、Gemini 和各类 OpenAI 兼容服务的兼容性更好：被拒绝的请求写法会自动修正并记住，工具调用配对、图片尺寸、思考设置和工具 schema 都按上游的要求处理。</li>
+      <li>单个请求超出卖家的每分钟额度时只让这个请求失败，不再让卖家暂停对所有买家的服务。</li>
+    </ul>
+
+    <h3>安全性</h3>
+    <ul>
+      <li>买家在 chat 请求里填写的 user 标识不再转发给卖家的模型服务。</li>
+    </ul>
+  </article>
+
   <article class="release" id="v1.0.3">
     <header class="release-head">
       <h2>1.0.3</h2>
-      <span class="release-tag">最新版本</span>
       <time datetime="2026-11-17">2026-11-17</time>
     </header>
 
