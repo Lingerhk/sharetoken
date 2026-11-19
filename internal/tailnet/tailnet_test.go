@@ -17,6 +17,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/tailscale/tailcat"
@@ -334,7 +335,19 @@ func TestSweep(t *testing.T) {
 	if len(buyer.Network().ConnsToPeer(seller.ID())) != 1 {
 		t.Fatal("closed before the idle time")
 	}
+	// A stream that came and went between two looks counts as use: the
+	// connection of a job a minute is not idle.
+	var use *lastUse
+	if c := buyer.Network().ConnsToPeer(seller.ID())[0]; !c.As(&use) || use.at.Load() == 0 {
+		t.Fatalf("the connection does not note its use (%v)", use)
+	}
+	use.at.Store(now.Add(45 * time.Second).UnixNano())
 	btn.sweep(buyer, idle, now.Add(61*time.Second))
+	btn.sweep(buyer, idle, now.Add(104*time.Second))
+	if len(buyer.Network().ConnsToPeer(seller.ID())) != 1 {
+		t.Fatal("closed a minute after the first look, 16 seconds after its last stream")
+	}
+	btn.sweep(buyer, idle, now.Add(106*time.Second))
 	deadline := time.Now().Add(5 * time.Second)
 	for len(buyer.Network().ConnsToPeer(seller.ID())) != 0 || btn.Status().Tunnels[0].Conns != 0 {
 		if time.Now().After(deadline) {
@@ -526,4 +539,45 @@ func TestTunnelAmongUnreachableAddrs(t *testing.T) {
 		t.Fatalf("the tunnel took %v: it waited for the dead addresses", took)
 	}
 	echo(t, buyer, seller.ID(), "past the dead addresses")
+}
+
+// The addresses an attempt dials outlive identify's sweep of a peer's
+// temporary addresses, which runs when the last connection to the peer ends:
+// an attempt that starts at that moment still finds them.
+func TestReachAddrsOutliveTheSweep(t *testing.T) {
+	dm := derpMap(t)
+	seller, stn := newHost(t, dm)
+	buyer, btn := newHost(t, dm)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	addr, err := stn.Serve(ctx, seller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !btn.Reach(ctx, buyer, seller.ID(), []ma.Multiaddr{addr}, 20*time.Second) {
+		t.Fatalf("Reach: %+v", btn.Status())
+	}
+	// What identify does when the last connection ends.
+	buyer.Peerstore().UpdateAddrs(seller.ID(), peerstore.TempAddrTTL, 0)
+	if got := Addrs(buyer.Peerstore().Addrs(seller.ID())); len(got) != 1 {
+		t.Fatalf("the tunnel address was swept: %v", buyer.Peerstore().Addrs(seller.ID()))
+	}
+
+	// The node's tunnel restarts: the next attempt forgets the address
+	// before.
+	stn.Reset(seller)
+	next, err := stn.Serve(ctx, seller)
+	if err != nil || next.Equal(addr) {
+		t.Fatalf("Serve after the reset: %v, %v", next, err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for HasDirect(buyer, seller.ID()) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !btn.Reach(ctx, buyer, seller.ID(), []ma.Multiaddr{next}, 20*time.Second) {
+		t.Fatalf("Reach at the new address: %+v", btn.Status())
+	}
+	if got := Addrs(buyer.Peerstore().Addrs(seller.ID())); len(got) != 1 || !got[0].Equal(next) {
+		t.Fatalf("tunnel addresses after the restart: %v", got)
+	}
 }

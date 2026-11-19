@@ -2,6 +2,7 @@ package tailnet
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"time"
 
@@ -36,6 +37,16 @@ const (
 	reachTimeout = 30 * time.Second
 	reachRetry   = time.Minute
 )
+
+// reachAddrTTL is how long connect keeps the addresses it dials in the
+// peerstore. Connect adds them itself, as temporary addresses, and libp2p's
+// identify drops every temporary address of a peer when it hears from the
+// peer or when the last connection to it ends (the tunnel's address is in no
+// identify message, so nothing puts it back): an attempt that starts as a
+// connection ends found the peer without addresses and stayed off for
+// reachRetry. A time of its own, longer than the temporary one, is left
+// alone.
+const reachAddrTTL = 3 * time.Minute
 
 // Reach makes sure a direct connection to p is being set up through the
 // tailnet address among addrs (and its addresses on a Tailscale network this
@@ -86,6 +97,15 @@ func (t *Transport) connect(h host.Host, p peer.ID, addrs []ma.Multiaddr, r *rea
 	ctx, cancel := context.WithTimeout(context.Background(), reachTimeout)
 	defer cancel()
 	t0 := time.Now()
+	// A node's tunnel address changes when its tunnel restarts; the one
+	// before leads nowhere, and a dial to it holds a tunnel and one of the
+	// peer's few connections until it times out.
+	for _, old := range Addrs(h.Peerstore().Addrs(p)) {
+		if !slices.ContainsFunc(addrs, old.Equal) {
+			h.Peerstore().SetAddrs(p, []ma.Multiaddr{old}, 0)
+		}
+	}
+	h.Peerstore().AddAddrs(p, addrs, reachAddrTTL)
 	err := h.Connect(network.WithForceDirectDial(ctx, "tailnet"), peer.AddrInfo{ID: p, Addrs: addrs})
 	t.mu.Lock()
 	r.err = err
@@ -140,7 +160,7 @@ func HasDirect(h host.Host, p peer.ID) bool {
 // ---- upkeep ----
 
 // Run closes what is no longer used, until ctx ends: outgoing tunnel
-// connections that carried no stream for Config.IdleClose, and tunnels
+// connections that got no stream for Config.IdleClose, and tunnels
 // without a connection. It also keeps each tunnel's path current.
 func (t *Transport) Run(ctx context.Context, h host.Host) {
 	tick := time.NewTicker(30 * time.Second)
@@ -169,9 +189,15 @@ func (t *Transport) sweep(h host.Host, idle map[network.Conn]time.Time, now time
 		}
 		since, ok := idle[c]
 		if !ok {
-			idle[c] = now
-			continue
+			since = now
 		}
+		var use *lastUse
+		if c.As(&use) {
+			if at := time.Unix(0, use.at.Load()); at.After(since) {
+				since = at // a stream came and went between two looks
+			}
+		}
+		idle[c] = since
 		if now.Sub(since) >= t.cfg.IdleClose {
 			t.log.Debug("closing an idle tunnel connection", "peer", c.RemotePeer())
 			_ = c.Close()

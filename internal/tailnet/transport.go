@@ -225,6 +225,9 @@ func (t *Transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tr
 	c, err := t.dial(ctx, raddr, p, scope)
 	if err != nil {
 		scope.Done()
+		// libp2p reports the first few failures of a dial, and a node has
+		// more addresses than that: the tunnel's, the last to fail, is cut.
+		t.log.Info("tunnel dial failed", "peer", p, "err", err)
 		return nil, err
 	}
 	return c, nil
@@ -255,7 +258,44 @@ func (t *Transport) dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID, sco
 	t.log.Debug("tunnel connection up", "peer", p, "took", time.Since(t0).Round(time.Millisecond))
 	tun.peer.Store(&p)
 	tun.probe()
-	return cc, nil
+	return &usedConn{CapableConn: cc}, nil
+}
+
+// lastUse is when a tunnel connection last got a new stream. The sweep
+// looks at a connection twice a minute and most jobs take seconds: by the
+// streams it happened to see, a connection that carried a job every minute
+// was idle at every look, and was closed after Config.IdleClose all the
+// same, sending the next job over the relay.
+type lastUse struct{ at atomic.Int64 }
+
+func (u *lastUse) touch() { u.at.Store(time.Now().UnixNano()) }
+
+// usedConn is the upgraded TCP connection through a tunnel, noting when it
+// is used.
+type usedConn struct {
+	transport.CapableConn
+	use lastUse
+}
+
+func (c *usedConn) OpenStream(ctx context.Context) (network.MuxedStream, error) {
+	c.use.touch()
+	return c.CapableConn.OpenStream(ctx)
+}
+
+func (c *usedConn) AcceptStream() (network.MuxedStream, error) {
+	s, err := c.CapableConn.AcceptStream()
+	if err == nil {
+		c.use.touch()
+	}
+	return s, err
+}
+
+func (c *usedConn) As(target any) bool {
+	if u, ok := target.(**lastUse); ok {
+		*u = &c.use
+		return true
+	}
+	return c.CapableConn.As(target)
 }
 
 // Listen serves libp2p on this host's tailcat server; Serve calls it
