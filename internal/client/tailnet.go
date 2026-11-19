@@ -64,6 +64,21 @@ func (c TailnetConfig) validate() error {
 type TailnetStatus struct {
 	tailnet.Status
 	WaitMillis int `json:"wait_ms,omitempty"`
+	// Settings are the settings as config.json holds them, for a form:
+	// Status says what is in force (the relay list in use, "quic" for an
+	// empty transport).
+	Settings TailnetConfig `json:"settings"`
+}
+
+// savedTailnetStatus is the tailnet of a client that is not running: its
+// settings, and nothing live.
+func savedTailnetStatus(tc TailnetConfig) TailnetStatus {
+	st := TailnetStatus{WaitMillis: tc.WaitMillis, Settings: tc}
+	st.Enabled, st.DERPMap, st.Proto = tc.Enabled, tc.DERPMap, tc.Transport
+	if st.Proto == "" {
+		st.Proto = tailnet.ProtoQUIC
+	}
+	return st
 }
 
 // newTailnet makes the agent's tailnet transport and the libp2p option that
@@ -171,12 +186,12 @@ func (a *Agent) tailnetSystemAddrs() []string {
 // TailnetStatus reports the tailnet.
 func (a *Agent) TailnetStatus() TailnetStatus {
 	a.mu.Lock()
-	wait := a.cfg.Tailnet.WaitMillis
+	tc := a.cfg.Tailnet
 	a.mu.Unlock()
 	if a.tailnet == nil {
-		return TailnetStatus{WaitMillis: wait}
+		return TailnetStatus{WaitMillis: tc.WaitMillis, Settings: tc}
 	}
-	return TailnetStatus{Status: a.tailnet.Status(), WaitMillis: wait}
+	return TailnetStatus{Status: a.tailnet.Status(), WaitMillis: tc.WaitMillis, Settings: tc}
 }
 
 // SetTailnet applies new tailnet settings to the running client and saves
@@ -248,11 +263,11 @@ func (a *Agent) handleSetTailnet(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 	// Fields left out keep their value.
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&tc); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed JSON: "+err.Error())
+		writeErrorCode(w, http.StatusBadRequest, "bad_request", "malformed JSON: "+err.Error())
 		return
 	}
 	if err := a.SetTailnet(tc); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, a.TailnetStatus())

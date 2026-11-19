@@ -1390,6 +1390,121 @@ I18N.ready.then(() => {
       h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'buy-native-hint' }, tr('卖家的模型服务器原生支持请求所用的接口时（如 Claude Code 用 Anthropic Messages，Codex 用 OpenAI Responses）原样转发，不做转换。不勾选时优先选这类卖家，没有空闲的就由其他卖家转换后提供；勾选后没有这类卖家时请求直接失败。')),
       h('span', { class: 'k' }, tr('每个请求的预算')), h('span', { class: 'v' }, budgetInput, ' ', h('span', { class: 'muted small' }, 'credit'), ' ', buyNote), budgetSave,
       h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'buy-budget-hint' }, tr('每个请求先冻结这么多，结束后按实际用量扣费，多余的退回。编程助手的 prompt 很长，预算太小会返回 budget 错误。'))));
+    // Direct tunnels (PUT /api/v1/tailnet; internal/client/tailnet.go): a
+    // second way to the other side of a job, next to the relays. The switch
+    // and the transport apply as they change, the two text fields with their
+    // button. The settings are those of config.json; what the tunnels carry
+    // right now is in the table below them, in the status bar and on the
+    // overview.
+    let tn = null, tnDirty = false;
+    const bytes = n => { n = Number(n || 0); return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B'; };
+    const tunnelPath = p => p === 'direct' ? tr('直连') : p && p.startsWith('derp:') ? tr('中转 {region}', { region: p.slice(5) }) : tr('建立中');
+    // What the tunnels are doing, in a few words, and their latency.
+    function tunnelSummary(t) {
+      if (!t || !t.enabled) return { text: tr('未开启'), ms: 0, on: false, n: 0 };
+      const list = t.tunnels || [];
+      if (list.length === 0) return { text: tr('已开启，暂无连接'), ms: 0, on: true, n: 0 };
+      const direct = list.filter(x => x.path === 'direct').length, relayed = list.filter(x => x.path && x.path.startsWith('derp:')).length;
+      const protos = [...new Set(list.map(x => x.proto).filter(Boolean))].map(x => x.toUpperCase()).sort().join('+');
+      const timed = list.filter(x => x.ms > 0);
+      const how = direct === list.length ? tr('直连') : direct === 0 && relayed > 0 ? tr('中转') : direct === 0 ? tr('建立中') : tr('直连 {direct} · 中转 {relayed}', { direct: num(direct), relayed: num(list.length - direct) });
+      return { text: (protos ? protos + ' ' : '') + how + ' × ' + num(list.length), ms: timed.length ? timed.reduce((a, x) => a + x.ms, 0) / timed.length : 0, on: true, n: list.length };
+    }
+    const tnNote = h('span', { class: 'small', id: 'tailnet-note', role: 'status' });
+    async function putTailnet(body, el, text) {
+      el.disabled = true;
+      try {
+        if (text) tnDirty = false;
+        drawTailnet(await api('PUT', '/api/v1/tailnet', body));
+        tnNote.className = 'small ok';
+        tnNote.textContent = tr('已保存');
+      } catch (e) {
+        if (text) tnDirty = true;
+        tnNote.className = 'small warn-text';
+        tnNote.textContent = message(e);
+        if (tn) drawTailnet(tn);
+      }
+      el.disabled = false;
+    }
+    function saveTailnet() {
+      const wait = Number(tnWait.value.trim() || 0);
+      if (!Number.isInteger(wait) || wait < 0 || wait > 10000) {
+        tnNote.className = 'small warn-text';
+        tnNote.textContent = tr('等待时间需要是 0 到 10000 之间的整数（毫秒）');
+        return;
+      }
+      putTailnet({ wait_ms: wait, derp_map: tnMap.value.trim() }, tnSave, true);
+    }
+    const tnBox = h('input', { type: 'checkbox', id: 'tailnet-enabled', disabled: true, onchange: () => putTailnet({ enabled: tnBox.checked }, tnBox) });
+    const tnProto = h('select', { id: 'tailnet-transport', class: 'narrow', 'aria-label': tr('传输协议'), onchange: () => putTailnet({ transport: tnProto.value }, tnProto) },
+      h('option', { value: 'quic' }, tr('QUIC（默认）')), h('option', { value: 'tcp' }, 'TCP'));
+    const tnWait = h('input', { type: 'text', id: 'tailnet-wait', class: 'narrow short', inputmode: 'numeric', 'aria-label': tr('等待隧道'),
+      oninput: () => { tnDirty = true; }, onkeydown: e => { if (e.key === 'Enter') saveTailnet(); } });
+    const tnMap = h('input', { type: 'text', id: 'tailnet-derp', class: 'narrow wide', spellcheck: 'false', placeholder: tr('默认：公共中转服务器'), 'aria-label': tr('中转服务器'),
+      oninput: () => { tnDirty = true; }, onkeydown: e => { if (e.key === 'Enter') saveTailnet(); } });
+    const tnSave = h('button', { type: 'button', id: 'tailnet-save', onclick: saveTailnet }, tr('保存'));
+    const tnServe = h('span', { class: 'v', id: 'tailnet-serving' });
+    // Shown only while the tunnels are on.
+    const tnOn = [
+      h('span', { class: 'k' }, tr('传输协议')), h('span', { class: 'v' }, tnProto), h('span'),
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'tailnet-transport-hint' }, tr('隧道里的连接跑在哪种协议上。只影响本机发起的连接（买模型时）；共享模型时两种都接受。QUIC 在稳定的网络上传大请求更快；网络丢包或抖动较多（例如信号不好的 Wi-Fi）、又常发几 MB 的请求时，TCP 更稳。改动对之后新建的连接生效。')),
+      h('span', { class: 'k' }, tr('等待隧道')), h('span', { class: 'v' }, tnWait, ' ', h('span', { class: 'muted small' }, tr('毫秒'))), h('span'),
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'tailnet-wait-hint' }, tr('第一次请求某个卖家时，最多等这么久让隧道建好再发送。0 表示不等：这个请求先走中继，隧道建好后接管后面的请求。范围 0 到 10000。')),
+      h('span', { class: 'k' }, tr('中转服务器')), h('span', { class: 'v' }, tnMap), tnSave,
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'tailnet-derp-hint' }, tr('隧道刚建立和打不通直连时经它中转，它只看到密文。留空使用公共中转服务器（DERP）；也可以填自建列表的网址或文件路径。买卖双方要用同一组服务器。修改后现有隧道会重建。')),
+      h('span', { class: 'k' }, tr('本机')), tnServe, h('span'),
+    ];
+    const tailnetPanel = h('section', { class: 'panel', id: 'tailnet-settings' }, h('div', { class: 'rows' },
+      h('span', { class: 'k' }, tr('直连隧道')), h('label', { class: 'v check' }, tnBox, h('span', null, tr('和对方直接建立加密隧道，不经过中继'))), tnNote,
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'tailnet-hint' }, tr('基于 Tailscale 的协议（WireGuard）：买卖双方都开启后，请求和回答在两台机器之间直接传输，不再经过中继；有一方没开或隧道建不起来时，照常走中继，请求不受影响。不需要 Tailscale 账号，不改动系统网络，也不需要管理员权限。隧道先经中转服务器接通，几秒后换成两端直连。')),
+      tnOn));
+    const tunnels = section('tunnels', tr('当前隧道'), { fill: true, hint: tr('每条隧道通向一个对方：买模型时到卖家，共享模型时来自买家。连接 10 分钟没有新请求就关闭，下次请求时重新建立。') });
+    function drawTailnet(t) {
+      tn = t;
+      const s = t.settings || {};
+      tnBox.checked = !!t.enabled;
+      tnBox.disabled = false;
+      if (document.activeElement !== tnProto) tnProto.value = t.proto === 'tcp' ? 'tcp' : 'quic';
+      if (!tnDirty && document.activeElement !== tnWait && document.activeElement !== tnMap) {
+        tnWait.value = String(s.wait_ms || 0);
+        tnMap.value = s.derp_map || '';
+      }
+      for (const el of tnOn) el.hidden = !t.enabled;
+      tnServe.textContent = t.serving ? tr('买家可以经隧道到达本机（中转区域 {region}）', { region: t.region || '—' })
+        : t.error ? tr('隧道暂不可用，买家走中继：{error}', { error: t.error })
+        : current.state !== 'running' ? tr('连接网络后生效') : tr('没有在共享模型：只在买模型时使用隧道');
+      tnServe.title = tnServe.textContent;
+      const list = t.enabled ? (t.tunnels || []) : [];
+      tunnels.el.hidden = !t.enabled;
+      tunnels.set(list, list.length === 0 ? h('div', { class: 'empty', id: 'tunnels-empty' }, tr('还没有隧道。和同样开启了直连隧道的对方有请求往来时才会建立。')) : table([
+        { title: tr('方向'), get: x => x.dir === 'in' ? tr('来自买家') : tr('到卖家') },
+        { title: tr('对方'), get: x => x.peer ? h('span', { class: 'mono', title: x.peer }, shortPeer(x.peer)) : '—' },
+        { title: tr('路径'), get: x => h('span', { class: 'badge' + (x.path === 'direct' ? ' accent' : ''), title: x.endpoint || null }, tunnelPath(x.path)) },
+        { title: tr('协议'), get: x => x.proto ? x.proto.toUpperCase() : '—' },
+        { title: tr('延迟'), num: true, get: x => rtt(x.ms) },
+        { title: tr('连接'), num: true, get: x => num(x.conns) },
+        { title: tr('流量'), num: true, get: x => '↓ ' + bytes(x.rx_bytes) + '  ↑ ' + bytes(x.tx_bytes) },
+      ], list));
+      drawTunnelStat();
+    }
+    async function loadTailnet() {
+      try { drawTailnet(await api('GET', '/api/v1/tailnet')); } catch (e) { /* shown again at the next try */ }
+    }
+    // The status bar says what kind of path the tunnels give right now and
+    // how fast it answers; a click opens their settings.
+    const tunnelStat = h('button', { type: 'button', class: 'link', id: 'status-tunnel', onclick: () => showView('settings', 'network') });
+    let lastTunnelStat = null;
+    function drawTunnelStat() {
+      const sum = tunnelSummary(tn);
+      const key = sum.text + '|' + Math.round(sum.ms);
+      if (key === lastTunnelStat) return;
+      lastTunnelStat = key;
+      tunnelStat.className = 'link' + (sum.on ? '' : ' off');
+      tunnelStat.replaceChildren(...[h('span', null, tr('隧道')), h('span', { id: 'status-tunnel-text' }, sum.text), sum.ms ? rtt(sum.ms) : null].filter(Boolean));
+      if (lastStatus) renderNetwork(lastStatus);
+    }
+    let lastStatus = null;
+
     let market = [];
     const pairing = pairingView();
     const partners = partnersView();
@@ -1401,7 +1516,7 @@ I18N.ready.then(() => {
       ['share', tr('共享'), null, [['state', tr('状态'), share.panes.state], ['providers', tr('厂商 API'), share.panes.providers], ['local', tr('本机模型'), share.panes.local]]],
       ['pairing', tr('配对'), null, [['partners', tr('共享伙伴'), [partners.partners, partners.settings]], ['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
       ['activity', tr('记录'), null, [['all', tr('全部'), [jobs.el]], ['sold', tr('卖出'), [share.sold]]]],
-      ['settings', tr('设置'), null, [['general', tr('通用'), [settings]], ['buy', tr('调用'), [buyPanel]], ['devices', tr('我的设备'), [devices.el]]]],
+      ['settings', tr('设置'), null, [['general', tr('通用'), [settings]], ['buy', tr('调用'), [buyPanel]], ['network', tr('网络'), [tailnetPanel, tunnels.el]], ['devices', tr('我的设备'), [devices.el]]]],
     ];
     const views = {}, navButtons = {}, tabs = {}, labels = {};
     const title = h('h1', { id: 'view-title' });
@@ -1432,7 +1547,7 @@ I18N.ready.then(() => {
           h('button', { type: 'button', id: 'nav-feedback', onclick: () => feedbackDialog() }, icon('feedback'), h('span', null, tr('反馈'))),
           navButtons.settings)),
       h('main', { class: 'main' }, head, h('div', { class: 'notices' }, updateBox, banner), Object.values(views)),
-      h('footer', { class: 'statusbar' }, pill, relayStat, h('span', { class: 'spacer' }), who, versionLabel)));
+      h('footer', { class: 'statusbar' }, pill, relayStat, tunnelStat, h('span', { class: 'spacer' }), who, versionLabel)));
     let savedView = '';
     try { savedView = localStorage.getItem('st_view') || ''; } catch (e) { /* the overview */ }
     showView(savedView);
@@ -1482,7 +1597,9 @@ I18N.ready.then(() => {
     }
 
     function renderNetwork(st) {
+      lastStatus = st;
       const c = st.coordinator;
+      const tun = tunnelSummary(tn);
       const q = c.link && c.link.samples ? c.link : null;
       // Under 10 ms a whole number would say 0.
       const ms1 = v => { v = Number(v || 0); return v > 0 && v < 10 ? Math.round(v * 10) / 10 : Math.round(v); };
@@ -1490,9 +1607,10 @@ I18N.ready.then(() => {
       const cur = (st.relays || []).find(r => r.current);
       // The live pings of the relay in use say more than the last survey of all relays.
       setRelayStat(cur, link && link[0] ? link[0] : cur && !cur.error ? cur.rtt_ms : 0);
-      network.set([st.relays, c.connected, c.via, st.warnings, link],
+      network.set([st.relays, c.connected, c.via, st.warnings, link, tun.text, Math.round(tun.ms)],
         h('div', { class: 'kv' },
           h('span', { class: 'pill ' + (c.connected ? 'ok' : 'bad'), id: 'coord-line' }, c.connected ? tr('协调器已连接') : tr('协调器未连接')),
+          tun.on ? h('span', { class: 'small', id: 'tunnel-line' }, tr('直连隧道：{state}', { state: tun.text }), tun.ms ? [' ', rtt(tun.ms)] : null) : null,
           link ? h('span', { class: 'small', id: 'link-line' }, I18N.parts('链路质量：平均 {avg} ms · 抖动 {jitter} ms · 丢包 {loss}%', {
             avg: h('strong', { class: link[0] ? rttClass(link[0]) + ' rtt-text' : null }, String(link[0])), jitter: String(link[1]),
             loss: h('strong', { class: link[2] >= 5 ? 'bad rtt-text' : link[2] > 0 ? 'warn rtt-text' : null }, String(link[2])) })) : null),
@@ -1512,6 +1630,7 @@ I18N.ready.then(() => {
       share.update(null);
       setBrief(null);
       setRelayStat(null);
+      lastStatus = null;
     }
 
     function renderModels(ms) {
@@ -1679,6 +1798,8 @@ I18N.ready.then(() => {
             setBanner(tr('暂时连不上门户，下面是上次获取的账户信息（{error}）', { error: message(e) }));
           }
         }
+        await loadTailnet();
+        if (stopped) return;
         if (s.state === 'running') {
           try {
             const st = await api('GET', '/api/v1/status');

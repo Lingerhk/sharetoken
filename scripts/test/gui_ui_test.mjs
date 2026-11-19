@@ -68,6 +68,8 @@ const text = s => ev(`${el(s)}?.textContent ?? ''`);
 // Types the way a user does, so that the page's own input element keeps the value.
 const fill = (s, v) => ev(`(() => { const e = ${el(s)}; e.focus(); e.value = ${q(v)}; e.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 const click = s => ev(`${el(s)}.click()`);
+const shown = s => ev(`(() => { const e = ${el(s)}; return !!e && e.getClientRects().length > 0; })()`);
+const choose = (s, v) => ev(`(() => { const e = ${el(s)}; e.value = ${q(v)}; e.dispatchEvent(new Event('change', { bubbles: true })); })()`);
 let passed = 0;
 function ok(cond, what) { if (!cond) throw new Error('FAILED: ' + what); passed++; console.log('  ok  ' + what); }
 async function errorIs(needle, what) { await waitFor(`${el('#error')}?.textContent.includes(${q(needle)})`); ok(true, what); }
@@ -289,6 +291,45 @@ await click('#buy-native');
 await waitFor(`${el('#buy-note')}.classList.contains('ok') && !${el('#buy-native')}.checked`);
 ok(buyConfig().require_native === false || buyConfig().require_native === undefined, 'and unticking it saves that too');
 ok(await ev(`!${el('#buy-spot')}`) && buyConfig().spot_checks === undefined, 'carrying spot checks is not a setting of the app: only config.json turns it off');
+
+console.log('direct tunnels');
+const tailnetConfig = () => JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8')).tailnet || {};
+const saved = async want => { for (let i = 0; i < 50 && !want(tailnetConfig()); i++) await sleep(100); return want(tailnetConfig()); };
+await waitFor(`${el('#status-tunnel-text')}.textContent === '未开启'`);
+ok((await text('#status-tunnel')).startsWith('隧道'), 'the status bar says the direct tunnels are off');
+await click('#status-tunnel');
+await waitFor(`!${el('#pane-settings-network')}.hidden && !${el('#tailnet-enabled')}.disabled`);
+ok(!(await ev(`${el('#tailnet-enabled')}.checked`)) && !(await shown('#tailnet-transport')) && !(await shown('#tunnels')), 'a click on it opens their settings: off, and nothing else to set');
+ok((await text('#tailnet-hint')).length > 60, 'what the switch does is explained');
+await click('#tailnet-enabled');
+await waitFor(`${el('#tailnet-note')}.classList.contains('ok') && ${el('#tailnet-enabled')}.checked`);
+ok(tailnetConfig().enabled === true, 'ticking it turns the tunnels on at once and saves that');
+await waitFor(`${el('#status-tunnel-text')}.textContent === '已开启，暂无连接'`);
+ok(await shown('#tailnet-transport') && await shown('#tailnet-wait') && await shown('#tailnet-derp') && await shown('#tunnels-empty'), 'their settings appear, and the list of tunnels, empty; the status bar follows');
+ok(await ev(`${el('#tailnet-transport')}.value`) === 'quic' && await ev(`${el('#tailnet-wait')}.value`) === '0' && await ev(`${el('#tailnet-derp')}.value`) === '', 'the defaults: QUIC, no wait, the public relays');
+ok((await text('#tailnet-transport-hint')).length > 60 && (await text('#tailnet-wait-hint')).length > 40 && (await text('#tailnet-derp-hint')).length > 40 && (await text('#tailnet-serving')).length > 5, 'each setting is explained, and what buyers can do with this device');
+await choose('#tailnet-transport', 'tcp');
+ok(await saved(c => c.transport === 'tcp'), 'choosing TCP saves the transport');
+await fill('#tailnet-wait', 'soon');
+await click('#tailnet-save');
+await waitFor(`${el('#tailnet-note')}.classList.contains('warn-text')`);
+ok(tailnetConfig().wait_ms === undefined, 'a wait that is not a number is refused, and says why');
+await fill('#tailnet-wait', '1500');
+await click('#tailnet-save');
+await waitFor(`${el('#tailnet-note')}.classList.contains('ok')`);
+ok(await saved(c => c.wait_ms === 1500 && c.transport === 'tcp' && c.enabled === true), 'the wait is saved in milliseconds, the rest kept');
+await shot('09d-tailnet-settings');
+await click('#nav-overview');
+await waitFor(`${el('#tunnel-line')} && ${el('#tunnel-line')}.textContent.includes('已开启')`);
+ok(true, 'the overview says so too');
+await click('#nav-settings');
+await choose('#tailnet-transport', 'quic');
+await fill('#tailnet-wait', '0');
+await click('#tailnet-save');
+ok(await saved(c => c.transport === 'quic' && !c.wait_ms), 'back to QUIC and no wait');
+await click('#tailnet-enabled');
+await waitFor(`!${el('#tailnet-enabled')}.checked && ${el('#status-tunnel-text')}.textContent === '未开启'`);
+ok(tailnetConfig().enabled === false && !(await shown('#tailnet-transport')) && !(await has('#tunnel-line')), 'unticking turns the tunnels off and hides their settings');
 await click('#tab-settings-general');
 await click('#nav-overview');
 
@@ -309,8 +350,6 @@ await click('#dlg-feedback-close');
 ok(!(await has('#dlg-feedback')), 'and the dialog closes');
 
 console.log('sharing: a hosted API');
-const choose = (s, v) => ev(`(() => { const e = ${el(s)}; e.value = ${q(v)}; e.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-const shown = s => ev(`(() => { const e = ${el(s)}; return !!e && e.getClientRects().length > 0; })()`);
 const KEY = 'sk-test-secret-0123456789';
 await click('#nav-share');
 await waitFor(el('#provider-add'));
