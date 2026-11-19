@@ -192,6 +192,10 @@ The reasoning of a thinking model also counts toward `max_tokens`, and the limit
 
 The node stopped sending anything (not even the progress frames it sends while the model is thinking), or its model produced nothing for 5 minutes, and was judged stuck. If the node or its network is merely slow, raise `first_byte_seconds` and `idle_seconds` in the configuration. See [Configuration](/docs/config#buy).
 
+### Large requests are slow with direct tunnels on {#tunnel-slow}
+
+Inside a tunnel the connection runs over QUIC by default. On a link that loses packets or jitters, weak Wi-Fi for example, a QUIC connection can stay slow once it has stumbled, and a request of several megabytes then takes many seconds to upload. Switch this computer to TCP: `{{exe}} tailnet on -transport tcp`, or "Transport" under Settings, Network in the desktop app (see [Direct tunnels](/docs/running#tailnet)). `{{exe}} tailnet` shows what each tunnel uses.
+
 ## Sharing models {#sharing}
 
 ### `share detect` says `cannot list models` {#detect-failed}

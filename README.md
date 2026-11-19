@@ -71,7 +71,9 @@ One request, end to end:
    in the seller's own signed offer.
 2. The client connects to the seller, directly when it can and through a relay
    when it cannot, and sends the request **sealed to the seller's key**. The
-   prompt does not pass through the coordinator at all.
+   prompt does not pass through the coordinator at all. Two ends that both turn
+   on [direct tunnels](docs/tailnet.md) have a second way to connect directly
+   when hole punching fails.
 3. The seller runs the model and streams the answer back, sealed to a key that
    exists only for this job, followed by a **signed receipt** over hashes of
    exactly what was sent and received.

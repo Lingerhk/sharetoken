@@ -33,7 +33,7 @@ Example: [`configs/relay.example.yaml`](../configs/relay.example.yaml). The acce
 | `identity.key_file` | `-key` | `relay.key` | Identity seed, created with mode 0600 if missing. The relay's address contains the peer ID derived from it, so keep the file |
 | `network.listen` | `-listen` | TCP and QUIC on IPv4 and IPv6, port 4001 | Listen multiaddrs. IPv6 listeners are skipped on a host without IPv6 |
 | `network.announce` | `-announce` | empty | Public multiaddrs to advertise instead of the interface addresses: needed behind 1:1 NAT. `/dns4` and `/dns6` names are accepted; when a name is announced, the `portal relay add` hint the relay prints uses only the names |
-| `network.max_conns` | `-max-conns` | 8192 | Connection-manager high watermark. The resource manager's system-wide connection and stream counts are raised to fit it |
+| `network.max_conns` | `-max-conns` | 8192 | Connection-manager high watermark. The resource manager's system-wide connection and stream counts are raised to fit it Apart from it, a relay and the coordinator accept 32 connections from one IPv4 address or one IPv6 /56 (256 from a /48), four times libp2p's default, so that the users behind one NAT fit; this is not configurable |
 | `access.networks` | — | empty | The networks this relay serves, one entry each. Empty means an open relay: anyone may reserve (a warning is printed) |
 | `access.networks[].name` | — | — | Required, unique |
 | `access.networks[].portal_keys` | — | — | Required. The network's portal pass keys (`portal pass-key`); several during a key rotation. A key cannot appear in two networks |

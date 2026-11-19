@@ -33,7 +33,7 @@
 | `identity.key_file` | `-key` | `relay.key` | 身份种子，不存在时以 0600 权限创建。中继的地址里包含由它派生的 peer ID，所以要保留这个文件 |
 | `network.listen` | `-listen` | IPv4 和 IPv6 上的 TCP 与 QUIC，端口 4001 | 监听的 multiaddr。主机没有 IPv6 时跳过 IPv6 监听 |
 | `network.announce` | `-announce` | 空 | 对外公告的公网 multiaddr，代替网卡地址：在 1:1 NAT 后面需要它。接受 `/dns4`、`/dns6` 域名；公告了域名时，中继打印的 `portal relay add` 提示只用域名地址 |
-| `network.max_conns` | `-max-conns` | 8192 | 连接管理器的高水位。资源管理器的全局连接数和流数按它放宽 |
+| `network.max_conns` | `-max-conns` | 8192 | 连接管理器的高水位。资源管理器的全局连接数和流数按它放宽。另外，中继和协调器对同一个 IPv4 地址或同一个 IPv6 /56 接受 32 条连接（/48 为 256 条），是 libp2p 默认值的四倍，容得下同一个 NAT 后面的用户；这一项不可配置 |
 | `access.networks` | — | 空 | 本中继服务的网络，每个网络一项。为空表示开放中继：任何人都可以预约（会打印警告） |
 | `access.networks[].name` | — | — | 必填，不可重复 |
 | `access.networks[].portal_keys` | — | — | 必填。该网络门户的凭证公钥（`portal pass-key`）；密钥轮换期间可以有多把。同一把密钥不能出现在两个网络里 |

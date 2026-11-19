@@ -54,7 +54,7 @@ sharetoken client for you@example.com (device 12D3Koo...)
 
 ## 直连隧道 {#tailnet}
 
-买家和卖家都在 NAT 后面、打洞又不成功时，请求全程经过中继。直连隧道是另一条直连的路：两端之间建一条 WireGuard 隧道（Tailscale 的数据面），先经 DERP 中继接通，几秒内换到两端之间的直连路径；换不成时留在 DERP 上，或者照旧走中继。不需要 Tailscale 账号，不装系统 VPN，不需要管理员权限，也不用开端口。默认关闭，买卖两端都打开才生效：
+买家和卖家都在 NAT 后面、打洞又不成功时，请求全程经过中继。直连隧道是另一条直连的路：两端之间建一条 WireGuard 隧道（Tailscale 的数据面），先经 DERP 中继接通，几秒内换到两端之间的直连路径；换不成时留在 DERP 上，或者照旧走中继。不需要 Tailscale 账号，不装系统 VPN，不需要管理员权限，也不用开端口。默认关闭，买卖两端都打开才生效，在这里或在桌面应用里打开都可以（见[应用里的直连隧道](/docs/desktop#tunnels)）：
 
 ```bash
 {{exe}} tailnet on
@@ -66,7 +66,8 @@ sharetoken client for you@example.com (device 12D3Koo...)
 
 - 对一个节点的第一个请求照常经中继发出，隧道在后台建立，之后的请求走隧道。`-wait 3000` 让第一个请求最多等 3 秒隧道，等不到再走中继。
 - 身份、加密、计费和校验都不变：隧道里跑的仍是原来的连接，DERP 和中继一样只看到密文。
-- 隧道里的连接跑在 QUIC 上。`tailnet on -transport tcp` 让本机连卖家时改用 TCP；卖家两种都接受。`tailnet` 会显示每条隧道用的是哪一种。
+- 隧道里的连接跑在 QUIC 上。`tailnet on -transport tcp` 让本机连卖家时改用 TCP；卖家两种都接受。`tailnet` 会显示每条隧道用的是哪一种。网络稳定时，QUIC 上传大请求快几倍。网络丢包或抖动较多时（比如信号不好的 Wi-Fi），一条 QUIC 连接在提速阶段受挫后会一直慢，几 MB 的请求比走 TCP 慢得多：这种网络请选 TCP。几十 KB 的普通请求没有差别。
+- 一条隧道连接 10 分钟没有请求就关闭，隧道本身再过 2 分钟关闭。下一个请求会重新建立；建立期间这个请求走中继。
 - 默认用 tailcat 的公共 DERP。自己运行 DERP 的网络用 `-derp-map <URL 或文件>` 指向自己的 DERP 表，买卖两端要用同一张表：买家只跟随地址去自己表里的 DERP。
 
 ## 在后台运行 {#background}

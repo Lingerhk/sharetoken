@@ -90,6 +90,7 @@ sharetoken relays remove <address|id>  # stop using it
 sharetoken tailnet                     # direct tunnels (off by default): whether on, each tunnel's path (direct, or derp:<region>) and transport
 sharetoken tailnet on | off            # direct WireGuard tunnels between buyer and seller in place of the relay; both ends need it on
 sharetoken tailnet on -transport tcp   # run TCP inside the tunnel in place of QUIC (the default), for this machine's connections to sellers
+sharetoken tailnet on -wait 3000       # let the first request to a seller wait up to 3 s for its tunnel instead of using the relay
 sharetoken version --check             # is a newer client released?
 sharetoken upgrade                      # install it (asks first; checks the release signature). Only when the user asks
 ```

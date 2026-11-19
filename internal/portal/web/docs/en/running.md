@@ -54,7 +54,7 @@ The client measures speed automatically, picks the fastest relay and switches wh
 
 ## Direct tunnels {#tailnet}
 
-When buyer and seller are both behind NATs and hole punching fails, requests go through a relay all the way. Direct tunnels are a second way to connect directly: a WireGuard tunnel between the two ends (Tailscale's data plane), which starts through a DERP relay and moves to a direct path between the two within seconds; when it cannot, it stays on DERP, or the request uses the relay as before. It needs no Tailscale account, no system VPN, no administrator rights and no open port. It is off by default, and works when both buyer and seller turn it on:
+When buyer and seller are both behind NATs and hole punching fails, requests go through a relay all the way. Direct tunnels are a second way to connect directly: a WireGuard tunnel between the two ends (Tailscale's data plane), which starts through a DERP relay and moves to a direct path between the two within seconds; when it cannot, it stays on DERP, or the request uses the relay as before. It needs no Tailscale account, no system VPN, no administrator rights and no open port. It is off by default, and works when both buyer and seller turn it on, here or in the desktop app (see [Direct tunnels in the app](/docs/desktop#tunnels)):
 
 ```bash
 {{exe}} tailnet on
@@ -66,7 +66,8 @@ When buyer and seller are both behind NATs and hole punching fails, requests go 
 
 - The first request to a node goes through the relay as usual while the tunnel is set up in the background; later requests use the tunnel. `-wait 3000` makes the first request wait up to 3 seconds for the tunnel before it uses the relay.
 - Identity, encryption, billing and verification do not change: the tunnel carries the same connection as before, and DERP, like a relay, sees only ciphertext.
-- Inside the tunnel the connection runs over QUIC. `tailnet on -transport tcp` makes this machine's connections to sellers use TCP instead; a seller accepts both. `tailnet` shows which one each tunnel uses.
+- Inside the tunnel the connection runs over QUIC. `tailnet on -transport tcp` makes this machine's connections to sellers use TCP instead; a seller accepts both. `tailnet` shows which one each tunnel uses. On a steady link QUIC uploads large requests several times faster. On a link that loses packets or jitters, weak Wi-Fi for example, a QUIC connection that stumbles while it speeds up stays slow, and requests of several megabytes take much longer than over TCP: choose TCP there. Ordinary requests of tens of kilobytes show no difference.
+- A tunnel connection that carried no request for 10 minutes is closed, and the tunnel 2 minutes after it. The next request sets it up again; while that takes, it goes through the relay.
 - The default is tailcat's public DERP relays. A network that runs its own points at its DERP map with `-derp-map <URL or file>`; buyer and seller need the same map: a buyer follows an address only to DERP relays of its own map.
 
 ## Run in the background {#background}

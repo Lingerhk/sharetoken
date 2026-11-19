@@ -13,6 +13,7 @@
 | [configuration.md](configuration.md) | 中继、协调器和门户的配置文件 |
 | [providers.md](providers.md) | 出售托管 API：厂商类型、API key 和 OAuth 登录 |
 | [apis.md](apis.md) | 三种模型接口（chat completions、Messages、Responses）：透传、转换、匹配、计费 |
+| [tailnet.md](tailnet.md) | NAT 后的买家和卖家之间的直连隧道：工作原理、设置、隧道里跑 QUIC 还是 TCP、实测结果、边界 |
 | [desktop.md](desktop.md) | 桌面应用：结构、本机 API、托盘、打包 |
 | [mail.md](mail.md) | 邮件服务：验证码、投递方式、DNS |
 | [versioning.md](versioning.md) | 发布版本、接口版本、升级规则、升级提醒 |
