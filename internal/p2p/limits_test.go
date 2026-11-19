@@ -151,3 +151,51 @@ func TestDeadAddressesLeaveRoomForLaterOnes(t *testing.T) {
 		t.Fatalf("connected after %v: the address had to wait for the dead ones", took)
 	}
 }
+
+// Everyone behind one NAT reaches a relay from one address. A hub takes
+// HubAddrConns of them, all arriving at once (an office after the relay
+// restarted), and the next one only when one has left; a user host keeps
+// libp2p's eight.
+func TestHubTakesAnOfficeBehindOneAddress(t *testing.T) {
+	open := func(rm network.ResourceManager, ip string, n int) (scopes []network.ConnManagementScope, err error) {
+		for i := range n {
+			var s network.ConnManagementScope
+			if s, err = rm.OpenConnection(network.DirInbound, true, ma.StringCast(fmt.Sprintf("/ip4/%s/tcp/%d", ip, 20000+i))); err != nil {
+				return scopes, err
+			}
+			scopes = append(scopes, s)
+		}
+		return scopes, nil
+	}
+	hub, err := newResourceManager(HubLimits(4096), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	office, err := open(hub, "203.0.113.7", HubAddrConns)
+	if err != nil {
+		t.Fatalf("a hub refused connection %d of one address: %v", len(office)+1, err)
+	}
+	if _, err := open(hub, "203.0.113.7", 1); err == nil {
+		t.Fatalf("a hub took more than %d connections of one address", HubAddrConns)
+	}
+	if _, err := open(hub, "203.0.113.8", 1); err != nil {
+		t.Fatalf("a full address kept another one out: %v", err)
+	}
+	office[0].Done()
+	if _, err := open(hub, "203.0.113.7", 1); err != nil {
+		t.Fatalf("no room after a connection left: %v", err)
+	}
+	if _, err := hub.OpenConnection(network.DirInbound, true, ma.StringCast("/ip6/2001:db8:1:1::1/tcp/4001")); err != nil {
+		t.Fatalf("IPv6: %v", err)
+	}
+
+	user, err := newResourceManager(ClientLimits(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer user.Close()
+	if got, _ := open(user, "203.0.113.7", 9); len(got) != 8 {
+		t.Fatalf("a user host took %d connections of one address, want libp2p's 8", len(got))
+	}
+}
