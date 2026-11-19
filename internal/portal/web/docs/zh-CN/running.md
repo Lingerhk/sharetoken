@@ -52,6 +52,22 @@ sharetoken client for you@example.com (device 12D3Koo...)
 
 `-measure` 立即重新测速。默认不需要开任何端口：卖家在中继上预约，买家经中继或打洞连过来。
 
+## 直连隧道 {#tailnet}
+
+买家和卖家都在 NAT 后面、打洞又不成功时，请求全程经过中继。直连隧道是另一条直连的路：两端之间建一条 WireGuard 隧道（Tailscale 的数据面），先经 DERP 中继接通，几秒内换到两端之间的直连路径；换不成时留在 DERP 上，或者照旧走中继。不需要 Tailscale 账号，不装系统 VPN，不需要管理员权限，也不用开端口。默认关闭，买卖两端都打开才生效：
+
+```bash
+{{exe}} tailnet on
+{{exe}} tailnet
+{{exe}} tailnet off
+```
+
+`tailnet` 显示本机作为卖家经哪个 DERP 区域可达，以及每条隧道走的路径（`direct`，或 `derp:<区域>`）。请求走了隧道时，响应头 `X-Sharetoken-Timing` 里有 `tailnet=direct`。
+
+- 对一个节点的第一个请求照常经中继发出，隧道在后台建立，之后的请求走隧道。`-wait 3000` 让第一个请求最多等 3 秒隧道，等不到再走中继。
+- 身份、加密、计费和校验都不变：隧道里跑的仍是原来的连接，DERP 和中继一样只看到密文。
+- 默认用 tailcat 的公共 DERP。自己运行 DERP 的网络用 `-derp-map <URL 或文件>` 指向自己的 DERP 表，买卖两端要用同一张表：买家只跟随地址去自己表里的 DERP。
+
 ## 在后台运行 {#background}
 
 共享模型或长期调用时，让客户端在后台运行。先在终端里[登录](/docs/account#login)，后台服务不会询问验证码。

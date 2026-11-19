@@ -65,6 +65,15 @@ While running:
   relays [-measure]                     relay round-trip times; -measure re-measures now
   relays add <address>                  share through a relay of your own (a private relay)
   relays remove <address|peer id>       stop using it
+  tailnet                               the direct path over tunnels: whether it is on, this node's relay region,
+                                        and each tunnel's path (direct, or through which DERP relay)
+  tailnet on [-derp-map URL|FILE] [-wait MS]
+                                        reach sellers, and be reached as a seller, through WireGuard tunnels that
+                                        go direct where the NATs allow (Tailscale's data plane; no account, no
+                                        system VPN). Both ends need it on. -derp-map: the relays tunnels start
+                                        through (default: tailcat's public ones); -wait: how long a request waits
+                                        for a new tunnel before it uses the relay (default 0)
+  tailnet off                           back to the relays and libp2p's own direct connections
 
 Account (portal):
   balance                               credits and token usage
@@ -176,6 +185,8 @@ func main() {
 		run = c.status
 	case "models":
 		run = c.models
+	case "tailnet":
+		run = c.tailnet
 	case "relays":
 		run = c.relays
 	case "balance", "account":
@@ -914,6 +925,9 @@ func (c *cmdCtx) status([]string) error {
 	} else {
 		fmt.Println("not sharing")
 	}
+	if st.Tailnet != nil {
+		printTailnet(*st.Tailnet)
+	}
 	for _, w := range st.Warnings {
 		fmt.Println("warning:", w)
 	}
@@ -1119,6 +1133,110 @@ func (c *cmdCtx) relays(args []string) error {
 		printLink(st.Coordinator.Link)
 	}
 	return nil
+}
+
+// tailnet shows or changes the direct path over tunnels (client/tailnet.go).
+// The settings are saved first and a running client takes them up at once.
+func (c *cmdCtx) tailnet(args []string) error {
+	if len(args) > 0 {
+		tc := c.cfg.Tailnet
+		switch args[0] {
+		case "on":
+			fs := flag.NewFlagSet("tailnet on", flag.ExitOnError)
+			derp := fs.String("derp-map", tc.DERPMap, "URL or file of the DERP map (empty: tailcat's public relays)")
+			wait := fs.Int("wait", tc.WaitMillis, "milliseconds a request waits for a new tunnel before it uses the relay")
+			_ = fs.Parse(args[1:])
+			if fs.NArg() > 0 {
+				return errors.New("usage: sharetoken tailnet on [-derp-map URL|FILE] [-wait MS]")
+			}
+			if d := *derp; d != "" && !strings.HasPrefix(d, "https://") && !strings.HasPrefix(d, "http://") {
+				abs, err := filepath.Abs(strings.TrimPrefix(d, "file://"))
+				if err != nil {
+					return err
+				}
+				if _, err := os.Stat(abs); err != nil {
+					return fmt.Errorf("DERP map: %w", err)
+				}
+				*derp = abs
+			}
+			tc.Enabled, tc.DERPMap, tc.WaitMillis = true, *derp, *wait
+		case "off":
+			if len(args) != 1 {
+				return errors.New("usage: sharetoken tailnet off")
+			}
+			tc.Enabled = false
+		default:
+			return fmt.Errorf("unknown tailnet command %q (on, off)", args[0])
+		}
+		if tc.WaitMillis < 0 || tc.WaitMillis > client.MaxTailnetWaitMillis {
+			return fmt.Errorf("-wait must be between 0 and %d", client.MaxTailnetWaitMillis)
+		}
+		c.cfg.Tailnet = tc
+		if err := c.save(); err != nil {
+			return err
+		}
+		if err := c.daemon(http.MethodPost, "/api/v1/tailnet/reload", nil, nil); err != nil && !strings.Contains(err.Error(), "not running") {
+			return fmt.Errorf("saved, but the running client refused it: %w", err)
+		}
+	}
+	var st client.TailnetStatus
+	if err := c.daemon(http.MethodGet, "/api/v1/tailnet", nil, &st); err != nil {
+		if !strings.Contains(err.Error(), "not running") {
+			return err
+		}
+		state := "off"
+		if c.cfg.Tailnet.Enabled {
+			state = "on"
+		}
+		fmt.Printf("tailnet %s (the client is not running)\n", state)
+		return nil
+	}
+	printTailnet(st)
+	return nil
+}
+
+func printTailnet(st client.TailnetStatus) {
+	if !st.Enabled {
+		fmt.Println("tailnet off (sharetoken tailnet on)")
+		return
+	}
+	fmt.Printf("tailnet on, relays from %s", st.DERPMap)
+	if st.WaitMillis > 0 {
+		fmt.Printf(", a request waits up to %d ms for a new tunnel", st.WaitMillis)
+	}
+	fmt.Println()
+	switch {
+	case st.Serving:
+		fmt.Printf("   reachable as a seller through DERP region %s\n", st.Region)
+	case st.Error != "":
+		fmt.Println("   not reachable as a seller:", st.Error)
+	default:
+		fmt.Println("   not serving (sharing is off, or the tunnel is starting)")
+	}
+	if len(st.System) > 0 {
+		fmt.Printf("   this machine is on a Tailscale network (%s): a seller announces that address too\n", strings.Join(st.System, ", "))
+	}
+	if len(st.Tunnels) == 0 {
+		fmt.Println("   no tunnels")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "   \tPEER\tPATH\tENDPOINT\tRTT\tCONNS\tRX\tTX")
+	for _, t := range st.Tunnels {
+		dir := map[string]string{"out": "to seller", "in": "from buyer"}[t.Dir]
+		rtt := ""
+		if t.Millis > 0 {
+			rtt = fmt.Sprintf("%.1f ms", t.Millis)
+		}
+		conns, rx, tx := "", "", ""
+		if t.Dir == "out" {
+			conns = strconv.Itoa(t.Conns)
+		} else {
+			rx, tx = strconv.FormatInt(t.RxBytes, 10), strconv.FormatInt(t.TxBytes, 10)
+		}
+		fmt.Fprintf(tw, "   %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", dir, short(t.Peer), t.Path, t.Endpoint, rtt, conns, rx, tx)
+	}
+	_ = tw.Flush()
 }
 
 func (c *cmdCtx) models(args []string) error {

@@ -47,6 +47,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 | `internal/relay`、`internal/relaypass` | 中继及其准入凭证 |
 | `internal/coordinator`、`internal/ledger`、`internal/audit`、`internal/tokens` | 撮合与结算、复式账本、抽检、参考模型的 token 计数 |
 | `internal/portal`、`internal/accounts`、`internal/mailer`、`internal/totp` | 门户、账户存储、邮件、TOTP |
+| `internal/tailnet` | 直连隧道：建在 Tailscale 数据面上的 libp2p 传输（§2.17） |
 | `internal/p2p`、`internal/protocol`、`internal/box`、`internal/receipt`、`internal/evidence`、`internal/attest`、`internal/canon` | libp2p 主机与中继、线上帧格式与消息、内容加密、收据、证据、TEE 证明、规范化签名字节 |
 | `internal/config`、`internal/mysqldb`、`internal/secfile`、`internal/cli`、`internal/version` | 配置文件、数据库层、私有文件、CLI 辅助、版本信息 |
 | `gui/` | 桌面外壳（[desktop.md](desktop.md)） |
@@ -207,6 +208,18 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 ### 2.16 三种模型接口
 
 本地端点支持 OpenAI chat completions、Anthropic Messages（Claude Code）和 OpenAI Responses（Codex）。Ticket 记下请求的接口（`Ticket.API`，纳入签名），协调器优先匹配模型服务器原生支持它的节点（`ModelPrice.APIs`），节点透传或转换请求（`internal/apicompat`）。收据分别记下从 prompt 缓存读出和写入缓存的 prompt token，按各自的价格计费。见 [apis.md](apis.md)。
+
+### 2.17 走 Tailscale 数据面的直连隧道
+
+买卖双方都在 NAT 后面、libp2p 打洞又不成功时，整单都压在中继上。tailnet（`internal/tailnet`，默认关闭：`sharetoken tailnet on`）是第二条直连的路：建在 [tailcat](https://github.com/tailscale/tailcat) 之上的一个 libp2p 传输。tailcat 是去掉控制面的 Tailscale 数据面（WireGuard、magicsock、DERP 和用户态网络栈）：不需要账号，不装系统 VPN，不需要特权。
+
+- **地址。** 共享节点启动一个 tailcat 服务端，在它里面监听，并把 `/tailcat/<地址>` 加进报价。地址里是服务端的密钥和所在的 DERP 区域。它只进报价，不进 libp2p identify 告诉每个对端的地址。协调器照旧把报价里的地址抄进 Ticket；没有 tailnet 的客户端跳过这个地址。
+- **拨号。** 买家在节点的各个地址里先拨它，并且另外单独拨一次、要求直连（`Transport.Reach`）：libp2p 的拨号器在中继接通后会停掉其余尝试，隧道永远建不完。隧道先经 DERP 接通，再换到直连路径；libp2p 的新流优先开在直连连接上。隧道里跑的是普通的 libp2p 连接（安全握手、yamux），所以对端身份、Ticket、收据和所有协议都和其他连接上一样。
+- **买家自己的 DERP 表。** 买家只跟随地址去自己表里的 DERP（`tailnet.derp_map`；默认是 tailcat 的公共 DERP）：地址里的区域只用来在自己的表里查找，不会照原样使用，卖家无法把买家引到它指定的主机。自己运行 DERP 的网络把同一张表发给两端。
+- **系统里的 Tailscale。** 装了 Tailscale 的机器有一个同一 tailnet 的设备都能直接到达的地址，它在 libp2p 不公布的那块网卡上。tailnet 打开时，共享节点把自己在这个地址上的监听也加进报价。
+- **回退。** 任何一端没开、DERP 不可达、隧道建不起来：这一单照旧走中继；隧道在一单进行中断开，则在节点的其他路径上续传。中继、协调器和门户不知道隧道的存在。
+
+一单走的路径记在它的耗时里：`tailnet=direct`、`derp:<区域>` 或 `system`。
 
 ## 3. 数据库
 

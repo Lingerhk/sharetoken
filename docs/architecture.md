@@ -47,6 +47,7 @@ A fifth program, `mailserver`, delivers the mail the portal queues (sign-in code
 | `internal/relay`, `internal/relaypass` | The relay and its admission passes |
 | `internal/coordinator`, `internal/ledger`, `internal/audit`, `internal/tokens` | Matching and settlement, the double-entry ledger, audits, reference token counting |
 | `internal/portal`, `internal/accounts`, `internal/mailer`, `internal/totp` | The portal, the account store, mail, TOTP |
+| `internal/tailnet` | Direct tunnels: a libp2p transport over Tailscale's data plane (§2.17) |
 | `internal/p2p`, `internal/protocol`, `internal/box`, `internal/receipt`, `internal/evidence`, `internal/attest`, `internal/canon` | libp2p hosts and relays, wire framing and messages, payload encryption, receipts, evidence, TEE attestation, canonical signing bytes |
 | `internal/config`, `internal/mysqldb`, `internal/secfile`, `internal/cli`, `internal/version` | Configuration files, the database layer, private files, CLI helpers, version information |
 | `gui/` | The desktop shell ([desktop.md](desktop.md)) |
@@ -207,6 +208,18 @@ The buyer and the node speak `/sharetoken/infer/1.0.2` (`internal/protocol`: `fr
 ### 2.16 Three model APIs
 
 The local endpoint speaks OpenAI chat completions, Anthropic Messages (Claude Code) and OpenAI Responses (Codex). The ticket names the request's API (`Ticket.API`, signed), the coordinator prefers nodes whose model server speaks it (`ModelPrice.APIs`), and the node passes the request through or converts it (`internal/apicompat`). Receipts count prompt tokens read from and written to the prompt cache, billed at their own prices. See [apis.md](apis.md).
+
+### 2.17 Direct tunnels over Tailscale's data plane
+
+Buyer and seller behind NATs that libp2p's hole punching does not get through keep the whole job on a relay. The tailnet (`internal/tailnet`, off by default: `sharetoken tailnet on`) is a second way to a direct connection: a libp2p transport over [tailcat](https://github.com/tailscale/tailcat), Tailscale's data plane (WireGuard, magicsock, DERP and a userspace network stack) without its control plane: no account, no system VPN, no privileges.
+
+- **Address.** A sharing node starts a tailcat server, listens inside it, and adds `/tailcat/<address>` to its offer. The address holds the server's keys and its DERP region. It goes only into offers, never into the addresses libp2p's identify tells every peer. The coordinator copies offer addresses into tickets as it always did; a client without the tailnet skips the address.
+- **Dial.** The buyer dials it first among the node's addresses, and also on its own with a direct connection required (`Transport.Reach`): libp2p's dialer stops the other attempts when the relay connects, and would never finish the tunnel. The tunnel starts through DERP and moves to a direct path; libp2p opens new streams on a direct connection in preference to a relayed one. Inside the tunnel runs the usual libp2p connection (security handshake, yamux), so the peer's identity, tickets, receipts and every protocol are the same as on any other connection.
+- **The buyer's own DERP map.** A buyer follows an address only to DERP relays of its own map (`tailnet.derp_map`; default: tailcat's public relays): the region in the address is looked up there and not used as it stands, so a seller cannot send buyers to hosts of its choice. A network with DERP relays of its own gives both ends its map.
+- **The system's Tailscale.** A machine that runs Tailscale has an address every device of its tailnet reaches directly, on an interface libp2p does not announce. With the tailnet on, a sharing node adds its listeners at that address to the offer.
+- **Falling back.** Either end off, DERP unreachable, a tunnel that does not come up: the job runs over the relay as before, and a tunnel that ends under a job is resumed over the node's other paths. Relays, coordinator and portal know nothing of tunnels.
+
+The path of a job is in its timing: `tailnet=direct`, `derp:<region>` or `system`.
 
 ## 3. Database
 

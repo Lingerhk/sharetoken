@@ -254,6 +254,31 @@ of its private relays holds a reservation, a node holds none on the network's
 relays (unless `share.keep_official`); when none does for half a minute, it
 falls back to them.
 
+### 2.9 Direct tunnels
+
+With `sharetoken tailnet on` a buyer and a seller that both turned it on may
+be connected by a WireGuard tunnel (Tailscale's data plane, as the library
+tailcat) in place of a relay ([architecture.md](architecture.md) §2.17).
+
+- **Nothing rests on the tunnel.** Inside it runs the same libp2p connection
+  as anywhere: the peer proves its identity in the handshake, and prompts,
+  tickets and receipts are protected as before. The tunnel's keys are in the
+  node's offer, which every buyer of the node gets: they keep nobody out,
+  and are not meant to. Whoever has the address reaches one thing, the node's
+  libp2p listener inside the tunnel, the same one its TCP and QUIC ports
+  offer; the tunnel leads to no other service and to no network of the
+  machine.
+- **A DERP relay sees what a relay sees**: the two addresses, how much they
+  exchange and when; not the content. The default DERP relays are tailcat's
+  public ones, run by Tailscale and not by this network: a deployment that
+  minds sets `tailnet.derp_map` to relays of its own.
+- **A seller cannot choose where a buyer connects.** The buyer looks the
+  address's DERP region up in its own map and refuses a region it does not
+  have.
+- **Directly connected peers see each other's IP address**, as they do after
+  a successful hole punch. A user who wants only relays to see theirs leaves
+  the tailnet off (and sets `nat` to false).
+
 ## 3. Accounts, devices and the platform
 
 | Threat | Defence | Code |

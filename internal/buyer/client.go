@@ -99,10 +99,19 @@ type Client struct {
 	// dialed (the auditor keeps only circuits through official relays). A
 	// ticket left with none fails.
 	NodeAddrs func([]ma.Multiaddr) []ma.Multiaddr
-	log       *slog.Logger
-	bg        sync.WaitGroup // disputes being delivered in the background
-	sticky    stickyNodes
-	models    modelsCache
+	// Direct, if set, is told the node and addresses of every job before
+	// its stream is opened: the client's tailnet uses it to bring up a
+	// direct connection to the node next to the relayed one
+	// (tailnet.Transport.Reach). With mayWait it may hold the job back for
+	// a moment; a job being resumed is not held.
+	Direct func(ctx context.Context, node peer.ID, addrs []ma.Multiaddr, mayWait bool)
+	// ConnPath, if set, names the path of a connection that runs through a
+	// tailnet tunnel ("direct", "derp:<region>"), and "" for any other.
+	ConnPath func(network.Conn) string
+	log      *slog.Logger
+	bg       sync.WaitGroup // disputes being delivered in the background
+	sticky   stickyNodes
+	models   modelsCache
 }
 
 // Attestation is the buyer's TEE trust configuration.
@@ -183,14 +192,18 @@ type Timing struct {
 	Reused      bool    `json:"reused"`        // a connection to the node existed already
 	Relayed     bool    `json:"relayed"`       // the stream ran through a relay
 	Via         string  `json:"via,omitempty"` // that relay's peer ID
-	Preferred   bool    `json:"preferred"`     // the session's previous node served it again
-	Attempts    int     `json:"attempts"`
-	Resumes     int     `json:"resumes"`  // the stream broke and the job went on over a new one
-	Frames      int     `json:"frames"`   // response data frames
-	Progress    int     `json:"progress"` // progress frames (the model was silent)
-	Chunks      int     `json:"chunks"`   // upstream payloads delivered
-	UpBytes     int64   `json:"up_bytes"`
-	DownBytes   int64   `json:"down_bytes"`
+	// Tailnet is set when the stream ran through a tailnet tunnel: "direct"
+	// once its packets go straight between the two machines, "derp:<region>"
+	// while a DERP relay still carries them.
+	Tailnet   string `json:"tailnet,omitempty"`
+	Preferred bool   `json:"preferred"` // the session's previous node served it again
+	Attempts  int    `json:"attempts"`
+	Resumes   int    `json:"resumes"`  // the stream broke and the job went on over a new one
+	Frames    int    `json:"frames"`   // response data frames
+	Progress  int    `json:"progress"` // progress frames (the model was silent)
+	Chunks    int    `json:"chunks"`   // upstream payloads delivered
+	UpBytes   int64  `json:"up_bytes"`
+	DownBytes int64  `json:"down_bytes"`
 }
 
 // Chat runs one request. onChunk, if set, receives each decrypted chunk
@@ -554,6 +567,9 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 		ctx, cancel = context.WithTimeout(ctx, jobTimeout)
 		defer cancel()
 	}
+	if c.Direct != nil {
+		c.Direct(ctx, nodeID, addrs, true)
+	}
 	tm.Reused = c.h.Network().Connectedness(nodeID) == network.Connected
 	t0 := time.Now()
 	raw, err := c.h.NewStream(network.WithAllowLimitedConn(ctx, "sharetoken-infer"), nodeID, lproto.ID(protocol.InferProtocol))
@@ -563,6 +579,15 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 	}
 	js := &jobStream{st: &countingStream{Stream: raw}}
 	defer func() { tm.UpBytes, tm.DownBytes = js.totals() }()
+	// The path is read when the job ends: a tunnel starts out through DERP
+	// and goes direct a moment later, and a resumed job may be on another
+	// connection than the one it began on.
+	tm.Tailnet = ""
+	defer func() {
+		if c.ConnPath != nil {
+			tm.Tailnet = c.ConnPath(js.cur().Conn())
+		}
+	}()
 	defer func() { _ = js.cur().Close() }()
 	// A caller that goes away (the HTTP client closed the connection) stops
 	// the job: the node stops its model and bills what was delivered. Once
@@ -652,7 +677,7 @@ recv:
 				// answers a resume and then says nothing is the problem, not
 				// the path to it.
 				_ = js.cur().Reset()
-				if rerr := c.resume(ctx, js, nodeID, t, uint64(len(tr.chunks))); rerr == nil {
+				if rerr := c.resume(ctx, js, nodeID, t, uint64(len(tr.chunks)), tm); rerr == nil {
 					tm.Resumes++
 					resumedAt = frames
 					c.log.Info("resumed a job over a new stream", "job", t.JobID, "from", len(tr.chunks), "after", err)
@@ -892,7 +917,7 @@ func (j *jobStream) totals() (up, down int64) {
 // resume opens a new stream to the node for job t, from frame from on. The
 // old connection is dropped first: it may be dead without knowing it yet,
 // and the dial then finds another path (another relay, or direct).
-func (c *Client) resume(ctx context.Context, js *jobStream, nodeID peer.ID, t *protocol.Ticket, from uint64) error {
+func (c *Client) resume(ctx context.Context, js *jobStream, nodeID peer.ID, t *protocol.Ticket, from uint64, tm *Timing) error {
 	deadline := time.Now().Add(c.ResumeWindow)
 	for {
 		_ = c.h.Network().ClosePeer(nodeID)
@@ -906,6 +931,16 @@ func (c *Client) resume(ctx context.Context, js *jobStream, nodeID peer.ID, t *p
 			}
 			if err = protocol.SendRequest(st, protocol.TypeResume, protocol.ResumeRequest{JobID: t.JobID, From: from}); err == nil {
 				js.replace(st)
+				tm.Relayed, tm.Via = p2p.IsRelayed(raw.Conn()), ""
+				if tm.Relayed {
+					if v, err := raw.Conn().RemoteMultiaddr().ValueForProtocol(ma.P_P2P); err == nil {
+						tm.Via = v
+					}
+				}
+				if c.Direct != nil {
+					// ClosePeer took the tunnel's connection too.
+					c.Direct(ctx, nodeID, c.h.Peerstore().Addrs(nodeID), false)
+				}
 				return nil
 			}
 			_ = st.Reset()
@@ -926,7 +961,7 @@ func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 // logJob records one attempt's timing.
 func (c *Client) logJob(t *protocol.Ticket, tm *Timing, err error) {
 	args := []any{"job", t.JobID, "node", t.Node, "ticket_ms", tm.TicketMs, "dial_ms", tm.DialMs, "upload_ms", tm.UploadMs,
-		"first_byte_ms", tm.FirstByteMs, "reused", tm.Reused, "relayed", tm.Relayed, "preferred", tm.Preferred,
+		"first_byte_ms", tm.FirstByteMs, "reused", tm.Reused, "relayed", tm.Relayed, "tailnet", tm.Tailnet, "preferred", tm.Preferred,
 		"frames", tm.Frames, "progress", tm.Progress, "chunks", tm.Chunks, "up_bytes", tm.UpBytes, "down_bytes", tm.DownBytes}
 	if err != nil {
 		c.log.Info("job attempt failed", append(args, "err", err)...)

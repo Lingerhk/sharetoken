@@ -83,6 +83,16 @@ Show the latency of each relay. `-measure` measures again right away. The client
 | `relays add <address>` | Share through a relay of your own, see [Run your own relay](/docs/relay) |
 | `relays remove <address or ID>` | Stop using it |
 
+### tailnet {#tailnet}
+
+Direct tunnels (see [Direct tunnels](/docs/running#tailnet)). A running client applies changes at once.
+
+| Command | Meaning |
+|---|---|
+| `tailnet` | Whether it is on, the DERP region this machine is reachable through as a seller, and each tunnel's path |
+| `tailnet on` | Turn it on. `-wait <ms>`: how long a request to a new node waits for the tunnel (default 0, at most 10000); `-derp-map <URL or file>`: a DERP map of your own |
+| `tailnet off` | Turn it off: back to relays and hole punching |
+
 ### apikey {#apikey}
 
 The local endpoint's API key (see [Call models](/docs/use-models#endpoint)). A running client follows a change at once.

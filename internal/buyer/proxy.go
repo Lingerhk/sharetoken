@@ -315,8 +315,8 @@ func (p *Proxy) streamWith(w http.ResponseWriter, r *http.Request, req ChatReque
 		_ = out.event(streamErrorJSON(req.API, err.Error(), codeFor(err)))
 	} else {
 		tm := &res.Timing
-		_, _ = fmt.Fprintf(w, ": sharetoken job=%s node=%s verified=true cost_micros=%d tee=%q ticket_ms=%.1f dial_ms=%.1f first_byte_ms=%.1f relayed=%t preferred=%t frames=%d resumes=%d up_bytes=%d down_bytes=%d\n\n",
-			res.Ticket.JobID, res.Ticket.Node, res.CostMicros, res.Attested, tm.TicketMs, tm.DialMs, tm.FirstByteMs, tm.Relayed, tm.Preferred, tm.Frames, tm.Resumes, tm.UpBytes, tm.DownBytes)
+		_, _ = fmt.Fprintf(w, ": sharetoken job=%s node=%s verified=true cost_micros=%d tee=%q ticket_ms=%.1f dial_ms=%.1f first_byte_ms=%.1f relayed=%t preferred=%t frames=%d resumes=%d up_bytes=%d down_bytes=%d%s\n\n",
+			res.Ticket.JobID, res.Ticket.Node, res.CostMicros, res.Attested, tm.TicketMs, tm.DialMs, tm.FirstByteMs, tm.Relayed, tm.Preferred, tm.Frames, tm.Resumes, tm.UpBytes, tm.DownBytes, tailnetNote(tm))
 	}
 	if req.API == protocol.APIChat {
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
@@ -439,8 +439,8 @@ func setJobHeaders(h http.Header, res *Result) {
 	h.Set("X-Sharetoken-Verified", strconv.FormatBool(res.Verified))
 	h.Set("X-Sharetoken-Cost-Micros", strconv.FormatUint(res.CostMicros, 10))
 	tm := &res.Timing
-	h.Set("X-Sharetoken-Timing", fmt.Sprintf("ticket_ms=%.1f dial_ms=%.1f upload_ms=%.1f first_byte_ms=%.1f total_ms=%.1f relayed=%t preferred=%t frames=%d up_bytes=%d down_bytes=%d",
-		tm.TicketMs, tm.DialMs, tm.UploadMs, tm.FirstByteMs, tm.TotalMs, tm.Relayed, tm.Preferred, tm.Frames, tm.UpBytes, tm.DownBytes))
+	h.Set("X-Sharetoken-Timing", fmt.Sprintf("ticket_ms=%.1f dial_ms=%.1f upload_ms=%.1f first_byte_ms=%.1f total_ms=%.1f relayed=%t preferred=%t frames=%d up_bytes=%d down_bytes=%d%s",
+		tm.TicketMs, tm.DialMs, tm.UploadMs, tm.FirstByteMs, tm.TotalMs, tm.Relayed, tm.Preferred, tm.Frames, tm.UpBytes, tm.DownBytes, tailnetNote(tm)))
 	if res.Attested != "" {
 		h.Set("X-Sharetoken-TEE", res.Attested)
 	}
@@ -528,4 +528,14 @@ func streamErrorJSON(api, msg, code string) []byte {
 		return b
 	}
 	return errorJSON(msg, code)
+}
+
+// tailnetNote is the timing line's last field for a job that ran through a
+// tailnet tunnel (" tailnet=direct", " tailnet=derp:tok"), and nothing for
+// any other job.
+func tailnetNote(tm *Timing) string {
+	if tm.Tailnet == "" {
+		return ""
+	}
+	return " tailnet=" + tm.Tailnet
 }

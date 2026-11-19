@@ -132,3 +132,6 @@ When you change settings with the `share` subcommands, the running client applie
 | `nat` | UPnP, NAT-PMP and hole punching | `true` |
 | `relays` | If not empty, overrides the relay list from the portal | Empty |
 | `private_relays` | Relays of your own that your sharing runs through, see [Run your own relay](/docs/relay). Managed with `relays add` | Empty |
+| `tailnet.enabled` | Direct tunnels, see [Direct tunnels](/docs/running#tailnet). Managed with `tailnet on` / `tailnet off` | `false` |
+| `tailnet.wait_ms` | How long a request to a new node waits for the tunnel before it uses the relay (0 to 10000 ms) | `0` |
+| `tailnet.derp_map` | The DERP map tunnels start through: a URL or a file; empty for tailcat's public DERP relays | Empty |

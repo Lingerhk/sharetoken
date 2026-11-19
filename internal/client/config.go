@@ -48,6 +48,8 @@ type Config struct {
 
 	Buy   BuyConfig   `json:"buy"`
 	Share ShareConfig `json:"share"`
+	// Tailnet is the direct path over Tailscale's data plane (tailnet.go).
+	Tailnet TailnetConfig `json:"tailnet"`
 }
 
 // BuyConfig tunes buying.

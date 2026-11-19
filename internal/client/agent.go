@@ -34,6 +34,7 @@ import (
 	"sharetoken/internal/portal"
 	"sharetoken/internal/provider"
 	"sharetoken/internal/relaypass"
+	"sharetoken/internal/tailnet"
 )
 
 // Agent is a running client.
@@ -83,7 +84,8 @@ type Agent struct {
 	buyer    *buyer.Client
 	proxy    *buyer.Proxy
 	share    *shareState
-	tokens   *provider.Tokens // OAuth logins of the providers
+	tailnet  *tailnet.Transport // the direct path over tunnels (tailnet.go); installed even while off
+	tokens   *provider.Tokens   // OAuth logins of the providers
 	warnings map[string]string
 
 	// The user's own relays (private_relays.go), measured for the status.
@@ -111,6 +113,7 @@ type shareState struct {
 	models   []node.ModelConfig // everything sold: local models and the providers'
 	node     *node.Service
 	reserver *p2p.Reserver
+	ctx      context.Context
 	cancel   context.CancelFunc
 }
 
@@ -155,7 +158,11 @@ func (a *Agent) Start(ctx context.Context) error {
 	if err := a.bind(a.ctx); err != nil {
 		return err
 	}
-	h, err := p2p.NewHost(a.keys, p2p.HostConfig{Program: "client", Listen: a.cfg.Listen, NAT: a.cfg.NAT, Options: a.HostOptions})
+	hostOpts := slices.Clone(a.HostOptions)
+	if opt := a.newTailnet(); opt != nil {
+		hostOpts = append(hostOpts, opt)
+	}
+	h, err := p2p.NewHost(a.keys, p2p.HostConfig{Program: "client", Listen: a.cfg.Listen, NAT: a.cfg.NAT, Options: hostOpts})
 	if err != nil {
 		return err
 	}
@@ -163,6 +170,10 @@ func (a *Agent) Start(ctx context.Context) error {
 	if err := a.setupBuyer(); err != nil {
 		_ = h.Close()
 		return err
+	}
+	a.tailnetHooks()
+	if a.tailnet != nil {
+		go a.tailnet.Run(a.ctx, h)
 	}
 	a.selectRelay(a.ctx, false)
 	a.mu.Lock()
@@ -267,6 +278,9 @@ func (a *Agent) Close() {
 	}
 	if a.h != nil {
 		_ = a.h.Close()
+	}
+	if a.tailnet != nil {
+		_ = a.tailnet.Close() // after the host, which closes its listener on the tunnel first
 	}
 }
 
@@ -883,7 +897,7 @@ func (a *Agent) startShareLocked(sc ShareConfig) error {
 		return err
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
-	st := &shareState{cfg: sc, models: models, cancel: cancel}
+	st := &shareState{cfg: sc, models: models, ctx: ctx, cancel: cancel}
 	st.reserver = p2p.NewReserver(a.h, func() {
 		if st.node != nil {
 			st.node.Announce() // advertise the new relay addresses at once
@@ -904,6 +918,14 @@ func (a *Agent) startShareLocked(sc ShareConfig) error {
 			for _, c := range st.reserver.CircuitAddrs() {
 				out = append(out, c.String())
 			}
+			if tn := a.tailnetAddr(); tn != "" {
+				out = append(out, tn)
+			}
+			for _, sys := range a.tailnetSystemAddrs() {
+				if !slices.Contains(out, sys) {
+					out = append(out, sys)
+				}
+			}
 			return out
 		},
 	})
@@ -913,6 +935,9 @@ func (a *Agent) startShareLocked(sc ShareConfig) error {
 	}
 	st.node = svc
 	a.share = st
+	if a.tailnet != nil && a.tailnet.Enabled() {
+		go a.serveTailnet(ctx, st)
+	}
 	a.warn("share", "")
 	for _, m := range models {
 		a.log.Info("sharing", "model", m.ID, "upstream", m.UpstreamModel, "in", m.PriceInMicros, "out", m.PriceOutMicros)
@@ -1105,6 +1130,9 @@ func (a *Agent) stopShareLocked() {
 	_ = a.share.reserver.SetRelays(nil)
 	a.share.cancel()
 	a.share = nil
+	if a.tailnet != nil {
+		a.tailnet.StopServing(a.h) // buyers' tunnels to other nodes stay
+	}
 }
 
 // SetShare applies and saves new sharing settings.

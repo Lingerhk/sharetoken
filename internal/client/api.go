@@ -35,6 +35,7 @@ type Status struct {
 	MeasuredAt  time.Time         `json:"measured_at,omitzero"`
 	Buy         BuyConfig         `json:"buy"`
 	Share       ShareStatus       `json:"share"`
+	Tailnet     *TailnetStatus    `json:"tailnet,omitempty"` // the direct path over tunnels, when it is on
 	Warnings    []string          `json:"warnings,omitempty"`
 	Update      *Update           `json:"update,omitempty"` // a newer release, when there is one
 }
@@ -80,6 +81,11 @@ type ShareStatus struct {
 // Status reports the agent's state.
 func (a *Agent) Status() Status {
 	views, _ := provider.Views(a.home)
+	var tn *TailnetStatus
+	if a.tailnet != nil && a.tailnet.Enabled() {
+		ts := a.TailnetStatus()
+		tn = &ts
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st := Status{
@@ -87,6 +93,7 @@ func (a *Agent) Status() Status {
 		Version: version.Version, API: "http://" + a.addr + "/v1", MeasuredAt: a.measured, Buy: a.cfg.Buy,
 		Coordinator: CoordinatorStatus{Peer: a.coord.String(), Via: a.current, Link: a.link.Quality()},
 		Share:       ShareStatus{ShareConfig: a.cfg.Share, Providers: views},
+		Tailnet:     tn,
 	}
 	for _, c := range a.h.Network().ConnsToPeer(a.coord) {
 		st.Coordinator.Connected = true
@@ -154,6 +161,15 @@ func (a *Agent) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/v1/share", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, a.Status().Share) })
 	mux.HandleFunc("PUT /api/v1/share", a.handleSetShare)
+	mux.HandleFunc("GET /api/v1/tailnet", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, a.TailnetStatus()) })
+	mux.HandleFunc("PUT /api/v1/tailnet", a.handleSetTailnet)
+	mux.HandleFunc("POST /api/v1/tailnet/reload", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.ReloadTailnet(); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, a.TailnetStatus())
+	})
 	mux.HandleFunc("GET /api/v1/buy", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, a.BuySettings()) })
 	mux.HandleFunc("PUT /api/v1/buy", a.handleSetBuy)
 	mux.HandleFunc("POST /api/v1/share/start", a.handleToggleShare(true))

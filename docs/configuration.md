@@ -201,6 +201,9 @@ The directory is created with mode 0700. Files in it:
 | `nat` | true | UPnP/NAT-PMP and hole punching |
 | `relays` | empty | Overrides the relays the portal lists |
 | `private_relays` | empty | Relays the user runs (at most 8). A sharing node reserves on them; nothing else uses them, and traffic with the coordinator never does (`sharetoken relays add`, [security.md](security.md) §2.8) |
+| `tailnet.enabled` | false | Direct tunnels over Tailscale's data plane between a buyer and a seller that both have it on (`sharetoken tailnet on`, [architecture.md](architecture.md) §2.17) |
+| `tailnet.wait_ms` | 0 | How long a request to a node waits for a new tunnel before it uses the relay (at most 10000) |
+| `tailnet.derp_map` | empty | Where the DERP relays come from: a URL or a file holding a DERP map; empty for tailcat's public relays. Buyer and seller need the same |
 | `buy.budget_micros` | 2000000 | Credit reserved per request; the unused part is refunded |
 | `buy.max_price_in`, `buy.max_price_out` | 0 (no limit) | Price limits per million prompt and completion tokens |
 | `buy.evidence` | true | Disclose a provably bad job's key for an automatic refund |

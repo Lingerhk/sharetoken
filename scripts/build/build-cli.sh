@@ -29,6 +29,7 @@ STAMP=sharetoken-build-type=$ENV
 SUFFIX=-$ENV; [ "$ENV" = prod ] && SUFFIX=
 LABEL=" ($ENV build)"; [ "$ENV" = prod ] && LABEL=
 LDFLAGS=$(scripts/build/ldflags.sh "$ENV")
+TAGS=$(scripts/build/tags.sh)
 mkdir -p "$OUT"
 
 build() { # go's system name, architecture
@@ -39,7 +40,7 @@ build() { # go's system name, architecture
   dir=$OUT/$base
   rm -rf "$dir"
   mkdir -p "$dir"
-  CGO_ENABLED=0 GOOS=$goos GOARCH=$arch go build -trimpath -ldflags "$LDFLAGS" -o "$dir/$exe" ./cmd/sharetoken
+  CGO_ENABLED=0 GOOS=$goos GOARCH=$arch go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$dir/$exe" ./cmd/sharetoken
   # -X says nothing when it misses its variable; see scripts/build-gui.sh.
   LC_ALL=C grep -aq "$STAMP" "$dir/$exe" || { echo "$exe is not a $ENV build" >&2; exit 1; }
   LC_ALL=C grep -aq "$VERSION" "$dir/$exe" || { echo "$exe does not carry version $VERSION" >&2; exit 1; }

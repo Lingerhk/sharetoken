@@ -52,6 +52,22 @@ The client measures speed automatically, picks the fastest relay and switches wh
 
 `-measure` measures again right away. By default you do not need to open any port: sellers register on a relay, and buyers connect through the relay or by hole punching.
 
+## Direct tunnels {#tailnet}
+
+When buyer and seller are both behind NATs and hole punching fails, requests go through a relay all the way. Direct tunnels are a second way to connect directly: a WireGuard tunnel between the two ends (Tailscale's data plane), which starts through a DERP relay and moves to a direct path between the two within seconds; when it cannot, it stays on DERP, or the request uses the relay as before. It needs no Tailscale account, no system VPN, no administrator rights and no open port. It is off by default, and works when both buyer and seller turn it on:
+
+```bash
+{{exe}} tailnet on
+{{exe}} tailnet
+{{exe}} tailnet off
+```
+
+`tailnet` shows through which DERP region this machine is reachable as a seller, and the path of each tunnel (`direct`, or `derp:<region>`). When a request used a tunnel, the response header `X-Sharetoken-Timing` has `tailnet=direct`.
+
+- The first request to a node goes through the relay as usual while the tunnel is set up in the background; later requests use the tunnel. `-wait 3000` makes the first request wait up to 3 seconds for the tunnel before it uses the relay.
+- Identity, encryption, billing and verification do not change: the tunnel carries the same connection as before, and DERP, like a relay, sees only ciphertext.
+- The default is tailcat's public DERP relays. A network that runs its own points at its DERP map with `-derp-map <URL or file>`; buyer and seller need the same map: a buyer follows an address only to DERP relays of its own map.
+
 ## Run in the background {#background}
 
 To share models or make calls over a long time, run the client in the background. First [sign in](/docs/account#login) in a terminal, because the background service does not ask for a code.

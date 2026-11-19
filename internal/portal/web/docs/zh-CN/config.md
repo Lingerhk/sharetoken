@@ -132,3 +132,6 @@
 | `nat` | UPnP、NAT-PMP 和打洞 | `true` |
 | `relays` | 非空时覆盖门户提供的中继列表 | 空 |
 | `private_relays` | 你自己的中继，共享经由它们，见[自建中继](/docs/relay)。用 `relays add` 管理 | 空 |
+| `tailnet.enabled` | 直连隧道，见[直连隧道](/docs/running#tailnet)。用 `tailnet on` / `tailnet off` 管理 | `false` |
+| `tailnet.wait_ms` | 对新节点的请求最多等多久隧道，之后走中继（0 到 10000 毫秒） | `0` |
+| `tailnet.derp_map` | 隧道起步用的 DERP 表：URL 或文件；空为 tailcat 的公共 DERP | 空 |
