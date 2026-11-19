@@ -14,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/host/autonat"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	circuitproto "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/proto"
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
@@ -81,17 +82,35 @@ func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 	return libp2p.New(opts...)
 }
 
+// peerDials is how many addresses of one peer are dialed at a time, in place
+// of libp2p's eight. A node's offer lists all the addresses it listens on,
+// and a dial to one of another network hangs until its timeout. A node with
+// a handful of interfaces filled the eight with those, and the relay
+// address, which libp2p dials a moment after the direct ones, waited behind
+// them: the first job to a node took ten seconds to connect. The resource
+// manager's count of a peer's outgoing connections is raised with it
+// (ClientLimits); without that the dial is refused outright ("cannot
+// reserve outbound connection").
+const peerDials = 64
+
+func init() { swarm.DefaultPerPeerRateLimit = peerDials }
+
 // ClientLimits are the resource manager limits of a user host: libp2p's
 // defaults scaled to the machine, except that a peer may have several pings
 // in flight. libp2p allows three; a measurement of all relays, the link
 // monitor's ping and a reservation's ping can overlap on the same relay, and
 // a client that refuses its own ping stream would call the relay unreachable
 // (it says "cannot reserve outbound stream: resource limit exceeded").
+//
+// A peer may also have more outgoing connections than libp2p's eight, which
+// count every dial under way; see peerDials. What a peer may open towards
+// this host stays at eight.
 func ClientLimits() rcmgr.ConcreteLimitConfig {
 	scaling := rcmgr.DefaultLimits
 	libp2p.SetDefaultServiceLimits(&scaling)
 	pingPeer := rcmgr.ResourceLimits{Streams: 16, StreamsInbound: 8, StreamsOutbound: 8}
 	partial := rcmgr.PartialLimitConfig{
+		PeerDefault:  rcmgr.ResourceLimits{Conns: peerDials + 8, ConnsOutbound: peerDials},
 		ServicePeer:  map[string]rcmgr.ResourceLimits{ping.ServiceName: pingPeer},
 		ProtocolPeer: map[lproto.ID]rcmgr.ResourceLimits{ping.ID: pingPeer},
 	}

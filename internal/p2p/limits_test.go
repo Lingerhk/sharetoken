@@ -5,14 +5,18 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
+	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	lproto "github.com/libp2p/go-libp2p/core/protocol"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	circuitproto "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/proto"
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 // A hub's system limits fit MaxConns connections, and the defaults it keeps
@@ -92,5 +96,58 @@ func TestHubRefusesOversizedStreamReservation(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("no answer from the hub")
+	}
+}
+
+// A node's offer lists every address it listens on, those of its own
+// network among them, and from elsewhere a dial to one of them hangs until
+// its timeout while holding one of the connections the peer may have.
+// libp2p dials a relay address a moment after the direct ones: with its
+// default of eight connections a peer, a node with a handful of interfaces
+// had none left by then, the relay dial was refused, and the job waited for
+// the timeouts (or for a tunnel).
+func TestDeadAddressesLeaveRoomForLaterOnes(t *testing.T) {
+	seller, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seller.Close()
+	late := seller.Addrs()[0]
+	rm, err := rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(ClientLimits()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every address at once, the one that answers a quarter of a second
+	// later: where libp2p puts a relay.
+	ranker := func(addrs []ma.Multiaddr) []network.AddrDelay {
+		out := make([]network.AddrDelay, 0, len(addrs))
+		for _, a := range addrs {
+			d := time.Duration(0)
+			if a.Equal(late) {
+				d = 250 * time.Millisecond
+			}
+			out = append(out, network.AddrDelay{Addr: a, Delay: d})
+		}
+		return out
+	}
+	buyer, err := libp2p.New(libp2p.NoListenAddrs, libp2p.ResourceManager(rm), libp2p.SwarmOpts(swarm.WithDialRanker(ranker)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer buyer.Close()
+	// TEST-NET addresses: packets to them vanish.
+	addrs := []ma.Multiaddr{late}
+	for i := 1; i <= 16; i++ {
+		addrs = append(addrs, ma.StringCast(fmt.Sprintf("/ip4/192.0.2.%d/tcp/4001", i)))
+	}
+	buyer.Peerstore().AddAddrs(seller.ID(), addrs, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	t0 := time.Now()
+	if err := buyer.Connect(ctx, peer.AddrInfo{ID: seller.ID()}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if took := time.Since(t0); took > 3*time.Second {
+		t.Fatalf("connected after %v: the address had to wait for the dead ones", took)
 	}
 }
