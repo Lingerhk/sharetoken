@@ -134,4 +134,5 @@
 | `private_relays` | 你自己的中继，共享经由它们，见[自建中继](/docs/relay)。用 `relays add` 管理 | 空 |
 | `tailnet.enabled` | 直连隧道，见[直连隧道](/docs/running#tailnet)。用 `tailnet on` / `tailnet off` 管理 | `false` |
 | `tailnet.wait_ms` | 对新节点的请求最多等多久隧道，之后走中继（0 到 10000 毫秒） | `0` |
+| `tailnet.transport` | 本机连卖家时隧道里跑什么：`quic` 或 `tcp`。卖家两种都接受 | `quic` |
 | `tailnet.derp_map` | 隧道起步用的 DERP 表：URL 或文件；空为 tailcat 的公共 DERP | 空 |

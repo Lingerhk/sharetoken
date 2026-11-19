@@ -66,6 +66,7 @@ sharetoken client for you@example.com (device 12D3Koo...)
 
 - 对一个节点的第一个请求照常经中继发出，隧道在后台建立，之后的请求走隧道。`-wait 3000` 让第一个请求最多等 3 秒隧道，等不到再走中继。
 - 身份、加密、计费和校验都不变：隧道里跑的仍是原来的连接，DERP 和中继一样只看到密文。
+- 隧道里的连接跑在 QUIC 上。`tailnet on -transport tcp` 让本机连卖家时改用 TCP；卖家两种都接受。`tailnet` 会显示每条隧道用的是哪一种。
 - 默认用 tailcat 的公共 DERP。自己运行 DERP 的网络用 `-derp-map <URL 或文件>` 指向自己的 DERP 表，买卖两端要用同一张表：买家只跟随地址去自己表里的 DERP。
 
 ## 在后台运行 {#background}

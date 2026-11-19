@@ -134,4 +134,5 @@ When you change settings with the `share` subcommands, the running client applie
 | `private_relays` | Relays of your own that your sharing runs through, see [Run your own relay](/docs/relay). Managed with `relays add` | Empty |
 | `tailnet.enabled` | Direct tunnels, see [Direct tunnels](/docs/running#tailnet). Managed with `tailnet on` / `tailnet off` | `false` |
 | `tailnet.wait_ms` | How long a request to a new node waits for the tunnel before it uses the relay (0 to 10000 ms) | `0` |
+| `tailnet.transport` | What this machine's connections to sellers run over inside the tunnel: `quic` or `tcp`. A seller accepts both | `quic` |
 | `tailnet.derp_map` | The DERP map tunnels start through: a URL or a file; empty for tailcat's public DERP relays | Empty |

@@ -67,12 +67,13 @@ While running:
   relays remove <address|peer id>       stop using it
   tailnet                               the direct path over tunnels: whether it is on, this node's relay region,
                                         and each tunnel's path (direct, or through which DERP relay)
-  tailnet on [-derp-map URL|FILE] [-wait MS]
+  tailnet on [-derp-map URL|FILE] [-wait MS] [-transport quic|tcp]
                                         reach sellers, and be reached as a seller, through WireGuard tunnels that
                                         go direct where the NATs allow (Tailscale's data plane; no account, no
                                         system VPN). Both ends need it on. -derp-map: the relays tunnels start
                                         through (default: tailcat's public ones); -wait: how long a request waits
-                                        for a new tunnel before it uses the relay (default 0)
+                                        for a new tunnel before it uses the relay (default 0); -transport: what
+                                        a connection through a tunnel runs on (default quic)
   tailnet off                           back to the relays and libp2p's own direct connections
 
 Account (portal):
@@ -1145,10 +1146,18 @@ func (c *cmdCtx) tailnet(args []string) error {
 			fs := flag.NewFlagSet("tailnet on", flag.ExitOnError)
 			derp := fs.String("derp-map", tc.DERPMap, "URL or file of the DERP map (empty: tailcat's public relays)")
 			wait := fs.Int("wait", tc.WaitMillis, "milliseconds a request waits for a new tunnel before it uses the relay")
+			proto := fs.String("transport", tc.Transport, "what a connection through a tunnel runs on: quic (the default) or tcp")
 			_ = fs.Parse(args[1:])
 			if fs.NArg() > 0 {
-				return errors.New("usage: sharetoken tailnet on [-derp-map URL|FILE] [-wait MS]")
+				return errors.New("usage: sharetoken tailnet on [-derp-map URL|FILE] [-wait MS] [-transport quic|tcp]")
 			}
+			if *proto != "" && *proto != "quic" && *proto != "tcp" {
+				return errors.New("-transport must be quic or tcp")
+			}
+			if *proto == "quic" {
+				*proto = "" // the default is not written down
+			}
+			tc.Transport = *proto
 			if d := *derp; d != "" && !strings.HasPrefix(d, "https://") && !strings.HasPrefix(d, "http://") {
 				abs, err := filepath.Abs(strings.TrimPrefix(d, "file://"))
 				if err != nil {
@@ -1200,7 +1209,7 @@ func printTailnet(st client.TailnetStatus) {
 		fmt.Println("tailnet off (sharetoken tailnet on)")
 		return
 	}
-	fmt.Printf("tailnet on, relays from %s", st.DERPMap)
+	fmt.Printf("tailnet on (%s), relays from %s", st.Proto, st.DERPMap)
 	if st.WaitMillis > 0 {
 		fmt.Printf(", a request waits up to %d ms for a new tunnel", st.WaitMillis)
 	}
@@ -1221,7 +1230,7 @@ func printTailnet(st client.TailnetStatus) {
 		return
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "   \tPEER\tPATH\tENDPOINT\tRTT\tCONNS\tRX\tTX")
+	fmt.Fprintln(tw, "   \tPEER\tPATH\tOVER\tENDPOINT\tRTT\tCONNS\tRX\tTX")
 	for _, t := range st.Tunnels {
 		dir := map[string]string{"out": "to seller", "in": "from buyer"}[t.Dir]
 		rtt := ""
@@ -1234,7 +1243,7 @@ func printTailnet(st client.TailnetStatus) {
 		} else {
 			rx, tx = strconv.FormatInt(t.RxBytes, 10), strconv.FormatInt(t.TxBytes, 10)
 		}
-		fmt.Fprintf(tw, "   %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", dir, short(t.Peer), t.Path, t.Endpoint, rtt, conns, rx, tx)
+		fmt.Fprintf(tw, "   %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", dir, short(t.Peer), t.Path, t.Proto, t.Endpoint, rtt, conns, rx, tx)
 	}
 	_ = tw.Flush()
 }

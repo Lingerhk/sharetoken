@@ -87,8 +87,9 @@ sharetoken jobs [-role buy|sell] [-n 20]
 sharetoken relays [-measure]           # relay round-trip times; the link quality of the current relay
 sharetoken relays add <address>        # share through a relay the user runs themselves (a private relay)
 sharetoken relays remove <address|id>  # stop using it
-sharetoken tailnet                     # direct tunnels (off by default): whether on, each tunnel's path (direct, or derp:<region>)
+sharetoken tailnet                     # direct tunnels (off by default): whether on, each tunnel's path (direct, or derp:<region>) and transport
 sharetoken tailnet on | off            # direct WireGuard tunnels between buyer and seller in place of the relay; both ends need it on
+sharetoken tailnet on -transport tcp   # run TCP inside the tunnel in place of QUIC (the default), for this machine's connections to sellers
 sharetoken version --check             # is a newer client released?
 sharetoken upgrade                      # install it (asks first; checks the release signature). Only when the user asks
 ```

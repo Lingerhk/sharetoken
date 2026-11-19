@@ -11,20 +11,25 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/connmgr"
+	ic "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/transport"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
+	p2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
+	"github.com/quic-go/quic-go"
 	"github.com/tailscale/tailcat"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
 
-// Port is the TCP port, inside the tunnel, a node's libp2p listener is on.
-// It is on no machine's network: only the tunnel's own address has it.
+// Port is the port, inside the tunnel, a node's libp2p listener is on: UDP
+// for QUIC and TCP (quic.go). It is on no machine's network: only the
+// tunnel's own address has it.
 const Port = 4001
 
 // Config tunes a Transport.
@@ -41,12 +46,17 @@ type Config struct {
 	// IdleClose closes an outgoing tunnel connection that has carried no
 	// stream for this long (0: 10 minutes). The next job dials it again.
 	IdleClose time.Duration
+	// Proto is what a connection this host dials through a tunnel runs on:
+	// ProtoQUIC (the default, and what an empty value means) or ProtoTCP. A
+	// node serves both.
+	Proto string
 	// MaxTunnels bounds the tunnels kept to nodes at once (0: 16). Each is
 	// a WireGuard engine with its own UDP socket and relay connection.
 	MaxTunnels int
 	Log        *slog.Logger
 
 	derpMap *tailcfg.DERPMap // a fixed map (tests)
+	tcpOnly bool             // serve no QUIC, as a node without it (tests)
 }
 
 // Transport is the libp2p transport of tailnet addresses. One serves both
@@ -60,6 +70,14 @@ type Transport struct {
 
 	upgrader transport.Upgrader
 	rcmgr    network.ResourceManager
+	gater    connmgr.ConnectionGater
+	self     peer.ID
+	identity *p2ptls.Identity // names this host in a QUIC handshake
+	quicConf *quic.Config
+	proto    atomic.Value // string: Config.Proto
+
+	qconns     sync.Map     // *quic.Conn -> *qconn
+	quicClosed atomic.Int64 // when a QUIC connection last closed (UnixNano)
 
 	mu       sync.Mutex
 	maps     *derpMaps
@@ -99,10 +117,22 @@ func New(cfg Config) (*Transport, libp2p.Option, error) {
 	t := &Transport{cfg: cfg, log: lg.With("component", "tailnet"), maps: maps, key: key.NewNode(),
 		tunnels: map[key.NodePublic]*tunnel{}, reaching: map[peer.ID]*reach{}}
 	t.enabled.Store(cfg.Enabled)
+	if err := t.SetProto(cfg.Proto); err != nil {
+		return nil, nil, err
+	}
+	t.quicConf = t.quicConfig()
 	opt := libp2p.ChainOptions(
 		libp2p.DefaultTransports,
-		libp2p.Transport(func(u transport.Upgrader, rcmgr network.ResourceManager) (*Transport, error) {
-			t.upgrader, t.rcmgr = u, rcmgr
+		libp2p.Transport(func(k ic.PrivKey, u transport.Upgrader, rcmgr network.ResourceManager, gater connmgr.ConnectionGater) (*Transport, error) {
+			id, err := p2ptls.NewIdentity(k)
+			if err != nil {
+				return nil, err
+			}
+			self, err := peer.IDFromPrivateKey(k)
+			if err != nil {
+				return nil, err
+			}
+			t.upgrader, t.rcmgr, t.gater, t.identity, t.self = u, rcmgr, gater, id, self
 			return t, nil
 		}),
 		libp2p.DialRanker(dialRanker),
@@ -125,6 +155,23 @@ func (t *Transport) Enabled() bool { return t.enabled.Load() }
 // SetEnabled turns the tailnet on or off. Turning it off does not end what
 // runs over it; Reset does.
 func (t *Transport) SetEnabled(on bool) { t.enabled.Store(on) }
+
+// SetProto changes what connections dialed from now on run on (see
+// Config.Proto); those that stand stay as they are.
+func (t *Transport) SetProto(proto string) error {
+	switch proto {
+	case "":
+		proto = ProtoQUIC
+	case ProtoQUIC, ProtoTCP:
+	default:
+		return fmt.Errorf("tailnet: unknown transport %q (quic, tcp)", proto)
+	}
+	t.proto.Store(proto)
+	return nil
+}
+
+// Proto is what connections this host dials through a tunnel run on.
+func (t *Transport) Proto() string { return t.proto.Load().(string) }
 
 // SetDERPMap changes where the relay list comes from (see Config.DERPMap).
 // Tunnels and the server keep the relays they started with until Reset.
@@ -225,6 +272,9 @@ func (t *Transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tr
 	c, err := t.dial(ctx, raddr, p, scope)
 	if err != nil {
 		scope.Done()
+		// libp2p reports the first few failures of a dial, and a node has
+		// more addresses than that: the tunnel's, the last to fail, is cut.
+		t.log.Info("tunnel dial failed", "peer", p, "err", err)
 		return nil, err
 	}
 	return c, nil
@@ -236,6 +286,18 @@ func (t *Transport) dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID, sco
 		return nil, err
 	}
 	t0 := time.Now()
+	if t.Proto() == ProtoQUIC {
+		cc, err := t.dialQUIC(ctx, tun, raddr, p, scope)
+		if err != nil {
+			tun.release()
+			return nil, fmt.Errorf("tailnet: %w", err)
+		}
+		t.log.Debug("tunnel connection up", "peer", p, "proto", ProtoQUIC, "took", time.Since(t0).Round(time.Millisecond))
+		tun.peer.Store(&p)
+		tun.proto.Store(ProtoQUIC)
+		tun.probe()
+		return cc, nil
+	}
 	nc, err := tun.client.DialTCPPort(ctx, Port)
 	if err != nil {
 		tun.release()
@@ -252,10 +314,48 @@ func (t *Transport) dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID, sco
 		_ = mc.Close()
 		return nil, err
 	}
-	t.log.Debug("tunnel connection up", "peer", p, "took", time.Since(t0).Round(time.Millisecond))
+	t.log.Debug("tunnel connection up", "peer", p, "proto", ProtoTCP, "took", time.Since(t0).Round(time.Millisecond))
 	tun.peer.Store(&p)
+	tun.proto.Store(ProtoTCP)
 	tun.probe()
-	return cc, nil
+	return &usedConn{CapableConn: cc}, nil
+}
+
+// lastUse is when a tunnel connection last got a new stream. The sweep
+// looks at a connection twice a minute and most jobs take seconds: by the
+// streams it happened to see, a connection that carried a job every minute
+// was idle at every look, and was closed after Config.IdleClose all the
+// same, sending the next job over the relay.
+type lastUse struct{ at atomic.Int64 }
+
+func (u *lastUse) touch() { u.at.Store(time.Now().UnixNano()) }
+
+// usedConn is the upgraded TCP connection through a tunnel, noting when it
+// is used.
+type usedConn struct {
+	transport.CapableConn
+	use lastUse
+}
+
+func (c *usedConn) OpenStream(ctx context.Context) (network.MuxedStream, error) {
+	c.use.touch()
+	return c.CapableConn.OpenStream(ctx)
+}
+
+func (c *usedConn) AcceptStream() (network.MuxedStream, error) {
+	s, err := c.CapableConn.AcceptStream()
+	if err == nil {
+		c.use.touch()
+	}
+	return s, err
+}
+
+func (c *usedConn) As(target any) bool {
+	if u, ok := target.(**lastUse); ok {
+		*u = &c.use
+		return true
+	}
+	return c.CapableConn.As(target)
 }
 
 // Listen serves libp2p on this host's tailcat server; Serve calls it
@@ -271,7 +371,16 @@ func (t *Transport) Listen(laddr ma.Multiaddr) (transport.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	return t.upgrader.UpgradeGatedMaListener(t, t.upgrader.GateMaListener(&listener{Listener: ln, addr: laddr})), nil
+	tcp := t.upgrader.UpgradeGatedMaListener(t, t.upgrader.GateMaListener(&listener{Listener: ln, addr: laddr}))
+	if t.cfg.tcpOnly {
+		return tcp, nil
+	}
+	udp, err := s.Listen(context.Background(), "udp", fmt.Sprintf(":%d", Port))
+	if err != nil {
+		_ = tcp.Close()
+		return nil, err
+	}
+	return t.newTunnelListener(laddr, tcp, udp), nil
 }
 
 // conn is a tunnel's TCP connection with the multiaddrs libp2p asks for.
@@ -422,7 +531,7 @@ func (t *Transport) StopServing(h host.Host) {
 			_ = c.Close()
 		}
 	}
-	closeServer(s)
+	t.closeServer(s)
 }
 
 // Close stops the server and every tunnel.
@@ -443,7 +552,7 @@ func (t *Transport) Close() error {
 	t.mu.Unlock()
 	closeTunnels(tuns)
 	if s != nil {
-		closeServer(s)
+		t.closeServer(s)
 	}
 	return nil
 }
@@ -461,6 +570,8 @@ type tunnel struct {
 
 	refs     int       // connections open or being opened; under t.mu
 	idleFrom time.Time // when refs last fell to zero; under t.mu
+
+	proto atomic.Value // string: what its latest connection runs on
 
 	path    atomic.Pointer[Path]
 	probing atomic.Bool
@@ -552,11 +663,22 @@ func (tun *tunnel) close() {
 		return
 	}
 	if tun.started.Load() {
+		tun.t.quicLinger()
 		ctx, cancel := context.WithTimeout(context.Background(), drainTime)
 		_ = tun.client.DrainTCP(ctx)
 		cancel()
 	}
 	_ = tun.client.Close()
+}
+
+// quicLinger gives a QUIC connection closed a moment ago the time to get its
+// closing packet through the engine that is about to stop; without it the
+// other side learns of the end from its idle timeout.
+func (t *Transport) quicLinger() {
+	const linger = 150 * time.Millisecond
+	if d := time.Since(time.Unix(0, t.quicClosed.Load())); d < linger {
+		time.Sleep(linger - d)
+	}
 }
 
 // drainTime is how long closing a tunnel or the server waits for the TCP
@@ -566,7 +688,8 @@ func (tun *tunnel) close() {
 // keepalive gives up, with the next job stalling on it.
 const drainTime = time.Second
 
-func closeServer(s *tailcat.Server) {
+func (t *Transport) closeServer(s *tailcat.Server) {
+	t.quicLinger()
 	ctx, cancel := context.WithTimeout(context.Background(), drainTime)
 	_ = s.DrainTCP(ctx)
 	cancel()

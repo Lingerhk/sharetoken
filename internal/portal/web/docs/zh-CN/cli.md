@@ -89,8 +89,8 @@
 
 | 命令 | 含义 |
 |---|---|
-| `tailnet` | 是否打开、本机作为卖家经哪个 DERP 区域可达、每条隧道的路径 |
-| `tailnet on` | 打开。`-wait <毫秒>`：对新节点的请求最多等这么久隧道（默认 0，最大 10000）；`-derp-map <URL 或文件>`：自己的 DERP 表 |
+| `tailnet` | 是否打开、本机作为卖家经哪个 DERP 区域可达、每条隧道的路径和传输 |
+| `tailnet on` | 打开。`-wait <毫秒>`：对新节点的请求最多等这么久隧道（默认 0，最大 10000）；`-derp-map <URL 或文件>`：自己的 DERP 表；`-transport quic\|tcp`：本机连卖家时隧道里跑什么（默认 `quic`） |
 | `tailnet off` | 关闭，回到中继和打洞 |
 
 ### apikey {#apikey}

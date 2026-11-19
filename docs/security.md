@@ -261,7 +261,7 @@ be connected by a WireGuard tunnel (Tailscale's data plane, as the library
 tailcat) in place of a relay ([architecture.md](architecture.md) §2.17).
 
 - **Nothing rests on the tunnel.** Inside it runs the same libp2p connection
-  as anywhere: the peer proves its identity in the handshake, and prompts,
+  as anywhere, over QUIC or TCP: the peer proves its identity in the handshake, and prompts,
   tickets and receipts are protected as before. The tunnel's keys are in the
   node's offer, which every buyer of the node gets: they keep nobody out,
   and are not meant to. Whoever has the address reaches one thing, the node's

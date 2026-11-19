@@ -38,6 +38,10 @@ type TailnetConfig struct {
 	// without the tailnet (the tunnel then takes over for the next stream).
 	// 0: do not wait.
 	WaitMillis int `json:"wait_ms,omitempty"`
+	// Transport is what a connection this client dials through a tunnel
+	// runs on: "quic" (the default; empty means it) or "tcp". A sharing node
+	// serves both, so this is the buyer's choice.
+	Transport string `json:"transport,omitempty"`
 }
 
 // MaxTailnetWaitMillis bounds TailnetConfig.WaitMillis: a job is not held
@@ -47,6 +51,11 @@ const MaxTailnetWaitMillis = 10_000
 func (c TailnetConfig) validate() error {
 	if c.WaitMillis < 0 || c.WaitMillis > MaxTailnetWaitMillis {
 		return fmt.Errorf("tailnet.wait_ms must be between 0 and %d", MaxTailnetWaitMillis)
+	}
+	switch c.Transport {
+	case "", tailnet.ProtoQUIC, tailnet.ProtoTCP:
+	default:
+		return fmt.Errorf("tailnet.transport must be %q or %q", tailnet.ProtoQUIC, tailnet.ProtoTCP)
 	}
 	return nil
 }
@@ -62,7 +71,10 @@ type TailnetStatus struct {
 // later needs no new host. A DERP map that cannot be read leaves the tailnet
 // off with a warning rather than keeping the client from starting.
 func (a *Agent) newTailnet() libp2p.Option {
-	cfg := tailnet.Config{Enabled: a.cfg.Tailnet.Enabled, DERPMap: a.cfg.Tailnet.DERPMap, Dir: a.home, Log: a.log}
+	cfg := tailnet.Config{Enabled: a.cfg.Tailnet.Enabled, DERPMap: a.cfg.Tailnet.DERPMap, Proto: a.cfg.Tailnet.Transport, Dir: a.home, Log: a.log}
+	if a.cfg.Tailnet.validate() != nil {
+		cfg.Proto = ""
+	}
 	tn, opt, err := tailnet.New(cfg)
 	if err != nil {
 		a.warn("tailnet", "tailnet off: "+err.Error())
@@ -185,6 +197,9 @@ func (a *Agent) SetTailnet(tc TailnetConfig) error {
 		if err := a.tailnet.SetDERPMap(tc.DERPMap); err != nil {
 			return err
 		}
+	}
+	if err := a.tailnet.SetProto(tc.Transport); err != nil {
+		return err
 	}
 	if err := saveTailnet(a.home, tc); err != nil {
 		return err

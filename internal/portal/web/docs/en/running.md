@@ -66,6 +66,7 @@ When buyer and seller are both behind NATs and hole punching fails, requests go 
 
 - The first request to a node goes through the relay as usual while the tunnel is set up in the background; later requests use the tunnel. `-wait 3000` makes the first request wait up to 3 seconds for the tunnel before it uses the relay.
 - Identity, encryption, billing and verification do not change: the tunnel carries the same connection as before, and DERP, like a relay, sees only ciphertext.
+- Inside the tunnel the connection runs over QUIC. `tailnet on -transport tcp` makes this machine's connections to sellers use TCP instead; a seller accepts both. `tailnet` shows which one each tunnel uses.
 - The default is tailcat's public DERP relays. A network that runs its own points at its DERP map with `-derp-map <URL or file>`; buyer and seller need the same map: a buyer follows an address only to DERP relays of its own map.
 
 ## Run in the background {#background}

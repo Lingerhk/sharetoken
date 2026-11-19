@@ -89,8 +89,8 @@ Direct tunnels (see [Direct tunnels](/docs/running#tailnet)). A running client a
 
 | Command | Meaning |
 |---|---|
-| `tailnet` | Whether it is on, the DERP region this machine is reachable through as a seller, and each tunnel's path |
-| `tailnet on` | Turn it on. `-wait <ms>`: how long a request to a new node waits for the tunnel (default 0, at most 10000); `-derp-map <URL or file>`: a DERP map of your own |
+| `tailnet` | Whether it is on, the DERP region this machine is reachable through as a seller, and each tunnel's path and transport |
+| `tailnet on` | Turn it on. `-wait <ms>`: how long a request to a new node waits for the tunnel (default 0, at most 10000); `-derp-map <URL or file>`: a DERP map of your own; `-transport quic\|tcp`: what this machine's connections to sellers run over inside the tunnel (default `quic`) |
 | `tailnet off` | Turn it off: back to relays and hole punching |
 
 ### apikey {#apikey}

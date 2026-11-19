@@ -203,6 +203,7 @@
 | `private_relays` | 空 | 用户自己运行的中继（最多 8 个）。共享节点在上面预约；其他功能都不用它，和协调器之间的流量从不经过它（`sharetoken relays add`，[security.md](security.md) §2.8） |
 | `tailnet.enabled` | false | 买卖双方都打开时，两端之间走 Tailscale 数据面的直连隧道（`sharetoken tailnet on`，[architecture.md](architecture.md) §2.17） |
 | `tailnet.wait_ms` | 0 | 对一个节点的请求最多等新隧道多久，之后走中继（最大 10000） |
+| `tailnet.transport` | quic | 买家的连接在隧道里跑什么：`quic` 或 `tcp`。共享节点两种都提供 |
 | `tailnet.derp_map` | 空 | DERP 中继的来源：URL，或存有 DERP 表的文件；空为 tailcat 的公共 DERP。买卖两端要一致 |
 | `buy.budget_micros` | 2000000 | 每个请求冻结的额度；没用完的部分退回 |
 | `buy.max_price_in`、`buy.max_price_out` | 0（不限） | 每百万 prompt token 和 completion token 的价格上限 |
