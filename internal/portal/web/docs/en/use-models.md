@@ -298,10 +298,10 @@ If no node qualifies, the request fails instead of falling back to an ordinary n
 
 ## Buy only from sellers you know {#pairing}
 
-By default your requests go to whichever node the coordinator picks. To send them only to sellers you know, pair with those sellers. A seller gives you a pairing code, and you join with it:
+By default your requests go to whichever node the coordinator picks. To send them only to sellers you know, pair with those sellers. A seller gives you a pairing code or an [invite link](/docs/share#invite-links), and you join with it:
 
 ```bash
-{{exe}} pair join ABCD-EFGH-IJKL-MNOP
+{{exe}} pair join ABCDE-FGHIJ
 ```
 
 From then on this account buys only from the sellers it is paired with, on all of its devices. `models` and `/v1/models` list only their models.

@@ -124,8 +124,10 @@ A seller hands out a pairing code. A buyer that joins with it buys only from the
 | Command | What it does |
 |---|---|
 | `pair` | Show who you are paired with, and your pairing codes |
-| `pair code [-label L] [-ttl 24h] [-uses N]` | Seller: make a code for your buyers. It lasts 24 hours (30 days at most) and admits any number of buyers unless you say otherwise |
-| `pair join <code>` | Buyer: pair with the seller that made the code |
+| `pair code [-label L] [-ttl 24h] [-uses N] [-approve]` | Seller: make a code for your buyers, and print its invite link. It lasts 24 hours (30 days at most) and admits any number of buyers unless you say otherwise; `-approve`: each buyer waits for your approval |
+| `pair join <code\|link>` | Buyer: pair with the seller that made the code or link |
+| `pair approve <request id>`, `pair reject <request id>` | Seller: approve or reject a buyer waiting for your approval |
+| `pair withdraw <request id>` | Buyer: withdraw your own request |
 | `pair leave <seller id>` | Buyer: end the pairing with a seller |
 | `pair rm <buyer id>` | Seller: remove one of your buyers |
 | `pair revoke <code id>` | Seller: stop a code from admitting more buyers. Buyers already paired stay |
@@ -133,7 +135,8 @@ A seller hands out a pairing code. A buyer that joins with it buys only from the
 
 ```bash
 {{exe}} pair code -label team -ttl 72h
-{{exe}} pair join ABCD-EFGH-IJKL-MNOP
+{{exe}} pair join ABCDE-FGHIJ
+{{exe}} pair join https://sharetoken.app/p#7kQm3xV9pT2b
 ```
 
 The ids are the ones `pair` lists. See [Pair with your buyers](/docs/share#pairing).
@@ -145,19 +148,35 @@ Two users who pair up as partners use each other's nodes first, for free; when n
 | Command | What it does |
 |---|---|
 | `partner` | Show your partners, the tokens you gave and used in the last 24 hours, open invites and your settings |
-| `partner invite [-ttl 24h]` | Make an invite for one person. It lasts 24 hours unless you pass `-ttl` (168 hours at most) |
-| `partner join <code>` | Become the partner of whoever made the invite |
+| `partner invite [-ttl 24h] [-approve]` | Make an invite for one person, and print its invite link. It lasts 24 hours unless you pass `-ttl` (168 hours at most); `-approve`: they wait for your approval |
+| `partner join <code\|link>` | Become the partner of whoever made the invite or link |
+| `partner approve <request id>`, `partner reject <request id>` | Approve or reject someone waiting for your approval |
+| `partner withdraw <request id>` | Withdraw your own request |
 | `partner rm <user id>` | Stop sharing with a partner |
 | `partner revoke <invite id>` | Withdraw an open invite |
 | `partner set [-only on\|off] [-limit N] [-share P]` | `-only`: use partners' nodes only; `-limit`: tokens your nodes give all partners per 24 hours (0: no limit); `-share`: percent of each of your nodes' concurrent jobs partners may take (0 pauses) |
 
 ```bash
 {{exe}} partner invite
-{{exe}} partner join ABCD-EFGH-IJKL-MNOP
+{{exe}} partner join ABCDE-FGHIJ
 {{exe}} partner set -limit 200000 -share 50
 ```
 
 See [Share with partners](/docs/share#partners).
+
+## Invite links {#invite-links}
+
+Every pairing code and share invite also has an invite link, `https://sharetoken.app/p#…` (pairing) or `https://sharetoken.app/s#…` (share partners), printed when it is made. Whoever gets a link need not know which kind it is:
+
+| Command | What it does |
+|---|---|
+| `accept <link\|code>` | Accept an invite link, or a code of either kind |
+
+```bash
+{{exe}} accept https://sharetoken.app/s#Hx82LpQe0aZt
+```
+
+A link can only be accepted by a client signed in to the portal it is from. See [Invite links](/docs/share#invite-links).
 
 ## Coding agents {#agents}
 

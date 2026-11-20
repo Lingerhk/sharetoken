@@ -29,10 +29,10 @@ func (p *PortalClient) Sharing(ctx context.Context) (*portal.SharingView, error)
 }
 
 // NewShareInvite makes an invite one person can join with; ttlHours 0 is the
-// portal's default.
-func (p *PortalClient) NewShareInvite(ctx context.Context, ttlHours float64) (*accounts.ShareInvite, error) {
+// portal's default. approval: joining waits for the inviter's approval.
+func (p *PortalClient) NewShareInvite(ctx context.Context, ttlHours float64, approval bool) (*accounts.ShareInvite, error) {
 	var out accounts.ShareInvite
-	err := p.Do(ctx, http.MethodPost, "/api/v1/sharing/invites", map[string]any{"ttl_hours": ttlHours}, &out)
+	err := p.Do(ctx, http.MethodPost, "/api/v1/sharing/invites", map[string]any{"ttl_hours": ttlHours, "approval": approval}, &out)
 	return &out, err
 }
 
@@ -65,4 +65,5 @@ func (a *Agent) sharingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/sharing/join", a.portalForward)
 	mux.HandleFunc("DELETE /api/v1/sharing/partners/{id}", a.portalForward)
 	mux.HandleFunc("PUT /api/v1/sharing/settings", a.portalForward)
+	a.requestRoutes(mux, "sharing")
 }

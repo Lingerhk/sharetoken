@@ -250,6 +250,8 @@ em.yes { color: var(--amber); background: rgba(var(--amber-rgb), .12); }
 }
 @media (max-width: 560px) {
   .nav, .hero, .foot { padding-inline: 16px; }
+  .nav nav { gap: 6px; }
+  .nav .btn.small { padding: 0 11px; white-space: nowrap; }
   .block, .changelog { padding-inline: 16px; }
   .changelog { padding-top: 48px; }
   .hero { min-height: 0; padding-top: 44px; padding-bottom: 150px; align-items: flex-start; }

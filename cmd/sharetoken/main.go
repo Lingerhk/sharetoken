@@ -20,6 +20,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -112,9 +113,12 @@ Hosted APIs to share (kept in providers.json, apart from the configuration):
 
 Pairing (a buyer that pairs with a seller buys only from the sellers it is paired with):
   pair                                  who you are paired with, and your pairing codes
-  pair code [-label L] [-ttl 24h] [-uses N]
-                                        seller: make a code to hand to your buyers (any number of them, or -uses N)
-  pair join <code>                      buyer: pair with the seller that made the code
+  pair code [-label L] [-ttl 24h] [-uses N] [-approve]
+                                        seller: make a code and its link to hand to your buyers (any number of them,
+                                        or -uses N); -approve: each pairing waits for you to approve it
+  pair join <code|link>                 buyer: pair with the seller that made the code or link
+  pair approve | reject <request id>    seller: approve or reject a buyer waiting for your approval
+  pair withdraw <request id>            buyer: withdraw your own request
   pair leave <seller id>                buyer: end the pairing with a seller
   pair rm <buyer id>                    seller: remove one of your buyers
   pair revoke <code id>                 seller: stop a code from admitting more buyers
@@ -122,8 +126,12 @@ Pairing (a buyer that pairs with a seller buys only from the sellers it is paire
 
 Share partners (two users use each other's nodes for free, before the market):
   partner                               your partners, open invites, settings and the tokens shared in the last 24 hours
-  partner invite [-ttl 24h]             make an invite for one person (at most 168h)
-  partner join <code>                   become the partner of whoever made the invite
+  partner invite [-ttl 24h] [-approve]  make an invite and its link for one person (at most 168h);
+                                        -approve: joining waits for you to approve it
+  partner join <code|link>              become the partner of whoever made the invite
+  partner approve | reject <request id> approve or reject someone waiting for your approval
+  partner withdraw <request id>         withdraw your own request
+  accept <link|code>                    accept an invite link (https://<portal>/p#… or /s#…) or code of either kind
   partner rm <user id>                  stop sharing with a partner
   partner revoke <invite id>            withdraw an open invite
   partner set [-only on|off] [-limit N] [-share P]
@@ -213,6 +221,8 @@ func main() {
 		run = c.pair
 	case "partner":
 		run = c.partner
+	case "accept":
+		run = c.accept
 	case "apikey":
 		run = c.apikey
 	case "skill":
@@ -497,29 +507,39 @@ func (c *cmdCtx) pair(args []string) error {
 	}
 	switch sub {
 	case "", "ls", "list":
-		return showPairing(cx, pc)
+		return showPairing(cx, pc, c.cfg.Portal)
 	case "code", "new":
 		fs := flag.NewFlagSet("pair code", flag.ExitOnError)
 		label := fs.String("label", "", "a note for yourself: who the code is for")
 		ttl := fs.Duration("ttl", 0, "how long the code can be used (default 24h, at most 720h)")
 		uses := fs.Int64("uses", 0, "how many buyers it admits (default: any number)")
+		approve := fs.Bool("approve", false, "each pairing waits for you to approve it")
 		_ = fs.Parse(args)
-		code, err := pc.NewPairingCode(cx, *label, ttl.Hours(), *uses)
+		code, err := pc.NewPairingCode(cx, *label, ttl.Hours(), *uses, *approve)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("pairing code  %s\n", code.Code)
+		fmt.Printf("link          %s\n", accounts.InviteLink(c.cfg.Portal, accounts.KindPair, code.LinkToken))
 		fmt.Printf("  good until %s, for %s\n", time.Unix(0, code.ExpiresAt).Format("2006-01-02 15:04"), usesText(code.MaxUses, 0))
-		fmt.Println("  a buyer runs: sharetoken pair join " + code.Code)
+		fmt.Println("  send the link (it works before the app is installed), or a buyer runs: sharetoken pair join " + code.Code)
+		if code.Approval {
+			fmt.Println("  each buyer waits for your approval: `sharetoken pair` lists them, `sharetoken pair approve <id>` lets one in")
+		}
 		fmt.Println("  from then on that buyer's requests go only to the sellers it is paired with")
 		return nil
 	case "join", "redeem":
 		if len(args) != 1 {
-			return errors.New("usage: sharetoken pair join <code>")
+			return errors.New("usage: sharetoken pair join <code|link>")
 		}
 		seller, err := pc.RedeemPairingCode(cx, args[0])
 		if err != nil {
 			return err
+		}
+		if seller.Pending {
+			fmt.Printf("asked seller %s (id %d) to pair: it waits for their approval\n", seller.Username, seller.ID)
+			fmt.Println("  `sharetoken pair` shows it; you are paired once they approve")
+			return nil
 		}
 		fmt.Printf("paired with seller %s (id %d)\n", seller.Username, seller.ID)
 		fmt.Println("  this account now buys only from the sellers it is paired with; `sharetoken pair leave " + fmt.Sprint(seller.ID) + "` ends it")
@@ -554,6 +574,12 @@ func (c *cmdCtx) pair(args []string) error {
 		}
 		fmt.Println("revoked code", n, "(the buyers already paired with it stay)")
 		return nil
+	case "approve", "reject", "withdraw":
+		n, err := id("request id")
+		if err != nil {
+			return err
+		}
+		return requestAction(cx, pc, "pairing", sub, n)
 	case "private":
 		if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
 			return errors.New("usage: sharetoken pair private on|off")
@@ -568,7 +594,97 @@ func (c *cmdCtx) pair(args []string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("unknown: pair %s (pair | pair code | pair join <code> | pair leave <id> | pair rm <id> | pair revoke <id> | pair private on|off)", sub)
+	return fmt.Errorf("unknown: pair %s (pair | pair code | pair join <code|link> | pair leave <id> | pair rm <id> | pair revoke <id> | pair approve|reject|withdraw <id> | pair private on|off)", sub)
+}
+
+// requestAction approves, rejects or withdraws a request for approval; area
+// is "pairing" or "sharing".
+func requestAction(cx context.Context, pc *client.PortalClient, area, action string, id int64) error {
+	switch action {
+	case "approve":
+		r, err := pc.ApproveRequest(cx, area, id)
+		if err != nil {
+			return err
+		}
+		if area == "pairing" {
+			fmt.Printf("approved: %s is now paired with you as a buyer\n", r.Username)
+		} else {
+			fmt.Printf("approved: %s is now your share partner\n", r.Username)
+		}
+		return nil
+	case "reject":
+		if err := pc.RejectRequest(cx, area, id); err != nil {
+			return err
+		}
+		fmt.Println("rejected request", id)
+		return nil
+	}
+	if err := pc.WithdrawRequest(cx, area, id); err != nil {
+		return err
+	}
+	fmt.Println("withdrew request", id)
+	return nil
+}
+
+// printRequests lists requests waiting for the user's approval and the user's
+// own waiting for someone else's.
+func printRequests(requests, waiting []accounts.InviteRequest, cmd string) {
+	day := func(ns int64) string { return time.Unix(0, ns).Format("2006-01-02 15:04") }
+	if len(requests) > 0 {
+		fmt.Printf("\nwaiting for your approval (sharetoken %s approve|reject <id>):\n", cmd)
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tACCOUNT\tASKED\tLABEL")
+		for _, r := range requests {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\n", r.ID, r.Username, day(r.CreatedAt), r.Label)
+		}
+		_ = tw.Flush()
+	}
+	if len(waiting) > 0 {
+		fmt.Printf("\nyour requests waiting for approval (sharetoken %s withdraw <id>):\n", cmd)
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tOF\tASKED")
+		for _, r := range waiting {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\n", r.ID, r.Username, day(r.CreatedAt))
+		}
+		_ = tw.Flush()
+	}
+}
+
+// accept takes an invite link or code of either kind.
+func (c *cmdCtx) accept(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: sharetoken accept <link|code>")
+	}
+	pc, err := c.portal()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	if ref := accounts.ParseInvite(args[0]); ref.Host != "" && !strings.EqualFold(ref.Host, hostOfURL(c.cfg.Portal)) {
+		return fmt.Errorf("this link is from %s, but this client uses %s", ref.Host, c.cfg.Portal)
+	}
+	r, err := pc.AcceptInvite(cx, args[0])
+	if err != nil {
+		return err
+	}
+	switch {
+	case r.Pending:
+		fmt.Printf("asked %s (id %d): it waits for their approval\n", r.User, r.ID)
+	case r.Kind == accounts.KindShare:
+		fmt.Printf("now sharing with %s (id %d): each of you uses the other's nodes first, for free\n", r.User, r.ID)
+	default:
+		fmt.Printf("paired with seller %s (id %d): this account now buys only from the sellers it is paired with\n", r.User, r.ID)
+	}
+	return nil
+}
+
+func hostOfURL(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(u.Host, ":443"), ":80")
 }
 
 func usesText(maxUses, used int64) string {
@@ -578,7 +694,7 @@ func usesText(maxUses, used int64) string {
 	return fmt.Sprintf("%d of %d buyers", used, maxUses)
 }
 
-func showPairing(cx context.Context, pc *client.PortalClient) error {
+func showPairing(cx context.Context, pc *client.PortalClient, base string) error {
 	v, err := pc.Pairing(cx)
 	if err != nil {
 		return err
@@ -616,12 +732,20 @@ func showPairing(cx context.Context, pc *client.PortalClient) error {
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "  ID\tCODE\tGOOD UNTIL\tUSED BY\tLABEL")
 		for _, c := range v.Codes {
-			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\t%s\n", c.ID, c.Code, day(c.ExpiresAt), usesText(c.MaxUses, c.Used), c.Label)
+			label := c.Label
+			if c.Approval {
+				label = strings.TrimSpace(label + " (approval)")
+			}
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\t%s\n", c.ID, c.Code, day(c.ExpiresAt), usesText(c.MaxUses, c.Used), label)
+			if c.LinkToken != "" {
+				fmt.Fprintf(tw, "  \t%s\t\t\t\n", accounts.InviteLink(base, accounts.KindPair, c.LinkToken))
+			}
 		}
 		_ = tw.Flush()
 	} else {
 		fmt.Println("\nno pairing codes; `sharetoken pair code` makes one")
 	}
+	printRequests(v.Requests, v.Waiting, "pair")
 	return nil
 }
 
@@ -650,27 +774,36 @@ func (c *cmdCtx) partner(args []string) error {
 	}
 	switch sub {
 	case "", "ls", "list":
-		return showPartners(cx, pc)
+		return showPartners(cx, pc, c.cfg.Portal)
 	case "invite", "new":
 		fs := flag.NewFlagSet("partner invite", flag.ExitOnError)
 		ttl := fs.Duration("ttl", 0, "how long the invite can be used (default 24h, at most 168h)")
+		approve := fs.Bool("approve", false, "joining waits for you to approve it")
 		_ = fs.Parse(args)
-		inv, err := pc.NewShareInvite(cx, ttl.Hours())
+		inv, err := pc.NewShareInvite(cx, ttl.Hours(), *approve)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("share invite  %s\n", inv.Code)
+		fmt.Printf("link          %s\n", accounts.InviteLink(c.cfg.Portal, accounts.KindShare, inv.LinkToken))
 		fmt.Printf("  good until %s, for one person\n", time.Unix(0, inv.ExpiresAt).Format("2006-01-02 15:04"))
-		fmt.Println("  they run: sharetoken partner join " + inv.Code)
+		fmt.Println("  send the link (it works before the app is installed), or they run: sharetoken partner join " + inv.Code)
+		if inv.Approval {
+			fmt.Println("  joining waits for your approval: `sharetoken partner` lists it, `sharetoken partner approve <id>` lets them in")
+		}
 		fmt.Println("  from then on each of you uses the other's nodes first, for free")
 		return nil
 	case "join":
 		if len(args) != 1 {
-			return errors.New("usage: sharetoken partner join <code>")
+			return errors.New("usage: sharetoken partner join <code|link>")
 		}
 		p, err := pc.JoinShare(cx, args[0])
 		if err != nil {
 			return err
+		}
+		if p.Pending {
+			fmt.Printf("asked %s (id %d) to share: it waits for their approval\n", p.Username, p.ID)
+			return nil
 		}
 		fmt.Printf("now sharing with %s (id %d)\n", p.Username, p.ID)
 		fmt.Println("  each of you uses the other's nodes first, for free; `sharetoken partner rm " + fmt.Sprint(p.ID) + "` ends it")
@@ -695,6 +828,12 @@ func (c *cmdCtx) partner(args []string) error {
 		}
 		fmt.Println("withdrew invite", n)
 		return nil
+	case "approve", "reject", "withdraw":
+		n, err := id("request id")
+		if err != nil {
+			return err
+		}
+		return requestAction(cx, pc, "sharing", sub, n)
 	case "set":
 		v, err := pc.Sharing(cx)
 		if err != nil {
@@ -722,7 +861,7 @@ func (c *cmdCtx) partner(args []string) error {
 		printShareSettings(st)
 		return nil
 	}
-	return fmt.Errorf("unknown: partner %s (partner | partner invite | partner join <code> | partner rm <id> | partner revoke <id> | partner set)", sub)
+	return fmt.Errorf("unknown: partner %s (partner | partner invite | partner join <code|link> | partner rm <id> | partner revoke <id> | partner approve|reject|withdraw <id> | partner set)", sub)
 }
 
 func printShareSettings(st accounts.ShareSettings) {
@@ -743,7 +882,7 @@ func printShareSettings(st accounts.ShareSettings) {
 	}
 }
 
-func showPartners(cx context.Context, pc *client.PortalClient) error {
+func showPartners(cx context.Context, pc *client.PortalClient, base string) error {
 	v, err := pc.Sharing(cx)
 	if err != nil {
 		return err
@@ -772,12 +911,20 @@ func showPartners(cx context.Context, pc *client.PortalClient) error {
 	if len(v.Invites) > 0 {
 		fmt.Println("\nopen invites:")
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "  ID\tCODE\tGOOD UNTIL")
+		fmt.Fprintln(tw, "  ID\tCODE\tGOOD UNTIL\tLINK")
 		for _, inv := range v.Invites {
-			fmt.Fprintf(tw, "  %d\t%s\t%s\n", inv.ID, inv.Code, day(inv.ExpiresAt))
+			link := ""
+			if inv.LinkToken != "" {
+				link = accounts.InviteLink(base, accounts.KindShare, inv.LinkToken)
+			}
+			if inv.Approval {
+				link += " (approval)"
+			}
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\n", inv.ID, inv.Code, day(inv.ExpiresAt), link)
 		}
 		_ = tw.Flush()
 	}
+	printRequests(v.Requests, v.Waiting, "partner")
 	return nil
 }
 

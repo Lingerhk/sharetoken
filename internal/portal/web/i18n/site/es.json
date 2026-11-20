@@ -264,5 +264,9 @@
   "经中继的连接不再算在中继的地址上：协调器同时在线的用户数，以及经中继接单的卖家同时服务的买家数，不再受每个中继 32 条（卖家 8 条）连接的限制。": "Las conexiones a través de un relé ya no cuentan contra la dirección del relé: los usuarios conectados al coordinador y los compradores que un vendedor atiende a través de un relé ya no están limitados a 32 conexiones por relé (8 en un vendedor).",
   "Skill支持": "Skills",
   "增加ShareToken Cli端的Skill，可使用sharetoken skill install安装，AI Agent（如codex/claude）中可直接操作。": "Un skill para la CLI de ShareToken, que se instala con sharetoken skill install, permite que agentes de IA como Codex y Claude la manejen directamente.",
-  "本项目以 MIT 许可证开源。": "Este proyecto es de código abierto con licencia MIT."
+  "本项目以 MIT 许可证开源。": "Este proyecto es de código abierto con licencia MIT.",
+  "邀请链接：配对码和共享伙伴邀请码都附带一个链接，对方还没装客户端也能打开：页面显示是谁邀请，用邮箱登录或注册后一键接受，再按提示下载客户端。已经装了客户端的，可以在页面上直接打开应用确认。": "Enlaces de invitación: cada código de emparejamiento e invitación de socio incluye un enlace que funciona incluso sin la aplicación instalada. La página muestra quién invita; inicia sesión o regístrate con tu correo, acepta con un clic y luego descarga la aplicación. Si ya la tienes, la página la abre para confirmar.",
+  "“需要我确认”：生成配对码或伙伴邀请时可以勾选，对方使用后要你确认才生效。": "«Requerir mi aprobación»: márcalo al crear un código o una invitación y cada uso solo tendrá efecto cuando lo apruebes.",
+  "网页控制台的配对页也能管理共享伙伴，并能复制链接和整段邀请文案。": "La página de emparejamiento de la consola web también gestiona socios y copia enlaces y mensajes de invitación listos.",
+  "配对码加长到 10 位，链接是另外的 12 位令牌；输错的配对码和链接按账户、地址和每天计数，新账户次数更少，全站大量输错时自动收紧并通知管理员。": "Los códigos de emparejamiento tienen ahora 10 caracteres y los enlaces un token aparte de 12. Los códigos y enlaces erróneos se cuentan por cuenta, dirección y día; las cuentas nuevas tienen menos intentos y, si llegan muchos de todas partes, los límites se endurecen y se avisa a los administradores."
 }

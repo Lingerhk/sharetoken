@@ -190,8 +190,15 @@ I18N.ready.then(() => {
     const auth = { probe: null, sent: null, invite: false, mfa: false, confirmed: false, busy: false, error: '' };
     // The brand on one side stays; the form beside it is redrawn.
     const root = h('div', { class: 'auth-main', id: 'auth' });
+    // An invite link the app was opened with waits for the sign-in.
+    const inviteNote = h('div', { class: 'notice small', id: 'auth-invite', hidden: !session.invite },
+      tr('你收到了一个邀请。登录或注册后，会请你确认是否接受。'));
+    const checkInvite = async () => {
+      try { const s = await api('GET', '/api/v1/session'); inviteNote.hidden = !s.invite; } catch (e) { /* stays as it was */ }
+    };
+    window.addEventListener('focus', checkInvite);
     app.replaceChildren(h('div', { class: 'auth' },
-      h('div', { class: 'auth-side' }, h('img', { class: 'auth-logo', src: '/ui/favicon.svg', alt: '' }), h('h1', null, 'ShareToken'), h('p', { class: 'tagline' }, tr('共享和使用模型算力'))),
+      h('div', { class: 'auth-side' }, h('img', { class: 'auth-logo', src: '/ui/favicon.svg', alt: '' }), h('h1', null, 'ShareToken'), h('p', { class: 'tagline' }, tr('共享和使用模型算力')), inviteNote),
       root));
 
     const lastEmail = (session.user || '').includes('@') ? session.user : '';
@@ -982,6 +989,64 @@ I18N.ready.then(() => {
       update(next) { st = next; render(); }, account(me, jobs) { acct = me; sold = jobs || []; render(); } };
   }
 
+  // ---- invite links ----
+
+  // Every pairing code and share invite also has a link on the portal this
+  // app uses (/p#… or /s#…): it works for someone who has no app yet, and it
+  // opens in this app once installed (sharetoken://, the shell). A code or
+  // invite may ask its owner to approve whoever uses it.
+  let portalBase = '';
+  const inviteLink = (kind, token) => portalBase.replace(/\/+$/, '') + '/' + kind + '#' + token;
+  function inviteText(kind, c) {
+    const vars = { link: inviteLink(kind, c.link_token), code: c.code, time: time(c.expires_at) };
+    return kind === 'p'
+      ? tr('我在 ShareToken 共享了 AI 模型额度，点这个链接就能和我配对：{link}', vars) + '\n' + tr('已经装了客户端的话，也可以输入配对码 {code}（{time} 前有效）。', vars)
+      : tr('来做 ShareToken 共享伙伴吧，互相免费使用对方的模型额度。点这个链接接受邀请：{link}', vars) + '\n' + tr('已经装了客户端的话，也可以输入邀请码 {code}（{time} 前有效）。', vars);
+  }
+  const linkButtons = (kind, c, id) => c.link_token ? h('span', { class: 'row-actions' },
+    copyButton(() => inviteLink(kind, c.link_token), id + '-link', tr('复制链接')),
+    copyButton(() => inviteText(kind, c), id + '-text', tr('复制邀请文案'))) : null;
+  // shownInvite: the dialog after a code or invite is made.
+  function shownInvite(kind, c, intro) {
+    const prefix = kind === 'p' ? 'pair' : 'partner';
+    modal('dlg-' + prefix + '-shown', kind === 'p' ? tr('配对码已生成') : tr('邀请码已生成'),
+      h('p', { class: 'small muted' }, intro),
+      h('div', { class: 'endpoint' }, h('code', { id: prefix + '-shown-code', class: 'pair-code big' }, c.code), copyButton(() => c.code, prefix + '-shown-copy')),
+      h('p', { class: 'small muted' }, tr('邀请链接（对方没装客户端也能打开）')),
+      h('div', { class: 'endpoint' }, h('code', { id: prefix + '-shown-link', class: 'invite-link' }, inviteLink(kind, c.link_token)), copyButton(() => inviteLink(kind, c.link_token), prefix + '-shown-link-copy')),
+      c.approval ? h('p', { class: 'small notice', id: prefix + '-shown-approval' }, tr('已开启确认：对方使用后，要你在这里确认才生效。')) : null,
+      h('p', { class: 'small muted', id: prefix + '-shown-meta' }, tr('到期时间：{time}', { time: time(c.expires_at) })),
+      h('div', { class: 'modal-actions' },
+        copyButton(() => inviteText(kind, c), prefix + '-shown-text', tr('复制邀请文案')),
+        h('button', { type: 'button', class: 'primary', id: prefix + '-shown-done', onclick: () => closeModal() }, tr('完成'))));
+  }
+  // Requests waiting for this account's approval, and its own waiting for
+  // someone else's. area: "pairing" or "sharing".
+  function requestTables(area, requests, waiting, after, explain) {
+    const act = (cls, label, method, path, danger) => r => h('button', { type: 'button', class: 'mini ' + cls + (danger ? ' danger' : ' accent'), 'data-id': String(r.id), onclick: async e => {
+      e.currentTarget.disabled = true;
+      try { await api(method, path(r)); } catch (ex) { await after({ cls: 'bad', text: explain(ex) }); return; }
+      await after(null);
+    } }, label);
+    // One flat list: a panel's set() flattens one level only.
+    return [
+      requests && requests.length ? [h('h3', { class: 'sub-title', id: area + '-requests-title' }, tr('等待你确认')), table([
+        { title: tr('账户'), get: r => r.username },
+        { title: tr('备注'), get: r => r.label || '—' },
+        { title: tr('申请时间'), get: r => time(r.created_at) },
+        { title: '', get: r => h('span', { class: 'row-actions' },
+          act(area + '-approve', tr('确认'), 'POST', r => '/api/v1/' + area + '/requests/' + r.id + '/approve')(r),
+          act(area + '-reject', tr('拒绝'), 'DELETE', r => '/api/v1/' + area + '/requests/' + r.id, true)(r)) },
+      ], requests)] : null,
+      waiting && waiting.length ? [h('h3', { class: 'sub-title', id: area + '-waiting-title' }, tr('等待对方确认')), table([
+        { title: tr('账户'), get: r => r.username },
+        { title: tr('申请时间'), get: r => time(r.created_at) },
+        { title: '', get: act(area + '-withdraw', tr('撤回'), 'DELETE', r => '/api/v1/' + area + '/waiting/' + r.id, true) },
+      ], waiting)] : null,
+    ].flat().filter(Boolean);
+  }
+  const approvalField = id => h('label', { class: 'check' }, h('input', { type: 'checkbox', id }), h('span', null, tr('需要我确认'), ' ', h('span', { class: 'small muted' }, tr('对方使用后，要你确认才生效'))));
+
   // ---- pairing ----
 
   // Pairing ties this account, as a buyer, to the sellers whose codes it
@@ -1004,6 +1069,8 @@ I18N.ready.then(() => {
       if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
       if (e.code === 'not_found') return tr('这一项已经不存在了');
       if (e.code === 'not_logged_in') return tr('请先登录');
+      if (e.code === 'wrong_kind') return tr('这是共享伙伴的邀请链接，请到「共享伙伴」里输入');
+      if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
       return message(e);
     }
 
@@ -1019,8 +1086,11 @@ I18N.ready.then(() => {
     const flashLine = (f, id) => f ? h('div', { class: 'notice ' + f.cls, id }, f.text) : null;
 
     function render() {
-      const v = view || { sellers: [], buyers: [], codes: [], restricted: false, private: false, max_sellers: 0 };
-      sellers.set([v.sellers, v.restricted, v.max_sellers, error, flash.sellers, !view],
+      const v = view || { sellers: [], buyers: [], codes: [], restricted: false, private: false, max_sellers: 0, requests: [], waiting: [] };
+      const after = async f => { flash.sellers = flash.buyers = f; await reload(); };
+      // "waiting for approval" goes once nothing waits any more
+      if (view && flash.sellers && flash.sellers.pending && !(v.waiting || []).length) flash.sellers = null;
+      sellers.set([v.sellers, v.restricted, v.max_sellers, v.waiting, error, flash.sellers, !view],
         failed(),
         flashLine(flash.sellers, 'pair-join-flash'),
         v.restricted ? h('div', { class: 'notice warn small', id: 'pair-restricted' }, tr('这个账户现在只向下面的卖家购买，「可用模型」也只列出他们的模型。全部解除后，恢复为向整个网络购买。')) : null,
@@ -1030,14 +1100,17 @@ I18N.ready.then(() => {
           { title: tr('备注'), get: u => u.label || '—' },
           { title: tr('配对时间'), get: u => time(u.since) },
           { title: '', get: u => h('button', { type: 'button', class: 'mini danger pair-leave', 'data-id': String(u.id), onclick: () => leave(u) }, tr('解除')) },
-        ], v.sellers));
+        ], v.sellers),
+        requestTables('pairing', null, v.waiting, after, pairError));
 
-      buyers.set([v.buyers, v.codes, v.private, error, flash.buyers, !view],
+      buyers.set([v.buyers, v.codes, v.private, v.requests, portalBase, error, flash.buyers, !view],
         failed(),
         flashLine(flash.buyers, 'pair-code-flash'),
+        requestTables('pairing', v.requests, null, after, pairError),
         privateToggle(v),
         v.codes.length === 0 ? h('div', { class: 'empty', id: 'pair-codes-empty' }, tr('没有有效的配对码')) : table([
-          { title: tr('配对码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'pair-copy-' + c.id)) },
+          { title: tr('配对码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'pair-copy-' + c.id), c.approval ? h('span', { class: 'pill pair-approval' }, tr('需确认')) : null) },
+          { title: tr('邀请链接'), get: c => linkButtons('p', c, 'pair-' + c.id) },
           { title: tr('备注'), get: c => c.label || '—' },
           { title: tr('已配对'), num: true, get: uses },
           { title: tr('到期时间'), get: c => time(c.expires_at) },
@@ -1068,17 +1141,17 @@ I18N.ready.then(() => {
     }
 
     function joinDialog() {
-      const code = h('input', { type: 'text', id: 'pair-code-input', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', maxlength: '64', placeholder: 'XXXX-XXXX-XXXX-XXXX', class: 'mono' });
+      const code = h('input', { type: 'text', id: 'pair-code-input', autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false', maxlength: '256', placeholder: tr('配对码或邀请链接'), class: 'mono' });
       const err = errorBox('pair-join-error');
       const okBtn = h('button', { class: 'primary', type: 'submit', id: 'pair-join-ok' }, tr('配对'));
       modal('dlg-pair-join', tr('输入配对码'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
         if (!code.value.trim()) throw new Error(tr('请输入配对码'));
         const seller = await api('POST', '/api/v1/pairing/redeem', { code: code.value.trim() });
         closeModal();
-        flash.sellers = { cls: 'ok', text: tr('已和卖家 {name} 配对', { name: seller.username }) };
+        flash.sellers = { cls: 'ok', pending: !!seller.pending, text: seller.pending ? tr('已发送，等待 {name} 确认', { name: seller.username }) : tr('已和卖家 {name} 配对', { name: seller.username }) };
         await reload();
       }, pairError); } },
-        field(tr('配对码'), code, tr('配对后，这个账户的所有设备都只向配对的卖家购买。随时可以解除。')),
+        field(tr('配对码或邀请链接'), code, tr('配对后，这个账户的所有设备都只向配对的卖家购买。随时可以解除。')),
         err.el, okBtn));
     }
 
@@ -1087,27 +1160,22 @@ I18N.ready.then(() => {
       const label = h('input', { type: 'text', id: 'pair-label', maxlength: '64', dir: 'auto' });
       const ttl = h('select', { id: 'pair-ttl' }, TTLS.map(([hours, text]) => h('option', { value: String(hours), selected: hours === 24 }, text)));
       const limit = h('input', { type: 'text', id: 'pair-uses', inputmode: 'numeric', placeholder: tr('不限') });
+      const approval = approvalField('pair-approval');
       const err = errorBox('pair-code-error');
       const okBtn = h('button', { class: 'primary', type: 'submit', id: 'pair-code-ok' }, tr('生成'));
       modal('dlg-pair-code', tr('生成配对码'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
         const n = limit.value.trim() === '' ? 0 : Number(limit.value.trim());
         if (!Number.isInteger(n) || n < 0 || n > 1000) throw new Error(tr('可配对的买家数需要是 1 到 1000 的整数，不填表示不限'));
-        const c = await api('POST', '/api/v1/pairing/codes', { label: label.value.trim(), ttl_hours: Number(ttl.value), max_uses: n });
+        const c = await api('POST', '/api/v1/pairing/codes', { label: label.value.trim(), ttl_hours: Number(ttl.value), max_uses: n, approval: approval.querySelector('input').checked });
         flash.buyers = null;
         await reload();
-        shownCode(c);
+        shownInvite('p', c, tr('把配对码或链接发给要配对的买家。拿到它的人都能和你配对，请只发给你信任的人。'));
       }, pairError); } },
         field(tr('备注（配对的买家也会看到，可不填）'), label),
         field(tr('有效期'), ttl, tr('到期后不能再用它配对，已经配对的买家不受影响。')),
         field(tr('可配对的买家数'), limit, tr('不填表示不限。')),
+        approval,
         err.el, okBtn));
-    }
-    function shownCode(c) {
-      modal('dlg-pair-shown', tr('配对码已生成'),
-        h('p', { class: 'small muted' }, tr('把它发给要配对的买家。拿到它的人都能和你配对，请只发给你信任的人。')),
-        h('div', { class: 'endpoint' }, h('code', { id: 'pair-shown-code', class: 'pair-code big' }, c.code), copyButton(() => c.code, 'pair-shown-copy')),
-        h('p', { class: 'small muted', id: 'pair-shown-meta' }, tr('到期时间：{time}', { time: time(c.expires_at) })),
-        h('div', { class: 'modal-actions' }, h('button', { type: 'button', class: 'primary', id: 'pair-shown-done', onclick: () => closeModal() }, tr('完成'))));
     }
 
     function leave(u) {
@@ -1124,7 +1192,9 @@ I18N.ready.then(() => {
     }
 
     render();
-    return { sellers: sellers.el, buyers: buyers.el, reload };
+    // note: say something above the sellers, as after accepting an invite link.
+    const note = async (text, pending) => { flash.sellers = { cls: 'ok', text, pending }; await reload(); };
+    return { sellers: sellers.el, buyers: buyers.el, reload, note };
   }
 
   // ---- share partners ----
@@ -1151,6 +1221,8 @@ I18N.ready.then(() => {
       if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
       if (e.code === 'not_found') return tr('这一项已经不存在了');
       if (e.code === 'not_logged_in') return tr('请先登录');
+      if (e.code === 'wrong_kind') return tr('这是配对的邀请链接，请到「我的卖家」里输入');
+      if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
       return message(e);
     }
 
@@ -1198,10 +1270,13 @@ I18N.ready.then(() => {
     }
 
     function render() {
-      const v = view || { partners: [], invites: [], settings: { only_partners: false, daily_limit_tokens: 0, share_pct: 100 }, served: 0, window_hours: 24, max_partners: 0 };
-      partners.set([v.partners, v.invites, error, flash, !view],
+      const v = view || { partners: [], invites: [], settings: { only_partners: false, daily_limit_tokens: 0, share_pct: 100 }, served: 0, window_hours: 24, max_partners: 0, requests: [], waiting: [] };
+      const after = async f => { flash = f; await reload(); };
+      if (view && flash && flash.pending && !(v.waiting || []).length) flash = null;
+      partners.set([v.partners, v.invites, v.requests, v.waiting, portalBase, error, flash, !view],
         failed(),
         flashLine(flash, 'partner-flash'),
+        requestTables('sharing', v.requests, v.waiting, after, partnerError),
         v.max_partners ? h('p', { class: 'small muted', id: 'partner-max' }, tr('最多同时和 {n} 个伙伴共享。下表是最近 {h} 小时的用量。', { n: num(v.max_partners), h: num(v.window_hours) })) : null,
         v.partners.length === 0 ? h('div', { class: 'empty', id: 'partners-empty' }, tr('还没有共享伙伴')) : table([
           { title: tr('伙伴'), get: u => who(u) },
@@ -1213,7 +1288,8 @@ I18N.ready.then(() => {
         v.invites.length === 0 ? null : [
           h('h3', { class: 'sub-title' }, tr('未使用的邀请码')),
           table([
-            { title: tr('邀请码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'partner-copy-' + c.id)) },
+            { title: tr('邀请码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'partner-copy-' + c.id), c.approval ? h('span', { class: 'pill partner-approval' }, tr('需确认')) : null) },
+            { title: tr('邀请链接'), get: c => linkButtons('s', c, 'partner-' + c.id) },
             { title: tr('到期时间'), get: c => time(c.expires_at) },
             { title: '', get: c => h('button', { type: 'button', class: 'mini danger partner-revoke', 'data-id': String(c.id), onclick: () => revoke(c) }, tr('撤销')) },
           ], v.invites)]);
@@ -1231,40 +1307,35 @@ I18N.ready.then(() => {
     }
 
     function joinDialog() {
-      const code = h('input', { type: 'text', id: 'partner-code-input', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', maxlength: '64', placeholder: 'XXXX-XXXX-XXXX-XXXX', class: 'mono' });
+      const code = h('input', { type: 'text', id: 'partner-code-input', autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false', maxlength: '256', placeholder: tr('邀请码或邀请链接'), class: 'mono' });
       const err = errorBox('partner-join-error');
       const okBtn = h('button', { class: 'primary', type: 'submit', id: 'partner-join-ok' }, tr('配对'));
       modal('dlg-partner-join', tr('输入邀请码'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
         if (!code.value.trim()) throw new Error(tr('请输入邀请码'));
         const p = await api('POST', '/api/v1/sharing/join', { code: code.value.trim() });
         closeModal();
-        flash = { cls: 'ok', text: tr('已和 {name} 成为共享伙伴', { name: p.username }) };
+        flash = { cls: 'ok', pending: !!p.pending, text: p.pending ? tr('已发送，等待 {name} 确认', { name: p.username }) : tr('已和 {name} 成为共享伙伴', { name: p.username }) };
         await reload();
       }, partnerError); } },
-        field(tr('邀请码'), code, tr('配对后，你们双方的所有设备都优先使用对方的节点，不扣费。随时可以解除。')),
+        field(tr('邀请码或邀请链接'), code, tr('配对后，你们双方的所有设备都优先使用对方的节点，不扣费。随时可以解除。')),
         err.el, okBtn));
     }
 
     const TTLS = [[24, tr('1 天')], [72, tr('3 天')], [168, tr('7 天')]];
     function inviteDialog() {
       const ttl = h('select', { id: 'partner-ttl' }, TTLS.map(([hours, text]) => h('option', { value: String(hours), selected: hours === 24 }, text)));
+      const approval = approvalField('partner-approval');
       const err = errorBox('partner-invite-error');
       const okBtn = h('button', { class: 'primary', type: 'submit', id: 'partner-invite-ok' }, tr('生成'));
       modal('dlg-partner-invite', tr('邀请伙伴'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
-        const c = await api('POST', '/api/v1/sharing/invites', { ttl_hours: Number(ttl.value) });
+        const c = await api('POST', '/api/v1/sharing/invites', { ttl_hours: Number(ttl.value), approval: approval.querySelector('input').checked });
         flash = null;
         await reload();
-        shownInvite(c);
+        shownInvite('s', c, tr('把邀请码或链接发给要共享的伙伴。对方接受后，你们就能免费使用对方的节点。'));
       }, partnerError); } },
         field(tr('有效期'), ttl, tr('邀请码只能用一次，到期后失效。')),
+        approval,
         err.el, okBtn));
-    }
-    function shownInvite(c) {
-      modal('dlg-partner-shown', tr('邀请码已生成'),
-        h('p', { class: 'small muted' }, tr('把它发给要共享的伙伴。对方输入后，你们就能免费使用对方的节点。')),
-        h('div', { class: 'endpoint' }, h('code', { id: 'partner-shown-code', class: 'pair-code big' }, c.code), copyButton(() => c.code, 'partner-shown-copy')),
-        h('p', { class: 'small muted', id: 'partner-shown-meta' }, tr('到期时间：{time}', { time: time(c.expires_at) })),
-        h('div', { class: 'modal-actions' }, h('button', { type: 'button', class: 'primary', id: 'partner-shown-done', onclick: () => closeModal() }, tr('完成'))));
     }
 
     function leave(u) {
@@ -1277,7 +1348,8 @@ I18N.ready.then(() => {
     }
 
     render();
-    return { partners: partners.el, settings: settings.el, reload };
+    const note = async (text, pending) => { flash = { cls: 'ok', text, pending }; await reload(); };
+    return { partners: partners.el, settings: settings.el, reload, note };
   }
 
   // subTabs puts panels of one view behind a row of tabs: one shows at a time,
@@ -1762,8 +1834,62 @@ I18N.ready.then(() => {
       ], js));
     }
 
+    // An invite link the app was opened with (sharetoken://, the shell): shown
+    // once, and accepted only when the user says so; any web page can open
+    // such a link.
+    let invitesShown = '';
+    function inviteError(e) {
+      if (e.code === 'bad_code') return tr('邀请已失效：链接不对，或者已过期、被撤销或用完。请联系对方重新生成。');
+      if (e.code === 'own_code') return tr('这是你自己的邀请链接，请把它发给要邀请的人。');
+      if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
+      if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
+      return message(e);
+    }
+    async function openInvite(inv) {
+      showView('pairing', inv.kind === 's' ? 'partners' : 'sellers');
+      const err = errorBox('invite-error');
+      const body = h('div', { id: 'invite-body' }, h('p', { class: 'small muted' }, tr('正在读取邀请…')));
+      const forget = () => api('DELETE', '/api/v1/invite/pending').catch(() => {});
+      const okBtn = h('button', { type: 'button', class: 'primary', id: 'invite-accept', disabled: true, onclick: () => run(okBtn, err, async () => {
+        const r = await api('POST', '/api/v1/invite/accept', { link: inv.link });
+        closeModal();
+        const text = r.pending ? tr('已发送，等待 {name} 确认', { name: r.username })
+          : r.kind === 's' ? tr('已和 {name} 成为共享伙伴', { name: r.username }) : tr('已和卖家 {name} 配对', { name: r.username });
+        await (r.kind === 's' ? partners : pairing).note(text, !!r.pending);
+      }, inviteError) }, tr('接受邀请'));
+      const dismiss = h('button', { type: 'button', id: 'invite-dismiss', onclick: () => { closeModal(); forget(); } }, tr('忽略'));
+      modal('dlg-invite', inv.kind === 's' ? tr('共享伙伴邀请') : tr('配对邀请'), body, err.el, h('div', { class: 'modal-actions' }, dismiss, okBtn));
+      if (inv.other_portal) {
+        body.replaceChildren(h('div', { class: 'notice warn', id: 'invite-other-portal' }, tr('这个邀请来自 {host}，但这个客户端连接的是 {portal}，不能在这里接受。', { host: inv.host, portal: portalBase })));
+        dismiss.textContent = tr('关闭');
+        return;
+      }
+      try {
+        const p = await api('GET', '/api/v1/invite/preview?link=' + encodeURIComponent(inv.link));
+        const name = '\u2068' + p.inviter + '\u2069';
+        body.replaceChildren(...[
+          h('p', { id: 'invite-who' }, h('strong', null, inv.kind === 's' ? tr('{name} 邀请你成为共享伙伴', { name }) : tr('{name} 邀请你配对共享', { name }))),
+          p.label ? h('p', { class: 'small', id: 'invite-label' }, tr('备注：{label}', { label: p.label })) : null,
+          h('p', { class: 'small muted' }, inv.kind === 's'
+            ? tr('成为共享伙伴后，你们双方都可以免费使用对方的节点，不扣 credit。伙伴的节点不可用时，再到网络上付费购买。随时可以解除。')
+            : tr('配对后，你的账户只向配对的卖家购买，使用对方共享的 Claude、Codex 等模型额度。随时可以解除。')),
+          p.approval ? h('p', { class: 'small notice', id: 'invite-approval' }, tr('对方开启了确认：你接受后，需要对方确认才生效。')) : null,
+          h('p', { class: 'small muted' }, tr('有效期至 {time}', { time: time(p.expires_at) })),
+          h('p', { class: 'small muted', id: 'invite-origin' }, tr('这个邀请是从浏览器里的链接打开的。只在你认识对方时接受。'))].filter(Boolean));
+        okBtn.disabled = false;
+      } catch (e) {
+        body.replaceChildren(h('div', { class: 'notice bad', id: 'invite-bad' }, inviteError(e)));
+        dismiss.textContent = tr('关闭');
+      }
+    }
+
     function renderSession(s) {
       current = s;
+      portalBase = s.portal || portalBase;
+      if (s.invite && s.invite.token && s.invite.token !== invitesShown) {
+        invitesShown = s.invite.token;
+        openInvite(s.invite);
+      }
       renderUpdate(s);
       who.textContent = accountName.textContent = s.user || '';
       who.title = s.user || '';
@@ -1943,6 +2069,8 @@ I18N.ready.then(() => {
     renderNetworkDown(session);
     refresh();
     poll = setInterval(refresh, 5000);
+    // The shell brings the window forward when it is opened with a link: look at once.
+    window.addEventListener('focus', () => { if (!stopped) refresh(); });
   }
 
   // ---- start ----

@@ -28,6 +28,8 @@ var Migrations = []mysqldb.Migration{
 	// Token-level audits: method, per-question scores, shadow verdicts, and
 	// the honest score distribution of each reference model.
 	{Version: 8, Name: "token-level audits", SQL: tokenAuditSchema},
+	// Links for pairing codes and share invites, and approval of their use.
+	{Version: 9, Name: "invite links", SQL: accounts.InviteLinkSchema},
 }
 
 const tokenAuditSchema = `ALTER TABLE audits ADD COLUMN method VARCHAR(16) NOT NULL DEFAULT '',

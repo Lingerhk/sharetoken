@@ -196,11 +196,11 @@ If a Google account has no project of its own, `gemini` and `antigravity` need a
 
 There are two ways to share. One is buying and selling: buyers pay credits and sellers earn them. Pairing with your buyers (below) is part of it; it only narrows who buys from whom. The other is share partners: two people pair up as partners and each uses the other's nodes **for free**: nothing is held or charged, and there is no platform fee. It suits two people who each have some models or API quota and want to cover for each other.
 
-One makes an invite (it prints a code such as `ABCD-EFGH-IJKL-MNOP`, good for 24 hours unless you pass `-ttl`, 168 hours at most), the other enters it:
+One makes an invite (it prints a code such as `ABCDE-FGHIJ` and an [invite link](#invite-links), good for 24 hours unless you pass `-ttl`, 168 hours at most), the other enters the code or the link:
 
 ```bash
 {{exe}} partner invite
-{{exe}} partner join ABCD-EFGH-IJKL-MNOP
+{{exe}} partner join ABCDE-FGHIJ
 ```
 
 From then on, when you ask for a model, the coordinator first looks among your partners' online nodes. When one of them can take the request, it is free. When your partners do not offer the model, are offline or busy, or used up what they share, the request goes to the network and is paid as usual.
@@ -213,12 +213,14 @@ From then on, when you ask for a model, the coordinator first looks among your p
 | The percent of each of your nodes' concurrent jobs partners may take | `{{exe}} partner set -share 50` (`100`: no limit, `0`: pause sharing) |
 | Withdraw an open invite | `{{exe}} partner revoke 7` |
 | Stop sharing with a partner | `{{exe}} partner rm 42` |
+| Approve, or reject, someone waiting for your approval | `{{exe}} partner approve 5`, `{{exe}} partner reject 5` |
 
 - **The limits cover what you give:** the daily limit counts the last 24 hours, all partners together. A job counts once it ends, so jobs still running when the limit is reached can take it a little past. The share is counted per node and is at least one job: at 4 concurrent jobs and 50%, partners take at most 2 at a time.
 - **Past the limits:** your partners buy on the network instead, where they may be matched to your nodes again, paying your price.
 - **Partners only:** when no partner node can take a request, it fails and costs nothing. Available models then lists only your partners' (and your own).
 - **Reputation:** jobs between partners do not count toward your nodes' record or reputation on the market.
 - **How many:** an invite works once. An account can have up to 5 partners at a time.
+- **Approval:** make the invite with `-approve` ("Require my approval" in the app and the portal) and whoever uses it waits until you approve. `partner` lists who waits; a request lapses after 7 days.
 - **Who sees what:** part of your partner's account name, and the tokens each of you used of the other in the last 24 hours.
 - **Ending it:** either side can end it at any time; then neither uses the other's nodes for free any more.
 - **Private mode:** the private mode of pairing (below) only concerns paying buyers. It does not affect partners.
@@ -233,10 +235,10 @@ Pairing ties buyers to you. Make a pairing code and hand it to the people you wa
 {{exe}} pair code -label team
 ```
 
-The command prints the code, for example `ABCD-EFGH-IJKL-MNOP`. It lasts 24 hours unless you pass `-ttl` (30 days at most), and admits any number of buyers unless you pass `-uses`. Each buyer then runs:
+The command prints the code, for example `ABCDE-FGHIJ`, and its [invite link](#invite-links). It lasts 24 hours unless you pass `-ttl` (30 days at most), and admits any number of buyers unless you pass `-uses`. Each buyer then opens the link, or runs:
 
 ```bash
-{{exe}} pair join ABCD-EFGH-IJKL-MNOP
+{{exe}} pair join ABCDE-FGHIJ
 ```
 
 | Action | Command |
@@ -246,15 +248,35 @@ The command prints the code, for example `ABCD-EFGH-IJKL-MNOP`. It lasts 24 hour
 | Stop a code from admitting more buyers | `{{exe}} pair revoke 7` |
 | Serve only your paired buyers (private mode), or anyone again | `{{exe}} pair private on`, `{{exe}} pair private off` |
 | As a buyer, end the pairing with a seller | `{{exe}} pair leave 42` |
+| Approve, or reject, a buyer waiting for your approval | `{{exe}} pair approve 5`, `{{exe}} pair reject 5` |
 
 - **What a paired buyer sees:** only the models of the sellers it is paired with. When none of them offers a model, or all of them are offline, the request fails. It is not sent to another seller.
 - **What does not change:** prices, billing, receipts and audits work as for any other job. Pairing alone does not close you to others: buyers that are not paired with anyone can still be matched to you.
 - **Private mode:** turn it on and only the buyers paired with you are matched to you and see your models. Everyone else is sent elsewhere. Turn it off to sell to anyone again.
 - **A buyer's limit:** one buyer can be paired with at most three sellers at a time.
+- **Approval:** make the code with `-approve` ("Require my approval" in the app and the portal) and each buyer that uses it waits until you approve. `pair` lists who waits; a request lapses after 7 days, and approving it takes a use of the code.
 - **Who sees what:** you see part of each buyer's account name, and they see part of yours.
 - **Ending it:** either side can end a pairing at any time. A buyer with no pairings left buys from any seller again.
 
 The desktop app has the same under **Pairing → My buyers** for sellers and **Pairing → My sellers** for buyers, and so does the portal's [pairing page](/app/#/pairing).
+
+## Invite links {#invite-links}
+
+Every pairing code and share invite also has a link on the portal's site, `https://sharetoken.app/p#7kQm3xV9pT2b` for a pairing code and `https://sharetoken.app/s#…` for a share invite. The command line prints it next to the code; the desktop app and the portal have **Copy link** and **Copy invitation message** (the link, the code and how long they last, ready to paste into a chat).
+
+The link works for someone who has nothing installed yet. Its page says who invites them (their account name, partly hidden) and how long the link lasts. They sign in or sign up there with their email address and click **Accept invite**: the pairing, or the partnership, is made on their account at once. The page then offers the app for their system; once they install it and sign in with the same address, it is ready.
+
+Someone who already has the desktop app can click **Open in ShareToken** on the page instead. The browser asks whether to open the app, and the app shows who invites and asks before it accepts anything. On a phone the page explains that ShareToken runs on computers; inside WeChat and similar chat apps it asks to open the link in a browser, since they block downloads and opening apps.
+
+A link can also be pasted wherever a code goes: in the app, on the portal's pairing page, or on the command line:
+
+```bash
+{{exe}} accept https://sharetoken.app/p#7kQm3xV9pT2b
+```
+
+- **Treat it like the code:** whoever has the link can use it, within the code's limits. Revoke the code and the link stops working too.
+- **One portal:** a link belongs to the portal that made it; an app signed in to another portal says so and does not accept it.
+- **Guessing:** a code is 10 random characters and a link 12. Wrong codes and links are counted per account and per address, with fewer tries for new accounts and a daily cap; when many come in at once from everywhere, everyone gets fewer and the administrators are told.
 
 ## Concurrency and performance {#tuning}
 

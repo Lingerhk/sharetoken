@@ -28,7 +28,7 @@ func TestPairingAPI(t *testing.T) {
 
 	var code accounts.PairingCode
 	a.call("POST", "/api/v1/pairing/codes", seller, map[string]any{"label": "team", "ttl_hours": 2, "max_uses": 0}, 201, &code)
-	if len(code.Code) != 19 || strings.Count(code.Code, "-") != 3 || code.ExpiresAt-code.CreatedAt != int64(2*3600e9) {
+	if len(code.Code) != 11 || len(code.LinkToken) != 12 || strings.Count(code.Code, "-") != 1 || code.ExpiresAt-code.CreatedAt != int64(2*3600e9) {
 		t.Fatalf("code: %+v", code)
 	}
 	a.call("POST", "/api/v1/pairing/codes", seller, map[string]any{"ttl_hours": -1}, 400, nil)
@@ -80,7 +80,7 @@ func TestPairingAPI(t *testing.T) {
 	a.call("POST", "/api/v1/pairing/redeem", b1, map[string]string{"code": code.Code}, 404, nil)
 
 	// Guessing pairing codes is throttled like guessing sign-in codes.
-	for i := 1; i < maxFails; i++ {
+	for i := 1; i < newAccountMaxFails; i++ { // b1's account is new: it gets fewer tries (invites.go)
 		a.call("POST", "/api/v1/pairing/redeem", b1, map[string]string{"code": "AAAA-AAAA-AAAA-AAAA"}, 404, nil)
 	}
 	a.call("POST", "/api/v1/pairing/redeem", b1, map[string]string{"code": "AAAA-AAAA-AAAA-AAAA"}, 429, nil)

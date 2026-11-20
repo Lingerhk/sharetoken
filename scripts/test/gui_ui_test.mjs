@@ -541,7 +541,7 @@ console.log('pairing');
 // The other accounts of the stack act through the command line: `seller` sells
 // mock-fast, `idle` sells nothing.
 const cli = (home, ...args) => execFileSync(`${dir}/bin/sharetoken`, ['-home', `${dir}/${home}`, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-const codeOf = out => out.match(/[A-Z2-7]{4}(?:-[A-Z2-7]{4}){3}/)[0];
+const codeOf = out => out.match(/\b[A-Z2-7]{5}-[A-Z2-7]{5}\b/)[0];
 const buyOnce = async () => {
   const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKeyFile().key }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
   return { status: r.status, body: await r.text() };
@@ -557,7 +557,7 @@ ok(!(await has('#pair-restricted')) && (await text('#paired-sellers-body')).incl
 await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
 await click('#pair-join-ok');
 await waitFor(`${el('#pair-join-error')}.textContent.includes('请输入')`);
-await fill('#pair-code-input', 'AAAA-AAAA-AAAA-AAAA'); await click('#pair-join-ok');
+await fill('#pair-code-input', 'AAAAA-AAAAA'); await click('#pair-join-ok');
 await waitFor(`${el('#pair-join-error')}.textContent.includes('配对码不对')`);
 ok(true, 'an empty and a wrong pairing code are refused');
 const idleCode = codeOf(cli('idle', 'pair', 'code', '-label', '<b>idle</b> team'));
@@ -602,7 +602,8 @@ await waitFor(`${el('#pair-code-error')}.textContent.includes('整数')`);
 await fill('#pair-label', 'friends'); await choose('#pair-ttl', '168'); await fill('#pair-uses', '2'); await click('#pair-code-ok');
 await waitFor(el('#dlg-pair-shown'));
 const ownCode = await text('#pair-shown-code');
-ok(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){3}$/.test(ownCode), 'a new code is shown once it is made');
+ok(/^[A-Z2-7]{5}-[A-Z2-7]{5}$/.test(ownCode), 'a new code is shown once it is made');
+ok(/\/p#[0-9A-Za-z]{12}$/.test(await text('#pair-shown-link')) && await has('#pair-shown-text'), 'with its link and a button that copies an invitation message');
 await shot('24-pair-code');
 await click('#pair-shown-done');
 const pairingText = () => text('#pairing-body');
@@ -668,7 +669,8 @@ ok(await ev(`[...${el('#partner-ttl')}.options].map(o => o.value).join()`) === '
 await click('#partner-invite-ok');
 await waitFor(el('#dlg-partner-shown'));
 const invite = await text('#partner-shown-code');
-ok(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){3}$/.test(invite), 'an invite code is shown');
+ok(/^[A-Z2-7]{5}-[A-Z2-7]{5}$/.test(invite), 'an invite code is shown');
+ok(/\/s#[0-9A-Za-z]{12}$/.test(await text('#partner-shown-link')), 'with its link');
 await shot('25-partner-invite');
 await click('#partner-shown-done');
 await waitFor(`${el('#share-partners-body')}.textContent.includes(${q(invite)})`);
@@ -730,6 +732,59 @@ await clickRow('#share-partners', 'se***', '.partner-leave'); await waitFor(el('
 await click('#confirm-ok');
 await waitFor(el('#partners-empty'));
 ok((await buyPaid()).cost > 0, 'after parting, requests are paid again');
+
+console.log('invite links');
+// A seller makes a code that asks for approval; the app gets its link as the
+// shell hands it over when the browser opens sharetoken:// (POST /api/v1/invite/pending).
+const linkOf = out => out.match(/^link\s+(\S+)$/m)[1];
+const askOut = cli('seller', 'pair', 'code', '-approve');
+const askLink = linkOf(askOut);
+ok(/\/p#[0-9A-Za-z]{12}$/.test(askLink) && askOut.includes('approval'), 'the command line prints the link of a code, and that it asks for approval');
+const askToken = askLink.split('#')[1];
+const portalHost = new URL(env.PORTAL).host;
+const openLink = l => ev(`kfetch('/api/v1/invite/pending', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ${q(JSON.stringify({ link: l }))} }).then(r => r.status)`);
+ok(await openLink('sharetoken://p/' + askToken + '?h=' + portalHost) === 200, 'the daemon keeps the link the shell hands over');
+await ev(`window.dispatchEvent(new Event('focus'))`);
+await waitFor(el('#dlg-invite'));
+await waitFor(`${el('#invite-who')}?.textContent.includes('se***')`);
+ok(await has('#invite-approval') && await has('#invite-origin') && !(await ev(`${el('#invite-accept')}.disabled`)), 'the app shows who invites and that they approve, and asks before accepting');
+await shot('26-invite-dialog');
+await click('#invite-accept');
+await waitFor(`!${el('#dlg-invite')}`);
+await waitFor(`${el('#pair-join-flash')}?.textContent.includes('等待')`);
+await waitFor(`${el('#paired-sellers-body')}.textContent.includes('等待对方确认')`);
+ok(true, 'accepted, the request waits for the seller');
+ok(!(await ev(`kfetch('/api/v1/session').then(r => r.json())`)).invite, 'and the link is no longer pending');
+const reqId = cli('seller', 'pair').match(/waiting for your approval[^\n]*\n\s+ID[^\n]*\n\s+(\d+)/)[1];
+ok(cli('seller', 'pair', 'approve', reqId).includes('approved'), 'the seller approves from the command line');
+await waitFor(`${el('#pair-restricted')} && !${el('#paired-sellers-body')}.textContent.includes('等待对方确认')`, 40000);
+ok((await text('#paired-sellers-body')).includes('se***'), 'and the buyer is paired');
+ok(!(await has('#pair-join-flash')), 'the note that it waits for approval is gone');
+await fullShot('26b-invite-approved');
+await clickRow('#paired-sellers', 'se***', '.pair-leave'); await waitFor(el('#dlg-confirm')); await click('#confirm-ok');
+await waitFor(el('#pair-sellers-empty'));
+// A link of another portal is shown but cannot be accepted here; dismissing forgets it.
+ok(await openLink('sharetoken://s/AAAAAAAAAAAA?h=elsewhere.example') === 200, 'a link of another portal is kept too');
+await ev(`window.dispatchEvent(new Event('focus'))`);
+await waitFor(el('#invite-other-portal'));
+ok(await ev(`${el('#invite-accept')}.disabled`), 'but cannot be accepted here');
+await shot('26c-invite-other-portal');
+await click('#invite-dismiss');
+await waitFor(`!${el('#dlg-invite')}`);
+ok(!(await ev(`kfetch('/api/v1/session').then(r => r.json())`)).invite, 'dismissing forgets the link');
+ok(await openLink('ABCDE-FGHIJ') === 400, 'the daemon takes links only');
+// A share invite's link pasted where a code goes.
+const shareLink = linkOf(cli('seller', 'partner', 'invite'));
+await click('#tab-pairing-partners');
+await click('#partner-join'); await waitFor(el('#dlg-partner-join'));
+await fill('#partner-code-input', askLink); await click('#partner-join-ok');
+await waitFor(`${el('#partner-join-error')}.textContent.includes('配对的邀请链接')`);
+ok(true, 'a pairing link pasted as a share invite is pointed to the right place');
+await fill('#partner-code-input', shareLink); await click('#partner-join-ok');
+await waitFor(`${el('#share-partners-body')}.textContent.includes('se***')`, 40000);
+ok(true, 'a share invite link pasted in the app makes partners');
+await clickRow('#share-partners', 'se***', '.partner-leave'); await waitFor(el('#dlg-confirm')); await click('#confirm-ok');
+await waitFor(el('#partners-empty'));
 
 console.log('languages');
 await cdp('Page.navigate', { url: env.DAEMON + '/?lang=en' });

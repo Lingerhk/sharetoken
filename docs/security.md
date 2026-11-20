@@ -179,9 +179,22 @@ models. The rule is applied by the coordinator on every request, for every
 device of the account, also when the request names a node, so a modified client
 cannot step around it.
 
-- A code is 80 random bits, expires (one day by default, 30 days at most) and
-  can be limited to a number of buyers and revoked. Wrong codes are throttled
-  per account and per address, like failed logins.
+- A code is 50 random bits (10 base32 characters), expires (one day by default,
+  30 days at most) and can be limited to a number of buyers and revoked. Its
+  invite link carries a separate token of 71 bits (12 base62 characters) after
+  the `#`, so it reaches no server log or Referer. Only a token gets a preview
+  without an account (who invites, masked; the label; the expiry): a code is
+  short enough to guess, a token is not.
+- Wrong codes and links are counted: per account and per address within five
+  minutes, like failed logins (three for an account younger than an hour), and
+  30 a day per account. When wrong codes pour in from everywhere at once (300 in
+  five minutes), every account and address gets three, and the administrators
+  are mailed, at most once an hour (`internal/portal/invites.go`).
+- A seller may ask to approve each use of a code: a leaked code then only files
+  requests, which the seller sees and rejects.
+- Any web page can open `sharetoken://`, so the desktop app never accepts an
+  invite link by itself: it shows who invites and accepts only on a click. A
+  link from another portal is shown as such and cannot be accepted.
 - Each side sees the other's account name masked. A code that leaks lets a
   stranger pair with the seller. With an open seller that gives the stranger
   nothing beyond what an unpaired buyer already has; with a private seller it
@@ -208,9 +221,10 @@ so the job moves no credits. Nothing else about the job changes: the partner's
 node sees the prompt as any seller would, and receipts, hashes and audits work
 as usual.
 
-- An invite is a secret like a pairing code: 80 random bits, one day by
-  default and 7 days at most, admits one person, and can be withdrawn. Wrong
-  codes are throttled per account and per address, like failed logins. A
+- An invite is a secret like a pairing code: 50 random bits with a 71-bit link
+  token, one day by default and 7 days at most, admits one person, can ask for
+  the inviter's approval, and can be withdrawn. Wrong codes and links are
+  counted as for pairing codes. A
   leaked invite lets a stranger use the inviter's nodes for free within its
   limits; the inviter sees the partner and can end it.
 - Each side sees the other's account name masked, and the tokens each used of

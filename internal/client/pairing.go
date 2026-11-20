@@ -33,9 +33,10 @@ func (p *PortalClient) Pairing(ctx context.Context) (*portal.PairingView, error)
 
 // NewPairingCode makes a code that pairs buyers with the signed-in user.
 // ttlHours 0 is the portal's default; maxUses 0 admits any number of buyers.
-func (p *PortalClient) NewPairingCode(ctx context.Context, label string, ttlHours float64, maxUses int64) (*accounts.PairingCode, error) {
+// approval: each pairing waits for the seller's approval.
+func (p *PortalClient) NewPairingCode(ctx context.Context, label string, ttlHours float64, maxUses int64, approval bool) (*accounts.PairingCode, error) {
 	var out accounts.PairingCode
-	err := p.Do(ctx, http.MethodPost, "/api/v1/pairing/codes", map[string]any{"label": label, "ttl_hours": ttlHours, "max_uses": maxUses}, &out)
+	err := p.Do(ctx, http.MethodPost, "/api/v1/pairing/codes", map[string]any{"label": label, "ttl_hours": ttlHours, "max_uses": maxUses, "approval": approval}, &out)
 	return &out, err
 }
 
@@ -75,6 +76,7 @@ func (a *Agent) pairingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/pairing/sellers/{id}", a.portalForward)
 	mux.HandleFunc("DELETE /api/v1/pairing/buyers/{id}", a.portalForward)
 	mux.HandleFunc("PUT /api/v1/pairing/private", a.portalForward)
+	a.requestRoutes(mux, "pairing")
 }
 
 // portalForward sends r to the portal under the same path, with the user's

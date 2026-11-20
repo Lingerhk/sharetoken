@@ -11,7 +11,7 @@
 // stack's outbox (scripts/test/gui_stack.sh code), and creates what it needs there:
 // alice-<run>@example.test and the admin root@example.test.
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -301,13 +301,16 @@ try {
   await click('#pair-new-code');
   await waitFor(q('#pair-new .secret code'));
   const pairCode = await evaluate(`${q('#pair-new .secret code')}.textContent`);
-  check(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){3}$/.test(pairCode), 'a new pairing code is shown');
+  check(/^[A-Z2-7]{5}-[A-Z2-7]{5}$/.test(pairCode), 'a new pairing code is shown');
+  check((await evaluate(`${q('#p-new-link')}.textContent`)).startsWith(base + '/p#') && /\/p#[0-9A-Za-z]{12}$/.test(await evaluate(`${q('#p-new-link')}.textContent`)), 'and its link on this portal, /p#<12 characters>');
+  check(await evaluate(`!!${q('#p-new-text')}`), 'with a button that copies an invitation message');
   await shot('05c-pairing-code');
   await click('.modal .actions button.primary');
   check((await evaluate(`${q('#pair-codes')}.textContent`)).includes(pairCode) && (await evaluate(`${q('#pair-codes')}.textContent`)).includes('0 / 5')
     && (await evaluate(`${q('#pair-codes')}.textContent`)).includes(LABEL) && !(await evaluate(`!!${q('#pair-codes b')} || !!window.__pl`)), 'the code is listed with its uses, and its label as text');
   const days = await evaluate(`fetch('/api/v1/pairing', { headers: { 'X-Sharetoken-Web': '1' }, credentials: 'same-origin' }).then(r => r.json()).then(v => (v.codes[0].expires_at / 1e6 - Date.now()) / 86400e3)`);
   check(days > 29.9 && days < 30.1, 'and lasts the thirty days chosen');
+  check((await evaluate(`${q('#pair-codes')}.textContent`)).includes('复制链接') && (await evaluate(`${q('#pair-codes')}.textContent`)).includes('复制邀请文案'), 'the listed code offers its link and message');
   await type('#pair-code', pairCode); await click('#pair-join');
   await assertText('自己的配对码', 'nobody pairs with their own code');
   await clickText('.topbar button', '退出'); await sleep(800);
@@ -315,7 +318,7 @@ try {
   await waitFor('document.querySelector(".sidenav")');
   await goto(base + '/app/#/pairing');
   await waitFor(q('#pair-join-form'));
-  await type('#pair-code', 'AAAA-AAAA-AAAA-AAAA'); await click('#pair-join');
+  await type('#pair-code', 'AAAAA-AAAAA'); await click('#pair-join');
   await assertText('配对码不对', 'a wrong code is refused');
   await type('#pair-code', pairCode.toLowerCase()); await click('#pair-join');
   await waitFor(q('#pair-restricted'));
@@ -329,6 +332,78 @@ try {
   await waitFor(q('#pair-buyers table'));
   check((await evaluate(`${q('#pair-buyers')}.textContent`)).includes('we***') && (await evaluate(`${q('#pair-codes')}.textContent`)).includes('1 / 5'), 'the seller sees its buyer, and the code counts it');
   await shot('05e-pairing-seller');
+
+  // ---- invite links: the page a link opens, before and after signing in ----
+  console.log('invite links');
+  const web = (method, path, body) => evaluate(`fetch(${JSON.stringify(path)}, { method: ${JSON.stringify(method)}, headers: { 'X-Sharetoken-Web': '1', 'Content-Type': 'application/json' }, credentials: 'same-origin', body: ${JSON.stringify(body ? JSON.stringify(body) : null)} }).then(r => r.json())`);
+  const pairLink = (await web('POST', '/api/v1/pairing/codes', { label: 'friends' })).link_token;
+  const shareAsk = (await web('POST', '/api/v1/sharing/invites', { ttl_hours: 24, approval: true })).link_token;
+  check(/^[0-9A-Za-z]{12}$/.test(pairLink) && /^[0-9A-Za-z]{12}$/.test(shareAsk), 'a code and an invite (asking for approval) get link tokens');
+  await clickText('.topbar button', '退出'); await sleep(800);
+  // The downloads the page offers are the portal's own packages, this system's first.
+  const dlDir = readFileSync(STACK + '/env', 'utf8').match(/^DOWNLOADS=(.*)$/m)[1];
+  const fakePkgs = ['macos-arm64.dmg', 'macos-amd64.dmg', 'windows-amd64.exe', 'linux-amd64.deb'].map(s => `${dlDir}/sharetoken-9.9.9-${s}`);
+  for (const f of fakePkgs) writeFileSync(f, 'package');
+  await goto(base + '/p#' + pairLink);
+  await waitFor(q('#invite-title'));
+  check((await evaluate(`${q('#invite-title')}.textContent`)).includes('al***') && !(await text()).includes(ALICE), "the page names the seller, masked, before anyone signs in");
+  check((await evaluate(`${q('#invite-label')}.textContent`)).includes('friends') && await evaluate(`!!${q('#invite-expiry')}`), 'with the label and how long the link works');
+  check((await evaluate(`${q('#invite-accept')}.textContent`)).includes('登录并接受邀请') && await evaluate(`!!${q('#invite-open')}`), 'it offers to sign in and accept, and to open the installed app');
+  check(!(await evaluate(`!!${q('#invite-inapp')}`)), 'no chat-app warning in a browser');
+  await shot('06a-invite-page');
+  await noNull('invite page');
+  // A newcomer signs up from the page and the invite is accepted on the new account.
+  const NEWCOMER = 'link' + Date.now().toString(36) + '@example.test';
+  await click('#invite-accept');
+  await waitFor(q('#login-email'));
+  await assertText('登录或注册后接受邀请', 'accepting asks to sign in or sign up first');
+  {
+    const code = await sendCode(NEWCOMER);
+    await type('#login-code', code); await click('#login-submit');
+  }
+  await waitFor(q('#invite-result'), 12000);
+  check(await evaluate(`${q('#invite-result')}.dataset.pending`) === '0' && (await text()).includes('已与卖家配对'), 'signed up, the newcomer is paired at once');
+  check((await text()).includes('用 ' + NEWCOMER + ' 登录客户端'), 'and told to sign in to the app with the same address');
+  check(await evaluate(`!!${q('#invite-download')}`), 'with the downloads next');
+  check(await evaluate(`[...document.querySelectorAll('#invite-dl-here a')].map(a => a.dataset.os + ' ' + a.getAttribute('href')).join()`) === 'macos /downloads/sharetoken-9.9.9-macos-arm64.dmg,macos /downloads/sharetoken-9.9.9-macos-amd64.dmg'
+    && await evaluate(`document.querySelectorAll('#invite-download details a[data-os]').length`) === 2, "this system's packages first (Apple Silicon, then Intel), the others behind a fold");
+  await shot('06b2-invite-downloads');
+  for (const f of fakePkgs) rmSync(f);
+  await shot('06b-invite-accepted');
+  const paired = await web('GET', '/api/v1/pairing');
+  check(paired.sellers.length === 1 && paired.sellers[0].username.startsWith('al***') && paired.sellers[0].label === 'friends', "the pairing is on the newcomer's account");
+  // An invite that asks for approval: the request waits for the inviter.
+  await goto(base + '/s#' + shareAsk);
+  await waitFor(q('#invite-accept'));
+  check((await evaluate(`${q('#invite-title')}.textContent`)).includes('共享伙伴') && await evaluate(`!!${q('#invite-approval')}`), 'a share invite says so, and that the inviter approves');
+  check((await evaluate(`${q('#invite-who')}.textContent`)).includes(NEWCOMER), 'and which account accepts it');
+  await click('#invite-accept');
+  await waitFor(q('#invite-result'), 12000);
+  check(await evaluate(`${q('#invite-result')}.dataset.pending`) === '1' && (await text()).includes('等待对方确认'), 'accepting files a request that waits for approval');
+  await shot('06c-invite-pending');
+  // Broken and dead links.
+  await goto(base + '/p#AAAAAAAAAAAA'); await waitFor(q('#invite-error'));
+  await assertText('邀请已失效', 'a dead link says the invite no longer works');
+  await goto(base + '/s#'); await sleep(300); await evaluate('location.reload()'); await sleep(800); await waitFor(q('#invite-error'));
+  await assertText('邀请链接不完整', 'a cut link says it is incomplete');
+  // Inside a chat app the page warns that downloads may be blocked; on a phone it offers no app to open.
+  await cdp('Network.setUserAgentOverride', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.50' });
+  await goto(base + '/p#' + pairLink); await waitFor(q('#invite-title'));
+  check(await evaluate(`!!${q('#invite-inapp')}`) && !(await evaluate(`!!${q('#invite-open')}`)), 'in WeChat on a phone: the browser hint, and no button to open the app');
+  await shot('06d-invite-wechat');
+  await cdp('Network.setUserAgentOverride', { userAgent: '' });
+  // The inviter approves the request from the console.
+  await goto(base + '/app/'); await sleep(500);
+  await clickText('.topbar button', '退出'); await sleep(800);
+  await login(ALICE);
+  await waitFor('document.querySelector(".sidenav")');
+  await goto(base + '/app/#/pairing');
+  await waitFor(q('#sharing-requests'));
+  check((await evaluate(`${q('#sharing-requests')}.textContent`)).includes('li***'), 'the request waits for the inviter, the account masked');
+  await shot('06e-invite-request');
+  await click('#sharing-requests .sharing-approve');
+  await waitFor(`!${q('#sharing-requests')} && ${q('#partner-list')}?.textContent.includes('li***')`);
+  check(true, 'approved: the newcomer is a share partner');
   await clickText('.topbar button', '退出'); await sleep(800);
 
   // ---- admin console ----

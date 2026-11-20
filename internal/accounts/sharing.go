@@ -85,6 +85,8 @@ const (
 type ShareInvite struct {
 	ID        int64  `json:"id"`
 	Code      string `json:"code"`
+	LinkToken string `json:"link_token"` // the same secret for a link (invites.go)
+	Approval  bool   `json:"approval"`   // joining waits for the inviter to approve it
 	CreatedAt int64  `json:"created_at"`
 	ExpiresAt int64  `json:"expires_at"` // unix nanoseconds
 }
@@ -96,6 +98,10 @@ type SharePartner struct {
 	GroupID  int64  `json:"group_id"`
 	Since    int64  `json:"since"`
 	Disabled bool   `json:"disabled,omitempty"`
+	// Pending: the inviter asks to approve whoever joins, and has not yet.
+	Pending bool `json:"pending,omitempty"`
+	// NewRequest: this call filed the request Pending stands for.
+	NewRequest bool `json:"-"`
 }
 
 // ShareSettings is what a user gives its partners and takes from them.
@@ -142,19 +148,21 @@ const shareInviteLive = `revoked = 0 AND used_by = 0 AND expires_at > ?`
 // CreateShareInvite makes a one-person invite for userID. ttl 0 means
 // DefaultShareTTL.
 func (s *Store) CreateShareInvite(userID int64, ttl time.Duration) (*ShareInvite, error) {
+	return s.CreateShareInviteWith(userID, ttl, false)
+}
+
+// CreateShareInviteWith makes a one-person invite, and the link token that
+// stands for it. approval: whoever joins waits for userID to approve it.
+func (s *Store) CreateShareInviteWith(userID int64, ttl time.Duration, approval bool) (*ShareInvite, error) {
 	if ttl == 0 {
 		ttl = DefaultShareTTL
 	}
 	if ttl < minPairingTTL || ttl > MaxShareTTL {
 		return nil, fmt.Errorf("%w: an invite lasts between %s and %d days", ErrInvalid, minPairingTTL, int(MaxShareTTL/(24*time.Hour)))
 	}
-	code, err := newPairingCode()
-	if err != nil {
-		return nil, err
-	}
 	now := s.now()
-	inv := &ShareInvite{Code: code, CreatedAt: now.UnixNano(), ExpiresAt: now.Add(ttl).UnixNano()}
-	err = s.tx(func(tx *sql.Tx) error {
+	inv := &ShareInvite{Approval: approval, CreatedAt: now.UnixNano(), ExpiresAt: now.Add(ttl).UnixNano()}
+	err := s.tx(func(tx *sql.Tx) error {
 		var live int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM share_invites WHERE inviter_id = ? AND `+shareInviteLive, userID, now.UnixNano()).Scan(&live); err != nil {
 			return err
@@ -169,8 +177,14 @@ func (s *Store) CreateShareInvite(userID int64, ttl time.Duration) (*ShareInvite
 		if n >= MaxSharePartners {
 			return fmt.Errorf("%w: you have %d share partners; remove one first", ErrLimit, n)
 		}
-		res, err := tx.Exec(`INSERT INTO share_invites (inviter_id, code, created_at, expires_at) VALUES (?, ?, ?, ?)`,
-			userID, code, inv.CreatedAt, inv.ExpiresAt)
+		if inv.Code, err = uniqueCode(tx, "share_invites"); err != nil {
+			return err
+		}
+		if inv.LinkToken, err = uniqueValue(tx, "share_invites", "link_token", newLinkToken); err != nil {
+			return err
+		}
+		res, err := tx.Exec(`INSERT INTO share_invites (inviter_id, code, link_token, approval, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
+			userID, inv.Code, inv.LinkToken, boolInt(approval), inv.CreatedAt, inv.ExpiresAt)
 		if err != nil {
 			return err
 		}
@@ -185,7 +199,7 @@ func (s *Store) CreateShareInvite(userID int64, ttl time.Duration) (*ShareInvite
 
 // ShareInvites lists userID's open invites, newest first.
 func (s *Store) ShareInvites(userID int64) ([]ShareInvite, error) {
-	rows, err := s.DB.Query(`SELECT id, code, created_at, expires_at FROM share_invites WHERE inviter_id = ? AND `+shareInviteLive+` ORDER BY id DESC`,
+	rows, err := s.DB.Query(`SELECT id, code, COALESCE(link_token, ''), approval, created_at, expires_at FROM share_invites WHERE inviter_id = ? AND `+shareInviteLive+` ORDER BY id DESC`,
 		userID, s.now().UnixNano())
 	if err != nil {
 		return nil, err
@@ -194,7 +208,7 @@ func (s *Store) ShareInvites(userID int64) ([]ShareInvite, error) {
 	out := []ShareInvite{}
 	for rows.Next() {
 		var inv ShareInvite
-		if err := rows.Scan(&inv.ID, &inv.Code, &inv.CreatedAt, &inv.ExpiresAt); err != nil {
+		if err := rows.Scan(&inv.ID, &inv.Code, &inv.LinkToken, &inv.Approval, &inv.CreatedAt, &inv.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, inv)
@@ -223,17 +237,33 @@ func countPartners(q interface {
 // ErrOwnCode for the user's own invite and ErrLimit when either side has as
 // many partners as it may (or the group named by the invite is full). Joining
 // someone one already shares with changes nothing and leaves the invite open.
+// When the invite asks the inviter to approve, nothing is joined yet: the
+// request waits for the inviter (invites.go) and the inviter comes back with
+// Pending set.
 func (s *Store) JoinShare(userID int64, code string) (*SharePartner, error) {
 	code = NormalizePairingCode(code)
 	if code == "" {
 		return nil, ErrNotFound
 	}
+	return s.joinShare(userID, "code", code)
+}
+
+// JoinShareLink is JoinShare for the link token of an invite.
+func (s *Store) JoinShareLink(userID int64, token string) (*SharePartner, error) {
+	if !ValidLinkToken(token) {
+		return nil, ErrNotFound
+	}
+	return s.joinShare(userID, "link_token", token)
+}
+
+func (s *Store) joinShare(userID int64, column, value string) (*SharePartner, error) {
 	now := s.now().UnixNano()
 	var out *SharePartner
 	err := s.tx(func(tx *sql.Tx) error {
 		var inviteID, inviterID, groupID int64
-		err := tx.QueryRow(`SELECT id, inviter_id, group_id FROM share_invites WHERE code = ? AND `+shareInviteLive+` FOR UPDATE`, code, now).
-			Scan(&inviteID, &inviterID, &groupID)
+		var approval bool
+		err := tx.QueryRow(`SELECT id, inviter_id, group_id, approval FROM share_invites WHERE `+column+` = ? AND `+shareInviteLive+` FOR UPDATE`, value, now).
+			Scan(&inviteID, &inviterID, &groupID, &approval)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -251,63 +281,92 @@ func (s *Store) JoinShare(userID int64, code string) (*SharePartner, error) {
 			return ErrNotFound
 		}
 		out = &SharePartner{ID: inviter.ID, Username: inviter.Username, Since: now}
-		var g, since int64
-		switch err := tx.QueryRow(`SELECT m.group_id, GREATEST(m.joined_at, o.joined_at) FROM share_members m
-			JOIN share_members o ON o.group_id = m.group_id AND o.user_id = ? WHERE m.user_id = ? ORDER BY m.group_id LIMIT 1`, inviterID, userID).Scan(&g, &since); {
-		case err == nil:
+		if g, since, err := sharedGroup(tx, userID, inviterID); err != nil || g != 0 {
 			out.GroupID, out.Since = g, since
-			return nil
-		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
-		for _, id := range []int64{userID, inviterID} {
-			n, err := countPartners(tx, id)
-			if err != nil {
-				return err
-			}
-			if n >= MaxSharePartners {
-				if id == userID {
-					return fmt.Errorf("%w: you have %d share partners; remove one first", ErrLimit, n)
-				}
-				return fmt.Errorf("%w: the inviter has as many share partners as it may", ErrLimit)
-			}
-		}
-		if groupID == 0 {
-			res, err := tx.Exec(`INSERT INTO share_groups (max_members, created_at) VALUES (?, ?)`, MaxShareGroupMembers, now)
-			if err != nil {
-				return err
-			}
-			if groupID, err = res.LastInsertId(); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(`INSERT INTO share_members (group_id, user_id, joined_at) VALUES (?, ?, ?)`, groupID, inviterID, now); err != nil {
-				return err
-			}
-		} else {
-			// An invite into an existing pool (not made by the API yet).
-			var members, maxMembers int64
-			if err := tx.QueryRow(`SELECT (SELECT COUNT(*) FROM share_members WHERE group_id = g.id), g.max_members FROM share_groups g WHERE g.id = ? FOR UPDATE`, groupID).
-				Scan(&members, &maxMembers); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					return ErrNotFound
-				}
-				return err
-			}
-			if members >= maxMembers {
-				return fmt.Errorf("%w: this share group is full", ErrLimit)
-			}
-		}
-		if _, err := tx.Exec(`INSERT INTO share_members (group_id, user_id, joined_at) VALUES (?, ?, ?)`, groupID, userID, now); err != nil {
+		if err := partnerLimits(tx, userID, inviterID); err != nil {
 			return err
 		}
-		out.GroupID = groupID
-		_, err = tx.Exec(`UPDATE share_invites SET used_by = ?, used_at = ?, group_id = ? WHERE id = ?`, userID, now, groupID, inviteID)
+		if approval {
+			out.Pending = true
+			out.Since, out.NewRequest, err = addRequest(tx, KindShare, inviteID, inviterID, userID, now)
+			return err
+		}
+		out.GroupID, err = joinTx(tx, userID, inviteID, inviterID, groupID, now)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// sharedGroup returns a group userID and otherID are both in, and since when;
+// 0 when they share none.
+func sharedGroup(tx *sql.Tx, userID, otherID int64) (group, since int64, err error) {
+	err = tx.QueryRow(`SELECT m.group_id, GREATEST(m.joined_at, o.joined_at) FROM share_members m
+		JOIN share_members o ON o.group_id = m.group_id AND o.user_id = ? WHERE m.user_id = ? ORDER BY m.group_id LIMIT 1`, otherID, userID).Scan(&group, &since)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, nil
+	}
+	return group, since, err
+}
+
+// partnerLimits fails with ErrLimit when userID or inviterID may not take one
+// more partner.
+func partnerLimits(tx *sql.Tx, userID, inviterID int64) error {
+	for _, id := range []int64{userID, inviterID} {
+		n, err := countPartners(tx, id)
+		if err != nil {
+			return err
+		}
+		if n >= MaxSharePartners {
+			if id == userID {
+				return fmt.Errorf("%w: you have %d share partners; remove one first", ErrLimit, n)
+			}
+			return fmt.Errorf("%w: the inviter has as many share partners as it may", ErrLimit)
+		}
+	}
+	return nil
+}
+
+// joinTx makes userID a partner of inviterID through invite inviteID, which is
+// then used up, and returns their group.
+func joinTx(tx *sql.Tx, userID, inviteID, inviterID, groupID, now int64) (int64, error) {
+	if err := partnerLimits(tx, userID, inviterID); err != nil {
+		return 0, err
+	}
+	if groupID == 0 {
+		res, err := tx.Exec(`INSERT INTO share_groups (max_members, created_at) VALUES (?, ?)`, MaxShareGroupMembers, now)
+		if err != nil {
+			return 0, err
+		}
+		if groupID, err = res.LastInsertId(); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(`INSERT INTO share_members (group_id, user_id, joined_at) VALUES (?, ?, ?)`, groupID, inviterID, now); err != nil {
+			return 0, err
+		}
+	} else {
+		// An invite into an existing pool (not made by the API yet).
+		var members, maxMembers int64
+		if err := tx.QueryRow(`SELECT (SELECT COUNT(*) FROM share_members WHERE group_id = g.id), g.max_members FROM share_groups g WHERE g.id = ? FOR UPDATE`, groupID).
+			Scan(&members, &maxMembers); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return 0, ErrNotFound
+			}
+			return 0, err
+		}
+		if members >= maxMembers {
+			return 0, fmt.Errorf("%w: this share group is full", ErrLimit)
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO share_members (group_id, user_id, joined_at) VALUES (?, ?, ?)`, groupID, userID, now); err != nil {
+		return 0, err
+	}
+	_, err := tx.Exec(`UPDATE share_invites SET used_by = ?, used_at = ?, group_id = ? WHERE id = ?`, userID, now, groupID, inviteID)
+	return groupID, err
 }
 
 // SharePartners lists everyone userID shares a group with, newest first.

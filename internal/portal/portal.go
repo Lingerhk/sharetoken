@@ -85,6 +85,8 @@ type Server struct {
 
 	failMu sync.Mutex
 	fails  map[string][]time.Time // login failures per username and per IP
+	// surgeAlerted is when the administrators last heard that codes are being guessed (invites.go).
+	surgeAlerted time.Time
 
 	feedbackMu sync.Mutex
 	feedbackIP map[string][]time.Time // accepted feedback per client IP, last hour
@@ -458,6 +460,7 @@ func (s *Server) Handler() http.Handler {
 	s.feedbackRoutes(mux)
 	s.pairingRoutes(mux)
 	s.sharingRoutes(mux)
+	s.inviteRoutes(mux)
 	s.settingsRoutes(mux)
 	return withLimits(mux)
 }

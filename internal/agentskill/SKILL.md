@@ -23,7 +23,7 @@ The examples below write `sharetoken`; use the command above if `sharetoken` is 
 ## Ground rules
 
 - **Credits are money.** Requests through the endpoint spend the user's credits. Do not send large batches, loops or long generations without the user's go-ahead, and set `max_tokens` on requests.
-- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private`, `partner invite/join/rm/revoke/set`, `apikey on/off/rotate`, `relays add/remove`, `tailnet on/off`, `warmup set/run/pause/resume`, `provider warmup`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `tailnet`, `share`, `provider`, `pair`, `partner`, `warmup`, `config`) is always fine.
+- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private/approve/reject/withdraw`, `partner invite/join/rm/revoke/set/approve/reject/withdraw`, `accept`, `apikey on/off/rotate`, `relays add/remove`, `tailnet on/off`, `warmup set/run/pause/resume`, `provider warmup`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `tailnet`, `share`, `provider`, `pair`, `partner`, `warmup`, `config`) is always fine.
 - **Never put secrets on a command line.** A provider API key goes in through standard input or `$SHARETOKEN_PROVIDER_KEY`, never as an argument. Never print the `token` from `config.json` or `providers.json`; `sharetoken config` masks it.
 - **Sign-in needs the user.** `login` mails a six-digit code to the user's address. Ask the user for the address and then for the code; do not guess them.
 - **`up` runs until stopped.** Start it in the background (or ask the user to run it in a terminal); never wait on it in the foreground.
@@ -142,8 +142,10 @@ A buyer paired with sellers buys only from them (at most 3). A seller in private
 
 ```bash
 sharetoken pair                                   # pairings and live codes
-sharetoken pair code [-label L] [-ttl 24h] [-uses N]   # seller: make a code for buyers
-sharetoken pair join CODE                         # buyer
+sharetoken pair code [-label L] [-ttl 24h] [-uses N] [-approve]   # seller: make a code and its invite link for buyers
+sharetoken pair join CODE_OR_LINK                 # buyer
+sharetoken pair approve | reject REQUEST_ID       # seller, for a code made with -approve
+sharetoken pair withdraw REQUEST_ID               # buyer: withdraw a request waiting for approval
 sharetoken pair leave SELLER_ID | pair rm BUYER_ID | pair revoke CODE_ID
 sharetoken pair private on | off
 ```
@@ -154,8 +156,10 @@ Two users who pair as partners use each other's nodes first and free (no credits
 
 ```bash
 sharetoken partner                                # partners, tokens given/used in 24h, open invites, settings
-sharetoken partner invite [-ttl 24h]              # a one-person invite code
-sharetoken partner join CODE
+sharetoken partner invite [-ttl 24h] [-approve]   # a one-person invite code and its invite link
+sharetoken partner join CODE_OR_LINK
+sharetoken partner approve | reject | withdraw REQUEST_ID
+sharetoken accept LINK_OR_CODE                    # an invite link (https://<portal>/p#… or /s#…) or code of either kind
 sharetoken partner rm USER_ID | partner revoke INVITE_ID
 sharetoken partner set [-only on|off] [-limit TOKENS_PER_24H] [-share PERCENT]
 ```

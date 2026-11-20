@@ -201,13 +201,37 @@ func main() {
 		Windows: application.WindowsOptions{DisableQuitOnLastWindowClosed: useTray},
 		Linux:   application.LinuxOptions{DisableQuitOnLastWindowClosed: useTray, ProgramName: daemonName()},
 	}
-	if useTray {
+	invites := &inviteForwarder{start: start, ep: sup.endpoint, show: showWindow}
+	// One app per data directory: a second start (an invite link clicked in
+	// the browser, or the app opened again) hands its arguments over and ends.
+	if !selftest && !updateCheck && !trayCheck {
+		opts.SingleInstance = &application.SingleInstanceOptions{
+			UniqueID: singleInstanceID(sup.home),
+			OnSecondInstanceLaunch: func(d application.SecondInstanceData) {
+				if link := inviteArg(d.Args); link != "" {
+					invites.forward(link)
+					return
+				}
+				showWindow()
+			},
+		}
+	} else if useTray {
 		opts.SingleInstance = &application.SingleInstanceOptions{
 			UniqueID:               singleInstanceID(sup.home),
 			OnSecondInstanceLaunch: func(application.SecondInstanceData) { showWindow() },
 		}
 	}
 	app = application.New(opts)
+	// macOS hands a clicked link over as an Apple Event, at start or later;
+	// Windows and Linux report a first start's argument this way too.
+	app.Event.OnApplicationEvent(events.Common.ApplicationLaunchedWithUrl, func(e *application.ApplicationEvent) {
+		if link := inviteArg([]string{e.Context().URL()}); link != "" {
+			invites.forward(link)
+		}
+	})
+	if link := inviteArg(os.Args[1:]); link != "" {
+		invites.forward(link)
+	}
 
 	if goruntime.GOOS == "darwin" { // Windows and Linux windows have no menu bar; the webview handles the keys
 		m := app.NewMenu()

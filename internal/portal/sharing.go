@@ -27,6 +27,9 @@ type SharingView struct {
 	Served      int64 `json:"served"`
 	WindowHours int   `json:"window_hours"`
 	MaxPartners int   `json:"max_partners"`
+	// Requests wait for the caller's approval; Waiting are the caller's own.
+	Requests []accounts.InviteRequest `json:"requests"`
+	Waiting  []accounts.InviteRequest `json:"waiting"`
 }
 
 // PartnerView is one partner and the tokens that moved between the two in the
@@ -78,6 +81,14 @@ func (s *Server) sharingView(userID int64) (*SharingView, error) {
 	for i := range v.Invites {
 		v.Invites[i].Code = accounts.FormatPairingCode(v.Invites[i].Code)
 	}
+	if v.Requests, err = s.store.InviteRequests(userID, accounts.KindShare); err != nil {
+		return nil, err
+	}
+	if v.Waiting, err = s.store.WaitingRequests(userID, accounts.KindShare); err != nil {
+		return nil, err
+	}
+	maskRequests(v.Requests)
+	maskRequests(v.Waiting)
 	return v, nil
 }
 
@@ -101,6 +112,7 @@ func (s *Server) sharingErr(w http.ResponseWriter, err error) {
 func (s *Server) handleNewShareInvite(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 	var req struct {
 		TTLHours float64 `json:"ttl_hours"` // 0: the default, one day
+		Approval bool    `json:"approval"`  // joining waits for the caller's approval
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -109,7 +121,7 @@ func (s *Server) handleNewShareInvite(w http.ResponseWriter, r *http.Request, cu
 		writeErr(w, http.StatusBadRequest, "bad_request", "ttl_hours is out of range")
 		return
 	}
-	inv, err := s.store.CreateShareInvite(cu.user.ID, time.Duration(req.TTLHours*float64(time.Hour)))
+	inv, err := s.store.CreateShareInviteWith(cu.user.ID, time.Duration(req.TTLHours*float64(time.Hour)), req.Approval)
 	if err != nil {
 		s.sharingErr(w, err)
 		return
@@ -138,25 +150,14 @@ func (s *Server) handleJoinShare(w http.ResponseWriter, r *http.Request, cu ctxU
 	if !readJSON(w, r, &req) {
 		return
 	}
-	// Wrong codes count like failed logins, so nobody searches for a live one.
-	keys := []string{"share:u:" + strconv.FormatInt(cu.user.ID, 10), "share:ip:" + s.clientIP(r)}
-	if s.throttled(keys[0]) || s.throttled(keys[1]) {
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong invite codes; try again in a few minutes")
+	// The code may also be a link to the invite, or its bare link token.
+	// Wrong codes count like failed logins (invites.go).
+	ref := accounts.ParseInvite(req.Code)
+	if ref.Kind == accounts.KindPair {
+		writeErr(w, http.StatusBadRequest, "wrong_kind", "this is a link to a pairing code, not to a share invite")
 		return
 	}
-	p, err := s.store.JoinShare(cu.user.ID, req.Code)
-	if err != nil {
-		if errors.Is(err, accounts.ErrNotFound) {
-			s.recordFailure(keys...)
-			writeErr(w, http.StatusNotFound, "bad_code", "this invite code is wrong, expired, revoked or already used")
-			return
-		}
-		s.sharingErr(w, err)
-		return
-	}
-	p.Username = maskName(p.Username)
-	s.log.Info("share partners", "user", cu.user.ID, "partner", p.ID, "group", p.GroupID)
-	writeJSON(w, http.StatusOK, p)
+	s.serveInvite(w, r, cu, []string{accounts.KindShare}, ref, true)
 }
 
 func (s *Server) handleLeaveSharePartner(w http.ResponseWriter, r *http.Request, cu ctxUser) {

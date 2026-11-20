@@ -74,6 +74,13 @@ Section
   WriteRegStr HKCU "${UNINSTKEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair" 1
+  ; invite links from the portal's pages: sharetoken://p/<token> (gui/invite.go)
+  SetRegView 64
+  WriteRegStr HKCU "Software\Classes\sharetoken" "" "URL:ShareToken"
+  WriteRegStr HKCU "Software\Classes\sharetoken" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\sharetoken\DefaultIcon" "" "$INSTDIR\icon.ico"
+  WriteRegStr HKCU "Software\Classes\sharetoken\shell\open\command" "" '"$INSTDIR\${GUI}.exe" "%1"'
+  SetRegView default
   ; /RELAUNCH: the app's one-click update runs this silently (/S) and wants the
   ; app back afterwards (gui/update_windows.go).
   ${GetParameters} $R0
@@ -101,6 +108,10 @@ Section "Uninstall"
   ; This program is 32-bit, and Windows shows a 32-bit program its own copy of
   ; HKCU\Software\Classes\CLSID: the app wrote the 64-bit (native) one.
   SetRegView 64
+  ; the sharetoken:// links, when they still open this copy
+  ReadRegStr $1 HKCU "Software\Classes\sharetoken\shell\open\command" ""
+  StrCmp $1 '"$INSTDIR\${GUI}.exe" "%1"' 0 +2
+  DeleteRegKey HKCU "Software\Classes\sharetoken"
   ReadRegStr $0 HKCU "Software\Classes\AppUserModelId\${NAME}" "CustomActivator"
   StrCmp $0 "" +2
   DeleteRegKey HKCU "Software\Classes\CLSID\$0"

@@ -119,6 +119,18 @@ func (s *Server) servePages(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("GET /{$}", page("index.html")) // the public landing page
 	mux.HandleFunc("GET /app/{$}", page("app.html"))
+	// Invite links: /p#<token> for a pairing code, /s#<token> for a share
+	// invite (invites.go). The token after the "#" never reaches the server.
+	for _, kind := range []string{accounts.KindPair, accounts.KindShare} {
+		mux.HandleFunc("GET /"+kind, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+			page("invite.html")(w, r)
+		})
+		mux.HandleFunc("GET /"+kind+"/{$}", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+			page("invite.html")(w, r)
+		})
+	}
 	for _, from := range []string{"GET /app", "GET /login"} {
 		mux.HandleFunc(from, func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/app/", http.StatusFound)

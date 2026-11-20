@@ -68,6 +68,7 @@ type Daemon struct {
 	done     chan struct{}      // closed when the current start-up attempts end
 	updates  *UpdateWatcher
 	warmup   *warmup.Service // runs logged in or out: it needs no portal
+	invites  pendingInvites  // the invite link the app was opened with (invites.go)
 
 	stopUpdates context.CancelFunc
 }
@@ -99,6 +100,8 @@ type Session struct {
 	Version    string `json:"version"`
 	APIVersion int    `json:"api_version"`
 	Update     Update `json:"update"`
+	// Invite is an invite link the app was opened with, waiting to be shown.
+	Invite *PendingInvite `json:"invite,omitempty"`
 }
 
 // NewDaemon prepares a daemon with its state in home.
@@ -215,6 +218,7 @@ func (d *Daemon) Session() Session {
 	defer d.mu.Unlock()
 	s := Session{Env: Env, State: d.state, LoggedIn: d.portal != nil, Portal: d.cfg.Portal, User: d.cfg.User, API: "http://" + d.addr + "/v1", Error: d.lastErr, Version: version.Version, APIVersion: version.API}
 	s.Update = d.updates.Current()
+	s.Invite = d.invites.get()
 	if !s.LoggedIn || s.Portal == "" {
 		s.Portal = PortalAddr() // the sign-in page does not ask for it
 	}
@@ -779,6 +783,7 @@ func (d *Daemon) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/v1/session", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.Session()) })
 	d.warmup.Routes(mux)
+	d.inviteRoutes(mux)
 	mux.HandleFunc("POST /api/v1/portal/probe", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
 		Portal string `json:"portal"`
 	}) {

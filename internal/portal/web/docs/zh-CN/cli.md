@@ -124,8 +124,10 @@
 | 命令 | 作用 |
 |---|---|
 | `pair` | 显示你和谁配对，以及你的配对码 |
-| `pair code [-label L] [-ttl 24h] [-uses N]` | 卖家：生成一个给买家用的配对码。默认 24 小时有效（最长 30 天），不限买家数量 |
-| `pair join <code>` | 买家：和生成这个配对码的卖家配对 |
+| `pair code [-label L] [-ttl 24h] [-uses N] [-approve]` | 卖家：生成一个给买家用的配对码，同时打印它的邀请链接。默认 24 小时有效（最长 30 天），不限买家数量；`-approve`：每个买家要你确认才生效 |
+| `pair join <code\|link>` | 买家：用配对码或邀请链接，和生成它的卖家配对 |
+| `pair approve <request id>`、`pair reject <request id>` | 卖家：确认或拒绝一个等待你确认的买家 |
+| `pair withdraw <request id>` | 买家：撤回自己等待确认的申请 |
 | `pair leave <seller id>` | 买家：解除和某个卖家的配对 |
 | `pair rm <buyer id>` | 卖家：移除一个买家 |
 | `pair revoke <code id>` | 卖家：让配对码不再接纳新买家，已配对的买家不受影响 |
@@ -133,7 +135,8 @@
 
 ```bash
 {{exe}} pair code -label team -ttl 72h
-{{exe}} pair join ABCD-EFGH-IJKL-MNOP
+{{exe}} pair join ABCDE-FGHIJ
+{{exe}} pair join https://sharetoken.app/p#7kQm3xV9pT2b
 ```
 
 命令里的 id 就是 `pair` 列出的编号。详见[和买家配对](/docs/share#pairing)。
@@ -145,19 +148,35 @@
 | 命令 | 作用 |
 |---|---|
 | `partner` | 显示伙伴、最近 24 小时互相用了多少 tokens、未使用的邀请码和你的设置 |
-| `partner invite [-ttl 24h]` | 生成一个邀请码，只能一个人用。默认 24 小时有效（最长 168 小时） |
-| `partner join <code>` | 成为生成这个邀请码的人的伙伴 |
+| `partner invite [-ttl 24h] [-approve]` | 生成一个邀请码和它的邀请链接，只能一个人用。默认 24 小时有效（最长 168 小时）；`-approve`：对方要你确认才生效 |
+| `partner join <code\|link>` | 用邀请码或邀请链接，成为生成它的人的伙伴 |
+| `partner approve <request id>`、`partner reject <request id>` | 确认或拒绝一个等待你确认的人 |
+| `partner withdraw <request id>` | 撤回自己等待确认的申请 |
 | `partner rm <user id>` | 和某个伙伴解除共享 |
 | `partner revoke <invite id>` | 撤销一个未使用的邀请码 |
 | `partner set [-only on\|off] [-limit N] [-share P]` | `-only`：只用伙伴的节点；`-limit`：每 24 小时最多给所有伙伴的 tokens（0 不限）；`-share`：伙伴最多占用你每个节点并发的百分比（0 暂停） |
 
 ```bash
 {{exe}} partner invite
-{{exe}} partner join ABCD-EFGH-IJKL-MNOP
+{{exe}} partner join ABCDE-FGHIJ
 {{exe}} partner set -limit 200000 -share 50
 ```
 
 详见[和伙伴互相共享](/docs/share#partners)。
+
+## 邀请链接 {#invite-links}
+
+配对码和伙伴邀请码都有一个邀请链接，形如 `https://sharetoken.app/p#…`（配对）或 `https://sharetoken.app/s#…`（共享伙伴），生成时会一起打印出来。收到链接的人不需要分清是哪一种：
+
+| 命令 | 作用 |
+|---|---|
+| `accept <link\|code>` | 接受一个邀请链接，或任意一种邀请码 |
+
+```bash
+{{exe}} accept https://sharetoken.app/s#Hx82LpQe0aZt
+```
+
+链接属于哪个门户，就只能在登录那个门户的客户端里接受。详见[邀请链接](/docs/share#invite-links)。
 
 ## 编程助手 {#agents}
 
