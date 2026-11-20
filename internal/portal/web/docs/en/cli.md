@@ -160,6 +160,26 @@ See [Share with partners](/docs/share#partners).
 
 A file of the same name that the client did not write is left alone unless you add `-force`. Restart an open agent session to pick the skill up. See [Use with coding agents](/docs/agents).
 
+## Warm-up {#warmup}
+
+A Claude or ChatGPT (Codex) subscription's 5-hour window starts at the first request after it resets. The client can send one tiny request at times of day you choose, so a window starts early and resets sooner while you work: 6:00 gives the windows 6–11, 11–16 and 16–21 where starting work at 9:00 gives two. It works for the Claude Code and Codex on this computer, through their own command, and for the Claude and ChatGPT logins you sell. Nothing goes through the sharetoken network.
+
+| Command | What it does |
+|---|---|
+| `warmup` | Every account there is to warm up, its times, the last warm-up and its usage windows |
+| `warmup set claude\|codex [-times 06:00,11:05] [-on-reset off\|week\|all] [-off]` | The Claude Code or Codex of this computer |
+| `provider warmup <name> [-times 06:00] [-on-reset off\|week\|all] [-off]` | A Claude or ChatGPT login you sell |
+| `warmup run [claude\|codex\|provider:<name>]` | Warm up now (default: every one that is set) |
+| `warmup pause`, `warmup resume` | Stop every automatic warm-up, or go on |
+
+```bash
+{{exe}} warmup set claude -times 06:00,11:05
+{{exe}} warmup set codex -on-reset all
+{{exe}} warmup run claude
+```
+
+At each time, a request is sent only if the 5-hour window isn't running; a time missed by more than an hour (the computer asleep) is skipped. `-on-reset week` starts the weekly window as soon as it resets, `all` the 5-hour one too. Nothing is sent while a window is used up or extra usage is in use. Warm-ups happen while the client runs (the desktop app, or `up`); times are this computer's local time. The desktop app has the same settings under Settings → Warm-up.
+
 ## Other {#other}
 
 | Command | What it does |

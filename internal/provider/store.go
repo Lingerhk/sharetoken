@@ -62,6 +62,9 @@ type Entry struct {
 	// name for it, and prices.
 	Models  []node.ModelConfig `json:"models"`
 	AddedAt time.Time          `json:"added_at,omitzero"`
+	// Warmup starts a subscription login's usage windows at times of day
+	// (warm.go, internal/warmup).
+	Warmup *WarmOptions `json:"warmup,omitempty"`
 }
 
 // Token is an OAuth login.
@@ -232,6 +235,9 @@ func (f *File) Put(e *Entry) error {
 				if e.Transport == nil {
 					e.Transport = old.Transport
 				}
+				if e.Warmup == nil {
+					e.Warmup = old.Warmup // a new login keeps the account's warm-up
+				}
 				if e.Anthropic == nil && e.Auth == old.Auth {
 					e.Anthropic = old.Anthropic
 				}
@@ -349,6 +355,11 @@ type View struct {
 	CanRefresh      bool               `json:"can_refresh,omitempty"`
 	TLSProfile      string             `json:"tls_profile,omitempty"`
 	TokenTLSProfile string             `json:"token_tls_profile,omitempty"`
+	// WarmCapable: a subscription login with usage windows; Warmup is its
+	// warm-up, Usage what the last answers said of its windows.
+	WarmCapable bool         `json:"warm_capable,omitempty"`
+	Warmup      *WarmOptions `json:"warmup,omitempty"`
+	Usage       *UsageLimits `json:"usage,omitempty"`
 }
 
 // View hides the secrets of e.
@@ -357,6 +368,12 @@ func (e *Entry) View() View {
 	v := View{Name: e.Name, Type: e.Type, TypeName: k.Name, Auth: e.Auth, Enabled: e.Enabled, BaseURL: e.URL(), Models: e.Models}
 	v.Anthropic = e.Anthropic
 	v.Runtime = providerStatus(e.ID)
+	if e.WarmCapable() {
+		v.WarmCapable, v.Warmup = true, e.Warmup
+		if l, ok := UsageOf(e.ID); ok {
+			v.Usage = &l
+		}
+	}
 	if e.Transport != nil {
 		v.ProxyMode, v.ProxyAddress = e.Transport.ProxyMode, e.Transport.summary()
 		v.TLSProfile, v.TokenTLSProfile = e.Transport.TLSProfile, e.Transport.TokenTLSProfile

@@ -112,6 +112,7 @@
 | `anthropic` | `profile=standard/claude-code`、`sampling=strict/default` |
 | `oauth` | `account_uuid` 单独保存 Anthropic 用户 UUID，`scope` 和 `login_mode` 保存授权范围。登录得到的令牌。`account_id` 是令牌所代表的账户（ChatGPT 账户、Anthropic 组织）；`project_id` 用于 Gemini 和 Antigravity；`plan`、`extra` 按类型使用 |
 | `models` | 这个 provider 出售的模型：网络 ID、厂商侧的模型名、价格、`max_output` |
+| `warmup` | Claude 或 ChatGPT 登录的预热：`times`（本机每日时间）、`on_reset`（`week` 或 `all`）、`model`；同名重新登录后保留（[warmup.md](warmup.md)） |
 
 模型条目的字段与 `config.json` 里本机模型的相同（`node.ModelConfig`）。
 
@@ -128,6 +129,7 @@ sharetoken provider configure <名字> [-proxy-mode environment|direct|custom] [
                          [-tls-profile native|chrome] [-token-tls-profile native|chrome]
 sharetoken provider models <名字>                 # 这份凭据可以使用的模型
 sharetoken provider test <名字> [-model M] [-prompt TEXT]
+sharetoken provider warmup <名字> [-times 06:00,11:05] [-on-reset off|week|all] [-model M] [-off]
 sharetoken provider on|off <名字>
 sharetoken provider rm <名字>                     # 连同凭据一起删除
 

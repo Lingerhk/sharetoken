@@ -24,6 +24,7 @@ import (
 	"sharetoken/internal/p2p"
 	"sharetoken/internal/portal"
 	"sharetoken/internal/version"
+	"sharetoken/internal/warmup"
 )
 
 // Daemon is the service behind the desktop app. Unlike a bare Agent, it runs
@@ -66,6 +67,7 @@ type Daemon struct {
 	cancel   context.CancelFunc // ends the current run
 	done     chan struct{}      // closed when the current start-up attempts end
 	updates  *UpdateWatcher
+	warmup   *warmup.Service // runs logged in or out: it needs no portal
 
 	stopUpdates context.CancelFunc
 }
@@ -103,6 +105,7 @@ type Session struct {
 func NewDaemon(home string) *Daemon {
 	d := &Daemon{home: home, log: slog.Default().With("component", "daemon"), state: StateLoggedOut}
 	d.updates = NewUpdateWatcher(home, "desktop", d.portalAddr)
+	d.warmup = warmup.New(home)
 	return d
 }
 
@@ -164,6 +167,7 @@ func (d *Daemon) Start() error {
 	uctx, stopUpdates := context.WithCancel(context.Background())
 	d.stopUpdates = stopUpdates
 	d.bg.Go(func() { d.updates.Run(uctx) })
+	d.bg.Go(func() { d.warmup.Run(uctx) })
 	if cfg.Portal != "" && cfg.Token != "" {
 		if keys, err := p2p.LoadOrCreateKeys(filepath.Join(d.home, KeyFile)); err == nil {
 			d.mu.Lock()
@@ -774,6 +778,7 @@ func (d *Daemon) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, Hello{Env: Env, Version: version.Version, APIVersion: version.API, Proof: LocalProof(d.key, d.addr, nonce)})
 	})
 	mux.HandleFunc("GET /api/v1/session", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.Session()) })
+	d.warmup.Routes(mux)
 	mux.HandleFunc("POST /api/v1/portal/probe", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
 		Portal string `json:"portal"`
 	}) {

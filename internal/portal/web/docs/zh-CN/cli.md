@@ -160,6 +160,26 @@
 
 同名但不是客户端写的文件不会被覆盖或删除，除非加 `-force`。已打开的助手会话重启后才会加载。详见[在编程助手中使用](/docs/agents)。
 
+## 预热 {#warmup}
+
+Claude 和 ChatGPT（Codex）订阅的 5 小时窗口从重置后的第一次请求开始计时。客户端可以在你设定的时间发一条极小的请求，让窗口提前开始，工作时更早重置：在 6:00 预热，窗口是 6–11、11–16、16–21；9:00 才开始用，一天只有两个窗口。本机的 Claude Code 和 Codex（通过它们自己的命令）以及你出售的 Claude、ChatGPT 登录都可以预热。不经过 sharetoken 网络。
+
+| 命令 | 作用 |
+|---|---|
+| `warmup` | 所有可以预热的账号、设定的时间、最近一次预热和用量窗口 |
+| `warmup set claude\|codex [-times 06:00,11:05] [-on-reset off\|week\|all] [-off]` | 本机的 Claude Code 或 Codex |
+| `provider warmup <名字> [-times 06:00] [-on-reset off\|week\|all] [-off]` | 你出售的 Claude 或 ChatGPT 登录 |
+| `warmup run [claude\|codex\|provider:<名字>]` | 立即预热（不指定就预热所有已设置的） |
+| `warmup pause`、`warmup resume` | 暂停所有自动预热，或恢复 |
+
+```bash
+{{exe}} warmup set claude -times 06:00,11:05
+{{exe}} warmup set codex -on-reset all
+{{exe}} warmup run claude
+```
+
+到点时只有 5 小时窗口没在运行才会发请求；错过 1 小时以上（比如电脑在睡眠）就不补发。`-on-reset week` 表示周窗口一重置就启动，`all` 表示 5 小时窗口也一样。窗口已用完或正在使用超额额度时不发送。客户端运行时才会预热（桌面应用，或 `up`）；时间按本机时区。桌面应用的“设置 → 预热”里有同样的设置。
+
 ## 其他 {#other}
 
 | 命令 | 作用 |

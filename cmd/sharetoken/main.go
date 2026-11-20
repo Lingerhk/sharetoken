@@ -92,6 +92,9 @@ Hosted APIs to share (kept in providers.json, apart from the configuration):
   provider login anthropic [-mode full|inference] [-session-key] [-profile standard|claude-code]
   provider test <name> [-model M]       send one small request through it
   provider on | off <name>              sell its models, or stop
+  provider warmup <name> [-times 06:00,11:05] [-on-reset off|week|all] [-model M] [-off]
+                                        a Claude or ChatGPT login: start its usage windows at times of day,
+                                        or as they reset, with one tiny request (see warmup)
   provider rm <name>
 
 Pairing (a buyer that pairs with a seller buys only from the sellers it is paired with):
@@ -128,6 +131,14 @@ Coding agents (Claude Code, Codex):
                                         default: every agent found. Run it again after an update
   skill uninstall [-agent …] [-force]   remove it again
   skill show                            print the skill
+
+Warm-up (start a Claude or ChatGPT 5-hour window early, so it resets while you work):
+  warmup                                every account there is to warm up, its times and what was done
+  warmup set claude|codex [-times 06:00,11:05] [-on-reset off|week|all] [-model M] [-binary PATH] [-off]
+                                        the Claude Code or Codex of this machine, through its own CLI
+  warmup run [claude|codex|provider:<name>]
+                                        warm up now (default: every one that is set)
+  warmup pause | resume                 stop every automatic warm-up, or go on
 
   config                                show the configuration file
   version [--check]                     show what this client was built for; --check asks the portal for a newer release
@@ -191,6 +202,8 @@ func main() {
 		run = c.apikey
 	case "skill":
 		run = c.skill
+	case "warmup":
+		run = c.warmup
 	case "config":
 		run = c.showConfig
 	case "upgrade":
@@ -1432,6 +1445,8 @@ func (c *cmdCtx) provider(args []string) error {
 			fmt.Println(m)
 		}
 		return nil
+	case "warmup":
+		return c.providerWarmup(args[1:])
 	case "test":
 		fs := flag.NewFlagSet("provider test", flag.ExitOnError)
 		model := fs.String("model", "", "the provider's model to ask (default: the first one it sells)")

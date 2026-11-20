@@ -253,3 +253,7 @@ html.i18n-pending body { visibility: hidden; }
 .rows input.narrow { width: 10em; padding: 4px 8px; }
 .rows input.narrow.short { width: 4.5em; }
 #partner-settings .rows { margin-bottom: 4px; }
+/* the warm-up tab (internal/warmup) */
+.warmup-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-bottom: 6px; }
+.warmup-top .check { margin-top: 0; align-items: center; }
+.warmup-top .check input { margin-top: 0; }

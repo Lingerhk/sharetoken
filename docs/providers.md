@@ -112,6 +112,7 @@ The file is `providers.json` in the client's state directory, mode 0600, written
 | `anthropic` | `profile=standard/claude-code`, `sampling=strict/default` |
 | `oauth` | `account_uuid` separately identifies the Anthropic user; `scope` and `login_mode` record authorization scope. The token from a login. `account_id` is the account the token acts for (ChatGPT account, Anthropic organization); `project_id` is used by Gemini and Antigravity; `plan` and `extra` depend on the kind |
 | `models` | The models this provider sells: network ID, the vendor's model name, prices, `max_output` |
+| `warmup` | A Claude or ChatGPT login's warm-up: `times` (local times of day), `on_reset` (`week` or `all`), `model`; a new login of the same name keeps it ([warmup.md](warmup.md)) |
 
 A model entry has the same fields as a local model in `config.json` (`node.ModelConfig`).
 
@@ -128,6 +129,7 @@ sharetoken provider configure <name> [-proxy-mode environment|direct|custom] [-p
                          [-tls-profile native|chrome] [-token-tls-profile native|chrome]
 sharetoken provider models <name>                 # models these credentials may use
 sharetoken provider test <name> [-model M] [-prompt TEXT]
+sharetoken provider warmup <name> [-times 06:00,11:05] [-on-reset off|week|all] [-model M] [-off]
 sharetoken provider on|off <name>
 sharetoken provider rm <name>                     # removes the credentials too
 

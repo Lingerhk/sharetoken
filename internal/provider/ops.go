@@ -222,6 +222,7 @@ func Remove(home, name string) error {
 			releaseHTTPClient(e.ID)
 			releaseHTTPClient(e.ID + ":token")
 			recordProviderStatus(e.ID, nil)
+			forgetUsage(e.ID)
 		}
 		if !f.Remove(name) {
 			return fmt.Errorf("%w: %q", ErrNotFound, name)

@@ -172,6 +172,8 @@
 | `run.json` | 0600 | 正在运行的客户端的地址和 PID，CLI 据此找到它；退出时删除 |
 | `providers.json` | 0600 | 用户用来出售的托管 API，以及它们的 key 和 token（[providers.md](providers.md)） |
 | `update.json` | 0600 | 上次检查新版本的结果 |
+| `warmup.json` | 0600 | 本机 Claude Code 和 Codex 的预热设置（[warmup.md](warmup.md)） |
+| `warmup-state.json` | 0600 | 预热做过什么、读到了什么，重启后据此不重复发送 |
 | `daemon.log` | 0600 | 桌面应用启动的服务的日志（[desktop.md](desktop.md)） |
 
 `config.json` 由客户端自己写（`login`、`share …`，以及桌面应用使用的本地 API）；`sharetoken config` 打印它。写入时先写临时文件再改名，崩溃不会留下半个文件。它的字段：

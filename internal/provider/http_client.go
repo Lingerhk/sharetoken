@@ -181,8 +181,11 @@ func (u *outboundUpstream) Stream(ctx context.Context, body []byte, emit func([]
 	if ready := u.ReadyAt(); ready.After(time.Now()) {
 		return &node.StatusError{Status: 429, Body: "provider is temporarily rate limited", RetryAt: ready}
 	}
-	err := u.up.Stream(withHTTPClient(ctx, u.client), body, emit)
+	err := u.up.Stream(withHTTPClient(ctx, &limitsRecorder{inner: u.client, owner: u.owner}), body, emit)
 	recordProviderStatus(u.owner, err)
+	if err == nil {
+		noteSuccess(u.owner, time.Now())
+	}
 	return err
 }
 

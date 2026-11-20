@@ -34,6 +34,7 @@ import (
 	"sharetoken/internal/portal"
 	"sharetoken/internal/provider"
 	"sharetoken/internal/relaypass"
+	"sharetoken/internal/warmup"
 )
 
 // Agent is a running client.
@@ -56,6 +57,9 @@ type Agent struct {
 	ExternalAPI string
 	// Updates, when set, is checking for new releases; the status reports it.
 	Updates *UpdateWatcher
+	// warm is the warm-up, run by an agent that serves its own API (an
+	// embedder such as Daemon runs its own).
+	warm *warmup.Service
 
 	home string
 	log  *slog.Logger
@@ -170,6 +174,8 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 		a.addr = ln.Addr().String()
 		a.key = newLocalKey()
+		a.warm = warmup.New(a.home)
+		go a.warm.Run(a.ctx)
 		gate, err := newAPIKeyGate(a.home)
 		if err != nil {
 			ln.Close()

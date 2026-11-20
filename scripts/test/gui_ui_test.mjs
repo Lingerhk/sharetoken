@@ -267,6 +267,47 @@ await waitFor(`${el('#apikey-text')}.textContent.endsWith(${q(key2.slice(-4))})`
 ok(true, 'and the settings show it');
 await click('#nav-overview');
 
+console.log('warm-up');
+{
+  // A stand-in for Claude Code: the test sends nothing to a real account.
+  const fake = dir + '/fake-claude';
+  writeFileSync(fake, '#!/bin/sh\ncase "$*" in\n  *--version*) echo "9.9.9 (Claude Code)";;\n  */usage*) echo "Current session: 0% used"; echo "Current week (all models): 5% used";;\n' +
+    '  *) cat >/dev/null; echo \'{"type":"result","is_error":false,"result":"Hi"}\';;\nesac\n', { mode: 0o755 });
+  const warmup = async () => (await fetch(env.DAEMON + '/api/v1/warmup', { headers: { Authorization: 'Bearer ' + env.DAEMON_KEY } })).json();
+  const id = s => `[id=${q(s)}]`;
+  await click('#nav-settings'); await click('#tab-settings-warmup');
+  await waitFor(`${el('#warmup-body')}?.textContent.includes('Claude Code（本机）')`);
+  ok((await text('#warmup-body')).includes('Codex（本机）'), 'the warm-up lists the agents of this machine');
+  ok(await fits() && await viewFits('settings'), 'the warm-up tab fits the window');
+  await click(id('warmup-edit-local:claude')); await waitFor(el('#dlg-warmup'));
+  ok(!(await ev(`${el('#warmup-on')}.checked`)), 'it starts off');
+  await click('#warmup-on');
+  await fill('#warmup-times', '6:00, 11:05');
+  await ev(`${el('#warmup-on-reset')}.value = 'all'`);
+  await fill('#warmup-binary', fake);
+  await click('#warmup-save'); await waitFor(`!${el('#dlg-warmup')}`);
+  const c = (await warmup()).settings.claude;
+  ok(c.enabled && c.times.join(',') === '06:00,11:05' && c.on_reset === 'all' && c.binary === fake, 'its settings are saved, times as 06:00');
+  await waitFor(`${el('#warmup-body')}.textContent.includes('06:00 11:05')`);
+  await click(id('warmup-edit-local:claude')); await waitFor(el('#dlg-warmup'));
+  await fill('#warmup-times', '25:00');
+  await click('#warmup-save'); await waitFor(`${el('#warmup-dlg-error')}.textContent.includes('06:00')`);
+  ok(true, 'a bad time of day is refused with an example');
+  await click('#dlg-warmup-close');
+  await click(id('warmup-run-local:claude'));
+  await waitFor(`${el('#warmup-body')}.textContent.includes('已预热')`, 30000);
+  const t = (await warmup()).targets.find(t => t.id === 'local:claude');
+  ok(t.result === 'warmed' && t.version.startsWith('9.9.9') && t.usage.windows.length === 2, 'warm up now runs the CLI and reads its windows after');
+  await shot('09c-warmup');
+  await click('#warmup-paused');
+  await waitFor(`${el('#warmup-paused')}.checked`);
+  ok((await warmup()).paused, 'every automatic warm-up can be paused');
+  await click('#warmup-paused');
+  await waitFor(`!${el('#warmup-paused')}.checked`);
+  await click('#tab-settings-general');
+  await click('#nav-overview');
+}
+
 console.log('feedback');
 ok(!(await has('#feedback-text')), 'the feedback form is not on the page until asked for');
 await click('#nav-feedback'); await waitFor(el('#dlg-feedback'));

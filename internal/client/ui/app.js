@@ -481,6 +481,22 @@ I18N.ready.then(() => {
   // The sharing view: whether this device sells, the hosted APIs it sells
   // through with their models, and the models of the local model server.
   // getMarket: the models on the network, for a price hint.
+  // A subscription's usage windows in a line, as the warm-up and the
+  // providers' answers read them (internal/provider/limits.go).
+  function usageText(u) {
+    if (!u || !u.windows || !u.windows.length) return '—';
+    const now = Date.now();
+    const at = d => new Date(d).toLocaleString(I18N.lang, d - now > 86400e3
+      ? { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' } : { hour12: false, hour: '2-digit', minute: '2-digit' });
+    return u.windows.map(w => {
+      const r = w.resets_at ? Date.parse(w.resets_at) : 0;
+      const name = w.name === '5h' ? tr('5 小时') : w.name === '7d' ? tr('周') : w.name;
+      if (r && r <= now) return tr('{name} 已重置', { name });
+      const pct = Math.round(w.used) + '%';
+      return r ? tr('{name} {pct}，{time} 重置', { name, pct, time: at(r) }) : name + ' ' + pct;
+    }).join(' · ');
+  }
+
   function shareView(getMarket) {
     let st = null;    // the last /api/v1/status; null while the network is not joined
     let kinds = null; // what can be added; fetched once
@@ -601,7 +617,10 @@ I18N.ready.then(() => {
             h('span', { class: 'mono' }, p.base_url),
             p.token_expires ? h('span', null, p.can_refresh ? tr('令牌有效期至 {time}（会自动续期）', { time: clock(p.token_expires) }) : tr('令牌有效期至 {time}（需重新登录续期）', { time: clock(p.token_expires) })) : null,
             p.runtime?.retry_at && new Date(p.runtime.retry_at) > new Date() ? h('span', null, tr('上游限流，{time} 后恢复', { time: clock(p.runtime.retry_at) })) : null,
-            p.headers && p.headers.length ? h('span', null, tr('附加请求头：{names}', { names: p.headers.join(', ') })) : null),
+            p.headers && p.headers.length ? h('span', null, tr('附加请求头：{names}', { names: p.headers.join(', ') })) : null,
+            p.warm_capable && p.usage ? h('span', { class: 'prov-usage' }, tr('用量：{text}', { text: usageText(p.usage) })) : null,
+            p.warm_capable ? h('span', { class: 'prov-warmup', title: tr('在“设置 → 预热”里修改') }, p.warmup && (p.warmup.times || []).length ? tr('预热：每天 {times}', { times: p.warmup.times.join(' ') })
+              : p.warmup && p.warmup.on_reset ? tr('预热：窗口重置时') : tr('预热：未开启')) : null),
           p.models.length === 0 ? h('div', { class: 'empty prov-empty' }, tr('还没有要出售的模型')) : modelTable(p, p.models, serving))));
 
       const lm = s.models || [];
@@ -1279,6 +1298,94 @@ I18N.ready.then(() => {
     return { bar, panes: Object.values(panes), show };
   }
 
+  // ---- warm-up (internal/warmup) ----
+
+  // The warm-up: the Claude Code and Codex of this machine, and the Claude
+  // and ChatGPT logins sold, each with times of day to start its 5-hour
+  // window at, and whether to start windows as they reset.
+  function warmupView() {
+    const panel = section('warmup', tr('预热'), { fill: true, hint: tr('Claude 和 ChatGPT 订阅的 5 小时窗口从重置后的第一次请求开始计时。在设定的时间发一条极小的请求，窗口就提前开始，工作时更早重置。只在本机运行，不经过 sharetoken 网络。') });
+    const err = errorBox('warmup-error');
+    let st = null;
+    const RESET = { '': tr('不预热'), week: tr('周窗口'), all: tr('5 小时和周窗口') };
+    const RESULT = { warmed: tr('已预热'), running: tr('窗口已在运行'), used_up: tr('额度已用完，未发送'), failed: tr('失败') };
+    const SKIP = { paused: tr('已暂停'), disabled: tr('厂商已停用'), not_installed: tr('未找到程序'), off: tr('未开启') };
+    const label = t => t.kind === 'local' ? (t.agent === 'claude' ? tr('Claude Code（本机）') : tr('Codex（本机）')) : t.name;
+    const clock = d => new Date(d).toLocaleString(I18N.lang, { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    function last(t) {
+      if (t.skip && t.skip !== 'off' && !t.last_try) return h('span', { class: 'muted', title: t.skip_error || '' }, SKIP[t.skip] || t.skip);
+      if (!t.last_try) return '—';
+      const text = (RESULT[t.result] || t.result) + ' · ' + clock(t.last_try);
+      return h('span', { class: t.result === 'failed' ? 'warn-text' : null, title: t.error || t.last_model || '' }, text);
+    }
+    function render() {
+      if (!st) return;
+      const pause = h('input', { type: 'checkbox', id: 'warmup-paused', checked: st.paused || null, onchange: async () => {
+        pause.disabled = true;
+        try { st = await api('PUT', '/api/v1/warmup', { paused: pause.checked }); err.say(''); }
+        catch (e) { err.say(message(e)); }
+        render();
+      } });
+      panel.set(JSON.stringify(st), err.el,
+        h('div', { class: 'warmup-top' }, h('label', { class: 'check' }, pause, h('span', null, tr('暂停所有自动预热'))),
+          h('span', { class: 'small muted', id: 'warmup-zone' }, tr('时间按本机时区：{zone}', { zone: st.zone }))),
+        table([
+          { title: tr('账号'), get: t => h('span', { title: t.account || t.binary || '' }, label(t)) },
+          { title: tr('每日时间'), get: t => t.enabled && t.times.length ? t.times.join(' ') : '—' },
+          { title: tr('窗口重置时'), get: t => t.enabled ? RESET[t.on_reset || ''] : '—' },
+          { title: tr('窗口'), get: t => usageText(t.usage) },
+          { title: tr('最近一次'), get: last },
+          { title: '', get: t => h('span', { class: 'actions' },
+            h('button', { type: 'button', class: 'small', id: 'warmup-edit-' + t.id, onclick: () => dialog(t) }, tr('设置')),
+            h('button', { type: 'button', class: 'small', id: 'warmup-run-' + t.id, disabled: t.skip === 'not_installed' || null, onclick: e => runNow(e.currentTarget, t) }, tr('立即预热'))) },
+        ], st.targets));
+    }
+    async function runNow(btn, t) {
+      btn.disabled = true;
+      btn.textContent = tr('预热中…');
+      try { await api('POST', '/api/v1/warmup/run', { target: t.id }); err.say(''); }
+      catch (e) { err.say(tr('{name} 预热失败：{error}', { name: label(t), error: message(e) })); }
+      await reload();
+    }
+    function dialog(t) {
+      const dErr = errorBox('warmup-dlg-error');
+      const on = h('input', { type: 'checkbox', id: 'warmup-on', checked: t.enabled || null });
+      const times = h('input', { id: 'warmup-times', value: (t.times || []).join(', '), placeholder: '06:00, 11:05' });
+      const reset = h('select', { id: 'warmup-on-reset' }, Object.entries(RESET).map(([v, n]) => h('option', { value: v, selected: (t.on_reset || '') === v || null }, n)));
+      const model = h('input', { id: 'warmup-model', value: t.model || '', placeholder: t.agent === 'claude' ? 'haiku' : tr('默认') });
+      const local = t.kind === 'local';
+      const set = local ? (st.settings[t.agent] || {}) : {};
+      const bin = local ? h('input', { id: 'warmup-binary', value: set.binary || '', placeholder: t.binary || tr('自动查找') }) : null;
+      const save = h('button', { type: 'submit', class: 'primary', id: 'warmup-save' }, tr('保存'));
+      modal('dlg-warmup', tr('预热：{name}', { name: label(t) }), h('form', { onsubmit: e => {
+        e.preventDefault();
+        run(save, dErr, async () => {
+          const list = times.value.split(/[\s,，]+/).filter(Boolean);
+          if (local) {
+            const body = {};
+            body[t.agent] = { enabled: on.checked, times: list, on_reset: reset.value, model: model.value.trim(), binary: bin.value.trim() };
+            st = await api('PUT', '/api/v1/warmup', body);
+          } else {
+            const off = !on.checked;
+            st = await api('PUT', '/api/v1/warmup/providers/' + encodeURIComponent(t.name), off ? {} : { times: list, on_reset: reset.value, model: model.value.trim() });
+          }
+          closeModal(); render();
+        }, e => message(e));
+      } },
+        h('label', { class: 'check' }, on, h('span', null, tr('开启预热'))),
+        field(tr('每日时间'), times, tr('本机时间，可填多个，用逗号分隔。到点时 5 小时窗口没在运行就发一条极小的请求；错过 1 小时以上不补发。')),
+        field(tr('窗口重置时预热'), reset, tr('窗口一重置就启动下一个，不浪费空闲时间。窗口已用完或在用超额额度时不发送。')),
+        field(tr('模型'), model, tr('留空用最便宜的模型。')),
+        bin ? field(tr('程序路径'), bin, tr('留空自动查找。')) : null,
+        dErr.el, save));
+    }
+    async function reload() {
+      try { st = await api('GET', '/api/v1/warmup'); err.say(''); render(); }
+      catch (e) { err.say(message(e)); if (!st) panel.set('err', err.el); }
+    }
+    return { el: panel.el, reload };
+  }
+
   // The window after sign-in: a sidebar that chooses the view, the view, and a
   // status bar. Every view stays in the page, so that polling keeps the hidden
   // ones current and switching shows them at once.
@@ -1351,6 +1458,7 @@ I18N.ready.then(() => {
     const pairing = pairingView();
     const partners = partnersView();
     const share = shareView(() => market);
+    const warm = warmupView();
 
     // name, label, panels, or tabs of panels.
     const VIEWS = [
@@ -1358,7 +1466,7 @@ I18N.ready.then(() => {
       ['share', tr('共享'), null, [['state', tr('状态'), share.panes.state], ['providers', tr('厂商 API'), share.panes.providers], ['local', tr('本机模型'), share.panes.local]]],
       ['pairing', tr('配对'), null, [['partners', tr('共享伙伴'), [partners.partners, partners.settings]], ['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
       ['activity', tr('记录'), null, [['all', tr('全部'), [jobs.el]], ['sold', tr('卖出'), [share.sold]]]],
-      ['settings', tr('设置'), [settings, devices.el]],
+      ['settings', tr('设置'), null, [['general', tr('通用'), [settings, devices.el]], ['warmup', tr('预热'), [warm.el]]]],
     ];
     const views = {}, navButtons = {}, tabs = {}, labels = {};
     const title = h('h1', { id: 'view-title' });
@@ -1622,6 +1730,7 @@ I18N.ready.then(() => {
         // Account data: every third tick; the state: every tick.
         if (tick++ % 3 === 0) {
           loadAPIKey();
+          warm.reload();
           try {
             const [me, j, sj] = await Promise.all([api('GET', '/api/v1/account'), api('GET', '/api/v1/jobs?limit=10'), api('GET', '/api/v1/jobs?role=sell&limit=10')]);
             if (stopped) return;

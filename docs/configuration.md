@@ -172,6 +172,8 @@ The directory is created with mode 0700. Files in it:
 | `run.json` | 0600 | Address and PID of the running client, so the CLI can find it; removed on exit |
 | `providers.json` | 0600 | Hosted APIs the user sells through, with their keys and tokens ([providers.md](providers.md)) |
 | `update.json` | 0600 | The result of the last check for a new release |
+| `warmup.json` | 0600 | Warm-up settings of the Claude Code and Codex of this machine ([warmup.md](warmup.md)) |
+| `warmup-state.json` | 0600 | What the warm-up did and saw, so that a restart sends nothing twice |
 | `daemon.log` | 0600 | Log of the service started by the desktop app ([desktop.md](desktop.md)) |
 
 `config.json` is written by the client itself (`login`, `share …`, and the local API used by the desktop app); `sharetoken config` prints it. It is written to a temporary file and renamed, so a crash does not leave half a file. Its fields:

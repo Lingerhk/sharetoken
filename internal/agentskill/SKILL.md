@@ -23,7 +23,7 @@ The examples below write `sharetoken`; use the command above if `sharetoken` is 
 ## Ground rules
 
 - **Credits are money.** Requests through the endpoint spend the user's credits. Do not send large batches, loops or long generations without the user's go-ahead, and set `max_tokens` on requests.
-- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private`, `partner invite/join/rm/revoke/set`, `apikey on/off/rotate`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `share`, `provider`, `pair`, `partner`, `config`) is always fine.
+- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private`, `partner invite/join/rm/revoke/set`, `apikey on/off/rotate`, `warmup set/run/pause/resume`, `provider warmup`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `share`, `provider`, `pair`, `partner`, `warmup`, `config`) is always fine.
 - **Never put secrets on a command line.** A provider API key goes in through standard input or `$SHARETOKEN_PROVIDER_KEY`, never as an argument. Never print the `token` from `config.json` or `providers.json`; `sharetoken config` masks it.
 - **Sign-in needs the user.** `login` mails a six-digit code to the user's address. Ask the user for the address and then for the code; do not guess them.
 - **`up` runs until stopped.** Start it in the background (or ask the user to run it in a terminal); never wait on it in the foreground.
@@ -112,6 +112,20 @@ sharetoken provider test NAME [-model M]
 sharetoken share add MODEL -provider NAME            # then share one of its models
 sharetoken provider on | off | rm NAME
 ```
+
+## Warm-up
+
+A Claude or ChatGPT (Codex) 5-hour window starts at the first request after it resets. The client can send one tiny request at times of day, so the window resets sooner while the user works: for the Claude Code and Codex of this machine (through their own CLI) and for a sold Claude or ChatGPT login. Each warm-up is a real request on the user's subscription: set it up only when asked.
+
+```bash
+sharetoken warmup                                   # every account, its times, the last result, its windows
+sharetoken warmup set claude|codex [-times 06:00,11:05] [-on-reset off|week|all] [-off]
+sharetoken provider warmup NAME [-times 06:00] [-on-reset off|week|all] [-off]
+sharetoken warmup run [claude|codex|provider:NAME]  # now (needs the client running)
+sharetoken warmup pause | resume
+```
+
+Warm-ups are sent only while the client runs (`sharetoken up` or the desktop app); times are the machine's local time.
 
 `provider login` prints an address the user must open in a browser and then asks for the code or callback address: hand that step to the user.
 
