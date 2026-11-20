@@ -812,6 +812,13 @@ ok(await text('#who') === NORMAL, 'a reload stays logged in');
 await click('#logout');
 await waitFor(el('#signin-form'));
 ok(await ev(`${el('#email')}.value`) === NORMAL, 'after logout the email is pre-filled');
+// Signed out, an invite link that arrives is announced beside the sign-in form.
+ok(!(await shown('#auth-invite')), 'no invite is announced when none came');
+await openLink('sharetoken://p/AAAAAAAAAAAA?h=' + portalHost);
+await waitFor(`${el('#auth-invite')} && !${el('#auth-invite')}.hidden`, 8000); // without a focus event: the page looks every few seconds
+ok(await ev(`(() => { const s = getComputedStyle(${el('#auth-invite')}); return s.color !== s.backgroundColor && ${el('#auth-invite')}.textContent.length > 10; })()`), 'signed out, an arriving invite is announced beside the sign-in form, readable');
+await shot('10a-auth-invite');
+await ev(`kfetch('/api/v1/invite/pending', { method: 'DELETE' })`);
 ok(!(await has('#new-account')), 'nothing announces a new account before a code is asked for');
 ok(!(await has('#cert')) , 'the confirmed certificate is not asked about again');
 const oldToken = config.token;

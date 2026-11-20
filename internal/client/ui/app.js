@@ -197,6 +197,9 @@ I18N.ready.then(() => {
       try { const s = await api('GET', '/api/v1/session'); inviteNote.hidden = !s.invite; } catch (e) { /* stays as it was */ }
     };
     window.addEventListener('focus', checkInvite);
+    // A window brought forward may not get the focus (GNOME on Wayland keeps it
+    // where it was), so look now and then too; the dashboard's stopPolling ends it.
+    poll = setInterval(checkInvite, 3000);
     app.replaceChildren(h('div', { class: 'auth' },
       h('div', { class: 'auth-side' }, h('img', { class: 'auth-logo', src: '/ui/favicon.svg', alt: '' }), h('h1', null, 'ShareToken'), h('p', { class: 'tagline' }, tr('共享和使用模型算力')), inviteNote),
       root));
