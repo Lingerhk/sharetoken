@@ -146,6 +146,8 @@
 | `mail.support` | — | 空 | 用户反馈的地址；管理员的回复也从这里发出 |
 | `downloads.dir` | — | 空 | 客户端安装包所在的目录，在 `/downloads/` 提供下载。为空：不提供下载 |
 | `relay_metrics.*` | — | 关闭 | 经 SSH 读取每个中继的 `/metrics`，供管理控制台的仪表盘使用：`key_file`、`known_hosts_file`、`interval`（1m）、`timeout`（20s），以及 `targets[]`，每项有 `relay`（中继登记里的名称）、`ssh`（`user@host[:port]`）和 `command` |
+| `admin.allow_from` | — | 空 | 允许访问管理页面（`/admin/`）、管理 API（`/api/v1/admin/…`）以及管理员登录的来源：IP 地址、CIDR 网段和域名（域名代表它解析出的全部 A 和 AAAA 地址）。来源是对端地址；对端是回环或 `http.trusted_proxies` 里的代理时，取它传来的 `X-Real-IP`。其他来源访问管理端一律 404，管理员输对邮件验证码后也会被拒绝登录（403）；普通用户和客户端不受影响。不会自动放行回环地址。为空：不限制 |
+| `admin.resolve_interval` | — | 5m | 多久重新解析一次 `admin.allow_from` 里的域名（至少 10s）。解析失败时沿用该域名上一次的地址；从未解析成功的域名不放行任何来源 |
 | `alerts.pushover_file` | — | 空 | 一个含 `PUSHOVER_TOKEN=…` 和 `PUSHOVER_USER=…` 两行的文件：给管理员的告警（有人在猜配对码和邀请码）发到这个 Pushover 账号。每次告警时读取，改了不用重启。为空或读不到：告警只写日志 |
 | `sessions.login_ttl` | `serve -login-ttl` | 1440h | 客户端登录时得到的 token 的有效期（60 天） |
 | `sessions.web_session_ttl` | `serve -session-ttl` | 360h | 浏览器会话的有效期（15 天） |

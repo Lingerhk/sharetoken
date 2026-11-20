@@ -74,8 +74,11 @@ type Config struct {
 	// PushoverFile holds the Pushover account that administrators' alerts
 	// go to (pushover.go). Empty or unreadable: alerts are only logged.
 	PushoverFile string
-	Now          func() time.Time
-	Log          *slog.Logger
+	// AdminAllow limits where the admin pages, the admin API and
+	// administrators' sign-ins may come from (adminallow.go). Empty: anywhere.
+	AdminAllow AdminAllowConfig
+	Now        func() time.Time
+	Log        *slog.Logger
 }
 
 // Server is the portal.
@@ -91,7 +94,7 @@ type Server struct {
 	// codesPaused and linksPaused: until when codes, and the public preview
 	// of links, are refused for everyone because they are being guessed (invites.go).
 	codesPaused, linksPaused time.Time
-	pushoverURL  string // tests point alerts elsewhere (default pushoverAPI)
+	pushoverURL              string // tests point alerts elsewhere (default pushoverAPI)
 
 	feedbackMu sync.Mutex
 	feedbackIP map[string][]time.Time // accepted feedback per client IP, last hour
@@ -109,6 +112,7 @@ type Server struct {
 	background sync.WaitGroup // mail that outlives its request
 
 	relayMetrics *relayMetrics // nil: not configured
+	adminAllow   *adminAllow   // nil: admin access from anywhere
 }
 
 // New prepares the portal on cfg.DB, creating any missing tables.
@@ -163,8 +167,20 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	allow, err := newAdminAllow(cfg.AdminAllow)
+	if err != nil {
+		return nil, err
+	}
+	if allow != nil {
+		// A name that does not resolve now lets nobody in until it does;
+		// the portal still starts (Run keeps trying).
+		for _, err := range allow.resolve(context.Background()) {
+			cfg.Log.Warn("admin.allow_from: lookup failed", "err", err)
+		}
+		cfg.Log.Info("admin access limited", "allow_from", strings.Join(cfg.AdminAllow.From, ","))
+	}
 	srv := &Server{
-		cfg: cfg, db: cfg.DB, log: cfg.Log, relayMetrics: rm,
+		cfg: cfg, db: cfg.DB, log: cfg.Log, relayMetrics: rm, adminAllow: allow,
 		store:      &accounts.Store{DB: cfg.DB, Now: cfg.Now},
 		mail:       &mailer.Store{DB: cfg.DB, Now: cfg.Now},
 		fails:      make(map[string][]time.Time),
@@ -178,8 +194,12 @@ func New(cfg Config) (*Server, error) {
 	return srv, nil
 }
 
-// Run does the portal's background work (relay metrics) until ctx ends.
+// Run does the portal's background work (relay metrics, resolving
+// admin.allow_from) until ctx ends.
 func (s *Server) Run(ctx context.Context) {
+	if s.adminAllow != nil {
+		go s.runAdminAllow(ctx)
+	}
 	if s.relayMetrics != nil {
 		s.log.Info("reading relay metrics over ssh", "relays", len(s.relayMetrics.cfg.Targets), "every", s.relayMetrics.cfg.Interval)
 		s.relayMetrics.run(ctx)
@@ -467,7 +487,7 @@ func (s *Server) Handler() http.Handler {
 	s.sharingRoutes(mux)
 	s.inviteRoutes(mux)
 	s.settingsRoutes(mux)
-	return withLimits(mux)
+	return withLimits(s.guardAdmin(mux))
 }
 
 const maxBody = 64 << 10
@@ -525,7 +545,7 @@ func (s *Server) auth(h authedHandler) http.Handler {
 }
 
 func (s *Server) admin(h authedHandler) http.Handler {
-	return s.auth(func(w http.ResponseWriter, r *http.Request, cu ctxUser) {
+	authed := s.auth(func(w http.ResponseWriter, r *http.Request, cu ctxUser) {
 		if !cu.user.Admin {
 			writeErr(w, http.StatusForbidden, "forbidden", "admin only")
 			return
@@ -541,6 +561,14 @@ func (s *Server) admin(h authedHandler) http.Handler {
 			return
 		}
 		s.audited(w, r, cu, h)
+	})
+	// guardAdmin already refuses by path; this keeps any admin route safe.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.adminAllowed(r) {
+			http.NotFound(w, r)
+			return
+		}
+		authed.ServeHTTP(w, r)
 	})
 }
 

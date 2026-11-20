@@ -109,6 +109,12 @@ type File struct {
 	Alerts struct {
 		PushoverFile string `yaml:"pushover_file"` // PUSHOVER_TOKEN=… and PUSHOVER_USER=… lines
 	} `yaml:"alerts"`
+	// Admin: where the admin pages, the admin API and administrators' sign-ins
+	// may come from. allow_from empty: anywhere.
+	Admin struct {
+		AllowFrom       []string        `yaml:"allow_from"`       // IP addresses, CIDR prefixes, host names (every A/AAAA address)
+		ResolveInterval config.Duration `yaml:"resolve_interval"` // how often host names are resolved again (default 5m)
+	} `yaml:"admin"`
 	Sessions struct {
 		LoginTTL      config.Duration `yaml:"login_ttl"`
 		WebSessionTTL config.Duration `yaml:"web_session_ttl"`
@@ -175,6 +181,12 @@ func (f *File) validate() error {
 		if _, err := netmail.ParseAddress(a); err != nil {
 			bad("%s: %v", name, err)
 		}
+	}
+	if err := portal.ParseAdminAllow(f.Admin.AllowFrom); err != nil {
+		bad("%v", err)
+	}
+	if f.Admin.ResolveInterval < 0 || (f.Admin.ResolveInterval > 0 && f.Admin.ResolveInterval < config.D("10s")) {
+		bad("admin.resolve_interval %v: use at least 10s", f.Admin.ResolveInterval)
 	}
 	if f.Sessions.PassTTL > 0 && f.Sessions.PassTTL < config.D("5m") {
 		bad("sessions.pass_ttl %v: clients renew passes ahead of expiry; use at least 5m", f.Sessions.PassTTL)
@@ -333,7 +345,8 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 		LoginTTL: f.Sessions.LoginTTL.T(), PassKey: passKey, PassTTL: f.Sessions.PassTTL.T(), WebSessionTTL: f.Sessions.WebSessionTTL.T(),
 		SecureCookies: mode == "proxy", TrustedProxies: trustedProxies(f.HTTP.TrustedProxies), MFAKey: mfaKey, Log: lg,
 		Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir,
-		MFAIssuer: f.Accounts.MFAIssuer, RelayMetrics: relayMetricsConfig(f), PushoverFile: f.Alerts.PushoverFile})
+		MFAIssuer: f.Accounts.MFAIssuer, RelayMetrics: relayMetricsConfig(f), PushoverFile: f.Alerts.PushoverFile,
+		AdminAllow: portal.AdminAllowConfig{From: f.Admin.AllowFrom, Refresh: f.Admin.ResolveInterval.T()}})
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -68,6 +68,16 @@ mail:
 alerts:
   pushover_file: ""  # PUSHOVER_TOKEN=… and PUSHOVER_USER=… lines; administrators' alerts go there. Empty: only logged
 
+# Where the admin pages (/admin/), the admin API (/api/v1/admin/…) and
+# administrators' sign-ins may come from. The source is the peer's address, or
+# X-Real-IP from a proxy on loopback or in http.trusted_proxies. Elsewhere the
+# admin side answers 404 and administrators cannot sign in; everything else is
+# unchanged. Empty: no limit. Loopback is not implied: list 127.0.0.1 to reach
+# the admin side through an SSH tunnel.
+admin:
+  allow_from: []        # IP addresses, CIDR prefixes (198.51.100.0/24) and host names (every A/AAAA address)
+  resolve_interval: 5m  # how often host names are resolved again; a failed lookup keeps the last addresses
+
 downloads:
   dir: ""      # directory of client packages, served at /downloads/; empty: none
 
