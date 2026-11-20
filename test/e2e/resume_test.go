@@ -156,3 +156,45 @@ func TestBrokenJobIsBilledAfterTheResumeWindow(t *testing.T) {
 		t.Fatalf("node penalized for the buyer leaving: %+v", st)
 	}
 }
+
+// The connection to the only node offering the model breaks before any byte
+// of the answer came back (a route change on the buyer's machine: "quic:
+// transport closed … can't assign requested address"). Nothing reached the
+// caller, there is no other node to fail over to, and the node may be fine:
+// it is asked once more over a new connection and the answer arrives.
+func TestBrokenPathBeforeTheFirstByteAsksTheNodeAgain(t *testing.T) {
+	m := newMarket(t)
+	var calls atomic.Int32
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			started <- struct{}{}
+			select { // the first job never answers: its path breaks
+			case <-r.Context().Done():
+			case <-release:
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(up.Close)
+	t.Cleanup(func() { close(release) }) // before up.Close
+	nodeHost, _ := m.addNode(up.URL, priceIn, priceOut)
+	m.waitOffers(1)
+	cl, buyerHost, _ := m.addBuyer(5_000_000)
+	go func() {
+		<-started
+		_ = buyerHost.Network().ClosePeer(nodeHost.ID())
+	}()
+	res, err := cl.Chat(m.ctx, buyer.ChatRequest{Model: model, Body: []byte(body), BudgetMicros: 1_000_000}, nil)
+	if err != nil {
+		t.Fatalf("job failed: %v", err)
+	}
+	if res.Content != "hello" || !res.Verified || res.Timing.Attempts != 2 || calls.Load() != 2 {
+		t.Fatalf("content %q verified=%v attempts=%d upstream calls=%d", res.Content, res.Verified, res.Timing.Attempts, calls.Load())
+	}
+}

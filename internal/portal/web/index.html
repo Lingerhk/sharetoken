@@ -197,7 +197,7 @@ curl http://127.0.0.1:9787/v1/chat/completions \
     </div>
     <div class="term">
       <h3>赚 credit</h3>
-      <p>把本机 Ollama 里的模型共享出去。不需要公网 IP，节点经中继打通连接。</p>
+      <p>把本机 Ollama 里的模型共享出去。不需要公网 IP，节点经中继打通连接；买卖双方都开启直连隧道时，流量在两端之间直接传输。</p>
       <pre><code><span class="c"># 共享一个本地模型</span>
 sharetoken share add gemma4:e4b -id gemma-4-e4b
 
@@ -274,7 +274,7 @@ sharetoken up</code></pre>
     <p class="lead">转发流量的看不到内容，记账的不碰数据路径，管账户的不撮合交易。</p>
   </div>
   <div class="grid-4 reveal">
-    <div><h4>用户</h4><p>买家和卖家在同一个进程里。自动测 RTT，选最快的中继，中继故障时自动切换。</p></div>
+    <div><h4>用户</h4><p>买家和卖家在同一个进程里。自动测 RTT，选最快的中继，中继故障时自动切换；开启直连隧道后，买卖双方经加密隧道直接相连。</p></div>
     <div><h4>中继</h4><p>有多个，只转发加密流量。读不到明文，不记账，只给持有效凭证的设备预约。</p></div>
     <div><h4>协调器</h4><p>撮合、结算、争议和抽检。不监听任何端口，只能经中继访问，暴露面很小。</p></div>
     <div><h4>门户</h4><p>注册登录、API token、设备绑定、账单和中继登记，就是你现在看到的这个网站。</p></div>

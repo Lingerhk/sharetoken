@@ -52,6 +52,11 @@ type network struct {
 	passKey ed25519.PrivateKey
 	// healthEvery is the clients' health-check interval (default 200ms).
 	healthEvery time.Duration
+	// errandFirst is when clients first ask for errands (default 20s).
+	errandFirst time.Duration
+	// privateGrace is how long clients wait for their private relays
+	// (default: the client's 30s).
+	privateGrace time.Duration
 }
 
 func newNetwork(t *testing.T, relays int, relayOpts ...func(*relay.Config)) *network {
@@ -194,6 +199,8 @@ func (n *network) userWith(name string, share *client.ShareConfig, listen string
 	}
 	a := client.NewAgent(home, cfg)
 	a.HealthEvery, a.MeasureEvery = cmp.Or(n.healthEvery, 200*time.Millisecond), time.Hour
+	a.ErrandFirst = n.errandFirst
+	a.PrivateGrace = n.privateGrace
 	a.HostOptions = []libp2p.Option{libp2p.ConnectionGater(gater)}
 	if err := a.Start(n.ctx); err != nil {
 		n.t.Fatalf("starting %s: %v", name, err)

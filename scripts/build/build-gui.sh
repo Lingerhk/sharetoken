@@ -41,6 +41,7 @@ VERSION=$(scripts/build/version.sh)
 NUMERIC=${VERSION%%-*}  # macOS and Windows metadata take only numbers
 STAMP=sharetoken-build-type=$ENV
 LDFLAGS=$(scripts/build/ldflags.sh "$ENV")
+TAGS=$(scripts/build/tags.sh)
 SHELL_LDFLAGS="-s -w -X main.buildType=$STAMP -X main.version=$VERSION"
 
 fill() { # template: the packaging files name the build type with @ENV@ and so on
@@ -75,7 +76,7 @@ build_macos() { # architecture
   export MACOSX_DEPLOYMENT_TARGET=13.0 CGO_LDFLAGS="-mmacosx-version-min=13.0"
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$app/Contents/MacOS/$EXE" ./cmd/sharetoken
+  CGO_ENABLED=0 go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$app/Contents/MacOS/$EXE" ./cmd/sharetoken
   build_shell "$app/Contents/MacOS/$GUI"
   verify "$app/Contents/MacOS/$EXE" "$app/Contents/MacOS/$GUI"
   fill gui/packaging/Info.plist > "$app/Contents/Info.plist"
@@ -154,7 +155,7 @@ windows)
   DIR=$OUT/$BASE
   rm -rf "$DIR"
   mkdir -p "$DIR"
-  CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/$EXE.exe" ./cmd/sharetoken
+  CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$DIR/$EXE.exe" ./cmd/sharetoken
   trap 'rm -f gui/rsrc_windows_*.syso' EXIT
   go run github.com/tc-hib/go-winres@v0.3.3 make --in gui/packaging/winres.json --arch "$ARCH" --out gui/rsrc
   (cd gui && CGO_ENABLED=0 GOOS=windows GOARCH=$ARCH go build -trimpath -ldflags "$SHELL_LDFLAGS -H windowsgui" -o "../$DIR/$GUI.exe" .)
@@ -176,7 +177,7 @@ Linux)
   DIR=$OUT/$BASE
   rm -rf "$DIR"
   mkdir -p "$DIR"
-  CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o "$DIR/$EXE" ./cmd/sharetoken
+  CGO_ENABLED=0 go build -trimpath -tags "$TAGS" -ldflags "$LDFLAGS" -o "$DIR/$EXE" ./cmd/sharetoken
   build_shell "$DIR/$GUI"
   verify "$DIR/$EXE" "$DIR/$GUI"
   # The package: programs on every user's PATH, an entry in the application menu,

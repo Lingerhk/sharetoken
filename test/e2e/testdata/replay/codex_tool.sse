@@ -1,0 +1,48 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_{{ID}}","object":"response","created_at":{{NOW}},"status":"in_progress","background":false,"error":null,"incomplete_details":null,"instructions":"","max_output_tokens":null,"max_tool_calls":null,"model":"{{MODEL}}","output":[],"parallel_tool_calls":true,"previous_response_id":null,"prompt_cache_key":"{{ID}}","reasoning":{"effort":"medium","summary":"auto"},"safety_identifier":null,"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"low"},"tool_choice":"auto","tools":[],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_{{ID}}","object":"response","created_at":{{NOW}},"status":"in_progress","model":"{{MODEL}}","output":[],"usage":null}}
+
+event: codex.rate_limits
+data: {"type":"codex.rate_limits","plan_type":"plus","rate_limits":{"primary":{"used_percent":4.0,"window_minutes":300,"reset_at":{{NOW}}},"secondary":{"used_percent":1.0,"window_minutes":10080,"reset_at":{{NOW}}}}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"id":"rs_{{ID}}","type":"reasoning","encrypted_content":"gAAAAABpZ{{ID}}Qm9vVG9rZW5FbmNyeXB0ZWRSZWFzb25pbmdCbG9iX19fX19fX19fX19fX19fX19fX19fX19fX19f","summary":[]}}
+
+event: response.reasoning_summary_part.added
+data: {"type":"response.reasoning_summary_part.added","sequence_number":3,"item_id":"rs_{{ID}}","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","sequence_number":4,"item_id":"rs_{{ID}}","output_index":0,"summary_index":0,"delta":"**Checking the file**\n\nThe user wants the file's content; ","obfuscation":"x1"}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","sequence_number":5,"item_id":"rs_{{ID}}","output_index":0,"summary_index":0,"delta":"I'll read it with a command.","obfuscation":"x2"}
+
+event: response.reasoning_summary_text.done
+data: {"type":"response.reasoning_summary_text.done","sequence_number":6,"item_id":"rs_{{ID}}","output_index":0,"summary_index":0,"text":"**Checking the file**\n\nThe user wants the file's content; I'll read it with a command."}
+
+event: response.reasoning_summary_part.done
+data: {"type":"response.reasoning_summary_part.done","sequence_number":7,"item_id":"rs_{{ID}}","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":"**Checking the file**\n\nThe user wants the file's content; I'll read it with a command."}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":8,"output_index":0,"item":{"id":"rs_{{ID}}","type":"reasoning","encrypted_content":"gAAAAABpZ{{ID}}Qm9vVG9rZW5FbmNyeXB0ZWRSZWFzb25pbmdCbG9iX19fX19fX19fX19fX19fX19fX19fX19fX19f","summary":[{"type":"summary_text","text":"**Checking the file**\n\nThe user wants the file's content; I'll read it with a command."}]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":9,"output_index":1,"item":{"id":"fc_{{ID}}","type":"function_call","status":"in_progress","arguments":"","call_id":"{{CALL}}","name":"{{TOOL}}"}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":10,"item_id":"fc_{{ID}}","output_index":1,"delta":"{{ARGS_A}}","obfuscation":"y1"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":11,"item_id":"fc_{{ID}}","output_index":1,"delta":"{{ARGS_B}}","obfuscation":"y2"}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","sequence_number":12,"item_id":"fc_{{ID}}","output_index":1,"arguments":"{{ARGS}}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":13,"output_index":1,"item":{"id":"fc_{{ID}}","type":"function_call","status":"completed","arguments":"{{ARGS}}","call_id":"{{CALL}}","name":"{{TOOL}}"}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":14,"response":{"id":"resp_{{ID}}","object":"response","created_at":{{NOW}},"status":"completed","background":false,"error":null,"incomplete_details":null,"model":"{{MODEL}}","output":[{"id":"rs_{{ID}}","type":"reasoning","encrypted_content":"gAAAAABpZ{{ID}}Qm9vVG9rZW5FbmNyeXB0ZWRSZWFzb25pbmdCbG9iX19fX19fX19fX19fX19fX19fX19fX19fX19f","summary":[{"type":"summary_text","text":"**Checking the file**\n\nThe user wants the file's content; I'll read it with a command."}]},{"id":"fc_{{ID}}","type":"function_call","status":"completed","arguments":"{{ARGS}}","call_id":"{{CALL}}","name":"{{TOOL}}"}],"parallel_tool_calls":true,"store":false,"usage":{"input_tokens":6120,"input_tokens_details":{"cached_tokens":5888},"output_tokens":214,"output_tokens_details":{"reasoning_tokens":160},"total_tokens":6334},"user":null,"metadata":{}}}
+

@@ -55,31 +55,6 @@ func wantAll(t *testing.T, got string, parts ...string) {
 	}
 }
 
-func TestAnthropicRequest(t *testing.T) {
-	req, err := anthropicRequest(mustChat(t), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := asJSON(t, req)
-	wantAll(t, got,
-		`"system":[{"text":"Be brief.","type":"text"}]`,
-		`"max_tokens":900`, `"temperature":0.4`, `"stop_sequences":["END"]`,
-		`{"source":{"data":"QUJD","media_type":"image/png","type":"base64"},"type":"image"}`,
-		`{"id":"call_1","input":{"q":"cat"},"name":"lookup","type":"tool_use"}`,
-		// The tool result and the next user message are one user turn.
-		`{"content":[{"content":[{"text":"a cat","type":"text"}],"tool_use_id":"call_1","type":"tool_result"},{"text":"And now?","type":"text"}],"role":"user"}`,
-		`"tool_choice":{"type":"any"}`, `"input_schema":{`)
-	if strings.Contains(got, "top_p") {
-		t.Error("temperature and top_p must not go out together")
-	}
-	// A model with a small output limit gets no more than it takes.
-	c := mustChat(t)
-	c.Model, c.MaxTokens = "claude-3-5-haiku-20241022", 32768
-	if req, _ = anthropicRequest(c, 0); req["max_tokens"] != uint64(8192) {
-		t.Errorf("max_tokens = %v", req["max_tokens"])
-	}
-}
-
 // collect runs a stream parser over SSE payloads and returns what a buyer reads.
 func collect(t *testing.T, feed func(emit func([]byte) error) error) (text, reasoning, finish string, calls []protocol.ToolCall, usage *protocol.Usage) {
 	t.Helper()
@@ -104,124 +79,6 @@ func collect(t *testing.T, feed func(emit func([]byte) error) error) (text, reas
 		t.Fatal(err)
 	}
 	return text, reasoning, finish, acc.Calls(), usage
-}
-
-func TestAnthropicStream(t *testing.T) {
-	events := []string{
-		`{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":2,"output_tokens":1}}}`,
-		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}`,
-		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}`,
-		`{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
-		`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hi "}}`,
-		`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"there"}}`,
-		`{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_1","name":"lookup"}}`,
-		`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}`,
-		`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"cat\"}"}}`,
-		`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":42}}`,
-		`{"type":"message_stop"}`,
-	}
-	text, reasoning, finish, calls, usage := collect(t, func(emit func([]byte) error) error {
-		st := &anthropicStream{out: newChunks("m", emit), tool: map[int]int{}}
-		for _, e := range events {
-			if err := st.event([]byte(e)); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if text != "Hi there" || reasoning != "hmm" || finish != "tool_calls" {
-		t.Fatalf("text %q reasoning %q finish %q", text, reasoning, finish)
-	}
-	if len(calls) != 1 || calls[0].ID != "toolu_1" || calls[0].Function.Name != "lookup" || calls[0].Function.Arguments != `{"q":"cat"}` {
-		t.Fatalf("calls %+v", calls)
-	}
-	if usage == nil || usage.PromptTokens != 17 || usage.CompletionTokens != 42 {
-		t.Fatalf("usage %+v", usage)
-	}
-	// An error in the stream fails the job as the server's.
-	st := &anthropicStream{out: newChunks("m", func([]byte) error { return nil }), tool: map[int]int{}}
-	var se *node.StatusError
-	if err := st.event([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`)); !errors.As(err, &se) || se.Status != 503 {
-		t.Fatalf("error event: %v", err)
-	}
-}
-
-func TestResponsesRequestAndStream(t *testing.T) {
-	c := mustChat(t)
-	c.Tools[0].Function.Name = "python" // reserved by the backend
-	c.Messages[2].ToolCalls[0].Function.Name = "python"
-	req, err := responsesRequest(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := asJSON(t, req)
-	wantAll(t, got,
-		`"instructions":"Be brief."`, `"store":false`, `"stream":true`, `"include":["reasoning.encrypted_content"]`,
-		`{"image_url":"data:image/png;base64,QUJD","type":"input_image"}`,
-		`{"content":[{"text":"Let me look.","type":"output_text"}],"role":"assistant","type":"message"}`,
-		`{"arguments":"{\"q\":\"cat\"}","call_id":"call_1","name":"python__st","type":"function_call"}`,
-		`{"call_id":"call_1","output":"a cat","type":"function_call_output"}`,
-		`"name":"python__st","parameters":`, `"tool_choice":"required"`)
-	for _, banned := range []string{"temperature", "top_p", "max_tokens", "max_output_tokens", `"stop"`} {
-		if strings.Contains(got, banned) {
-			t.Errorf("%s must not reach the Codex backend: %s", banned, got)
-		}
-	}
-
-	events := []string{
-		`{"type":"response.created","response":{"id":"resp_1"}}`,
-		`{"type":"response.reasoning_summary_text.delta","delta":"thinking"}`,
-		`{"type":"response.output_text.delta","delta":"Hel"}`,
-		`{"type":"response.output_text.delta","delta":"lo"}`,
-		`{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","call_id":"call_9","name":"python__st"}}`,
-		`{"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"code\":"}`,
-		`{"type":"response.function_call_arguments.delta","output_index":2,"delta":"\"1\"}"}`,
-		`{"type":"response.completed","response":{"usage":{"input_tokens":31,"output_tokens":12}}}`,
-	}
-	text, reasoning, finish, calls, usage := collect(t, func(emit func([]byte) error) error {
-		st := &responsesStream{out: newChunks("m", emit), tool: map[int]int{}}
-		for _, e := range events {
-			if err := st.event([]byte(e)); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if text != "Hello" || reasoning != "thinking" || finish != "tool_calls" || usage == nil || usage.PromptTokens != 31 || usage.CompletionTokens != 12 {
-		t.Fatalf("text %q reasoning %q finish %q usage %+v", text, reasoning, finish, usage)
-	}
-	if len(calls) != 1 || calls[0].Function.Name != "python" || calls[0].Function.Arguments != `{"code":"1"}` {
-		t.Fatalf("calls %+v", calls)
-	}
-}
-
-// The Codex backend takes no output limit: the stream is cut where the
-// buyer's reservation ends.
-func TestCodexStreamIsCutAtTheOutputLimit(t *testing.T) {
-	var sent int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer at-1" || r.Header.Get("chatgpt-account-id") != "acct-1" || r.Header.Get("originator") != "codex_cli_rs" ||
-			!strings.HasPrefix(r.Header.Get("User-Agent"), "codex_cli_rs/"+r.Header.Get("version")) || r.Header.Get("session_id") == "" {
-			http.Error(w, "bad headers", http.StatusNotFound)
-			return
-		}
-		fl := w.(http.Flusher)
-		for range 2000 {
-			if _, err := fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"word word word word \"}\n\n"); err != nil {
-				return
-			}
-			sent++
-			fl.Flush()
-		}
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":9999}}}\n\n")
-	}))
-	defer srv.Close()
-	up := &codexUpstream{base: srv.URL, ts: FixedToken(&Token{AccessToken: "at-1", AccountID: "acct-1"})}
-	body := `{"model":"gpt-5.4","stream":true,"max_tokens":50,"messages":[{"role":"user","content":"go on"}]}`
-	text, _, finish, _, usage := collect(t, func(emit func([]byte) error) error { return up.Stream(context.Background(), []byte(body), emit) })
-	if finish != "length" || usage == nil || usage.CompletionTokens < 50 || usage.CompletionTokens > 80 || len(text) > 2000 {
-		t.Fatalf("finish %q usage %+v, %d bytes of text", finish, usage, len(text))
-	}
 }
 
 func TestGeminiRequestAndStream(t *testing.T) {
@@ -274,11 +131,11 @@ func TestGeminiRequestAndStream(t *testing.T) {
 
 func TestLimitOutput(t *testing.T) {
 	body := []byte(`{"model":"gpt-x","max_tokens":32768,"messages":[]}`)
-	out, err := limitOutput(body, &outputLimits{set: map[string]uint64{"gpt-x": 4096}}, "max_completion_tokens")
+	out, err := limitOutput(body, &outputLimits{set: map[string]uint64{"gpt-x": 4096}}, "max_tokens", "max_completion_tokens")
 	if err != nil || !strings.Contains(string(out), `"max_completion_tokens":4096`) || strings.Contains(string(out), `"max_tokens"`) {
 		t.Fatalf("%s %v", out, err)
 	}
-	if out, _ = limitOutput(body, &outputLimits{}, ""); string(out) != string(body) {
+	if out, _ = limitOutput(body, &outputLimits{}, "max_tokens", ""); string(out) != string(body) {
 		t.Fatalf("untouched body changed: %s", out)
 	}
 }
@@ -307,7 +164,9 @@ func TestOutputLimitIsLearntFromTheRefusal(t *testing.T) {
 		up := &openAIUpstream{base: srv.URL, header: http.Header{}}
 		body := []byte(`{"model":"m","max_tokens":32768,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 		for range 2 {
-			if text, _, _, _, _ := collect(t, func(emit func([]byte) error) error { return up.Stream(context.Background(), body, emit) }); text != "ok" {
+			if text, _, _, _, _ := collect(t, func(emit func([]byte) error) error {
+				return up.Stream(context.Background(), &node.Request{API: protocol.APIChat, Body: body}, emit)
+			}); text != "ok" {
 				t.Fatalf("%s: text %q", name, text)
 			}
 		}
@@ -328,23 +187,27 @@ func TestOutputLimitIsLearntFromTheRefusal(t *testing.T) {
 	}
 }
 
-// Tokens a model spent out of the buyer's sight are not claimed: the buyer
-// would reject the receipt, and the job with it.
-func TestHiddenReasoningIsNotBilled(t *testing.T) {
-	up := &billable{up: streamOf(
+// Probe bills what a buyer accepts: output the buyer saw by its text, hidden
+// reasoning (reported reasoning tokens) up to the job's limit.
+func TestProbeBillsWhatTheBuyerAccepts(t *testing.T) {
+	up := streamOf(
 		`{"choices":[{"delta":{"content":"pong"}}]}`,
-		`{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":74,"total_tokens":85}}`)}
+		`{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":74,"total_tokens":85}}`)
 	res, err := Probe(context.Background(), up, "m", "")
 	if err != nil || res.CompletionTokens != 2*1+64 || res.Reported != 74 || res.PromptTokens != 11 {
 		t.Fatalf("%+v, %v", res, err)
 	}
-	if protocol.UsagePlausible(res.PromptTokens, res.CompletionTokens, 100, protocol.EstimateTokens(res.Text)) != nil {
-		t.Fatal("the claim would still be rejected")
+	up = streamOf(
+		`{"choices":[{"delta":{"content":"pong"}}]}`,
+		`{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":300,"completion_tokens_details":{"reasoning_tokens":290}}}`)
+	if res, err = Probe(context.Background(), up, "m", ""); err != nil || res.CompletionTokens != 300 || res.Reported != 0 {
+		t.Fatalf("hidden reasoning within the limit: %+v, %v", res, err)
 	}
-	// A count the buyer can check goes through as it is.
-	up = &billable{up: streamOf(`{"choices":[{"delta":{"content":"pong"}}]}`, `{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3}}`)}
-	if res, err = Probe(context.Background(), up, "m", ""); err != nil || res.CompletionTokens != 3 || res.Reported != 0 {
-		t.Fatalf("%+v, %v", res, err)
+	up = streamOf(
+		`{"choices":[{"delta":{"content":"pong"}}]}`,
+		`{"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3000,"completion_tokens_details":{"reasoning_tokens":2990}}}`)
+	if res, err = Probe(context.Background(), up, "m", ""); err != nil || res.CompletionTokens != 512 || res.Reported != 3000 {
+		t.Fatalf("hidden reasoning past the limit: %+v, %v", res, err)
 	}
 }
 
@@ -352,7 +215,9 @@ type streamOf2 []string
 
 func streamOf(payloads ...string) node.Upstream { return streamOf2(payloads) }
 
-func (s streamOf2) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
+func (s streamOf2) APIs() []string { return []string{protocol.APIChat} }
+
+func (s streamOf2) Stream(ctx context.Context, _ *node.Request, emit func([]byte) error) error {
 	for _, p := range s {
 		if err := emit([]byte(p)); err != nil {
 			return err

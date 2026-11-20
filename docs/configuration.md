@@ -33,11 +33,13 @@ Example: [`configs/relay.example.yaml`](../configs/relay.example.yaml). The acce
 | `identity.key_file` | `-key` | `relay.key` | Identity seed, created with mode 0600 if missing. The relay's address contains the peer ID derived from it, so keep the file |
 | `network.listen` | `-listen` | TCP and QUIC on IPv4 and IPv6, port 4001 | Listen multiaddrs. IPv6 listeners are skipped on a host without IPv6 |
 | `network.announce` | `-announce` | empty | Public multiaddrs to advertise instead of the interface addresses: needed behind 1:1 NAT. `/dns4` and `/dns6` names are accepted; when a name is announced, the `portal relay add` hint the relay prints uses only the names |
-| `network.max_conns` | `-max-conns` | 8192 | Connection-manager high watermark. The resource manager's system-wide connection and stream counts are raised to fit it |
+| `network.max_conns` | `-max-conns` | 8192 | Connection-manager high watermark. The resource manager's system-wide connection and stream counts are raised to fit it Apart from it, a relay and the coordinator accept 32 connections from one IPv4 address or one IPv6 /56 (256 from a /48), four times libp2p's default, so that the users behind one NAT fit; this is not configurable |
 | `access.networks` | — | empty | The networks this relay serves, one entry each. Empty means an open relay: anyone may reserve (a warning is printed) |
 | `access.networks[].name` | — | — | Required, unique |
 | `access.networks[].portal_keys` | — | — | Required. The network's portal pass keys (`portal pass-key`); several during a key rotation. A key cannot appear in two networks |
 | `access.networks[].allow_peers` | — | empty | Peers that may reserve without a pass: the network's coordinator (`coordinator id`). A peer cannot appear in two networks. Empty produces a warning, since the coordinator then cannot reserve here |
+| `access.networks[].allow_accounts` | — | empty | Makes the relay private: only devices of these accounts of the network (`user:3`) may reserve. A private relay lists no `allow_peers`. `relay init -account … -out relay.yaml` writes such a file ([security.md](security.md) §2.8) |
+| `access.networks[].portal_url` | — | empty | The network's portal. The relay reads the pass key from it at start and every 6 hours, in addition to `portal_keys`, so that a relay nobody maintains survives a key rotation. https only |
 | `access.networks[].max_devices_per_user` | — | 4 | Devices of one user account that may hold reservations at once. Accounts are counted within their network |
 | `access.networks[].max_reservations` | — | 0 | Cap on the reservations of all devices of this network together; the coordinator does not count. 0: only `limits.max_reservations` applies |
 | `limits.max_reservations` | `-max-reservations` | 4096 | Reservations held at once, all networks together |
@@ -85,13 +87,24 @@ Example: [`configs/coordinator.example.yaml`](../configs/coordinator.example.yam
 | `jobs.max_offer_ttl` | — | 5m | Upper bound on the lifetime an offer may claim |
 | `jobs.job_retention` | — | 720h | How long finished jobs are kept (the ledger is kept forever) |
 | `jobs.suspend_for` | — | 24h | How long a node that failed repeated audits is left out of matching |
-| `references[]` | `-reference` (repeatable) | empty | Reference copies of models: they enable audits and exact token counts in disputes. Each entry has `id` (marketplace model ID), `upstream` (model name on the server), `url` (OpenAI-compatible base URL) and `api_key_env` |
+| `references[]` | `-reference` (repeatable) | empty | Reference copies of models: they enable audits and exact token counts in disputes. Each entry has `id` (marketplace model ID), `upstream` (model name on the server), `url` (OpenAI-compatible base URL), `api_key_env` or `api_key_file`, `verify` (how audits check answers: `vllm`, `deepseek-prefix`, `openai-div`, or `none` for the bill only; default `none`), `verify_url` (base URL audits score against; default `url`) and `params` (extra fields of audit requests, e.g. `{reasoning_effort: none}` for a model that thinks by default) |
 | `audit.interval` | `-audit-interval` | 10m | Mean time between audits; 0 turns audits off |
-| `audit.budget_micros` | `-audit-budget` | 200000 | Hold per audit job, paid from platform fees |
-| `audit.prompts_file` | `-audit-prompts` | empty | Challenge prompts, one per line. Empty: built-in randomized prompts |
-| `audit.max_tokens` | — | 96 | Output limit of a challenge |
-| `audit.match_at` | — | 0.8 | Similarity at or above which a result counts as matching |
-| `audit.mismatch_below` | — | 0.4 | Similarity below which a result counts as a mismatch |
+| `audit.budget_micros` | `-audit-budget` | 200000 | Hold per question, paid from platform fees |
+| `audit.prompts_file` | `-audit-prompts` | empty | Private question pool, one per line: plain text, or `{"system": …, "messages": […]}`. Empty: built-in open questions |
+| `audit.max_tokens` | — | 96 | Output limit of a question |
+| `audit.questions` | `-audit-questions` | 5 | Questions per audit; the verdict is on all of them together |
+| `audit.spread` | `-audit-spread` | 2m | Random pause of up to this long between an audit's questions |
+| `audit.score_tokens` | — | 64 | Positions scored per answer (`deepseek-prefix` makes one call per position) |
+| `audit.threshold` | — | 0.85 | Mean top-1 rate below which a node serves another model, until a calibration measures one for the reference |
+| `audit.margin` | — | 0.03 | `threshold + margin` and above is a match; in between, inconclusive |
+| `audit.div_fails` | — | 2 | `openai-div`: failed answers that make a mismatch; none is a match |
+| `audit.shadow` | `-audit-shadow` | true | Record verdicts without touching nodes' records (a receipt that fails its checks still counts) |
+| `audit.calibrate_every` | — | 24h | How often each scoring reference is calibrated; 0: only by `coordinator audit calibrate` |
+| `audit.calibrate_samples` | — | 40 | Questions per calibration; at least 10 |
+| `audit.delivery` | — | auto | How a question reaches a node. `auto`: a user's client that could buy from the node carries it (sealed, paid by the platform), and an audit identity asks through an official relay when no such client is there; `carried`: clients only; `direct`: audit identities only |
+| `audit.carry_poll` | — | 1m | How often clients ask for a question to carry (while audits run; every 10 minutes otherwise). At least 5s |
+| `audit.carry_wait` | — | 3m | How long a carried question may take to come back. At least 10s |
+| `audit.apis` | — | chat, messages, responses | The APIs questions are asked in, one drawn per question. A reference can narrow it with `apis` |
 | `tee.policy_file` | `-tee-policy` | empty | JSON allow-list of TEE images; setting it enables `require_tee` matching |
 | `tee.online_check` | `-tee-online` | false | Also check revocations and TCB status with AMD and Intel (needs network access) |
 | `debug.pprof_listen` | `-debug` | empty | Serves Go pprof profiles, e.g. `127.0.0.1:6060`; keep it on loopback |
@@ -101,9 +114,10 @@ Example: [`configs/coordinator.example.yaml`](../configs/coordinator.example.yam
 
 Notes:
 
-- Constraints checked at start-up: `jobs.start_grace < jobs.settle_grace < jobs.dispute_window ≤ jobs.job_retention`; `0 < audit.mismatch_below < audit.match_at ≤ 1`; reference IDs are unique.
-- `-reference id=…,upstream=…,url=…[,key-env=VAR]`, when given, replaces the whole `references[]` list. `key-env` corresponds to `api_key_env`.
+- Constraints checked at start-up: `jobs.start_grace < jobs.settle_grace < jobs.dispute_window ≤ jobs.job_retention`; `0 < audit.threshold < audit.threshold + audit.margin ≤ 1`; `1 ≤ audit.div_fails ≤ audit.questions`; reference IDs are unique and `verify` is one of the four kinds.
+- `-reference id=…,upstream=…,url=…[,key-env=VAR]`, when given, replaces the whole `references[]` list. `key-env` corresponds to `api_key_env`, `verify` to `verify`.
 - `audit.interval: 0` turns audits off but keeps the reference models for exact token counting. This suits models served by a commercial API: their output is not deterministic, so audits would misjudge, and each audit costs money.
+- Hosted APIs are not fully deterministic, so audits no longer compare how alike two texts are; they check the node's answer token by token (`docs/security.md` §2.4): DeepSeek with `deepseek-prefix`, OpenAI's non-reasoning models with `openai-div`; models that report no logprobs (Claude, Gemini) can only use `none`.
 - Setting either `dev.*` option prints a warning at start-up. Never use them on a public network.
 
 ## 4. portal
@@ -188,17 +202,26 @@ The directory is created with mode 0700. Files in it:
 | `listen` | TCP and QUIC on IPv4 and IPv6, any port | libp2p listen addresses |
 | `nat` | true | UPnP/NAT-PMP and hole punching |
 | `relays` | empty | Overrides the relays the portal lists |
-| `buy.budget_micros` | 200000 | Credit reserved per request; the unused part is refunded |
+| `private_relays` | empty | Relays the user runs (at most 8). A sharing node reserves on them; nothing else uses them, and traffic with the coordinator never does (`sharetoken relays add`, [security.md](security.md) §2.8) |
+| `tailnet.enabled` | false | Direct tunnels over Tailscale's data plane between a buyer and a seller that both have it on (`sharetoken tailnet on`, [architecture.md](architecture.md) §2.17) |
+| `tailnet.wait_ms` | 0 | How long a request to a node waits for a new tunnel before it uses the relay (at most 10000) |
+| `tailnet.transport` | quic | What a buyer's connections run over inside the tunnel: `quic` or `tcp`. A sharing node serves both |
+| `tailnet.derp_map` | empty | Where the DERP relays come from: a URL or a file holding a DERP map; empty for tailcat's public relays. Buyer and seller need the same |
+| `buy.budget_micros` | 2000000 | Credit reserved per request; the unused part is refunded |
 | `buy.max_price_in`, `buy.max_price_out` | 0 (no limit) | Price limits per million prompt and completion tokens |
 | `buy.evidence` | true | Disclose a provably bad job's key for an automatic refund |
 | `buy.require_tee`, `buy.tee_policy`, `buy.tee_online` | off | Buy only from attested TEE nodes; allow-list file of trusted images; online revocation check |
+| `buy.spot_checks` | on | Carry the platform's audits of sellers: now and then one short, sealed job goes to a seller through this client as if it were its own. It costs no credit and the client cannot read it ([security.md](security.md) §2.4). Turned off only here: the app has no switch for it |
+| `buy.require_native` | off | Buy only from nodes whose model server speaks the request's API natively ([apis.md](apis.md)) |
+| `buy.loop_guard` | on | Stop paying for a model stuck in a loop: a streamed answer whose reasoning or text goes round in place (the last 256 lines and sentences all among the same 24) is cut and ended as a length stop (`finish_reason` `length`, `stop_reason` `max_tokens`, `response.incomplete`), and the node stops the model; a request whose last 8 turns are the same tool call with the same result is answered locally with a notice and sent to no node. Header `X-Sharetoken-Loop-Guard` or the stream comment `loop_guard=` says when it acted. `false` turns both off |
 | `buy.queue_seconds` | 30 | How long a request waits for a free node when all are busy; negative: fail at once |
 | `buy.first_byte_seconds`, `buy.idle_seconds` | 30, 30 | How long a job may wait for the node's first frame, and between frames. Nodes send a progress frame every 10 seconds while the model is silent |
 | `share.enabled` | false | Sharing on or off |
 | `share.upstream`, `share.upstream_key_env` | `http://127.0.0.1:11434/v1`, empty | OpenAI-compatible base URL of the local model server, and the environment variable holding its API key |
 | `share.concurrency` | 2 | Concurrent jobs |
 | `share.models` | empty | Models shared from the local model server |
-| `share.relays` | 2 | Number of relays to hold reservations on |
+| `share.relays` | 2 | Number of the network's relays to hold reservations on |
+| `share.keep_official` | false | With private relays: hold those reservations also while a private relay works. Off, the network's relays are the fallback after 30 seconds without one |
 | `share.tee` | `off` | `off`, `auto`, `sev-snp` or `tdx` |
 
 The `up` and `daemon` flags `-http`, `-listen` and `-nat` override the file for that run and are not saved.

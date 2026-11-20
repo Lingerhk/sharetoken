@@ -15,6 +15,7 @@
 package relay
 
 import (
+	"crypto/ed25519"
 	"fmt"
 	"sort"
 	"sync/atomic"
@@ -203,6 +204,12 @@ func New(keys *p2p.Keys, cfg Config) (*Relay, error) {
 
 // ValidateNetworks reports a set of networks New would refuse.
 func ValidateNetworks(nets []Network) error { return validateNetworks(nets) }
+
+// AddPortalKey makes the network called name accept passes signed by key
+// too (a portal changing its key), and reports whether the key is new.
+func (r *Relay) AddPortalKey(name string, key ed25519.PublicKey) (bool, error) {
+	return r.adm.addPortalKey(name, key)
+}
 
 // Open reports whether the relay admits anyone (no networks configured).
 func (r *Relay) Open() bool { return r.adm.open() }

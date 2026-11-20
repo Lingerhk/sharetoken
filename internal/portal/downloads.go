@@ -22,7 +22,9 @@ const downloadWriteTimeout = time.Hour
 
 var (
 	// The names scripts/build/build-cli.sh and scripts/build/build-gui.sh give their packages.
-	packageRe  = regexp.MustCompile(`^sharetoken(-cli)?(-dev)?-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-(macos|linux|windows)-(amd64|arm64)\.(?:tar\.gz|zip|dmg|exe|deb)$`)
+	packageRe = regexp.MustCompile(`^sharetoken(-cli)?(-dev)?-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-(macos|linux|windows)-(amd64|arm64)\.(?:tar\.gz|zip|dmg|exe|deb)$`)
+	// The relay, for users who run one of their own (scripts/build/build-relay.sh).
+	relayRe    = regexp.MustCompile(`^sharetoken-relay-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-(linux)-(amd64|arm64)\.tar\.gz$`)
 	checksumRe = regexp.MustCompile(`^SHA256SUMS-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?$`)
 	// The macOS app as one-click updates install it: the .app bundle in a zip,
 	// which the app swaps in for itself (not listed: people download the .dmg).
@@ -34,7 +36,7 @@ var (
 
 // Package is one downloadable archive.
 type Package struct {
-	Kind    string `json:"kind"` // cli or desktop
+	Kind    string `json:"kind"` // cli, desktop or relay
 	OS      string `json:"os"`   // macos, linux or windows
 	Arch    string `json:"arch"` // amd64 or arm64
 	Version string `json:"version"`
@@ -70,19 +72,25 @@ func (s *Server) listDownloads() Downloads {
 	}
 	newest := map[string]Package{}
 	for _, e := range entries {
-		m := packageRe.FindStringSubmatch(e.Name())
-		if m == nil || m[2] != "" || !e.Type().IsRegular() {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		var kind, v, osName, arch string
+		if m := packageRe.FindStringSubmatch(e.Name()); m != nil && m[2] == "" {
+			kind, v, osName, arch = "desktop", m[3], m[4], m[5]
+			if m[1] != "" {
+				kind = "cli"
+			}
+		} else if m := relayRe.FindStringSubmatch(e.Name()); m != nil {
+			kind, v, osName, arch = "relay", m[1], m[2], m[3]
+		} else {
 			continue
 		}
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		kind := "desktop"
-		if m[1] != "" {
-			kind = "cli"
-		}
-		p := Package{Kind: kind, OS: m[4], Arch: m[5], Version: m[3], File: e.Name(), URL: "/downloads/" + e.Name(), Size: info.Size()}
+		p := Package{Kind: kind, OS: osName, Arch: arch, Version: v, File: e.Name(), URL: "/downloads/" + e.Name(), Size: info.Size()}
 		key := kind + "/" + p.OS + "/" + p.Arch
 		if old, ok := newest[key]; !ok || version.Compare(p.Version, old.Version) > 0 {
 			newest[key] = p
@@ -129,7 +137,7 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 // that may be in the directory.
 func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("file")
-	if s.cfg.DownloadsDir == "" || (!packageRe.MatchString(name) && !checksumRe.MatchString(name) && !appZipRe.MatchString(name) && !signaturesRe.MatchString(name)) {
+	if s.cfg.DownloadsDir == "" || (!packageRe.MatchString(name) && !relayRe.MatchString(name) && !checksumRe.MatchString(name) && !appZipRe.MatchString(name) && !signaturesRe.MatchString(name)) {
 		http.NotFound(w, r)
 		return
 	}

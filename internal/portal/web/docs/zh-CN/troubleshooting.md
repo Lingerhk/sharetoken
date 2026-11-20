@@ -192,6 +192,10 @@ Get-NetTCPConnection -LocalPort {{port}} -State Listen | Select-Object OwningPro
 
 节点什么都没再发（模型思考期间节点会发进度帧，连这个也没有），或者它的模型连续 5 分钟没有输出，于是被判定为卡死。如果只是节点或网络比较慢，调大配置里的 `first_byte_seconds` 和 `idle_seconds`，见[配置](/docs/config#buy)。
 
+### 开启直连隧道后大请求变慢 {#tunnel-slow}
+
+隧道里的连接默认跑在 QUIC 上。网络丢包或抖动较多时（比如信号不好的 Wi-Fi），一条 QUIC 连接受挫后会一直慢，几 MB 的请求要上传很多秒。把本机改成 TCP：`{{exe}} tailnet on -transport tcp`，或者在桌面应用“设置”的“网络”里改“传输协议”（见[直连隧道](/docs/running#tailnet)）。`{{exe}} tailnet` 会显示每条隧道用的是哪一种。
+
 ## 共享模型 {#sharing}
 
 ### `share detect` 报 `cannot list models` {#detect-failed}

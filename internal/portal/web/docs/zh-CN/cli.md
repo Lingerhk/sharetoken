@@ -76,6 +76,23 @@
 
 显示各中继的延迟。`-measure` 立即重新测速。需要客户端正在运行。
 
+| 命令 | 含义 |
+|---|---|
+| `relays` | 每个中继、延迟，以及本客户端用它做什么 |
+| `relays -measure` | 先重新测速 |
+| `relays add <地址>` | 经自己的中继共享，见[自建中继](/docs/relay) |
+| `relays remove <地址或 ID>` | 不再使用它 |
+
+### tailnet {#tailnet}
+
+直连隧道（见[直连隧道](/docs/running#tailnet)）。正在运行的客户端会立即按修改生效。
+
+| 命令 | 含义 |
+|---|---|
+| `tailnet` | 是否打开、本机作为卖家经哪个 DERP 区域可达、每条隧道的路径和传输 |
+| `tailnet on` | 打开。`-wait <毫秒>`：对新节点的请求最多等这么久隧道（默认 0，最大 10000）；`-derp-map <URL 或文件>`：自己的 DERP 表；`-transport quic\|tcp`：本机连卖家时隧道里跑什么（默认 `quic`） |
+| `tailnet off` | 关闭，回到中继和打洞 |
+
 ### apikey {#apikey}
 
 本地端点的 API key（见[调用模型](/docs/use-models#endpoint)）。正在运行的客户端会立即按修改生效。

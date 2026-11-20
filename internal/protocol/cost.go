@@ -3,9 +3,9 @@ package protocol
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"math/bits"
+	"sharetoken/internal/receipt"
 	"strings"
 	"unicode"
 )
@@ -38,17 +38,48 @@ func CostMicros(promptTokens, completionTokens, priceIn, priceOut uint64) (uint6
 	return q, nil
 }
 
+// Cost is ceil((uncached prompt*In + cache reads*CacheRead + cache writes*
+// CacheWrite + completion*Out) / 1e6) in micro-credits. Overflow, and cache
+// counts above the prompt, are errors.
+func Cost(u Usage, p Prices) (uint64, error) {
+	if u.CacheReadTokens > u.PromptTokens || u.CacheWriteTokens > u.PromptTokens-u.CacheReadTokens {
+		return 0, errors.New("protocol: cached tokens exceed the prompt")
+	}
+	plain := u.PromptTokens - u.CacheReadTokens - u.CacheWriteTokens
+	var sum uint64
+	for _, term := range [][2]uint64{{plain, p.In}, {u.CacheReadTokens, p.CacheRead}, {u.CacheWriteTokens, p.CacheWrite}, {u.CompletionTokens, p.Out}} {
+		v, err := mul(term[0], term[1])
+		if err != nil {
+			return 0, err
+		}
+		var carry uint64
+		if sum, carry = bits.Add64(sum, v, 0); carry != 0 {
+			return 0, ErrOverflow
+		}
+	}
+	q := sum / perMillion
+	if sum%perMillion != 0 {
+		q++
+	}
+	return q, nil
+}
+
 // TicketCost prices usage at a ticket's rates, capped at its reservation:
 // exactly what settlement will charge. A job between share partners is free.
-func TicketCost(t *Ticket, promptTokens, completionTokens uint64) uint64 {
+func TicketCost(t *Ticket, u Usage) uint64 {
 	if t.Shared {
 		return 0
 	}
-	c, err := CostMicros(promptTokens, completionTokens, t.PriceInMicros, t.PriceOutMicros)
+	c, err := Cost(u, t.Prices())
 	if err != nil || c > t.ReservedMicros {
 		return t.ReservedMicros
 	}
 	return c
+}
+
+// ReceiptUsage is the usage a receipt bills.
+func ReceiptUsage(r *receipt.Receipt) Usage {
+	return Usage{PromptTokens: r.PromptTokens, CompletionTokens: r.CompletionTokens, CacheReadTokens: r.CacheReadTokens, CacheWriteTokens: r.CacheWriteTokens}
 }
 
 // MaxOutputTokens is the largest completion length c for which
@@ -95,9 +126,20 @@ func EstimateTokens(s string) uint64 {
 
 const perMessageOverhead = 4 // role markers and separators in chat templates
 
-// EstimatePromptTokens estimates the prompt size of an OpenAI chat-completions
-// body from its message text and tool definitions.
-func EstimatePromptTokens(body []byte) (uint64, error) {
+// EstimatePromptTokens estimates the prompt size of a request in api from
+// its text, tool definitions and attachments.
+func EstimatePromptTokens(api string, body []byte) (uint64, error) {
+	switch NormalAPI(api) {
+	case APIMessages:
+		return estimateMessages(body)
+	case APIResponses:
+		return estimateResponses(body)
+	}
+	return estimateChat(body)
+}
+
+// estimateChat estimates an OpenAI chat-completions body.
+func estimateChat(body []byte) (uint64, error) {
 	var req struct {
 		Messages []struct {
 			Content  json.RawMessage `json:"content"`
@@ -112,7 +154,7 @@ func EstimatePromptTokens(body []byte) (uint64, error) {
 	}
 	var n uint64
 	for _, m := range req.Messages {
-		n += perMessageOverhead + EstimateTokens(messageText(m.Content))
+		n += perMessageOverhead + EstimateTokens(messageText(m.Content)) + attachmentTokens(m.Content)
 		for _, block := range m.Thinking {
 			n += EstimateTokens(block.Thinking)
 		}
@@ -142,19 +184,6 @@ func messageText(raw json.RawMessage) string {
 		return b.String()
 	}
 	return string(raw)
-}
-
-// UsagePlausible rejects usage claims far above what the buyer can see. The
-// bounds are loose on purpose (tokenizers and chat templates vary); the check
-// exists to catch inflated billing, not to second-guess honest tokenizers.
-func UsagePlausible(claimedPrompt, claimedCompletion, estPrompt, estCompletion uint64) error {
-	if claimedPrompt > 3*estPrompt+512 {
-		return fmt.Errorf("claimed %d prompt tokens, estimate %d", claimedPrompt, estPrompt)
-	}
-	if claimedCompletion > 2*estCompletion+64 {
-		return fmt.Errorf("claimed %d completion tokens, estimate %d", claimedCompletion, estCompletion)
-	}
-	return nil
 }
 
 // PaddedPrompt is the prompt allowance a node assumes when capping output

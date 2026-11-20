@@ -15,6 +15,7 @@ can and cannot do, and where the protection stops. The design behind it is in
 | Buyer's client | Its own prompts and credit | Paying honestly: it may refuse a valid receipt |
 | Seller's client | The plaintext of the jobs it serves (unless it runs in a TEE) | Running the advertised model, reporting usage honestly, returning what the model produced |
 | Relay | Forwarding bytes | Anything else. It sees who talks to whom and how much, never content |
+| Private relay (run by a user, §2.8) | Forwarding bytes to its owners' nodes | Anything else, and less than the network's relays: no traffic with the coordinator passes through it |
 | Coordinator | The ledger, matching, dispute decisions | Prompts and answers: they do not pass through it. It sees one job's content only when the buyer discloses it as evidence |
 | Portal | Accounts (email addresses; no passwords), sign-in codes (salted hashes), tokens (hashed), two-factor secrets (encrypted), device bindings, credit grants | Prompts and answers, device private keys |
 | Network | Nothing | |
@@ -107,13 +108,43 @@ administrator.
 A receipt proves what was returned. It does not prove which model produced it.
 Two mechanisms address that:
 
-- **Audits** (`internal/audit`). At random times the coordinator buys one
-  completion from a seller under a fresh identity, through the ordinary buyer
-  path, with a randomized prompt and greedy decoding. It sends the byte-identical
-  request to its own reference copy of the model and compares the output and the
-  usage. A clear mismatch costs reputation, and consecutive mismatches suspend
-  the seller from matching. Results in between are inconclusive and cost nothing,
-  so numeric differences across hardware do not punish honest sellers.
+- **Audits** (`internal/audit`). At random times the coordinator buys a few
+  answers (five by default) from a seller through the ordinary buyer path, in
+  any of the three APIs, with open-ended questions (explanations, advice,
+  rewrites; questions with one right answer tell nothing about the model) and
+  greedy decoding. Its own reference copy of the model then reads each answer
+  token by token: with teacher forcing it reports, at every position, whether
+  the seller's token is its own first choice (a self-hosted vLLM does this in
+  one call per answer, DeepSeek's prefix completion in one call per token);
+  where the reference only reports log-probabilities for its own output
+  (OpenAI), the seller's answer must leave the reference's greedy answer, if
+  at all, at a near tie. The verdict is on the mean over all questions, and the
+  threshold is calibrated per reference: the reference scores its own answers,
+  which is what an honest seller returns, every day. The bill is checked
+  against the reference's token counts. A clear mismatch costs reputation, and
+  consecutive mismatches suspend the seller from matching; results in between
+  are inconclusive and cost nothing. A new reference starts in shadow mode
+  (verdicts recorded only), and so does one whose honest scores drifted (the
+  provider changed the model behind the name). Models whose reference reports
+  no log-probabilities (Claude, Gemini) are checked for the bill only.
+  The questions are carried to the seller by users' clients
+  (`internal/coordinator/errand.go`): a client asks the coordinator now and
+  then whether there is one to carry, and runs it as a job of its own, from
+  its own device and over the connection it uses for its own purchases, so
+  the seller meets a buyer it may already know. Each question of an audit
+  goes through a different client where there are several. The coordinator
+  seals the request with a key it keeps: the client reads neither question
+  nor answer, and cannot change them, because the seller's receipt signs the
+  hashes of both and the coordinator checks what comes back against it. The
+  ticket is paid by the platform, not by the client. Only a client the market
+  could have matched to that seller for money carries: not the seller's own
+  devices, not its share partners, not a stranger to a private seller. A
+  user can turn carrying off, in the client's configuration file only
+  (`buy.spot_checks`). When no client is there to carry a question, the auditor asks
+  from a fresh identity of its own, and then only through circuits of the
+  coordinator's own relays: never directly, which would show sellers the
+  coordinator's address, and never through any other relay
+  (`audit.delivery`).
 - **Hardware attestation** (`internal/attest`). A seller in an AMD SEV-SNP or
   Intel TDX confidential VM publishes a quote, signed by the CPU, over the
   guest's launch measurement and a hash of both of its keys. A buyer that
@@ -160,9 +191,11 @@ cannot step around it.
   with it, unless it turns on private mode: then the coordinator matches only
   its paired buyers to it and hides its models from everyone else.
 - A buyer can be paired with three sellers at most.
-- Private sellers are audited like any other: the coordinator's audit
+- Private sellers are audited like any other: the clients of their paired
+  buyers carry the questions, and when none is there the coordinator's audit
   identities are matched to them. A private seller with few buyers can guess
-  that an unknown peer is an audit, so audits of such a seller prove less.
+  that an unknown peer is an audit, so audits that are not carried prove less
+  for such a seller.
 - Administrators see every pairing with both account names in full.
 
 ### 2.7 Share partners
@@ -189,6 +222,62 @@ as usual.
   partners at most.
 - Partners are matched whatever the user's pairings, and a private seller still
   serves its partners: private mode concerns paying buyers only.
+
+### 2.8 Private relays
+
+A user can run a relay of their own (`relay init`, the same program as the
+network's relays) and have their sharing nodes reached through it
+(`private_relays` in the client's configuration). Three rules keep such a relay
+from learning or deciding more than a seller already does:
+
+- **It admits only its owners.** The relay lists accounts
+  (`access.networks[].allow_accounts`). The portal signs the account into
+  every relay pass, so the relay admits those accounts' devices offline, a new
+  device needs no change on the relay, and a disabled user's passes run out
+  within their lifetime. It carries no coordinator (no `allow_peers`).
+- **Traffic with the coordinator never uses it.** The client keeps private
+  relays in a list of their own that the choice of the path to the
+  coordinator never reads (`internal/client/private_relays.go`), and the
+  coordinator reserves only on the relays registered with the portal. Whoever
+  runs a private relay therefore never sees the coordinator's address, nor
+  which users are online: only the nodes that reserved on it and the buyers
+  that connect to them.
+- **The platform's own audit connections never use it.** The auditor's
+  identity dials only circuits of registered relays (§2.4). Nodes behind a
+  private relay are audited all the same, by the jobs that buyers' clients
+  carry: a carrier dials whatever addresses the node offers, as it does for
+  its own requests.
+
+Nothing registers a private relay: the portal and the coordinator do not know
+it exists, apart from its circuit addresses in the node's offers. While one
+of its private relays holds a reservation, a node holds none on the network's
+relays (unless `share.keep_official`); when none does for half a minute, it
+falls back to them.
+
+### 2.9 Direct tunnels
+
+With `sharetoken tailnet on` a buyer and a seller that both turned it on may
+be connected by a WireGuard tunnel (Tailscale's data plane, as the library
+tailcat) in place of a relay ([architecture.md](architecture.md) §2.17).
+
+- **Nothing rests on the tunnel.** Inside it runs the same libp2p connection
+  as anywhere, over QUIC or TCP: the peer proves its identity in the handshake, and prompts,
+  tickets and receipts are protected as before. The tunnel's keys are in the
+  node's offer, which every buyer of the node gets: they keep nobody out,
+  and are not meant to. Whoever has the address reaches one thing, the node's
+  libp2p listener inside the tunnel, the same one its TCP and QUIC ports
+  offer; the tunnel leads to no other service and to no network of the
+  machine.
+- **A DERP relay sees what a relay sees**: the two addresses, how much they
+  exchange and when; not the content. The default DERP relays are tailcat's
+  public ones, run by Tailscale and not by this network: a deployment that
+  minds sets `tailnet.derp_map` to relays of its own.
+- **A seller cannot choose where a buyer connects.** The buyer looks the
+  address's DERP region up in its own map and refuses a region it does not
+  have.
+- **Directly connected peers see each other's IP address**, as they do after
+  a successful hole punch. A user who wants only relays to see theirs leaves
+  the tailnet off (and sets `nat` to false).
 
 ## 3. Accounts, devices and the platform
 
@@ -228,11 +317,22 @@ them more than the list above.
   then also subject to that provider's policy, and the seller is responsible for
   that provider's terms of service.
 - **Audits are probabilistic and need a reference.** A seller that could tell an
-  audit from a real job could behave only when audited. Audit prompts are
-  randomized and come from a fresh identity each time, but an operator who needs
-  stronger cover should give the auditor its own network egress. Only models
-  with a reference copy can be audited, which in practice means open-weight
-  models. For closed models nothing proves which model produced the text.
+  audit from a real job could behave only when audited. A carried question
+  comes from a real buyer's device over that buyer's usual path, direct or
+  relayed, but it is still a short chat with greedy decoding, and a seller
+  could treat every such request honestly and cheat on long ones. A client
+  that carries learns that the seller was audited at that moment (not the
+  question, nor the verdict); a seller that also runs buyers' clients could
+  use that, and a client can refuse or lose what it carries, which costs the
+  platform the job but never the seller its record. The seller sees the
+  carrying device's peer ID and address, as for any job that device buys.
+  A question that no client could carry comes from a fresh identity through
+  an official relay, which a seller can tell from its regular buyers. A token-level check
+  shows that answers behave like the reference model's; it is not a
+  cryptographic proof. Only models whose reference reports log-probabilities
+  can be checked: open-weight models on a self-hosted server, DeepSeek, and
+  OpenAI's non-reasoning models. For the others nothing proves which model
+  produced the text.
 - **Without a reference, usage checks are loose.** The fallback token counter is
   a heuristic and catches only gross over-billing.
 - **Attestation is only as good as the image.** The allow-listed measurement must
@@ -242,6 +342,11 @@ them more than the list above.
 - **Relayed connections are not admission-controlled.** Anyone can open a circuit
   to a reserved peer. The peer authenticates and rejects strangers, but the
   relay's bandwidth is used. Only aggregate limits bound it.
+- **A seller's own relay sees its buyers' addresses.** A buyer that reaches a
+  node through the seller's private relay shows that relay its network
+  address, the times and the byte counts: what a direct connection shows the
+  seller anyway, now also when the buyer could not connect directly. It sees
+  no content.
 - **Pairing is a matching rule, not encryption.** It decides which sellers a
   buyer's requests are sent to. What a paired seller can see of a prompt is
   unchanged, and the platform, which keeps the pairings, could alter them.

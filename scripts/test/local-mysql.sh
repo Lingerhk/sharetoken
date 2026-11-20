@@ -12,7 +12,7 @@ up() {
     docker rm -f st-test-mysql >/dev/null 2>&1 || true
     docker run -d --name st-test-mysql -e MYSQL_ALLOW_EMPTY_PASSWORD=yes -p "127.0.0.1:$PORT:3306" \
       --tmpfs /var/lib/mysql mysql:8.0 --skip-name-resolve --max-connections=2000 \
-      --character-set-server=utf8mb4 --collation-server=utf8mb4_bin --performance-schema=OFF --mysqlx=OFF >/dev/null
+      --character-set-server=utf8mb4 --collation-server=utf8mb4_bin --performance-schema=OFF --mysqlx=OFF --skip-log-bin >/dev/null
   fi
   # The image's entrypoint first runs a socket-only temporary server: wait for TCP.
   for _ in $(seq 120); do

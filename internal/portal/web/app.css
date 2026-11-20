@@ -368,6 +368,8 @@ tr.picked td { background: var(--hover); }
 .modal:has(.audit-modal) { width: min(620px, calc(100vw - 32px)); }
 .audit-modal .kv { grid-template-columns: max-content minmax(0, 1fr); }
 .audit-modal .kv dd { min-width: 0; overflow-wrap: anywhere; }
+.audit-q { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); display: grid; gap: 4px; }
+.audit-q .audit-val { white-space: pre-wrap; overflow-wrap: anywhere; }
 .audit-ua { font-size: 12px; }
 /* actions on a list's selection */
 .bulk-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 8px 12px; border-radius: 10px; background: var(--accent-soft); }

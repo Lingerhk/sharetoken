@@ -884,6 +884,84 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/account", d.fromPortal("/api/v1/me"))
 	mux.HandleFunc("GET /api/v1/jobs", d.fromPortal("/api/v1/jobs"))
 	mux.HandleFunc("GET /api/v1/ledger", d.fromPortal("/api/v1/ledger"))
+	// The buying settings live in config.json: they can be read and changed
+	// while the client is still joining the network, and reach the running
+	// endpoint at once when it is up.
+	mux.HandleFunc("GET /api/v1/buy", func(w http.ResponseWriter, r *http.Request) {
+		if !d.loggedIn() {
+			writeErrorCode(w, http.StatusUnauthorized, "not_logged_in", "not logged in")
+			return
+		}
+		c, err := LoadConfig(d.home)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, buyView(c.Buy))
+	})
+	mux.HandleFunc("PUT /api/v1/buy", jsonBody(func(w http.ResponseWriter, r *http.Request, v BuySettingsView) {
+		if !d.loggedIn() {
+			writeErrorCode(w, http.StatusUnauthorized, "not_logged_in", "not logged in")
+			return
+		}
+		d.mu.Lock()
+		a := d.agent
+		d.mu.Unlock()
+		var err error
+		if a != nil {
+			err = a.SetBuySettings(v)
+		} else {
+			err = saveBuySettings(d.home, v)
+		}
+		if err != nil {
+			writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		c, err := LoadConfig(d.home)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, buyView(c.Buy))
+	}))
+	// The tailnet settings, like the buying ones, can be read and changed
+	// before the client has joined the network: they are then only saved.
+	// The running client answers for itself (a.handleSetTailnet).
+	tailnetSaved := func(set bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			d.mu.Lock()
+			running, loggedIn := d.agentAPI != nil, d.portal != nil
+			d.mu.Unlock()
+			if running || !loggedIn {
+				d.toAgent(w, r)
+				return
+			}
+			c, err := LoadConfig(d.home)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if set {
+				tc := c.Tailnet // fields left out keep their value
+				if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&tc); err != nil {
+					writeErrorCode(w, http.StatusBadRequest, "bad_request", "malformed JSON")
+					return
+				}
+				if err := tc.validate(); err != nil {
+					writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
+					return
+				}
+				if err := saveTailnet(d.home, tc); err != nil {
+					writeError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				c.Tailnet = tc
+			}
+			writeJSON(w, http.StatusOK, savedTailnetStatus(c.Tailnet))
+		}
+	}
+	mux.HandleFunc("GET /api/v1/tailnet", tailnetSaved(false))
+	mux.HandleFunc("PUT /api/v1/tailnet", tailnetSaved(true))
 	mux.HandleFunc("/api/v1/", d.toAgent)
 	mux.HandleFunc("/v1/", d.toAgent)
 	apiKeyRoutes(mux, d.home)

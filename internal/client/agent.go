@@ -34,6 +34,7 @@ import (
 	"sharetoken/internal/portal"
 	"sharetoken/internal/provider"
 	"sharetoken/internal/relaypass"
+	"sharetoken/internal/tailnet"
 	"sharetoken/internal/warmup"
 )
 
@@ -42,12 +43,19 @@ type Agent struct {
 	// Timing of the background work; set before Start (zero: defaults).
 	HealthEvery  time.Duration // check the path to the coordinator (10s)
 	MeasureEvery time.Duration // re-measure relays (5m)
+	// PrivateGrace is how long a sharing node waits for its private relays
+	// before it falls back to the network's (30s).
+	PrivateGrace time.Duration
 	RefreshEvery time.Duration // refresh the relay list from the portal (5m)
 	// OnLoginEnded, when set, is called once if the portal stops accepting this
 	// agent's token, or the user logs out. The agent keeps running: stopping it
 	// is up to the caller, and not from this call.
 	OnLoginEnded    func()
 	LoginCheckEvery time.Duration // how often to ask the portal (1m)
+	// ErrandFirst is when the client first asks the coordinator for an errand
+	// (a platform audit to carry, buyer.RunErrands); later the coordinator
+	// says when (20s).
+	ErrandFirst time.Duration
 	// HostOptions are extra libp2p options for the agent's host (embedding,
 	// tests); set before Start.
 	HostOptions []libp2p.Option
@@ -72,7 +80,7 @@ type Agent struct {
 	portal   *PortalClient
 	netinfo  portal.NetworkInfo
 	coord    peer.ID
-	relays   []p2p.RelayRTT // last measurement, best first
+	relays   []p2p.RelayRTT // last measurement of the network's relays, best first
 	current  string         // relay used to reach the coordinator
 	measured time.Time
 	link     *p2p.LinkMonitor     // live pings of the current relay
@@ -80,8 +88,15 @@ type Agent struct {
 	buyer    *buyer.Client
 	proxy    *buyer.Proxy
 	share    *shareState
-	tokens   *provider.Tokens // OAuth logins of the providers
+	tailnet  *tailnet.Transport // the direct path over tunnels (tailnet.go); installed even while off
+	tokens   *provider.Tokens   // OAuth logins of the providers
 	warnings map[string]string
+
+	// The user's own relays (private_relays.go), measured for the status.
+	// Kept apart from relays: nothing that chooses the path to the
+	// coordinator may see them.
+	private     []p2p.RelayRTT
+	privateDown time.Time // since when no private relay holds a reservation
 
 	passMu sync.Mutex
 	pass   *relaypass.Pass // admits this device's relay reservations
@@ -102,6 +117,7 @@ type shareState struct {
 	models   []node.ModelConfig // everything sold: local models and the providers'
 	node     *node.Service
 	reserver *p2p.Reserver
+	ctx      context.Context
 	cancel   context.CancelFunc
 }
 
@@ -146,7 +162,11 @@ func (a *Agent) Start(ctx context.Context) error {
 	if err := a.bind(a.ctx); err != nil {
 		return err
 	}
-	h, err := p2p.NewHost(a.keys, p2p.HostConfig{Program: "client", Listen: a.cfg.Listen, NAT: a.cfg.NAT, Options: a.HostOptions})
+	hostOpts := slices.Clone(a.HostOptions)
+	if opt := a.newTailnet(); opt != nil {
+		hostOpts = append(hostOpts, opt)
+	}
+	h, err := p2p.NewHost(a.keys, p2p.HostConfig{Program: "client", Listen: a.cfg.Listen, NAT: a.cfg.NAT, Options: hostOpts})
 	if err != nil {
 		return err
 	}
@@ -154,6 +174,10 @@ func (a *Agent) Start(ctx context.Context) error {
 	if err := a.setupBuyer(); err != nil {
 		_ = h.Close()
 		return err
+	}
+	a.tailnetHooks()
+	if a.tailnet != nil {
+		go a.tailnet.Run(a.ctx, h)
 	}
 	a.selectRelay(a.ctx, false)
 	a.mu.Lock()
@@ -204,6 +228,11 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}})
 	go a.maintain()
+	go a.buyer.RunErrands(a.ctx, a.ErrandFirst, func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.cfg.Buy.CarriesSpotChecks()
+	})
 	return nil
 }
 
@@ -255,6 +284,9 @@ func (a *Agent) Close() {
 	}
 	if a.h != nil {
 		_ = a.h.Close()
+	}
+	if a.tailnet != nil {
+		_ = a.tailnet.Close() // after the host, which closes its listener on the tunnel first
 	}
 }
 
@@ -448,7 +480,8 @@ func (a *Agent) setupBuyer() error {
 	}
 	a.buyer = b
 	a.proxy = &buyer.Proxy{Client: b, BudgetMicros: a.cfg.Buy.BudgetMicros, MaxPriceIn: a.cfg.Buy.MaxPriceIn,
-		MaxPriceOut: a.cfg.Buy.MaxPriceOut, RequireTEE: a.cfg.Buy.RequireTEE}
+		MaxPriceOut: a.cfg.Buy.MaxPriceOut, RequireTEE: a.cfg.Buy.RequireTEE, RequireNative: a.cfg.Buy.RequireNative,
+		NoLoopGuard: a.cfg.Buy.LoopGuard != nil && !*a.cfg.Buy.LoopGuard}
 	return nil
 }
 
@@ -495,6 +528,9 @@ func (a *Agent) measureRelays(ctx context.Context) []p2p.RelayRTT {
 	defer a.mu.Unlock()
 	a.relays, a.measured = res, time.Now()
 	pruneAvoid(a.avoid, res, time.Now())
+	a.mu.Unlock()
+	a.measurePrivate(ctx)
+	a.mu.Lock()
 	return res
 }
 
@@ -662,15 +698,25 @@ func chooseRelay(res []p2p.RelayRTT, current string, currentFailed bool, coordin
 	return best
 }
 
-// shareRelaysLocked picks the relays to hold reservations on: the best
-// reachable ones, the coordinator's relay first.
+// shareRelaysLocked picks the relays to hold reservations on: the user's
+// private relays, and of the network's the best reachable ones, the
+// coordinator's relay first, unless a private relay does the job
+// (officialWantedLocked).
 func (a *Agent) shareRelaysLocked(sc ShareConfig) []string {
-	out := []string{}
+	private := a.privateRelaysLocked()
+	out := slices.Clone(private)
+	var rsv *p2p.Reserver
+	if a.share != nil {
+		rsv = a.share.reserver
+	}
+	if !a.officialWantedLocked(sc, private, rsv) {
+		return out
+	}
 	if a.current != "" {
 		out = append(out, a.current)
 	}
 	for _, r := range a.relays {
-		if len(out) >= sc.Relays {
+		if len(out)-len(private) >= sc.Relays {
 			break
 		}
 		if r.OK() && !slices.Contains(out, r.Addr) {
@@ -732,6 +778,7 @@ func (a *Agent) maintain() {
 			}
 		}
 		lastCheck = time.Now()
+		a.syncShareRelays()
 		if time.Since(lastRefresh) > a.RefreshEvery {
 			lastRefresh = time.Now()
 			if err := a.refreshNetwork(a.ctx); err != nil {
@@ -856,7 +903,7 @@ func (a *Agent) startShareLocked(sc ShareConfig) error {
 		return err
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
-	st := &shareState{cfg: sc, models: models, cancel: cancel}
+	st := &shareState{cfg: sc, models: models, ctx: ctx, cancel: cancel}
 	st.reserver = p2p.NewReserver(a.h, func() {
 		if st.node != nil {
 			st.node.Announce() // advertise the new relay addresses at once
@@ -877,6 +924,14 @@ func (a *Agent) startShareLocked(sc ShareConfig) error {
 			for _, c := range st.reserver.CircuitAddrs() {
 				out = append(out, c.String())
 			}
+			if tn := a.tailnetAddr(); tn != "" {
+				out = append(out, tn)
+			}
+			for _, sys := range a.tailnetSystemAddrs() {
+				if !slices.Contains(out, sys) {
+					out = append(out, sys)
+				}
+			}
 			return out
 		},
 	})
@@ -886,6 +941,9 @@ func (a *Agent) startShareLocked(sc ShareConfig) error {
 	}
 	st.node = svc
 	a.share = st
+	if a.tailnet != nil && a.tailnet.Enabled() {
+		go a.serveTailnet(ctx, st)
+	}
 	a.warn("share", "")
 	for _, m := range models {
 		a.log.Info("sharing", "model", m.ID, "upstream", m.UpstreamModel, "in", m.PriceInMicros, "out", m.PriceOutMicros)
@@ -909,7 +967,11 @@ func (a *Agent) shareModelsLocked(sc ShareConfig) ([]node.ModelConfig, error) {
 	var models []node.ModelConfig
 	seen := map[string]string{}
 	add := func(source string, up node.Upstream, ms []node.ModelConfig) {
-		up = &watchedUpstream{a: a, source: source, up: up}
+		wu := &watchedUpstream{a: a, source: source, up: up}
+		up = wu
+		if _, ok := wu.up.(node.Compactor); ok {
+			up = watchedCompactor{wu}
+		}
 		for _, m := range ms {
 			if other, dup := seen[m.ID]; dup {
 				a.warn("source:"+source+":"+m.ID, fmt.Sprintf("%s: model ID %s is already sold from %s; not sold twice", source, m.ID, other))
@@ -970,8 +1032,22 @@ func (w *watchedUpstream) ReadyAt() time.Time {
 	return time.Time{}
 }
 
-func (w *watchedUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
-	err := w.up.Stream(ctx, body, emit)
+func (w *watchedUpstream) APIs() []string { return w.up.APIs() }
+
+func (w *watchedUpstream) Stream(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	return w.watch(w.up.Stream(ctx, r, emit))
+}
+
+// watchedCompactor is a watchedUpstream whose model server compacts natively.
+type watchedCompactor struct{ *watchedUpstream }
+
+func (w watchedCompactor) Compact(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	return w.watch(w.up.(node.Compactor).Compact(ctx, r, emit))
+}
+
+// watch tells the user about err when it says the credentials are refused,
+// the balance is gone or the provider limits the rate.
+func (w *watchedUpstream) watch(err error) error {
 	msg := ""
 	var se *node.StatusError
 	if errors.As(err, &se) {
@@ -1039,9 +1115,11 @@ func (a *Agent) presentPass(ctx context.Context, relay peer.AddrInfo) error {
 	if p == nil {
 		return nil
 	}
-	if err := relaypass.Present(ctx, a.h, relay, p); err != nil {
+	err = relaypass.Present(ctx, a.h, relay, p)
+	if err != nil {
 		a.log.Debug("relay did not take the pass", "relay", relay.ID, "err", err)
 	}
+	a.privateRefused(relay.ID, err)
 	return nil
 }
 
@@ -1058,6 +1136,9 @@ func (a *Agent) stopShareLocked() {
 	_ = a.share.reserver.SetRelays(nil)
 	a.share.cancel()
 	a.share = nil
+	if a.tailnet != nil {
+		a.tailnet.StopServing(a.h) // buyers' tunnels to other nodes stay
+	}
 }
 
 // SetShare applies and saves new sharing settings.
@@ -1097,6 +1178,13 @@ func (a *Agent) ReloadShare() error {
 	if err != nil {
 		return err
 	}
+	if clean, err := cleanPrivateRelays(c.PrivateRelays); err != nil {
+		return err
+	} else {
+		a.mu.Lock()
+		a.cfg.PrivateRelays = clean
+		a.mu.Unlock()
+	}
 	return a.SetShare(c.Share)
 }
 
@@ -1107,5 +1195,6 @@ func (a *Agent) saveLocked() error {
 		return err
 	}
 	disk.Share = a.cfg.Share
+	disk.PrivateRelays = a.cfg.PrivateRelays
 	return SaveConfig(a.home, disk)
 }

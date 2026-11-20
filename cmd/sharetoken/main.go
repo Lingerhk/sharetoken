@@ -38,6 +38,7 @@ import (
 
 	"sharetoken/internal/accounts"
 	"sharetoken/internal/agentskill"
+	"sharetoken/internal/buyer"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/client"
 	"sharetoken/internal/node"
@@ -62,6 +63,18 @@ While running:
   status                                connection, relays, sharing
   models                                models on the network, nodes and prices
   relays [-measure]                     relay round-trip times; -measure re-measures now
+  relays add <address>                  share through a relay of your own (a private relay)
+  relays remove <address|peer id>       stop using it
+  tailnet                               the direct path over tunnels: whether it is on, this node's relay region,
+                                        and each tunnel's path (direct, or through which DERP relay)
+  tailnet on [-derp-map URL|FILE] [-wait MS] [-transport quic|tcp]
+                                        reach sellers, and be reached as a seller, through WireGuard tunnels that
+                                        go direct where the NATs allow (Tailscale's data plane; no account, no
+                                        system VPN). Both ends need it on. -derp-map: the relays tunnels start
+                                        through (default: tailcat's public ones); -wait: how long a request waits
+                                        for a new tunnel before it uses the relay (default 0); -transport: what
+                                        a connection through a tunnel runs on (default quic)
+  tailnet off                           back to the relays and libp2p's own direct connections
 
 Account (portal):
   balance                               credits and token usage
@@ -184,6 +197,8 @@ func main() {
 		run = c.status
 	case "models":
 		run = c.models
+	case "tailnet":
+		run = c.tailnet
 	case "relays":
 		run = c.relays
 	case "balance", "account":
@@ -924,6 +939,9 @@ func (c *cmdCtx) status([]string) error {
 	} else {
 		fmt.Println("not sharing")
 	}
+	if st.Tailnet != nil {
+		printTailnet(*st.Tailnet)
+	}
 	for _, w := range st.Warnings {
 		fmt.Println("warning:", w)
 	}
@@ -1011,6 +1029,11 @@ func printRelays(rs []client.RelayView) {
 			rtt = rtt[:40] + "…"
 		}
 		use := ""
+		if r.Private {
+			// Never carries coordinator traffic, so COORD says nothing of it.
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t-\t%s\n", "private", first(relaySummary(r.Addr)), second(relaySummary(r.Addr)), rtt, map[bool]string{true: "sharing"}[r.Reserved])
+			continue
+		}
 		if r.Current {
 			use = "coordinator"
 		}
@@ -1084,7 +1107,22 @@ func cmpOr(a, b string) string {
 	return b
 }
 
+func first(a, _ string) string  { return a }
+func second(_, b string) string { return b }
+
 func (c *cmdCtx) relays(args []string) error {
+	if len(args) > 0 && (args[0] == "add" || args[0] == "remove") {
+		if len(args) != 2 {
+			return fmt.Errorf("usage: sharetoken relays %s <address>", args[0])
+		}
+		method := map[string]string{"add": http.MethodPost, "remove": http.MethodDelete}[args[0]]
+		var rs []client.RelayView
+		if err := c.daemon(method, "/api/v1/relays/private", map[string]string{"addr": args[1]}, &rs); err != nil {
+			return err
+		}
+		printRelays(rs)
+		return nil
+	}
 	fs := flag.NewFlagSet("relays", flag.ExitOnError)
 	measure := fs.Bool("measure", false, "re-measure now")
 	_ = fs.Parse(args)
@@ -1111,12 +1149,130 @@ func (c *cmdCtx) relays(args []string) error {
 	return nil
 }
 
-func (c *cmdCtx) models([]string) error {
+// tailnet shows or changes the direct path over tunnels (client/tailnet.go).
+// The settings are saved first and a running client takes them up at once.
+func (c *cmdCtx) tailnet(args []string) error {
+	if len(args) > 0 {
+		tc := c.cfg.Tailnet
+		switch args[0] {
+		case "on":
+			fs := flag.NewFlagSet("tailnet on", flag.ExitOnError)
+			derp := fs.String("derp-map", tc.DERPMap, "URL or file of the DERP map (empty: tailcat's public relays)")
+			wait := fs.Int("wait", tc.WaitMillis, "milliseconds a request waits for a new tunnel before it uses the relay")
+			proto := fs.String("transport", tc.Transport, "what a connection through a tunnel runs on: quic (the default) or tcp")
+			_ = fs.Parse(args[1:])
+			if fs.NArg() > 0 {
+				return errors.New("usage: sharetoken tailnet on [-derp-map URL|FILE] [-wait MS] [-transport quic|tcp]")
+			}
+			if *proto != "" && *proto != "quic" && *proto != "tcp" {
+				return errors.New("-transport must be quic or tcp")
+			}
+			if *proto == "quic" {
+				*proto = "" // the default is not written down
+			}
+			tc.Transport = *proto
+			if d := *derp; d != "" && !strings.HasPrefix(d, "https://") && !strings.HasPrefix(d, "http://") {
+				abs, err := filepath.Abs(strings.TrimPrefix(d, "file://"))
+				if err != nil {
+					return err
+				}
+				if _, err := os.Stat(abs); err != nil {
+					return fmt.Errorf("DERP map: %w", err)
+				}
+				*derp = abs
+			}
+			tc.Enabled, tc.DERPMap, tc.WaitMillis = true, *derp, *wait
+		case "off":
+			if len(args) != 1 {
+				return errors.New("usage: sharetoken tailnet off")
+			}
+			tc.Enabled = false
+		default:
+			return fmt.Errorf("unknown tailnet command %q (on, off)", args[0])
+		}
+		if tc.WaitMillis < 0 || tc.WaitMillis > client.MaxTailnetWaitMillis {
+			return fmt.Errorf("-wait must be between 0 and %d", client.MaxTailnetWaitMillis)
+		}
+		c.cfg.Tailnet = tc
+		if err := c.save(); err != nil {
+			return err
+		}
+		if err := c.daemon(http.MethodPost, "/api/v1/tailnet/reload", nil, nil); err != nil && !strings.Contains(err.Error(), "not running") {
+			return fmt.Errorf("saved, but the running client refused it: %w", err)
+		}
+	}
+	var st client.TailnetStatus
+	if err := c.daemon(http.MethodGet, "/api/v1/tailnet", nil, &st); err != nil {
+		if !strings.Contains(err.Error(), "not running") {
+			return err
+		}
+		state := "off"
+		if c.cfg.Tailnet.Enabled {
+			state = "on"
+		}
+		fmt.Printf("tailnet %s (the client is not running)\n", state)
+		return nil
+	}
+	printTailnet(st)
+	return nil
+}
+
+func printTailnet(st client.TailnetStatus) {
+	if !st.Enabled {
+		fmt.Println("tailnet off (sharetoken tailnet on)")
+		return
+	}
+	fmt.Printf("tailnet on (%s), relays from %s", st.Proto, st.DERPMap)
+	if st.WaitMillis > 0 {
+		fmt.Printf(", a request waits up to %d ms for a new tunnel", st.WaitMillis)
+	}
+	fmt.Println()
+	switch {
+	case st.Serving:
+		fmt.Printf("   reachable as a seller through DERP region %s\n", st.Region)
+	case st.Error != "":
+		fmt.Println("   not reachable as a seller:", st.Error)
+	default:
+		fmt.Println("   not serving (sharing is off, or the tunnel is starting)")
+	}
+	if len(st.System) > 0 {
+		fmt.Printf("   this machine is on a Tailscale network (%s): a seller announces that address too\n", strings.Join(st.System, ", "))
+	}
+	if len(st.Tunnels) == 0 {
+		fmt.Println("   no tunnels")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "   \tPEER\tPATH\tOVER\tENDPOINT\tRTT\tCONNS\tRX\tTX")
+	for _, t := range st.Tunnels {
+		dir := map[string]string{"out": "to seller", "in": "from buyer"}[t.Dir]
+		rtt := ""
+		if t.Millis > 0 {
+			rtt = fmt.Sprintf("%.1f ms", t.Millis)
+		}
+		conns, rx, tx := "", "", ""
+		if t.Dir == "out" {
+			conns = strconv.Itoa(t.Conns)
+		} else {
+			rx, tx = strconv.FormatInt(t.RxBytes, 10), strconv.FormatInt(t.TxBytes, 10)
+		}
+		fmt.Fprintf(tw, "   %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", dir, short(t.Peer), t.Path, t.Proto, t.Endpoint, rtt, conns, rx, tx)
+	}
+	_ = tw.Flush()
+}
+
+func (c *cmdCtx) models(args []string) error {
+	fs := flag.NewFlagSet("models", flag.ExitOnError)
+	codex := fs.String("codex", "", "write the models as a Codex model catalog to this file (model_catalog_json in ~/.codex/config.toml)")
+	_ = fs.Parse(args)
 	var out struct {
 		Models []protocol.ModelSummary `json:"models"`
 	}
 	if err := c.daemon(http.MethodGet, "/api/v1/models", nil, &out); err != nil {
 		return err
+	}
+	if *codex != "" {
+		return writeCodexCatalog(*codex, out.Models)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "MODEL\tNODES\tTEE\tMIN IN/Mtok\tMIN OUT/Mtok")
@@ -1124,6 +1280,29 @@ func (c *cmdCtx) models([]string) error {
 		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\n", m.Model, m.Nodes, m.AttestedNodes, m.MinPriceIn, m.MinPriceOut)
 	}
 	return tw.Flush()
+}
+
+// writeCodexCatalog writes ms to path as a Codex model catalog and says how
+// to use it. Codex reads the file when it starts, so it is written again
+// when the models change.
+func writeCodexCatalog(path string, ms []protocol.ModelSummary) error {
+	data, err := json.MarshalIndent(buyer.CodexCatalog(ms), "", "  ")
+	if err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	tmp := abs + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, abs); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %d models to %s\nin ~/.codex/config.toml, at the top level:\n  model_catalog_json = %q\n", len(ms), abs, abs)
+	return nil
 }
 
 // ---- sharing ----
@@ -1155,8 +1334,10 @@ func (c *cmdCtx) share(args []string) error {
 		out := fs.Uint64("out", client.DefaultPriceOut, "price per million completion tokens, micro-credits")
 		from := fs.String("provider", "", "the provider whose model this is (default: the local model server)")
 		maxOut := fs.Uint64("max-output", 0, "the model's own limit of output tokens per request, if it refuses the usual one")
+		cacheRead := fs.Int64("cache-read", -1, "price per million prompt tokens read from the prompt cache (default: a tenth of -in)")
+		cacheWrite := fs.Int64("cache-write", -1, "price per million prompt tokens written to the prompt cache (default: 1.25 x -in for Anthropic models, else -in)")
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
-			return errors.New("usage: sharetoken share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-max-output N]")
+			return errors.New("usage: sharetoken share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-cache-read P] [-cache-write P] [-max-output N]")
 		}
 		upstreamModel := args[1]
 		_ = fs.Parse(args[2:])
@@ -1164,6 +1345,14 @@ func (c *cmdCtx) share(args []string) error {
 			*id = upstreamModel
 		}
 		m := node.ModelConfig{ID: *id, UpstreamModel: upstreamModel, PriceInMicros: *in, PriceOutMicros: *out, MaxOutputTokens: *maxOut}
+		if *cacheRead >= 0 {
+			v := uint64(*cacheRead)
+			m.PriceCacheRead = &v
+		}
+		if *cacheWrite >= 0 {
+			v := uint64(*cacheWrite)
+			m.PriceCacheWrite = &v
+		}
 		if *from != "" && *from != "local" {
 			var local []string
 			for _, lm := range sc.Models {
@@ -1513,7 +1702,7 @@ func addProviderOptionFlags(fs *flag.FlagSet) providerOptionFlags {
 		proxyMode:       fs.String("proxy-mode", "", "environment, direct or custom"),
 		proxyURL:        fs.String("proxy", "", "proxy URL; use SHARETOKEN_PROVIDER_PROXY for a URL containing a password"),
 		profile:         fs.String("profile", "", "Anthropic: standard or claude-code OAuth request profile"),
-		sampling:        fs.String("sampling", "", "Anthropic: strict, or default to ignore unsupported sampling parameters"),
+		sampling:        fs.String("sampling", "", "Anthropic: default (leave out sampling parameters a model refuses), or strict to refuse the request"),
 		tlsProfile:      fs.String("tls-profile", "", "inference TLS transport: native or chrome"),
 		tokenTLSProfile: fs.String("token-tls-profile", "", "login and refresh TLS transport: native or chrome"),
 	}

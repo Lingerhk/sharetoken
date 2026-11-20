@@ -624,7 +624,12 @@ func TestAuditorIsFundedByThePlatformAndLeftoversReturn(t *testing.T) {
 	if _, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: sr, Ack: ack(auditor, &sr)}); err != nil {
 		t.Fatal(err)
 	}
-	f.eng.Tick(f.now.Add(2 * time.Minute))
+	// Still buying: an audit's questions are spread over several minutes.
+	f.eng.Tick(f.now.Add(30 * time.Minute))
+	if got := f.balance(auditor); got != 980 {
+		t.Fatalf("an audit identity lost its funds within its lifetime: %d", got)
+	}
+	f.eng.Tick(f.now.Add(AuditorLifetime + time.Minute))
 	if got := f.balance(auditor); got != 0 {
 		t.Fatalf("auditor kept %d", got)
 	}

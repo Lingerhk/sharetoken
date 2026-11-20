@@ -71,7 +71,7 @@ The app has two parts: the window, and the background service that does the real
 
 Starting the program again only brings back the existing window.
 
-The window has its navigation on the left: Overview, Sharing, Pairing and Activity, with Feedback and Settings at the bottom. The status bar at the bottom of the window shows the connection, the relay in use and its latency; the latency is green, amber or red by how fast it is. The "?" beside a panel's title explains what the panel is for.
+The window has its navigation on the left: Overview, Sharing, Pairing and Activity, with Feedback and Settings at the bottom. The status bar at the bottom of the window shows the connection, the relay in use and its latency, and what the direct tunnels are doing; a latency is green, amber or red by how fast it is. The "?" beside a panel's title explains what the panel is for.
 
 ## Share models {#share}
 
@@ -84,9 +84,25 @@ Once you are signed in and connected to the network, click "Sharing" on the left
 
 Prices are in credit per million tokens. API keys and login tokens are stored only on this computer, and the page shows keys masked. For notes on each provider, see [Share a hosted API](/docs/share#providers).
 
+Under "Settings", the "Requests" tab lets you tick "Only sellers that speak the request's API natively" (Claude Code's requests then go only to sellers whose model server speaks Anthropic Messages, Codex's only to those that speak OpenAI Responses, with no conversion; see [Native and converted](/docs/use-models#native)) and set the budget held for each request (2 credits by default; you pay what a request uses). Both take effect at once.
+
 To buy only from sellers you know, use "My sellers" under "Pairing": click "Enter pairing code" and type the code a seller gave you. See [Buy only from sellers you know](/docs/use-models#pairing).
 
 To share with partners for free, use "Share partners", the first tab under "Pairing". Click "Invite partner", choose how long the code lasts (1, 3 or 7 days) and send it to your partner; they click "Enter invite code". The list shows your partners and the tokens you gave and used in the last 24 hours, and "Unpair" ends a partnership. Under "Sharing settings" you can use partners' nodes only, set a daily limit (tokens per 24 hours, all partners together) and the share of each node's concurrent jobs partners may take (0 pauses sharing). Available models marks the models your partners offer, and Activity shows "Partner (free)" for jobs between partners. See [Share with partners for free](/docs/share#partners).
+
+## Direct tunnels {#tunnels}
+
+Under "Settings", the "Network" tab has the switch for [direct tunnels](/docs/running#tailnet): an encrypted tunnel between you and the other side of a request, in place of the relays. It works when both sides have it on; otherwise, and whenever a tunnel cannot be set up, requests go through the relays as before. Ticking "Direct tunnels" applies at once and shows the settings:
+
+| Setting | What it does |
+|---|---|
+| Transport | What a connection inside a tunnel runs on, for the connections this computer opens (when you use a model): QUIC, the default, or TCP. When you share a model, both are accepted. QUIC is faster for large requests on a steady network; choose TCP on a link that loses packets or jitters, such as weak Wi-Fi, if you send requests of several megabytes |
+| Wait for a tunnel | How many milliseconds the first request to a seller may wait for its tunnel (0 to 10000). 0, the default, does not wait: that request goes through the relay, and the tunnel takes over the next ones |
+| DERP relays | The relays a tunnel starts through and stays on when no direct path is found. Empty uses the public ones; a network that runs its own gives the URL or the file of its DERP map. Buyer and seller need the same |
+
+"This device" says whether buyers can reach this computer through a tunnel. The "Tunnels" panel lists each tunnel: its direction (to a seller, from a buyer), the peer, the path ("Direct", or "Relayed" with the DERP region), the transport, the latency, and the traffic.
+
+The status bar shows the tunnels in short: "Off"; "On, no tunnel yet"; or the transport, the path, the number of tunnels and their latency, for example "QUIC Direct × 2". A click on it opens these settings. The Overview's network panel says the same.
 
 ## Graphical interface without the app {#browser-ui}
 

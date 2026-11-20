@@ -281,7 +281,7 @@ func (s *tokenSource) token(ctx context.Context, force bool, rejected string) (*
 		if valid {
 			return &tok, nil // nothing to renew it with: the server has the last word
 		}
-		return nil, fmt.Errorf("the login of provider %s has expired: `sharetoken provider login %s -name %s`", s.name, e.Type, s.name)
+		return nil, loginExpired(s.name, e.Type, nil)
 	}
 	flow, err := flowOf(e.Type)
 	if err != nil {
@@ -299,6 +299,10 @@ func (s *tokenSource) token(ctx context.Context, force bool, rejected string) (*
 		if valid && !force {
 			return &tok, nil
 		}
+		var le *loginError
+		if !valid && errors.As(err, &le) && le.refused() {
+			return nil, loginExpired(s.name, e.Type, err)
+		}
 		return nil, fmt.Errorf("renewing the login of provider %s: %w", s.name, err)
 	}
 	merged := mergeToken(&tok, nt)
@@ -314,6 +318,18 @@ func (s *tokenSource) token(ctx context.Context, force bool, rejected string) (*
 		return nil
 	})
 	return merged, err
+}
+
+// loginExpired is the error of a login that is spent and cannot be renewed:
+// a 401 like the model server's own, so that the provider is put on hold
+// (recordProviderStatus) instead of failing every job that comes until the
+// user signs in again.
+func loginExpired(name, kind string, cause error) error {
+	msg := fmt.Sprintf("the login of provider %s has expired: `sharetoken provider login %s -name %s`", name, kind, name)
+	if cause != nil {
+		msg += " (" + cause.Error() + ")"
+	}
+	return &node.StatusError{Status: http.StatusUnauthorized, Body: msg}
 }
 
 // mergeToken keeps what a renewal did not send again.

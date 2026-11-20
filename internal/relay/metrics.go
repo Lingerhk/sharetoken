@@ -61,6 +61,7 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 		emit(prometheus.GaugeValue, "network_coordinators_expected", "Allow-listed peers configured.", float64(n.CoordinatorsExpected), "network", n.Name)
 		emit(prometheus.CounterValue, "network_passes_accepted_total", "Passes accepted for this network.", float64(n.PassesAccepted), "network", n.Name)
 		emit(prometheus.CounterValue, "network_reservations_denied_total", "Reservations denied over this network's limits.", float64(n.ReservationsDenied), "network", n.Name)
+		emit(prometheus.CounterValue, "network_passes_refused_total", "Valid passes of accounts a private relay does not list.", float64(n.PassesRefused), "network", n.Name)
 		emit(prometheus.GaugeValue, "network_client_mismatches", "Devices holding a reservation whose identify agent disagrees with their pass.", float64(n.ClientMismatches), "network", n.Name)
 		for _, c := range n.Clients {
 			ch <- prometheus.MustNewConstMetric(clientsDesc, prometheus.GaugeValue, float64(c.Devices), n.Name, c.Version, c.OS, c.Arch)

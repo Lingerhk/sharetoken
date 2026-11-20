@@ -76,6 +76,23 @@ List the models on the network, the node count, the TEE node count and the lowes
 
 Show the latency of each relay. `-measure` measures again right away. The client must be running.
 
+| Command | Meaning |
+|---|---|
+| `relays` | Every relay, its latency, and what this client uses it for |
+| `relays -measure` | Measure again first |
+| `relays add <address>` | Share through a relay of your own, see [Run your own relay](/docs/relay) |
+| `relays remove <address or ID>` | Stop using it |
+
+### tailnet {#tailnet}
+
+Direct tunnels (see [Direct tunnels](/docs/running#tailnet)). A running client applies changes at once.
+
+| Command | Meaning |
+|---|---|
+| `tailnet` | Whether it is on, the DERP region this machine is reachable through as a seller, and each tunnel's path and transport |
+| `tailnet on` | Turn it on. `-wait <ms>`: how long a request to a new node waits for the tunnel (default 0, at most 10000); `-derp-map <URL or file>`: a DERP map of your own; `-transport quic\|tcp`: what this machine's connections to sellers run over inside the tunnel (default `quic`) |
+| `tailnet off` | Turn it off: back to relays and hole punching |
+
 ### apikey {#apikey}
 
 The local endpoint's API key (see [Call models](/docs/use-models#endpoint)). A running client follows a change at once.

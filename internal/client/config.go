@@ -42,9 +42,14 @@ type Config struct {
 	Listen []string `json:"listen,omitempty"` // libp2p listen addresses
 	NAT    bool     `json:"nat"`              // UPnP/NAT-PMP and hole punching
 	Relays []string `json:"relays,omitempty"` // overrides the relays the portal lists
+	// PrivateRelays are relays the user runs: a sharing node reserves on
+	// them, nothing else uses them (private_relays.go).
+	PrivateRelays []string `json:"private_relays,omitempty"`
 
 	Buy   BuyConfig   `json:"buy"`
 	Share ShareConfig `json:"share"`
+	// Tailnet is the direct path over Tailscale's data plane (tailnet.go).
+	Tailnet TailnetConfig `json:"tailnet"`
 }
 
 // BuyConfig tunes buying.
@@ -54,8 +59,24 @@ type BuyConfig struct {
 	MaxPriceOut  uint64 `json:"max_price_out,omitempty"` // per million completion tokens
 	Evidence     bool   `json:"evidence"`                // disclose a provably bad job's key for an automatic refund
 	RequireTEE   bool   `json:"require_tee,omitempty"`
-	TEEPolicy    string `json:"tee_policy,omitempty"` // allow-list file of trusted node images
-	TEEOnline    bool   `json:"tee_online,omitempty"`
+	// RequireNative buys only from nodes whose model server speaks the
+	// request's API natively (Claude Code from Anthropic models, Codex from
+	// OpenAI Responses), never converted. Off, such nodes are preferred and
+	// others convert when none is free.
+	RequireNative bool `json:"require_native,omitempty"`
+	// LoopGuard stops paying for a model stuck in a loop: an answer whose
+	// reasoning or text goes round in place is ended as a length stop, and
+	// a request whose last eight turns are the same tool call with the same
+	// result is answered locally and sent nowhere. Unset means on.
+	LoopGuard *bool `json:"loop_guard,omitempty"`
+	// SpotChecks lets the platform's audits of sellers travel through this
+	// client (buyer.RunErrands): now and then it carries one short, sealed
+	// job to a seller as if it were its own. It cannot read the job, pays
+	// nothing, and the seller sees this device as it sees any buyer. Unset
+	// means on.
+	SpotChecks *bool  `json:"spot_checks,omitempty"`
+	TEEPolicy  string `json:"tee_policy,omitempty"` // allow-list file of trusted node images
+	TEEOnline  bool   `json:"tee_online,omitempty"`
 	// QueueSeconds is how long a request waits for a free node when all are
 	// busy (0: the default, 30; negative: fail at once).
 	QueueSeconds int `json:"queue_seconds,omitempty"`
@@ -76,14 +97,25 @@ type ShareConfig struct {
 	UpstreamKeyEnv string             `json:"upstream_key_env,omitempty"` // env var holding its API key
 	Concurrency    int                `json:"concurrency"`
 	Models         []node.ModelConfig `json:"models"`
-	Relays         int                `json:"relays"`        // how many relays to hold reservations on
-	TEE            string             `json:"tee,omitempty"` // off, auto, sev-snp, tdx
+	Relays         int                `json:"relays"` // how many of the network's relays to hold reservations on
+	// KeepOfficial keeps those reservations while a private relay works too;
+	// otherwise the network's relays are only the fallback.
+	KeepOfficial bool   `json:"keep_official,omitempty"`
+	TEE          string `json:"tee,omitempty"` // off, auto, sev-snp, tdx
 }
 
 // Defaults.
 const (
-	DefaultUpstream      = "http://127.0.0.1:11434/v1"
-	DefaultBudgetMicros  = 200_000
+	DefaultUpstream = "http://127.0.0.1:11434/v1"
+	// DefaultBudgetMicros is 2 credits: coding agents send prompts of tens of
+	// thousands of tokens. Only what a request uses is charged.
+	DefaultBudgetMicros = 2_000_000
+	// oldDefaultBudgetMicros was the default before; a configuration that
+	// still has it gets the new one.
+	oldDefaultBudgetMicros = 200_000
+	// The range the settings page accepts: 0.01 to 1000 credits.
+	MinBudgetMicros      = 10_000
+	MaxBudgetMicros      = 1_000_000_000
 	DefaultPriceInMicros = 100_000
 	DefaultPriceOut      = 200_000
 )
@@ -118,6 +150,9 @@ func DefaultListen() []string {
 	return []string{"/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1", "/ip6/::/tcp/0", "/ip6/::/udp/0/quic-v1"}
 }
 
+// CarriesSpotChecks reports whether the client carries the platform's audits.
+func (b BuyConfig) CarriesSpotChecks() bool { return b.SpotChecks == nil || *b.SpotChecks }
+
 func (c *Config) fill() {
 	d := DefaultConfig()
 	if c.HTTP == "" {
@@ -126,7 +161,7 @@ func (c *Config) fill() {
 	if len(c.Listen) == 0 {
 		c.Listen = d.Listen
 	}
-	if c.Buy.BudgetMicros == 0 {
+	if c.Buy.BudgetMicros == 0 || c.Buy.BudgetMicros == oldDefaultBudgetMicros {
 		c.Buy.BudgetMicros = d.Buy.BudgetMicros
 	}
 	if c.Share.Upstream == "" {

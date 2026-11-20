@@ -1,0 +1,4 @@
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": "{{TEXT_A}}"}]}}],"usageMetadata": {"trafficType": "PROVISIONED_THROUGHPUT"},"modelVersion": "{{MODEL}}","createTime": "2026-11-15T13:00:01.000000Z","responseId": "{{ID}}"},"traceId": "t{{ID}}"}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": "{{TEXT_B}}"}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 4402,"candidatesTokenCount": 19,"totalTokenCount": 4467,"cachedContentTokenCount": 4096,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 4402}],"thoughtsTokenCount": 46,"trafficType": "PROVISIONED_THROUGHPUT"},"modelVersion": "{{MODEL}}","createTime": "2026-11-15T13:00:01.000000Z","responseId": "{{ID}}"},"traceId": "t{{ID}}"}
+

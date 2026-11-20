@@ -69,7 +69,7 @@ func newJob(t *testing.T, completionTokens uint64, mutate func(payloads []string
 		jobKey:  jobKey,
 		nodeBox: nodeBox,
 	}
-	encoded, err := protocol.EncodeRequest([]byte(body))
+	encoded, err := protocol.EncodeRequest(joinRequest(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,13 +144,13 @@ func TestInflatedUsageIsUpheld(t *testing.T) {
 // exactCounter stands in for a reference server: it counts words.
 type exactCounter struct{}
 
-func (exactCounter) CountPrompt(_ context.Context, _ string, b []byte) (uint64, error) {
+func (exactCounter) CountPrompt(_ context.Context, _, _ string, b []byte) (uint64, error) {
 	return uint64(len(strings.Fields(string(b)))), nil
 }
 func (exactCounter) CountText(_ context.Context, _, s string) (uint64, error) {
 	return uint64(len(strings.Fields(s))), nil
 }
-func (exactCounter) Exact(string) bool { return true }
+func (exactCounter) Exact(string, string) bool { return true }
 
 func TestExactCountsCatchModestInflationTheHeuristicAllows(t *testing.T) {
 	j := newJob(t, 60, nil) // 3 words billed as 60 tokens: within 2x+64, far above an exact 3+16
@@ -216,7 +216,7 @@ func TestBuyerCannotFabricateOrSwapKeys(t *testing.T) {
 	// A different request than the one signed for proves nothing.
 	ev = j.evidence()
 	other2 := *j
-	enc, _ := protocol.EncodeRequest([]byte(`{"messages":[]}`))
+	enc, _ := protocol.EncodeRequest(joinRequest(`{"messages":[]}`))
 	other2.request, _ = box.SealFrom(j.jobKey, j.t.NodeBoxPub, enc, protocol.RequestAAD(&j.t))
 	if v := judge(t, &other2, j.receipt, ev, j.chunks, tokens.Heuristic{}); v.Outcome != Unverifiable {
 		t.Fatalf("other request: want unverifiable, got %+v", v)
@@ -250,4 +250,13 @@ func TestReceiptRequirementsAndOrdering(t *testing.T) {
 	if err := jd.Add(1, j.chunks[1]); err == nil {
 		t.Fatal("accepted chunks out of order")
 	}
+}
+
+// joinRequest is a request's plaintext as a buyer seals it.
+func joinRequest(body string) []byte {
+	b, err := protocol.JoinRequest(nil, []byte(body))
+	if err != nil {
+		panic(err)
+	}
+	return b
 }

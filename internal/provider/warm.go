@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"sharetoken/internal/apicompat"
 	"sharetoken/internal/node"
 	"sharetoken/internal/protocol"
 )
@@ -216,12 +217,34 @@ func warmProbe(ctx context.Context, up node.Upstream, model string) error {
 		"messages":       []map[string]string{{"role": "user", "content": "hi"}},
 	})
 	chunks := 0
-	err := up.Stream(ctx, body, func(payload []byte) error {
+	read := func(payload []byte) error {
 		if _, err := protocol.ParseChunk(payload); err == nil {
 			chunks++
 		}
 		return nil
-	})
+	}
+	// The probe is a chat request; a provider that speaks another API gets
+	// it converted, and its answer converted back, as in a test (build.go).
+	req := &node.Request{API: protocol.APIChat, Body: body, Limit: 16}
+	emit := read
+	var tr apicompat.Translator
+	if !slices.Contains(up.APIs(), protocol.APIChat) {
+		target, ok := apicompat.Target(protocol.APIChat, up.APIs())
+		if !ok {
+			return errors.New("the provider speaks none of the APIs this client converts to")
+		}
+		conv, err := apicompat.Convert(protocol.APIChat, target, body, apicompat.Options{Model: model})
+		if err != nil {
+			return err
+		}
+		req = &node.Request{API: target, Body: conv.Body, Limit: 16}
+		tr = conv.Translator
+		emit = func(p []byte) error { return tr.Event(p, read) }
+	}
+	err := up.Stream(ctx, req, emit)
+	if err == nil && tr != nil {
+		err = tr.Close(read)
+	}
 	if err == nil && chunks == 0 {
 		err = errors.New("the provider answered with an empty stream")
 	}

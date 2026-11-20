@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
+	"sharetoken/internal/apicompat"
 	"sharetoken/internal/node"
 	"sharetoken/internal/protocol"
 )
@@ -54,77 +56,23 @@ func (e *Entry) Upstream(ts TokenSource) (node.Upstream, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &outboundUpstream{up: &billable{up: up, estimatePrompt: e.claudeProfile()}, client: client, owner: e.ID}, nil
+		return wrapOutbound(&outboundUpstream{up: up, client: client, owner: e.ID}), nil
 	}
 	var up node.Upstream
 	switch e.Type {
 	case KindAnthropic:
 		up = &anthropicUpstream{base: e.URL(), limits: outputLimits{set: e.caps()}, header: e.keyHeader(), entry: e}
 	case KindOpenAI:
-		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}, tokensField: "max_completion_tokens"}
+		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}, tokensField: "max_completion_tokens", responses: true}
+	case KindDeepSeek:
+		// DeepSeek also serves the Anthropic Messages API, at /anthropic.
+		up = (&openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}, messages: strings.TrimRight(e.URL(), "/") + "/anthropic"}).chatQuirks(e.Type)
+	case KindGemini:
+		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}, thoughtSignatures: true}
 	default:
-		up = &openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}}
+		up = (&openAIUpstream{base: e.URL(), header: e.keyHeader(), limits: outputLimits{set: e.caps()}}).chatQuirks(e.Type)
 	}
-	return &outboundUpstream{up: &billable{up: up}, client: client, owner: e.ID}, nil
-}
-
-// billable keeps the token counts a provider reports within what a buyer
-// accepts. A buyer checks the claimed completion tokens against the output
-// it received (protocol.UsagePlausible) and rejects the whole job when the
-// claim is far above it. Models that reason out of sight report tokens the
-// buyer never saw: those cannot be billed, and claiming them would lose the
-// job. The count the provider gave stays in the chunk as
-// completion_tokens_reported.
-type billable struct {
-	up             node.Upstream
-	estimatePrompt bool // seller pays for extra OAuth system instructions
-}
-
-func (b *billable) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
-	var seen strings.Builder
-	promptEstimate, err := protocol.EstimatePromptTokens(body)
-	if err != nil {
-		return err
-	}
-	return b.up.Stream(ctx, body, func(payload []byte) error {
-		info, err := protocol.ParseChunk(payload)
-		if err != nil {
-			return emit(payload)
-		}
-		seen.WriteString(info.Text())
-		if info.Usage == nil {
-			return emit(payload)
-		}
-		limit := 2*protocol.EstimateTokens(seen.String()) + 64
-		adjustPrompt := b.estimatePrompt && info.Usage.PromptTokens > promptEstimate
-		adjustOutput := info.Usage.CompletionTokens > limit
-		if !adjustPrompt && !adjustOutput {
-			return emit(payload)
-		}
-		var chunk map[string]json.RawMessage
-		var usage map[string]json.RawMessage
-		if json.Unmarshal(payload, &chunk) != nil || json.Unmarshal(chunk["usage"], &usage) != nil {
-			return emit(payload)
-		}
-		pt, ct := info.Usage.PromptTokens, info.Usage.CompletionTokens
-		if adjustOutput {
-			usage["completion_tokens_reported"] = usage["completion_tokens"]
-			ct = limit
-			usage["completion_tokens"], _ = json.Marshal(ct)
-		}
-		if adjustPrompt {
-			usage["prompt_tokens_reported"] = usage["prompt_tokens"]
-			pt = promptEstimate
-			usage["prompt_tokens"], _ = json.Marshal(pt)
-		}
-		usage["total_tokens"], _ = json.Marshal(pt + ct)
-		chunk["usage"], _ = json.Marshal(usage)
-		out, err := json.Marshal(chunk)
-		if err != nil {
-			return emit(payload)
-		}
-		return emit(out)
-	})
+	return wrapOutbound(&outboundUpstream{up: up, client: client, owner: e.ID}), nil
 }
 
 // keyHeader is what authenticates an API-key request.
@@ -256,8 +204,9 @@ type ProbeResult struct {
 	Chunks         int    `json:"chunks"`
 }
 
-// Probe sends one small request through up, the way a job would, and reads
-// the answer the way a buyer would.
+// Probe sends one small chat request through up, the way a job would
+// (converted when up does not speak chat), and reads the answer the way a
+// buyer would.
 func Probe(ctx context.Context, up node.Upstream, model, prompt string) (ProbeResult, error) {
 	var r ProbeResult
 	if prompt == "" {
@@ -268,7 +217,9 @@ func Probe(ctx context.Context, up node.Upstream, model, prompt string) (ProbeRe
 		"stream_options": map[string]bool{"include_usage": true},
 		"messages":       []map[string]string{{"role": "user", "content": prompt}},
 	})
-	err := up.Stream(ctx, body, func(payload []byte) error {
+	var meter protocol.UsageMeter
+	var text strings.Builder
+	read := func(payload []byte) error {
 		info, err := protocol.ParseChunk(payload)
 		if err != nil {
 			return fmt.Errorf("the provider's answer is not an OpenAI chunk: %w", err)
@@ -276,23 +227,42 @@ func Probe(ctx context.Context, up node.Upstream, model, prompt string) (ProbeRe
 		r.Chunks++
 		r.Text += info.Content
 		r.Reasoning += info.Reasoning
+		text.WriteString(info.Text())
 		if info.FinishReason != "" {
 			r.FinishReason = info.FinishReason
 		}
-		if info.Usage != nil {
-			r.PromptTokens, r.CompletionTokens = info.Usage.PromptTokens, info.Usage.CompletionTokens
-			var raw struct {
-				Usage struct {
-					Reported       uint64 `json:"completion_tokens_reported"`
-					PromptReported uint64 `json:"prompt_tokens_reported"`
-				} `json:"usage"`
-			}
-			_ = json.Unmarshal(payload, &raw)
-			r.Reported = raw.Usage.Reported
-			r.PromptReported = raw.Usage.PromptReported
-		}
+		meter.Add(info)
 		return nil
-	})
+	}
+	req := &node.Request{API: protocol.APIChat, Body: body, Limit: 512}
+	emit := read
+	var tr apicompat.Translator
+	if !slices.Contains(up.APIs(), protocol.APIChat) {
+		target, ok := apicompat.Target(protocol.APIChat, up.APIs())
+		if !ok {
+			return r, fmt.Errorf("the provider speaks none of the APIs this client converts to")
+		}
+		conv, err := apicompat.Convert(protocol.APIChat, target, body, apicompat.Options{Model: model})
+		if err != nil {
+			return r, err
+		}
+		req = &node.Request{API: target, Body: conv.Body, Limit: 512}
+		tr = conv.Translator
+		emit = func(p []byte) error { return tr.Event(p, read) }
+	}
+	err := up.Stream(ctx, req, emit)
+	if err == nil && tr != nil {
+		err = tr.Close(read)
+	}
+	if u := meter.Usage(); u != nil {
+		r.PromptTokens, r.CompletionTokens = u.PromptTokens, u.CompletionTokens
+		// What the buyer's rules let the seller bill: hidden reasoning up to
+		// the job's limit, visible output by its text.
+		billed := protocol.BillableUsage(*u, u.PromptTokens, protocol.EstimateTokens(text.String()), meter.Hidden(), 512)
+		if billed.CompletionTokens < u.CompletionTokens {
+			r.Reported, r.CompletionTokens = u.CompletionTokens, billed.CompletionTokens
+		}
+	}
 	if err == nil && r.Chunks == 0 {
 		err = errors.New("the provider answered with an empty stream")
 	}

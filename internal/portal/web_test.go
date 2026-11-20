@@ -340,7 +340,7 @@ func TestAdminConsoleEndpoints(t *testing.T) {
 	for _, ep := range []struct{ m, p string }{
 		{"GET", "/api/v1/admin/users/search"}, {"POST", "/api/v1/admin/users/alice/admin"},
 		{"GET", "/api/v1/admin/users/alice/tokens"}, {"POST", "/api/v1/admin/users/alice/tokens/revoke"}, {"GET", "/api/v1/admin/jobs"},
-		{"GET", "/api/v1/admin/nodes"}, {"GET", "/api/v1/admin/audits"}, {"GET", "/api/v1/admin/disputes"}, {"GET", "/api/v1/admin/ledger"},
+		{"GET", "/api/v1/admin/nodes"}, {"GET", "/api/v1/admin/audits"}, {"GET", "/api/v1/admin/audit-calibrations"}, {"GET", "/api/v1/admin/disputes"}, {"GET", "/api/v1/admin/ledger"},
 		{"GET", "/api/v1/admin/accounts"}, {"PATCH", "/api/v1/admin/relays/1"}, {"POST", "/api/v1/admin/disputes/x/resolve"},
 	} {
 		user.call(ep.m, ep.p, map[string]any{}, 403, nil)
@@ -444,6 +444,13 @@ func TestAdminConsoleEndpoints(t *testing.T) {
 	admin.call("GET", "/api/v1/admin/jobs?status=final&user=alice", nil, 200, &jl)
 	admin.call("GET", "/api/v1/admin/nodes", nil, 200, &struct{}{})
 	admin.call("GET", "/api/v1/admin/audits", nil, 200, &struct{}{})
+	var cal struct {
+		Calibrations []coordinator.AuditCalibration
+	}
+	admin.call("GET", "/api/v1/admin/audit-calibrations", nil, 200, &cal)
+	if cal.Calibrations == nil {
+		t.Fatal("calibrations: want an empty list, not null")
+	}
 	admin.call("GET", "/api/v1/admin/disputes", nil, 200, &struct{}{})
 
 	// Ledger journal with user names, and account balances.

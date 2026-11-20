@@ -4,7 +4,9 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,7 +43,15 @@ type Network struct {
 	// MaxReservations caps the reservations of all this network's devices
 	// together; AllowPeers do not count. 0: only the relay's global limit.
 	MaxReservations int
+	// AllowAccounts, when not empty, makes the relay private: only devices of
+	// these accounts of the network ("user:3") may reserve. The portal signs
+	// the account into every pass, so a new device of an owner is admitted
+	// without touching the relay, and a disabled user's passes run out.
+	AllowAccounts []string
 }
+
+// Private reports whether only listed accounts may reserve.
+func (n Network) Private() bool { return len(n.AllowAccounts) > 0 }
 
 // validateNetworks checks that the networks can be told apart: a pass or a peer must
 // belong to exactly one.
@@ -78,6 +88,11 @@ func validateNetworks(nets []Network) error {
 		if n.MaxReservations < 0 {
 			errs = append(errs, fmt.Errorf("network %q: negative reservation limit", n.Name))
 		}
+		for _, acct := range n.AllowAccounts {
+			if acct == "" || len(acct) > 64 || strings.ContainsAny(acct, " \t\r\n") {
+				errs = append(errs, fmt.Errorf("network %q: allow_accounts: %q is not an account (the portal shows yours, e.g. user:3)", n.Name, acct))
+			}
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -87,6 +102,20 @@ type tenant struct {
 	Network
 	accepted atomic.Int64
 	denied   atomic.Int64
+	refused  atomic.Int64 // valid passes of accounts a private relay does not list
+
+	keyMu sync.RWMutex
+	added []ed25519.PublicKey // portal keys learned after start (AddPortalKey)
+}
+
+func (t *tenant) keys() []ed25519.PublicKey {
+	t.keyMu.RLock()
+	defer t.keyMu.RUnlock()
+	return append(slices.Clone(t.PortalKeys), t.added...)
+}
+
+func (t *tenant) admits(account string) bool {
+	return !t.Private() || slices.Contains(t.AllowAccounts, account)
 }
 
 // admission decides who may reserve. With no networks it admits everyone (an
@@ -164,7 +193,7 @@ func (a *admission) AllowReserve(p peer.ID, _ ma.Multiaddr) bool {
 		return false // not started yet
 	}
 	e, ok := a.passes[p]
-	if !ok || !now.Before(e.expires) {
+	if !ok || !now.Before(e.expires) || !e.tenant.admits(e.account) {
 		return false
 	}
 	// Count the other devices that hold a live reservation (the relay drops a
@@ -201,7 +230,7 @@ func (a *admission) AllowConnect(peer.ID, ma.Multiaddr, peer.ID) bool { return t
 func (a *admission) verify(p *relaypass.Pass, remote string, now time.Time) (*tenant, error) {
 	err := relaypass.ErrBadSignature
 	for _, t := range a.tenants {
-		if err = p.Verify(t.PortalKeys, remote, now); err == nil {
+		if err = p.Verify(t.keys(), remote, now); err == nil {
 			return t, nil
 		}
 		if !errors.Is(err, relaypass.ErrBadSignature) {
@@ -233,6 +262,13 @@ func (a *admission) handlePass(s network.Stream) {
 		_ = protocol.SendError(s, protocol.Errorf(protocol.CodeUnauthorized, "%v", err))
 		return
 	}
+	if !t.admits(p.Account) {
+		// Said plainly, so that the client can tell its user why sharing
+		// through this relay does not work.
+		t.refused.Add(1)
+		_ = protocol.SendError(s, protocol.Errorf(protocol.CodeForbidden, "this relay is private and does not list account %s", p.Account))
+		return
+	}
 	a.mu.Lock()
 	a.passes[remote] = admitted{tenant: t, account: p.Account, client: p.Client.Clean(), expires: p.Expires()}
 	if len(a.passes) > 4*maxTrackedPasses/5 {
@@ -259,6 +295,11 @@ type NetworkStats struct {
 	Coordinators         int `json:"coordinators"`
 	CoordinatorsExpected int `json:"coordinators_expected"` // allow_peers configured
 	MaxReservations      int `json:"max_reservations"`      // 0: only the relay's global limit
+	// Private relays admit only AllowedAccounts accounts; PassesRefused
+	// counts the valid passes of others.
+	Private         bool  `json:"private"`
+	AllowedAccounts int   `json:"allowed_accounts,omitempty"`
+	PassesRefused   int64 `json:"passes_refused"`
 	// Clients counts the devices holding a reservation by what their pass
 	// says of their client (signed by the portal, as the client reported it).
 	Clients []ClientCount `json:"clients,omitempty"`
@@ -347,12 +388,45 @@ func (a *admission) networkStats() []NetworkStats {
 	for _, t := range a.tenants {
 		out = append(out, NetworkStats{Name: t.Name, Reservations: held[t], PassesAccepted: t.accepted.Load(), ReservationsDenied: t.denied.Load(),
 			Coordinators: coordinators[t], CoordinatorsExpected: len(t.AllowPeers), MaxReservations: t.MaxReservations,
+			Private: t.Private(), AllowedAccounts: len(t.AllowAccounts), PassesRefused: t.refused.Load(),
 			Clients: clientCounts(clients[t]), ClientMismatches: mismatches[t]})
 	}
 	return out
 }
 
 const maxTrackedPasses = 100_000
+
+// maxAddedKeys bounds the portal keys a network learns after start: a
+// rotation adds one.
+const maxAddedKeys = 4
+
+// addPortalKey makes network name accept passes signed by key as well. It
+// reports whether the key is new. A key another network uses is refused: a
+// pass must belong to exactly one network.
+func (a *admission) addPortalKey(name string, key ed25519.PublicKey) (bool, error) {
+	var target *tenant
+	for _, t := range a.tenants {
+		known := slices.ContainsFunc(t.keys(), func(k ed25519.PublicKey) bool { return k.Equal(key) })
+		switch {
+		case t.Name == name && known:
+			return false, nil
+		case known:
+			return false, fmt.Errorf("the key belongs to network %q", t.Name)
+		case t.Name == name:
+			target = t
+		}
+	}
+	if target == nil {
+		return false, fmt.Errorf("no network %q", name)
+	}
+	target.keyMu.Lock()
+	defer target.keyMu.Unlock()
+	if len(target.added) >= maxAddedKeys {
+		target.added = target.added[1:]
+	}
+	target.added = append(target.added, key)
+	return true, nil
+}
 
 func (a *admission) register(h host.Host) {
 	a.mu.Lock()

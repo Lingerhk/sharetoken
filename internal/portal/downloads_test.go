@@ -63,6 +63,9 @@ func TestDownloads(t *testing.T) {
 	write("sharetoken-cli-1.1.9-linux-amd64.tar.gz", "older")
 	write("sharetoken-cli-1.2.0-windows-arm64.zip", "windows archive")
 	write("sharetoken-1.2.0-macos-arm64.dmg", "desktop")
+	const relayPackage = "sharetoken-relay-1.2.0-linux-arm64.tar.gz"
+	write(relayPackage, "relay archive")
+	write("sharetoken-relay-1.2.0-windows-arm64.tar.gz", "there is no such package")
 	write("SHA256SUMS-1.2.0", "abc123  "+newest+"\ndef456  sharetoken-cli-1.2.0-windows-arm64.zip\n")
 	const devPackage = "sharetoken-cli-dev-1.3.0-linux-amd64.tar.gz" // newer, and still not what a user is offered
 	write(devPackage, "dev archive")
@@ -83,8 +86,8 @@ func TestDownloads(t *testing.T) {
 	if d.Version != "1.2.0" {
 		t.Errorf("version %q", d.Version)
 	}
-	if len(d.Packages) != 3 {
-		t.Fatalf("want 3 packages (newest per kind, system, architecture), got %+v", d.Packages)
+	if len(d.Packages) != 4 {
+		t.Fatalf("want 4 packages (newest per kind, system, architecture), got %+v", d.Packages)
 	}
 	byFile := map[string]Package{}
 	for _, p := range d.Packages {
@@ -96,6 +99,10 @@ func TestDownloads(t *testing.T) {
 	}
 	if p := byFile["sharetoken-1.2.0-macos-arm64.dmg"]; p.Kind != "desktop" || p.OS != "macos" {
 		t.Errorf("desktop package: %+v", p)
+	}
+
+	if p := byFile[relayPackage]; p.Kind != "relay" || p.OS != "linux" || p.Arch != "arm64" || p.Version != "1.2.0" {
+		t.Errorf("relay package: %+v", p)
 	}
 
 	get := func(path string, hdr ...string) (*http.Response, string) {
@@ -114,6 +121,9 @@ func TestDownloads(t *testing.T) {
 	}
 	if resp, body := get("/downloads/" + devPackage); resp.StatusCode != 200 || body != "dev archive" {
 		t.Errorf("dev package by name: %d %q", resp.StatusCode, body)
+	}
+	if resp, body := get("/downloads/" + relayPackage); resp.StatusCode != 200 || body != "relay archive" {
+		t.Errorf("relay package: %d %q", resp.StatusCode, body)
 	}
 	resp, body := get("/downloads/" + newest)
 	if resp.StatusCode != 200 || body != "new linux archive" {
@@ -137,6 +147,7 @@ func TestDownloads(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/downloads/secret.key",
+		"/downloads/sharetoken-relay-1.2.0-windows-arm64.tar.gz",
 		"/downloads/sharetoken-cli-1.2.0-linux-amd64.tar.gz.tmp",
 		"/downloads/sharetoken-cli-1.2.0-macos-arm64.tar.gz", // a directory
 		"/downloads/..%2foutside-downloads",

@@ -23,7 +23,38 @@ var Migrations = []mysqldb.Migration{
 	{Version: 5, Name: "no passwords", MinReader: 5, SQL: accounts.NoPasswords},
 	// Older binaries would charge for shared jobs: they may not run on it.
 	{Version: 6, Name: "share partners", MinReader: 6, SQL: accounts.SharingSchema + sharedJobsSchema},
+	// The API a job was in, and the prompt tokens billed at cache prices.
+	{Version: 7, Name: "job API and cache tokens", SQL: jobAPISchema},
+	// Token-level audits: method, per-question scores, shadow verdicts, and
+	// the honest score distribution of each reference model.
+	{Version: 8, Name: "token-level audits", SQL: tokenAuditSchema},
 }
+
+const tokenAuditSchema = `ALTER TABLE audits ADD COLUMN method VARCHAR(16) NOT NULL DEFAULT '',
+	ADD COLUMN questions INT NOT NULL DEFAULT 0,
+	ADD COLUMN score DOUBLE NOT NULL DEFAULT 0,
+	ADD COLUMN threshold DOUBLE NOT NULL DEFAULT 0,
+	ADD COLUMN shadow TINYINT NOT NULL DEFAULT 0,
+	ADD COLUMN scores MEDIUMTEXT NULL;
+CREATE TABLE IF NOT EXISTS audit_calibrations (
+	id            BIGINT PRIMARY KEY AUTO_INCREMENT,
+	at            BIGINT NOT NULL,
+	model         VARCHAR(255) NOT NULL,
+	method        VARCHAR(16) NOT NULL,
+	samples       INT NOT NULL,
+	honest_mean   DOUBLE NOT NULL,
+	honest_median DOUBLE NOT NULL,
+	honest_p001   DOUBLE NOT NULL,
+	fail_rate     DOUBLE NOT NULL,
+	threshold     DOUBLE NOT NULL,
+	drift         TINYINT NOT NULL DEFAULT 0,
+	detail        TEXT NOT NULL DEFAULT (''),
+	KEY audit_calibrations_by_model (model, at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;`
+
+const jobAPISchema = `ALTER TABLE jobs ADD COLUMN api VARCHAR(16) NOT NULL DEFAULT '',
+	ADD COLUMN cache_read_tokens BIGINT NOT NULL DEFAULT 0,
+	ADD COLUMN cache_write_tokens BIGINT NOT NULL DEFAULT 0;`
 
 // Migrate brings the shared database up to date. The portal and the coordinator
 // both call it, so either may start first.
@@ -165,30 +196,33 @@ func insertJob(tx *sql.Tx, j *job) error {
 	if j.ticket.Shared {
 		shared = 1
 	}
-	_, err = tx.Exec(`INSERT INTO jobs (job_id, buyer, node, buyer_acct, node_acct, model, status, ticket, dispute_reason, created_at, release_at, ticket_expires, shared)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = tx.Exec(`INSERT INTO jobs (job_id, buyer, node, buyer_acct, node_acct, model, status, ticket, dispute_reason, created_at, release_at, ticket_expires, shared, api)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ticket.JobID, j.ticket.Buyer, j.ticket.Node, j.buyerAcct, j.nodeAcct, j.ticket.Model, string(j.status), ticket,
-		j.disputeReason, j.createdAt, j.releaseAt, j.ticket.ExpiresAt, shared)
+		j.disputeReason, j.createdAt, j.releaseAt, j.ticket.ExpiresAt, shared, protocol.NormalAPI(j.ticket.API))
 	return err
 }
 
 // saveJob writes a job's mutable fields; the ticket never changes.
 func saveJob(tx *sql.Tx, j *job) error {
 	var (
-		rcpt   []byte
-		pt, ct uint64
+		rcpt           []byte
+		pt, ct, cr, cw uint64
 	)
 	if j.receipt != nil {
 		var err error
 		if rcpt, err = json.Marshal(j.receipt); err != nil {
 			return err
 		}
-		pt, ct = j.receipt.Receipt.PromptTokens, j.receipt.Receipt.CompletionTokens
+		r := &j.receipt.Receipt
+		pt, ct, cr, cw = r.PromptTokens, r.CompletionTokens, r.CacheReadTokens, r.CacheWriteTokens
 	}
 	_, err := tx.Exec(`UPDATE jobs SET status = ?, receipt = ?, cost = ?, fee = ?, dispute_reason = ?, dispute_outcome = ?,
-		dispute_detail = ?, finalize_at = ?, done_at = ?, prompt_tokens = ?, completion_tokens = ?, started_at = ? WHERE job_id = ?`,
+		dispute_detail = ?, finalize_at = ?, done_at = ?, prompt_tokens = ?, completion_tokens = ?, started_at = ?,
+		cache_read_tokens = ?, cache_write_tokens = ? WHERE job_id = ?`,
 		string(j.status), rcpt, int64(j.cost), j.fee, j.disputeReason, j.disputeOutcome, j.disputeDetail,
-		j.finalizeAt, j.doneAt, int64(min(pt, 1<<62)), int64(min(ct, 1<<62)), j.startedAt, j.ticket.JobID)
+		j.finalizeAt, j.doneAt, int64(min(pt, 1<<62)), int64(min(ct, 1<<62)), j.startedAt,
+		int64(min(cr, 1<<62)), int64(min(cw, 1<<62)), j.ticket.JobID)
 	return err
 }
 

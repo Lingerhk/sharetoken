@@ -1013,7 +1013,7 @@ func TestDaemonAPIKey(t *testing.T) {
 	d.want(401, "invalid_api_key", "GET", "/v1/models", nil, noKey...)
 	d.want(401, "invalid_api_key", "GET", "/v1/models", nil, "Authorization", "Bearer sk-st-"+strings.Repeat("0", 48))
 	d.want(401, "invalid_api_key", "GET", "/v1/models", nil, "Authorization", "Bearer "+d.Key()) // the management API's key is not this one
-	d.want(401, "not_logged_in", "GET", "/v1/models", nil)                                      // with the key, on to the agent
+	d.want(401, "not_logged_in", "GET", "/v1/models", nil)                                       // with the key, on to the agent
 	d.want(401, "not_logged_in", "GET", "/v1/models", nil, "Authorization", "", "X-Api-Key", s.Key)
 
 	// The management API shows and changes it, with its own key only.
@@ -1271,5 +1271,75 @@ func TestDaemonFeedback(t *testing.T) {
 	f := list.Feedback[0]
 	if f.Message != "it broke" || f.Lang != "de" || f.Source != "client" || f.AppVersion != version.Version || f.OS != runtime.GOOS+"/"+runtime.GOARCH {
 		t.Fatalf("feedback: %+v", f)
+	}
+}
+
+// The settings page changes the budget and require_native: the running
+// endpoint takes them at once and config.json keeps them.
+func TestDaemonBuySettings(t *testing.T) {
+	e := newDaemonEnv(t, openPortal(), false)
+	d := e.daemon()
+	d.want(401, "not_logged_in", "GET", "/api/v1/buy", nil)
+	d.signIn(e, "buyer@example.com")
+	var v BuySettingsView
+	if err := json.Unmarshal(d.want(200, "", "GET", "/api/v1/buy", nil), &v); err != nil || v.BudgetMicros != DefaultBudgetMicros || v.RequireNative {
+		t.Fatalf("defaults: %+v %v", v, err)
+	}
+	if err := json.Unmarshal(d.want(200, "", "PUT", "/api/v1/buy", BuySettingsView{BudgetMicros: 5_000_000, RequireNative: true}), &v); err != nil || v.BudgetMicros != 5_000_000 || !v.RequireNative {
+		t.Fatalf("set: %+v %v", v, err)
+	}
+	c, err := LoadConfig(d.home)
+	if err != nil || c.Buy.BudgetMicros != 5_000_000 || !c.Buy.RequireNative {
+		t.Fatalf("saved: %+v %v", c.Buy, err)
+	}
+	d.want(400, "bad_request", "PUT", "/api/v1/buy", BuySettingsView{BudgetMicros: 5})
+	d.want(400, "bad_request", "PUT", "/api/v1/buy", map[string]any{"budget_micros": "lots"})
+
+	// Carrying the platform's spot checks is on, and no setting of the app:
+	// the local API neither shows nor changes it, and saving the others
+	// keeps what config.json says.
+	if !c.Buy.CarriesSpotChecks() {
+		t.Fatalf("spot checks by default: %+v", c.Buy)
+	}
+	off := false
+	c.Buy.SpotChecks = &off
+	if err := SaveConfig(d.home, c); err != nil {
+		t.Fatal(err)
+	}
+	body := d.want(200, "", "PUT", "/api/v1/buy", map[string]any{"budget_micros": 4_000_000, "spot_checks": true})
+	if strings.Contains(string(body), "spot_checks") {
+		t.Fatalf("the local API shows spot_checks: %s", body)
+	}
+	if c, err := LoadConfig(d.home); err != nil || c.Buy.CarriesSpotChecks() || c.Buy.BudgetMicros != 4_000_000 {
+		t.Fatalf("saved: %+v %v", c.Buy, err)
+	}
+}
+
+// The settings page turns the direct tunnels on and chooses what runs inside
+// them: the client takes the settings at once, running or still joining the
+// network, and config.json keeps them. A field left out keeps its value.
+func TestDaemonTailnetSettings(t *testing.T) {
+	e := newDaemonEnv(t, openPortal(), false)
+	d := e.daemon()
+	d.want(401, "not_logged_in", "GET", "/api/v1/tailnet", nil)
+	d.signIn(e, "buyer@example.com")
+	var st TailnetStatus
+	if err := json.Unmarshal(d.want(200, "", "GET", "/api/v1/tailnet", nil), &st); err != nil || st.Enabled || st.Settings.Enabled || st.Proto != "quic" || st.Settings.Transport != "" {
+		t.Fatalf("defaults: %+v %v", st, err)
+	}
+	if err := json.Unmarshal(d.want(200, "", "PUT", "/api/v1/tailnet", map[string]any{"enabled": true, "transport": "tcp", "wait_ms": 1500}), &st); err != nil ||
+		!st.Enabled || st.Proto != "tcp" || st.WaitMillis != 1500 || st.Settings != (TailnetConfig{Enabled: true, Transport: "tcp", WaitMillis: 1500}) {
+		t.Fatalf("set: %+v %v", st, err)
+	}
+	if c, err := LoadConfig(d.home); err != nil || c.Tailnet != (TailnetConfig{Enabled: true, Transport: "tcp", WaitMillis: 1500}) {
+		t.Fatalf("saved: %+v %v", c.Tailnet, err)
+	}
+	if err := json.Unmarshal(d.want(200, "", "PUT", "/api/v1/tailnet", map[string]any{"transport": "quic"}), &st); err != nil || !st.Enabled || st.Proto != "quic" || st.WaitMillis != 1500 {
+		t.Fatalf("one field: %+v %v", st, err)
+	}
+	d.want(400, "bad_request", "PUT", "/api/v1/tailnet", map[string]any{"transport": "udp"})
+	d.want(400, "bad_request", "PUT", "/api/v1/tailnet", map[string]any{"wait_ms": MaxTailnetWaitMillis + 1})
+	if err := json.Unmarshal(d.want(200, "", "PUT", "/api/v1/tailnet", map[string]any{"enabled": false}), &st); err != nil || st.Enabled || st.Settings.Transport != "quic" {
+		t.Fatalf("off: %+v %v", st, err)
 	}
 }

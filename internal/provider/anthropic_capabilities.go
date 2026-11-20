@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -28,27 +29,49 @@ func anthropicModelCapabilities(model string) anthropicCapabilities {
 	}
 }
 
-func validateAnthropicParameters(chat *chatRequest, sampling string) error {
-	caps := anthropicModelCapabilities(chat.Model)
-	mode, name := chat.toolChoice()
-	if !caps.forcedTools && (name != "" || mode == "required") {
-		return fmt.Errorf("%s does not support forced tool_choice; use auto or none", chat.Model)
+// validateAnthropicRequest checks a Messages request's sampling and
+// tool_choice against what model takes; with sampling "default" it drops the
+// sampling settings the model would refuse instead.
+func validateAnthropicRequest(req map[string]any, model, sampling string) error {
+	caps := anthropicModelCapabilities(model)
+	if tc, ok := req["tool_choice"].(map[string]any); ok && !caps.forcedTools {
+		if typ := tc["type"]; typ == "any" || typ == "tool" {
+			return fmt.Errorf("%s does not support forced tool_choice; use auto or none", model)
+		}
 	}
 	if !caps.lockedSampling {
 		return nil
 	}
-	if sampling == "default" {
-		chat.Temperature, chat.TopP = nil, nil
+	// A buyer's tool cannot know each model's rules: the settings these
+	// models refuse are left out and the model samples at its default, as
+	// magpie does (samplingRefused). A seller that wants the buyer told
+	// configures sampling=strict.
+	if sampling != "strict" {
+		delete(req, "temperature")
+		delete(req, "top_p")
 		return nil
 	}
-	if chat.Temperature != nil && *chat.Temperature != 1 {
-		return fmt.Errorf("%s requires temperature=1 or no temperature", chat.Model)
+	temp, hasTemp := floatField(req, "temperature")
+	topP, hasTopP := floatField(req, "top_p")
+	if hasTemp && temp != 1 {
+		return fmt.Errorf("%s requires temperature=1 or no temperature", model)
 	}
-	if p := chat.TopP; p != nil && ((!caps.topPRange && *p != .99) || (caps.topPRange && (*p < .99 || *p > 1))) {
-		return fmt.Errorf("%s does not support this top_p; omit it or use 0.99", chat.Model)
+	if hasTopP && ((!caps.topPRange && topP != .99) || (caps.topPRange && (topP < .99 || topP > 1))) {
+		return fmt.Errorf("%s does not support this top_p; omit it or use 0.99", model)
 	}
-	if chat.Temperature != nil && chat.TopP != nil {
-		return fmt.Errorf("%s does not allow temperature and top_p together; omit one", chat.Model)
+	if hasTemp && hasTopP {
+		return fmt.Errorf("%s does not allow temperature and top_p together; omit one", model)
 	}
 	return nil
+}
+
+func floatField(req map[string]any, k string) (float64, bool) {
+	switch v := req[k].(type) {
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
+	case float64:
+		return v, true
+	}
+	return 0, false
 }

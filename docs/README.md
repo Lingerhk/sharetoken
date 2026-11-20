@@ -14,6 +14,8 @@ who run a network or work on the code.
 | [self-hosting.md](self-hosting.md) | Running a whole network with Docker Compose |
 | [configuration.md](configuration.md) | The configuration files of relay, coordinator and portal |
 | [providers.md](providers.md) | Selling hosted APIs: provider kinds, API keys and OAuth logins |
+| [apis.md](apis.md) | The three model APIs (chat completions, Messages, Responses): passing through, converting, matching, billing |
+| [tailnet.md](tailnet.md) | Direct tunnels between a buyer and a seller behind NAT: how they work, settings, QUIC or TCP inside, measured results, limits |
 | [warmup.md](warmup.md) | Warm-up: starting Claude and ChatGPT usage windows early, on this machine and for sold logins |
 | [desktop.md](desktop.md) | The desktop app: structure, local API, tray, packaging |
 | [mail.md](mail.md) | The mail server: verification codes, delivery modes, DNS |

@@ -129,7 +129,7 @@ sharetoken up                               # 客户端已在运行时，share �
   "nat": true,
   "relays": [],
   "buy": {
-    "budget_micros": 200000,
+    "budget_micros": 2000000,
     "max_price_in": 0,
     "max_price_out": 0,
     "evidence": true,
@@ -270,6 +270,7 @@ coordinator -db $DSN -fee-bps 500 \
 | `portal pass-key` | 中继验证凭证用的公钥。 |
 | `coordinator id` | 协调器的 peer ID。 |
 | `coordinator disputes`、`resolve <job-id> pay\|refund`、`nodes`、`audits`、`relays`、`check`、`balance <peer-id>` | 争议及其人工裁决、节点记录、抽检、中继登记、账本检查、某个设备的余额。 |
+| `coordinator audit calibrate [-samples n] [model]`、`audit try <node-peer-id> <model>`、`audit calibrations` | 测量参考模型的诚实分数（据此得出抽检阈值）；立即抽检一个节点（经官方中继，按影子模式记录）；列出校准记录。 |
 | `portal check-config`、`coordinator check-config`、`relay -check-config` | 校验配置并打印生效的设置。 |
 
 运维命令直接读写数据库，可以和运行中的服务同时执行。
@@ -393,7 +394,8 @@ OpenAI 兼容端点 `/v1/` 用的是 `apikey.json` 里的 API key（除非用 `s
 | `GET /api/v1/admin/relays`、`POST /api/v1/admin/relays`、`PATCH …/{id}`、`POST …/{id}/enable`、`POST …/{id}/disable`、`DELETE …/{id}` | 管理员 | 中继登记：添加、改名或设置地区、启用、停用、删除。 |
 | `GET /api/v1/admin/jobs?status=&user=&account=&before=&limit=` | 管理员 | 全部作业，含双方账户、争议原因和裁决。 |
 | `GET /api/v1/admin/nodes` | 管理员 | 节点信誉记录，附所属用户。 |
-| `GET /api/v1/admin/audits?limit=` | 管理员 | 推理审计记录。 |
+| `GET /api/v1/admin/audits?limit=` | 管理员 | 推理审计记录（方法、得分与阈值、影子模式、每道题的得分）。 |
+| `GET /api/v1/admin/audit-calibrations` | 管理员 | 参考模型的校准记录：诚实分数分布、阈值、漂移。 |
 | `GET /api/v1/admin/disputes?limit=` | 管理员 | 争议，未裁决的在前。 |
 | `POST /api/v1/admin/disputes/{job}/resolve` | 管理员 | `{decision: "pay"\|"refund"}`：人工裁决。 |
 | `GET /api/v1/admin/ledger?account=&before=&limit=` | 管理员 | 全局账本流水，附每个 `user:<id>` 账户对应的用户名。 |

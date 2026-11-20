@@ -3,6 +3,7 @@ package coordinator
 import (
 	"database/sql"
 	"math"
+	"time"
 
 	"sharetoken/internal/accounts"
 	"sharetoken/internal/ledger"
@@ -18,16 +19,73 @@ const (
 	AuditInconclusive = "inconclusive" // too close to call; no effect on the node
 )
 
-// AuditRecord is the result of one audit job.
+// AuditRecord is the result of one audit: one or more questions put to a
+// node, each a job of its own (JobID is the first).
 type AuditRecord struct {
 	JobID      string  `json:"job_id"`
 	Node       string  `json:"node"`
 	Model      string  `json:"model"`
 	Verdict    string  `json:"verdict"`
-	Similarity float64 `json:"similarity"`
+	Similarity float64 `json:"similarity"` // legacy LCS audits; 0 on token-level ones
 	Detail     string  `json:"detail"`
 	At         int64   `json:"at"`
+	// Token-level audits (package audit).
+	Method    string  `json:"method,omitempty"`    // tf, div, none; "" on legacy records
+	Questions int     `json:"questions,omitempty"` // questions asked
+	Score     float64 `json:"score"`               // tf: mean top-1 rate; div: failed divergences
+	Threshold float64 `json:"threshold"`           // tf: mean below which the model differs
+	// Shadow: recorded only. The verdict did not touch the node's record.
+	Shadow bool `json:"shadow"`
+	// Scores holds each question's score as JSON, for inspection.
+	Scores string `json:"scores,omitempty"`
 }
+
+// AuditCalibration is the score distribution of honest answers for one
+// reference model: the reference scoring its own answers, which is what an
+// honest node returns. Token-level audits take their threshold from it.
+type AuditCalibration struct {
+	At           int64   `json:"at"`
+	Model        string  `json:"model"`
+	Method       string  `json:"method"`
+	Samples      int     `json:"samples"`       // questions answered and scored
+	HonestMean   float64 `json:"honest_mean"`   // tf: mean top-1 rate per question
+	HonestMedian float64 `json:"honest_median"` // tf: median of K-question means
+	HonestP001   float64 `json:"honest_p001"`   // tf: 0.1th percentile of K-question means
+	FailRate     float64 `json:"fail_rate"`     // div: share of honest answers failing the check
+	Threshold    float64 `json:"threshold"`     // tf: what audits use
+	// Drift: the honest distribution moved since the previous calibration
+	// (the provider changed the model behind the name). Audits of the model
+	// are recorded without penalty until a calibration without drift.
+	Drift  bool   `json:"drift"`
+	Detail string `json:"detail"`
+}
+
+// SaveCalibration stores a calibration run.
+func (e *Engine) SaveCalibration(c AuditCalibration) error {
+	if c.At == 0 {
+		c.At = e.cfg.Now().UnixNano()
+	}
+	return e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
+		_, err := tx.Exec(`INSERT INTO audit_calibrations (at, model, method, samples, honest_mean, honest_median, honest_p001, fail_rate, threshold, drift, detail)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, c.At, c.Model, c.Method, c.Samples, c.HonestMean, c.HonestMedian, c.HonestP001, c.FailRate, c.Threshold, c.Drift, c.Detail)
+		return err
+	})
+}
+
+// LatestCalibration returns the newest calibration of model, or nil.
+func (e *Engine) LatestCalibration(model string) (*AuditCalibration, error) {
+	cs, err := QueryCalibrations(e.db, model, 1)
+	if err != nil || len(cs) == 0 {
+		return nil, err
+	}
+	return &cs[0], nil
+}
+
+// AuditorLifetime is how long an audit identity lives: after it, once none of
+// its jobs is open, its leftover credits return to the platform and it can no
+// longer buy. An audit asks several questions, spread out and scored in
+// between, all under one identity.
+const AuditorLifetime = time.Hour
 
 // RegisterAuditor records peer as an audit identity and funds it out of the
 // platform's fees. Its leftover credits return to the platform once its jobs
@@ -53,8 +111,14 @@ func (e *Engine) RecordAudit(rec AuditRecord) (*NodeStats, error) {
 	rec.At = now.UnixNano()
 	var st *NodeStats
 	err := e.update(func(tx *sql.Tx, _ *ledger.Tx) (err error) {
-		if _, err := tx.Exec(`INSERT INTO audits (at, job_id, node, model, verdict, similarity, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			rec.At, rec.JobID, rec.Node, rec.Model, rec.Verdict, rec.Similarity, rec.Detail); err != nil {
+		if _, err := tx.Exec(`INSERT INTO audits (at, job_id, node, model, verdict, similarity, detail, method, questions, score, threshold, shadow, scores)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			rec.At, rec.JobID, rec.Node, rec.Model, rec.Verdict, rec.Similarity, rec.Detail,
+			rec.Method, rec.Questions, rec.Score, rec.Threshold, rec.Shadow, rec.Scores); err != nil {
+			return err
+		}
+		if rec.Shadow {
+			st, err = loadStats(tx, rec.Node)
 			return err
 		}
 		st, err = updateStats(tx, rec.Node, func(s *NodeStats) {

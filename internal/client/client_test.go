@@ -128,3 +128,20 @@ func TestPruneAvoid(t *testing.T) {
 		t.Fatalf("want the list kept, got %v", avoid)
 	}
 }
+
+// The budget that was the default goes up with the default; one the user
+// chose stays.
+func TestOldDefaultBudgetIsRaised(t *testing.T) {
+	for _, c := range []struct{ saved, want uint64 }{{200_000, DefaultBudgetMicros}, {300_000, 300_000}, {0, DefaultBudgetMicros}} {
+		home := t.TempDir()
+		cfg := DefaultConfig()
+		cfg.Buy.BudgetMicros = c.saved
+		if err := SaveConfig(home, cfg); err != nil {
+			t.Fatal(err)
+		}
+		got, err := LoadConfig(home)
+		if err != nil || got.Buy.BudgetMicros != c.want {
+			t.Errorf("saved %d: loaded %d, %v; want %d", c.saved, got.Buy.BudgetMicros, err, c.want)
+		}
+	}
+}

@@ -6,7 +6,7 @@
 
 ## 1. 概述
 
-卖家除了共享本机的模型服务（Ollama 等），还可以共享自己在模型厂商开通的服务。客户端把买家发来的 OpenAI chat-completions 请求改写成厂商自己的格式，用卖家的 API key 或 OAuth 登录发出去，再把回答改写回 OpenAI 流式分片。买家侧没有任何变化，仍然只看到 OpenAI 格式。
+卖家除了共享本机的模型服务（Ollama 等），还可以共享自己在模型厂商开通的服务。买家的请求是三种接口之一（chat completions、Anthropic Messages、OpenAI Responses，见 [apis.md](apis.md)）。厂商支持该接口时，请求带上卖家的 API key 或 OAuth 登录和厂商需要的适配后原样发出；不支持时由节点转换（`internal/apicompat`），再把回答转回来。
 
 - 一个卖家可以配置多个 provider，同一类型也可以配多个（用 `-name` 区分），各自可开可关。
 - 本机模型和 provider 的模型可以同时出售。
@@ -40,12 +40,12 @@
 |---|---|
 | `store.go` | `providers.json` 的读写：`File`、`Entry`、`Token`；`Load`、`Save`、`Update`；`View`（密钥打码） |
 | `kind.go` | 类型表，`CheckSecretURL` |
-| `build.go` | `Entry.Upstream`（配置 → `node.Upstream`）、`ListModels`、`Check`、`Probe`、`billable` |
+| `build.go` | `Entry.Upstream`（配置 → `node.Upstream`，带上每种 provider 原生支持的接口）、`ListModels`、`Check`、`Probe` |
 | `ops.go` | 命令行和 API 共用的操作：`AddWithKey`、`SaveLogin`、`FinishLoginAndSave`、`SetEnabled`、`Remove`、`SetModel`、`RemoveModel`、`Models`、`Test`、`Views`、`KindViews` |
-| `chat.go`、`sse.go` | 解析买家的 chat 请求；发送 SSE 请求，并把结果写成 OpenAI 分片 |
+| `chat.go`、`sse.go` | 解析 chat 请求（Gemini 登录用）；发送 SSE 请求，并把结果写成 OpenAI 分片 |
 | `openai.go` | OpenAI 兼容上游；输出上限的学习与重试 |
-| `anthropic.go` | chat ↔ Messages API |
-| `responses.go` | chat ↔ Responses（Codex 后端） |
+| `anthropic.go` | 透传 Messages API：模型别名、输出上限和 thinking 预算、beta、不是 Anthropic 签名的 thinking 块 |
+| `responses.go` | Codex 后端的 Responses 规则、按作业上限截断流、`/responses/compact` |
 | `gemini.go` | chat ↔ Gemini 原生格式；工具 schema 清理 |
 | `oauth.go` | 两步登录、令牌续期、401 重试 |
 | `oauth_anthropic.go`、`oauth_openai.go`、`oauth_google.go`、`oauth_grok.go` | 各家的登录流程和请求封装 |
@@ -116,6 +116,8 @@
 
 模型条目的字段与 `config.json` 里本机模型的相同（`node.ModelConfig`）。
 
+节点报价里每个模型的元数据（上下文窗口、输出上限、是否推理及推理档位）来自内置的常见模型表（Claude、GPT/Codex、Gemini、DeepSeek、Grok，见 [`internal/modelinfo`](../../internal/modelinfo/modelinfo.go)），先按厂商侧的模型名查，再按网络 ID 查。模型条目可以用可选的 `meta` 自己设置，写了的字段优先于内置表：`{"context_window": 400000, "max_output_tokens": 32000, "reasoning": true, "reasoning_levels": ["low", "medium", "high"]}`。`max_output` 也会压低对外公布的输出上限。买家在 `/v1/models` 和 Codex 的模型目录里看到这些信息；两边都不知道的模型不带这些字段。
+
 所有修改都经过 `provider.Update`：它重新读取文件、应用修改再写回（使用操作系统文件锁，在 CLI 和 daemon 进程之间串行），所以运行中的客户端续期的令牌和命令修改的设置不会互相覆盖。
 
 ## 5. 命令行
@@ -175,7 +177,7 @@ sharetoken provider add anthropic -header anthropic-workspace-id=<工作区 ID>
 
 ## 7. 请求改写
 
-每个 provider 最终是一个 `node.Upstream`：输入买家的 chat-completions 请求体，输出 OpenAI 的 `chat.completion.chunk` 对象。
+每个 provider 最终是一个 `node.Upstream`：说明自己原生支持哪些接口（`APIs`），按其中一种发送请求，并以同一种接口输出厂商的流式事件（厂商有自己格式时先转成这种接口，例如 Gemini 登录）。其他接口的请求由节点转换（[apis.md](apis.md)）。下表是发出前做的适配。
 
 | 上游 | 改写内容 |
 |---|---|
@@ -197,9 +199,7 @@ Anthropic 必须带 `max_tokens`；`anthropicMaxOutput` 给出默认值。
 
 ### 隐藏推理与计费
 
-买家会核对卖家申报的输出 token：不得超过可见输出估算值的 2 倍加 64（`protocol.UsagePlausible`），超出的作业整单拒收。带隐藏推理的模型（例如 `gpt-5-nano`）报出的 token 远多于买家看到的内容。
-
-`billable` 包在每个 provider 外面，把申报量压到这个上限以内；厂商原始的数字保留在分片的 `completion_tokens_reported` 里。结果是：**隐藏推理的 token 卖家收不到钱**，定价时要把这一点算进去。`provider test` 遇到这种情况会提示。
+买家会核对卖家申报的输出 token（`protocol.UsagePlausible`）：不得超过可见输出估算值的 2 倍加 64；回答显示模型做了看不见的推理时（thinking 或 reasoning 项、redacted 或 omitted thinking、上报了推理 token），厂商的数字在作业输出上限以内都接受。节点签名前先把申报量降到这个范围内（`protocol.BillableUsage`），收据不会因为厂商的数字被拒：超过上限的推理，以及没有推理迹象的回答里看不见的输出，不计费。`provider test` 会把这种数字显示为 `completion_tokens_reported`。厂商从缓存读出或写入缓存的 prompt token 按卖家的缓存价格计费。
 
 ## 8. OAuth 登录
 
@@ -233,6 +233,8 @@ Anthropic 必须带 `max_tokens`；`anthropicMaxOutput` 给出默认值。
 ### 限流
 
 适用于所有 provider，登录和 API key 都一样。上游返回 HTTP 429 时，该 provider 按 `Retry-After` 冷却，缺失时默认一分钟。节点立即重新报价：冷却中的 provider 的模型不在报价里；全部 provider 都在冷却时撤下报价。冷却到期后，下一次报价（`OfferInterval` 内，默认 15 秒）恢复这些模型。按旧报价签发的 Ticket 返回 `busy`，不再请求上游，也不归咎于买方。本机 provider View 返回最近的上游 HTTP 状态、request ID 和冷却截止时间。该状态只在 daemon 进程内维护，重启后清空。
+
+针对单个请求、而不是针对账号的 429 不会让 provider 冷却：OpenAI 的 "Request too large … on tokens per min (TPM): Limit 30000, Requested 45000"（这一个请求就超过了账号每分钟的额度）让这个作业以 HTTP 413 失败；用 429 表达的上下文超长让作业以 400 失败，买家按上下文超长告诉客户端。额度用完、套餐限额和普通限流仍然让 provider 冷却。
 
 ## 9. 验证情况
 
@@ -287,7 +289,7 @@ sharetoken provider test claude -model claude-sonnet-4-6
 
 **账号与授权。** `oauth.account_id` 仍表示组织 UUID，`oauth.account_uuid` 表示用户 UUID。启用兼容配置前，旧登录若缺用户 UUID，需要刷新或重新登录。刷新、重启和同账号重新登录保留设备身份；同一真实 Anthropic 账号不能重复加入两个 provider。Cookie 只用于查询组织和交换授权码，不保存到 `providers.json`，也不发送给 token 或 Messages 端点。
 
-**模型与参数。** 兜底表包含 Fable 5.2、Mythos 5.2。模型查询成功只验证列模型权限；`source=fallback` 明确表示本地目录。401/403 不会被兜底掩盖，inference-only 凭据若没有列模型权限，可保存后手动指定模型做推理测试。Sonnet 5.5、Haiku 5.5、Fable/Mythos 5.2 的显式采样参数按能力表检查；`sampling=default` 对这些模型省略 temperature/top_p，交给上游默认值。Opus/Sonnet 5.5 和 Fable/Mythos 5.2 的强制工具调用明确报错，不静默降为 auto。API key 模式共用参数校验。
+**模型与参数。** 兜底表包含 Fable 5.2、Mythos 5.2。模型查询成功只验证列模型权限；`source=fallback` 明确表示本地目录。401/403 不会被兜底掩盖，inference-only 凭据若没有列模型权限，可保存后手动指定模型做推理测试。Sonnet 5.5、Haiku 5.5、Fable/Mythos 5.2 只接受部分采样参数：默认（`sampling=default`）省略它们不接受的 temperature/top_p，交给上游默认值；`sampling=strict` 则直接拒绝这样的请求。Opus/Sonnet 5.5 和 Fable/Mythos 5.2 的强制工具调用明确报错，不静默降为 auto。API key 模式共用参数校验。
 
 **会话。** 买方可在 OpenAI 请求顶层附加 `session_id`（最多 256 字节）。它经加密请求到达卖方，通过本地 context 交给适配器，不作为普通 OpenAI 上游字段发送。派生后的 ID 按卖方 provider、已认证买方和会话隔离；没有显式 ID 时，用首条 user 文本近似，同一买方相同开场的两段对话仍可能共用 ID。实际买方 peer ID 不发往 Anthropic。
 

@@ -20,17 +20,18 @@ func TestSignedEncodingsAreStable(t *testing.T) {
 
 	offer := protocol.Offer{
 		Node: "node", Addrs: []string{"/ip4/127.0.0.1/tcp/1"}, BoxPub: box32, ReceiptKey: key32,
-		Models:         []protocol.ModelPrice{{Model: "m", PriceInMicros: 1, PriceOutMicros: 2}},
+		Models:         []protocol.ModelPrice{{Model: "m", PriceInMicros: 1, PriceOutMicros: 2, PriceCacheRead: 3, PriceCacheWrite: 4, APIs: []string{"chat", "messages"}}},
 		MaxConcurrency: 3, IssuedAt: 4, ExpiresAt: 5, ClientVersion: "1.0.0", InferVersions: []uint32{1},
 	}
 	offer.Sign(priv)
 	ticket := protocol.Ticket{
 		JobID: "job", Model: "m", Node: "node", NodeAddrs: []string{"/ip4/127.0.0.1/tcp/1"}, NodeBoxPub: box32, NodeReceiptKey: key32,
 		Buyer: "buyer", PriceInMicros: 1, PriceOutMicros: 2, ReservedMicros: 3, IssuedAt: 4, ExpiresAt: 5, Coordinator: "coord", InferVersion: 1, Shared: true,
+		PriceCacheRead: 6, PriceCacheWrite: 7, API: "responses",
 	}
 	ticket.Sign(priv)
 	sr, err := receipt.Sign(priv, receipt.Receipt{JobID: "job", ModelID: "m", NodeID: priv.Public().(ed25519.PublicKey), RequestHash: key32, ResponseHash: key32,
-		PromptTokens: 1, CompletionTokens: 2, UnixNano: 3, Nonce: key32})
+		PromptTokens: 1, CompletionTokens: 2, CacheReadTokens: 4, CacheWriteTokens: 5, UnixNano: 3, Nonce: key32})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,10 +41,10 @@ func TestSignedEncodingsAreStable(t *testing.T) {
 		got  []byte
 		want string
 	}{
-		"offer":   {offer.Sig, "510d4d42a5a9ab26b1a02639e5fbee7a6e42ddd2aba5cbb075a2b5b2da871758962a104da4c8bdd6a0e48c097e66d887a70f4ab23abb0b7a93f4d7d2370ad00c"},
-		"ticket":  {ticket.Sig, "7da000864f3dd691f0a6d3aec214622871ef0ea32f48541f463bb8d98fe054d48e0ccde3be0f4f4436287386a6d0571ecb484d3d7ee7815bd6a512a2c2e72306"},
-		"receipt": {sr.Sig, "f8e4b4e3ad30c7e76c9a011b1b2ce7e72a840bd376455c1c337967a3381ea53dfe0044cc4ac444b83a05a6b399ff8c2fbc0940eed166282e9c35898b0af5050f"},
-		"ack":     {ed25519.Sign(priv, protocol.AckBytes(&sr.Receipt)), "abb31db93c13ae1c89ecc69f2d568f7f96633afc62b8ef8c75abd8ebe9eb1e1f43a760569d4660d1033d9346b882d32196edc00541409beea64f0b8ffff2c10c"},
+		"offer":   {offer.Sig, "b9e77d9247ce3cdde49fc40c13d974feec353f7dbc19f39d494066e12f8b6f898ea024df749f8574d0f2e9b5d516c34c1279d02858bdb850f23d4980f9466c04"},
+		"ticket":  {ticket.Sig, "f8fb9e0dbf7a9e822cc2d184732a156a7adc519e04b1c895a19189b7de43b87617268cc4b1cb32baba7732482a7181333abc76d91510836ba4bdfa4272e1d504"},
+		"receipt": {sr.Sig, "5e544751b6d100496d7a53227926672f74443eff554ecb55e97383fa3d6db30c10b0b0e15c6ee67768b88298ea7422f6d5f4152c9df70a09b00e6c8f1e3d6901"},
+		"ack":     {ed25519.Sign(priv, protocol.AckBytes(&sr.Receipt)), "c1f23a00f3cc3b7becc79e3b47d8746ffd009ee0d538dd998956ecaa802abb66bf072831b19f259099e45e21dd1a09976b1ee8076c76cf0bba55e510f149970d"},
 		"pass":    {pass.Sig, "0880a433f11945095548d18cf91959cf2854cf82dc8003d0a31d2fd8723a845836387aa1dfb90db486650983578387f41482b9107869240c6d6f50d4fd3b3b08"},
 		"aad":     {protocol.RequestAAD(&ticket), "000000197368617265746f6b656e2f6161642f726571756573742f7631000000036a6f62000000016d000000056275796572000000046e6f6465"},
 		"chunk":   {protocol.ChunkAAD(&ticket, 7), "000000177368617265746f6b656e2f6161642f6368756e6b2f7631000000036a6f62000000016d0000000000000007"},

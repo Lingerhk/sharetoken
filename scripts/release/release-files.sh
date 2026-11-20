@@ -6,8 +6,8 @@
 #   scripts/release/release-files.sh <version> --check      only check the key and the tree
 #
 # The packages: the desktop installers (.dmg, .exe, .deb), the macOS .app.zip and
-# the command-line archives, for three systems and two architectures each, 14 in
-# all; --with-dev-cli adds the six dev command-line archives. Beside them it writes:
+# the command-line archives, for three systems and two architectures each, and the
+# relay for Linux (scripts/build/build-relay.sh), 16 in all; --with-dev-cli adds the six dev command-line archives. Beside them it writes:
 #   SHA256SUMS-<version>   afresh, for exactly these packages
 #   SIGNATURES-<version>   the release key's signature of each (scripts/release/sign-packages.go).
 #                          The key is $ST_RELEASE_KEY, by default local/keys/release-signing.pem,
@@ -60,6 +60,7 @@ want 2 "macOS disk images" dist/sharetoken-"$V"-macos-*.dmg
 want 2 "zipped macOS apps" dist/sharetoken-"$V"-macos-*.app.zip
 want 2 "Windows installers" dist/sharetoken-"$V"-windows-*.exe
 want 2 "Linux packages" dist/sharetoken-"$V"-linux-*.deb
+want 2 "relay archives" dist/sharetoken-relay-"$V"-linux-*.tar.gz
 [ -z "$WITH_DEV" ] || want 6 "dev command-line archives" dist/sharetoken-cli-dev-"$V"-*.tar.gz dist/sharetoken-cli-dev-"$V"-*.zip
 
 # The first paragraph line of the notes is shown on one line: keep it short.

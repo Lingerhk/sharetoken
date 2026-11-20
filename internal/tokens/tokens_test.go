@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"sharetoken/internal/protocol"
 )
 
 // fakeServer reports prompt_tokens = 7 (template) + 1 per word of message
@@ -43,11 +45,11 @@ func TestReferenceCountsByDifferenceAndFallsBack(t *testing.T) {
 	if err != nil || n != 5 {
 		t.Fatalf("CountText = %d, %v; want 5 (template overhead cancels)", n, err)
 	}
-	p, err := c.CountPrompt(ctx, "m", []byte(`{"messages":[{"role":"user","content":"a b c"}],"n":9}`))
+	p, err := c.CountPrompt(ctx, "m", protocol.APIChat, []byte(`{"messages":[{"role":"user","content":"a b c"}],"n":9}`))
 	if err != nil || p != 10 {
 		t.Fatalf("CountPrompt = %d, %v; want 10", p, err)
 	}
-	if !c.Exact("m") || c.Exact("unknown") {
+	if !c.Exact("m", protocol.APIChat) || c.Exact("unknown", protocol.APIChat) || c.Exact("m", protocol.APIMessages) {
 		t.Fatal("Exact must be true only for models with a reference server")
 	}
 	// No server for this model: the heuristic answers.
