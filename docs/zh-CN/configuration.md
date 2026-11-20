@@ -146,6 +146,7 @@
 | `mail.support` | — | 空 | 用户反馈的地址；管理员的回复也从这里发出 |
 | `downloads.dir` | — | 空 | 客户端安装包所在的目录，在 `/downloads/` 提供下载。为空：不提供下载 |
 | `relay_metrics.*` | — | 关闭 | 经 SSH 读取每个中继的 `/metrics`，供管理控制台的仪表盘使用：`key_file`、`known_hosts_file`、`interval`（1m）、`timeout`（20s），以及 `targets[]`，每项有 `relay`（中继登记里的名称）、`ssh`（`user@host[:port]`）和 `command` |
+| `alerts.pushover_file` | — | 空 | 一个含 `PUSHOVER_TOKEN=…` 和 `PUSHOVER_USER=…` 两行的文件：给管理员的告警（有人在猜配对码和邀请码）发到这个 Pushover 账号。每次告警时读取，改了不用重启。为空或读不到：告警只写日志 |
 | `sessions.login_ttl` | `serve -login-ttl` | 1440h | 客户端登录时得到的 token 的有效期（60 天） |
 | `sessions.web_session_ttl` | `serve -session-ttl` | 360h | 浏览器会话的有效期（15 天） |
 | `sessions.pass_ttl` | `serve -pass-ttl` | 1h | 中继凭证的有效期；至少 5m。禁用用户最迟在这段时间内在中继上生效 |

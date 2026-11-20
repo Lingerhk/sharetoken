@@ -146,6 +146,7 @@ Example: [`configs/portal.example.yaml`](../configs/portal.example.yaml). `-db` 
 | `mail.support` | — | empty | Address for user feedback; administrators' replies are sent from it |
 | `downloads.dir` | — | empty | Directory of client packages served at `/downloads/`. Empty: no downloads |
 | `relay_metrics.*` | — | off | Reads each relay's `/metrics` over SSH for the admin dashboard: `key_file`, `known_hosts_file`, `interval` (1m), `timeout` (20s) and `targets[]` with `relay` (name in the registry), `ssh` (`user@host[:port]`) and `command` |
+| `alerts.pushover_file` | — | empty | A file with `PUSHOVER_TOKEN=…` and `PUSHOVER_USER=…` lines: administrators' alerts (pairing and invite codes being guessed) go to that Pushover account. Read at each alert, so no restart is needed. Empty or unreadable: alerts only go to the log |
 | `sessions.login_ttl` | `serve -login-ttl` | 1440h | Lifetime of the token a client gets at sign-in (60 days) |
 | `sessions.web_session_ttl` | `serve -session-ttl` | 360h | Lifetime of browser sessions (15 days) |
 | `sessions.pass_ttl` | `serve -pass-ttl` | 1h | Lifetime of relay passes; at least 5m. Disabling a user takes effect on relays within this time |

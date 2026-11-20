@@ -2,6 +2,12 @@ package portal
 
 import (
 	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -170,5 +176,39 @@ func TestCodeGuessingLimits(t *testing.T) {
 	a.call("POST", "/api/v1/sharing/join", oldTok, wrong, 429, nil)
 	if s.surgeAlerted.IsZero() {
 		t.Fatal("the administrators were not told")
+	}
+}
+
+func TestSurgeAlertPushover(t *testing.T) {
+	got := make(chan url.Values, 2)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		got <- r.PostForm
+	}))
+	defer api.Close()
+	creds := filepath.Join(t.TempDir(), "pushover.env")
+	os.WriteFile(creds, []byte("# alerts\nPUSHOVER_TOKEN=\"tok\"\nPUSHOVER_USER=usr\n"), 0o600)
+	clock := time.Unix(1_800_000_000, 0)
+	s := &Server{cfg: Config{Now: func() time.Time { return clock }, PushoverFile: creds}, log: slog.New(slog.DiscardHandler), fails: map[string][]time.Time{}, pushoverURL: api.URL}
+	s.surgeAlert()
+	s.surgeAlert() // within surgeAlertEvery: no second alert
+	s.background.Wait()
+	select {
+	case f := <-got:
+		if f.Get("token") != "tok" || f.Get("user") != "usr" || f.Get("priority") != "1" || !strings.Contains(f.Get("message"), "wrong pairing or invite codes") {
+			t.Fatalf("alert %v", f)
+		}
+	default:
+		t.Fatal("no alert sent")
+	}
+	if len(got) != 0 {
+		t.Fatal("alerted twice within an hour")
+	}
+	clock = clock.Add(surgeAlertEvery)
+	s.cfg.PushoverFile = filepath.Join(t.TempDir(), "missing")
+	s.surgeAlert() // no account: only logged
+	s.background.Wait()
+	if len(got) != 0 {
+		t.Fatal("alert sent without an account")
 	}
 }

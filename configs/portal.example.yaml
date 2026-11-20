@@ -65,6 +65,9 @@ mail:
   from: ""     # ShareToken <team@example.com>; empty: no mail is sent, and no sign-in
   support: ""  # ShareToken Support <support@example.com>: where users write to, and where administrators reply from
 
+alerts:
+  pushover_file: ""  # PUSHOVER_TOKEN=… and PUSHOVER_USER=… lines; administrators' alerts go there. Empty: only logged
+
 downloads:
   dir: ""      # directory of client packages, served at /downloads/; empty: none
 

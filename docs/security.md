@@ -189,7 +189,8 @@ cannot step around it.
   minutes, like failed logins (three for an account younger than an hour), and
   30 a day per account. When wrong codes pour in from everywhere at once (300 in
   five minutes), every account and address gets three, and the administrators
-  are mailed, at most once an hour (`internal/portal/invites.go`).
+  get a Pushover alert (`alerts.pushover_file`), at most once an hour
+  (`internal/portal/invites.go`).
 - A seller may ask to approve each use of a code: a leaked code then only files
   requests, which the seller sees and rejects.
 - Any web page can open `sharetoken://`, so the desktop app never accepts an

@@ -105,6 +105,10 @@ type File struct {
 			Command string `yaml:"command"` // default: curl of 127.0.0.1:8093/metrics
 		} `yaml:"targets"`
 	} `yaml:"relay_metrics"`
+	// Alerts: administrators' alerts (codes being guessed) go to Pushover.
+	Alerts struct {
+		PushoverFile string `yaml:"pushover_file"` // PUSHOVER_TOKEN=… and PUSHOVER_USER=… lines
+	} `yaml:"alerts"`
 	Sessions struct {
 		LoginTTL      config.Duration `yaml:"login_ttl"`
 		WebSessionTTL config.Duration `yaml:"web_session_ttl"`
@@ -329,7 +333,7 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 		LoginTTL: f.Sessions.LoginTTL.T(), PassKey: passKey, PassTTL: f.Sessions.PassTTL.T(), WebSessionTTL: f.Sessions.WebSessionTTL.T(),
 		SecureCookies: mode == "proxy", TrustedProxies: trustedProxies(f.HTTP.TrustedProxies), MFAKey: mfaKey, Log: lg,
 		Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir,
-		MFAIssuer: f.Accounts.MFAIssuer, RelayMetrics: relayMetricsConfig(f)})
+		MFAIssuer: f.Accounts.MFAIssuer, RelayMetrics: relayMetricsConfig(f), PushoverFile: f.Alerts.PushoverFile})
 	if err != nil {
 		log.Fatal(err)
 	}

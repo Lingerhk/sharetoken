@@ -71,6 +71,9 @@ type Config struct {
 	// RelayMetrics reads the relays' metrics over SSH for the admin dashboard
 	// (relaymetrics.go). No targets: the dashboard shows the registry only.
 	RelayMetrics RelayMetricsConfig
+	// PushoverFile holds the Pushover account that administrators' alerts
+	// go to (pushover.go). Empty or unreadable: alerts are only logged.
+	PushoverFile string
 	Now          func() time.Time
 	Log          *slog.Logger
 }
@@ -87,6 +90,7 @@ type Server struct {
 	fails  map[string][]time.Time // login failures per username and per IP
 	// surgeAlerted is when the administrators last heard that codes are being guessed (invites.go).
 	surgeAlerted time.Time
+	pushoverURL  string // tests point alerts elsewhere (default pushoverAPI)
 
 	feedbackMu sync.Mutex
 	feedbackIP map[string][]time.Time // accepted feedback per client IP, last hour

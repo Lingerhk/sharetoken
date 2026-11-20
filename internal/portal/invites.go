@@ -100,8 +100,8 @@ func (s *Server) codeGuard(r *http.Request, cu ctxUser, scope string) (keys []st
 	return keys, ok
 }
 
-// surgeAlert logs a wave of wrong codes and mails the administrators, at most
-// once per surgeAlertEvery.
+// surgeAlert logs a wave of wrong codes and tells the administrators by
+// Pushover (pushover.go), at most once per surgeAlertEvery.
 func (s *Server) surgeAlert() {
 	now := s.cfg.Now()
 	s.failMu.Lock()
@@ -114,21 +114,10 @@ func (s *Server) surgeAlert() {
 		return
 	}
 	s.log.Warn("pairing and invite codes are being guessed: limits tightened", "wrong_codes", s.failCount(allFailsKey, failWindow), "window", failWindow.String())
-	rows, err := s.db.Query(`SELECT username FROM users WHERE is_admin = 1 AND disabled = 0`)
-	if err != nil {
-		s.log.Warn("listing administrators", "err", err)
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var to string
-		if rows.Scan(&to) == nil {
-			s.notify(mailer.Message{Kind: mailer.KindNotice, To: to, Subject: "ShareToken: pairing and invite codes are being guessed",
-				Text: fmt.Sprintf("More than %d wrong pairing or invite codes were entered in the last %s, from all accounts together.\r\n"+
-					"Until that stops, each account and each address may enter only %d wrong codes per %s.\r\n"+
-					"The portal's log has the details (\"pairing and invite codes are being guessed\").\r\n", surgeFails, failWindow, surgeMaxFails, failWindow)})
-		}
-	}
+	s.push("ShareToken: invite codes are being guessed",
+		fmt.Sprintf("More than %d wrong pairing or invite codes in the last %s, from all accounts together. "+
+			"Until that stops, each account and address may enter only %d wrong codes per %s. "+
+			"The portal's log has the details.", surgeFails, failWindow, surgeMaxFails, failWindow), 1)
 }
 
 // handlePreviewInvite shows who a link is from, for its page. It needs no
