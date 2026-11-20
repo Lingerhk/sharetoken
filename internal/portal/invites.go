@@ -28,20 +28,29 @@ import (
 //	DELETE /api/v1/pairing/waiting/{id}            buyer: withdraw one's own request
 //	(and the same three under /api/v1/sharing/)
 
-// Guessing codes. A code is 50 random bits and a link token 71, live codes are
-// few, and every wrong one counts: per account and per address in a short
-// window (maxFails in failWindow, as failed logins), per account over a day,
-// and over everyone. When wrong codes pour in from everywhere at once, each
-// account and address gets less, and the administrators hear of it.
+// Guessing codes. A code is only 30 random bits (six characters, to be easy
+// to type) and a link token 47.6, so every wrong one counts: per account and
+// per address over a quarter of an hour and over a day, with less for new
+// accounts. Over everyone, guessers with many accounts and addresses are
+// stopped whole: when wrong codes reach codeSurgeFails in an hour, codes stop
+// working for everyone for surgePause (links go on); when wrong links reach
+// linkSurgeFails, the public preview of links stops. Each pause is pushed to
+// the administrators (pushover.go).
 const (
-	dailyMaxFails      = 30             // wrong codes one account may enter in 24 hours
-	newAccountAge      = time.Hour      // an account younger than this gets newAccountMaxFails
-	newAccountMaxFails = 3              // wrong codes a new account may enter in failWindow
-	surgeFails         = 300            // wrong codes from everyone in failWindow that count as an attack
-	surgeMaxFails      = 3              // wrong codes each account and address may enter during one
-	surgeAlertEvery    = time.Hour      // how often the administrators are told of one
-	failDay            = 24 * time.Hour // the window of dailyMaxFails
-	allFailsKey        = "inv:all"      // the key of everyone's wrong codes
+	guessWindow        = 15 * time.Minute
+	guessDay           = 24 * time.Hour
+	userMaxFails       = 5              // wrong codes or links one account may enter in guessWindow
+	userDayMaxFails    = 15             // … in guessDay
+	ipMaxFails         = 10             // … one address in guessWindow (people behind one NAT share it)
+	ipDayMaxFails      = 50             // … in guessDay
+	newAccountAge      = 24 * time.Hour // an account younger than this gets newAccountMaxFails
+	newAccountMaxFails = 3              // wrong codes or links a new account may enter in guessDay
+	surgeWindow        = time.Hour
+	codeSurgeFails     = 100  // wrong codes from everyone in surgeWindow that stop codes
+	linkSurgeFails     = 2000 // wrong links from everyone in surgeWindow that stop link previews
+	surgePause         = time.Hour
+	codeFailsKey       = "inv:codes" // everyone's wrong codes
+	linkFailsKey       = "inv:links" // everyone's wrong links
 )
 
 // AcceptedInvite is what accepting an invite returns: its kind and the other
@@ -82,55 +91,95 @@ func (s *Server) failCount(key string, window time.Duration) int {
 	return len(fs)
 }
 
-// codeGuard decides whether cu may try one more code or link of scope ("pair"
-// or "share") from r, and returns the keys a wrong one is counted under.
-func (s *Server) codeGuard(r *http.Request, cu ctxUser, scope string) (keys []string, ok bool) {
+// codeGuard decides whether cu may try one more code (link false) or link
+// from r. It returns the keys a wrong one is counted under, and the error code
+// to refuse with: "throttled", "codes_paused", or "" to go on.
+func (s *Server) codeGuard(r *http.Request, cu ctxUser, link bool) (keys []string, refuse string) {
 	uid := strconv.FormatInt(cu.user.ID, 10)
-	userKey, ipKey, dayKey := scope+":u:"+uid, scope+":ip:"+s.clientIP(r), "inv:day:u:"+uid
-	keys = []string{userKey, ipKey, dayKey, allFailsKey}
-	perUser, perIP := maxFails, maxFails
+	userKey, userDayKey := "inv:u:"+uid, "inv:ud:"+uid
+	ipKeys, ipOK := s.ipGuard(r)
+	keys = append([]string{userKey, userDayKey}, ipKeys...)
+	if link {
+		keys = append(keys, linkFailsKey)
+	} else {
+		keys = append(keys, codeFailsKey)
+		if s.paused(&s.codesPaused) {
+			return keys, "codes_paused"
+		}
+	}
+	dayMax := userDayMaxFails
 	if s.cfg.Now().Sub(time.Unix(0, cu.user.CreatedAt)) < newAccountAge {
-		perUser = newAccountMaxFails
+		dayMax = newAccountMaxFails
 	}
-	if s.failCount(allFailsKey, failWindow) >= surgeFails {
-		perUser, perIP = min(perUser, surgeMaxFails), surgeMaxFails
-		s.surgeAlert()
+	if !ipOK || s.failCount(userKey, guessWindow) >= userMaxFails || s.failCount(userDayKey, guessDay) >= dayMax {
+		return keys, "throttled"
 	}
-	ok = s.failCount(userKey, failWindow) < perUser && s.failCount(ipKey, failWindow) < perIP && s.failCount(dayKey, failDay) < dailyMaxFails
-	return keys, ok
+	return keys, ""
 }
 
-// surgeAlert logs a wave of wrong codes and tells the administrators by
-// Pushover (pushover.go), at most once per surgeAlertEvery.
-func (s *Server) surgeAlert() {
-	now := s.cfg.Now()
+// ipGuard is codeGuard's part for r's address: its keys, and whether it may
+// try one more.
+func (s *Server) ipGuard(r *http.Request) (keys []string, ok bool) {
+	ip := s.clientIP(r)
+	ipKey, ipDayKey := "inv:ip:"+ip, "inv:ipd:"+ip
+	ok = s.failCount(ipKey, guessWindow) < ipMaxFails && s.failCount(ipDayKey, guessDay) < ipDayMaxFails
+	return []string{ipKey, ipDayKey}, ok
+}
+
+// paused reports whether the pause *until stands now.
+func (s *Server) paused(until *time.Time) bool {
 	s.failMu.Lock()
-	due := now.Sub(s.surgeAlerted) >= surgeAlertEvery
-	if due {
-		s.surgeAlerted = now
+	defer s.failMu.Unlock()
+	return s.cfg.Now().Before(*until)
+}
+
+// guessFailed counts a wrong code (link false) or link under keys and pauses
+// codes or link previews for everyone when too many came in from everyone.
+func (s *Server) guessFailed(link bool, keys ...string) {
+	s.recordFailure(keys...)
+	key, limit, until, what := codeFailsKey, codeSurgeFails, &s.codesPaused, "codes"
+	if link {
+		key, limit, until, what = linkFailsKey, linkSurgeFails, &s.linksPaused, "link previews"
 	}
-	s.failMu.Unlock()
-	if !due {
+	n := s.failCount(key, surgeWindow)
+	if n < limit {
 		return
 	}
-	s.log.Warn("pairing and invite codes are being guessed: limits tightened", "wrong_codes", s.failCount(allFailsKey, failWindow), "window", failWindow.String())
-	s.push("ShareToken: invite codes are being guessed",
-		fmt.Sprintf("More than %d wrong pairing or invite codes in the last %s, from all accounts together. "+
-			"Until that stops, each account and address may enter only %d wrong codes per %s. "+
-			"The portal's log has the details.", surgeFails, failWindow, surgeMaxFails, failWindow), 1)
+	now := s.cfg.Now()
+	s.failMu.Lock()
+	start := !now.Before(*until)
+	if start {
+		*until = now.Add(surgePause)
+	}
+	s.failMu.Unlock()
+	if !start {
+		return
+	}
+	s.log.Warn("pairing and invite "+what+" are being guessed: paused for everyone", "wrong", n, "window", surgeWindow.String(), "pause", surgePause.String())
+	msg := fmt.Sprintf("%d wrong pairing or invite codes in the last %s, from all accounts together. "+
+		"Codes are refused for everyone for %s; invite links still work. The portal's log has the details.", n, surgeWindow, surgePause)
+	if link {
+		msg = fmt.Sprintf("%d wrong invite links in the last %s, from all addresses together. "+
+			"The public preview of links is refused for %s; signed-in users can still accept links. The portal's log has the details.", n, surgeWindow, surgePause)
+	}
+	s.push("ShareToken: invite "+what+" are being guessed", msg, 1)
 }
 
 // handlePreviewInvite shows who a link is from, for its page. It needs no
 // account: a link token is too long to find by trying.
 func (s *Server) handlePreviewInvite(w http.ResponseWriter, r *http.Request) {
-	ipKey := "inv:ip:" + s.clientIP(r)
-	if s.failCount(ipKey, failWindow) >= maxFails*4 {
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong links; try again in a few minutes")
+	keys, ok := s.ipGuard(r)
+	if !ok {
+		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong links; try again later")
+		return
+	}
+	if s.paused(&s.linksPaused) {
+		writeErr(w, http.StatusTooManyRequests, "links_paused", "too many wrong links from everyone: previews are paused for a while; sign in and accept the link instead")
 		return
 	}
 	p, err := s.store.PreviewInvite(r.PathValue("kind"), r.PathValue("token"))
 	if errors.Is(err, accounts.ErrNotFound) {
-		s.recordFailure(ipKey, allFailsKey)
+		s.guessFailed(true, append(keys, linkFailsKey)...)
 		writeErr(w, http.StatusNotFound, "bad_code", "this link is wrong, expired, revoked or used up")
 		return
 	}
@@ -174,13 +223,14 @@ func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request, cu c
 // the other side: as an AcceptedInvite, or, for the older routes (legacy), as
 // the PairedUser or SharePartner they always returned.
 func (s *Server) serveInvite(w http.ResponseWriter, r *http.Request, cu ctxUser, kinds []string, ref accounts.InviteRef, legacy bool) {
-	scope := "pair"
-	if kinds[0] == accounts.KindShare {
-		scope = "share"
-	}
-	keys, ok := s.codeGuard(r, cu, scope)
-	if !ok {
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong codes; try again later")
+	link := ref.Token != ""
+	keys, refuse := s.codeGuard(r, cu, link)
+	switch refuse {
+	case "codes_paused":
+		writeErr(w, http.StatusTooManyRequests, refuse, "too many wrong codes from everyone: codes are paused for up to an hour; open the invite link instead")
+		return
+	case "throttled":
+		writeErr(w, http.StatusTooManyRequests, refuse, "too many wrong codes; try again later")
 		return
 	}
 	if ref.Token == "" && ref.Code == "" {
@@ -222,7 +272,7 @@ func (s *Server) serveInvite(w http.ResponseWriter, r *http.Request, cu ctxUser,
 	}
 	if err != nil {
 		if errors.Is(err, accounts.ErrNotFound) {
-			s.recordFailure(keys...)
+			s.guessFailed(link, keys...)
 			msg := "this code is wrong, expired, revoked or used up"
 			if len(kinds) == 1 && kinds[0] == accounts.KindPair {
 				msg = "this pairing code is wrong, expired, revoked or used up"

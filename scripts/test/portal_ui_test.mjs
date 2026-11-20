@@ -290,26 +290,26 @@ try {
   await goto(base + '/app/#/pairing');
   await waitFor(q('#pair-code-form'));
   await assertText('最多同时配对 3 个卖家', 'the pairing page states the limit of three sellers');
-  check(await evaluate(`[...${q('#pair-ttl')}.options].map(o => o.value).join()`) === '24,168,720', 'a code lasts one, seven or thirty days');
+  check(await evaluate(`[...${q('#pair-ttl')}.options].map(o => o.value).join()`) === '24,168', 'a code lasts one or seven days');
   check(!(await evaluate(`!!${q('#pair-restricted')}`)) && !(await evaluate(`${q('#pair-private')}.checked`)), 'not paired and not private at first');
   await click('#pair-private');
   await waitFor(`${q('#pair-private')}?.checked && !${q('#pair-private')}.disabled`);
   await assertText('私有模式已开启', 'private mode is switched on from the page');
   const LABEL = '<b onclick="window.__pl=1">team</b>';
   await type('#pair-label', LABEL); await type('#pair-uses', '5');
-  await evaluate(`(() => { const t = ${q('#pair-ttl')}; t.value = '720'; t.dispatchEvent(new Event('change')); return true; })()`);
+  await evaluate(`(() => { const t = ${q('#pair-ttl')}; t.value = '168'; t.dispatchEvent(new Event('change')); return true; })()`);
   await click('#pair-new-code');
   await waitFor(q('#pair-new .secret code'));
   const pairCode = await evaluate(`${q('#pair-new .secret code')}.textContent`);
-  check(/^[A-Z2-7]{5}-[A-Z2-7]{5}$/.test(pairCode), 'a new pairing code is shown');
-  check((await evaluate(`${q('#p-new-link')}.textContent`)).startsWith(base + '/p#') && /\/p#[0-9A-Za-z]{12}$/.test(await evaluate(`${q('#p-new-link')}.textContent`)), 'and its link on this portal, /p#<12 characters>');
+  check(/^[A-Z2-7]{3}-[A-Z2-7]{3}$/.test(pairCode), 'a new pairing code is shown');
+  check((await evaluate(`${q('#p-new-link')}.textContent`)).startsWith(base + '/p#') && /\/p#[0-9A-Za-z]{8}$/.test(await evaluate(`${q('#p-new-link')}.textContent`)), 'and its link on this portal, /p#<8 characters>');
   check(await evaluate(`!!${q('#p-new-text')}`), 'with a button that copies an invitation message');
   await shot('05c-pairing-code');
   await click('.modal .actions button.primary');
   check((await evaluate(`${q('#pair-codes')}.textContent`)).includes(pairCode) && (await evaluate(`${q('#pair-codes')}.textContent`)).includes('0 / 5')
     && (await evaluate(`${q('#pair-codes')}.textContent`)).includes(LABEL) && !(await evaluate(`!!${q('#pair-codes b')} || !!window.__pl`)), 'the code is listed with its uses, and its label as text');
   const days = await evaluate(`fetch('/api/v1/pairing', { headers: { 'X-Sharetoken-Web': '1' }, credentials: 'same-origin' }).then(r => r.json()).then(v => (v.codes[0].expires_at / 1e6 - Date.now()) / 86400e3)`);
-  check(days > 29.9 && days < 30.1, 'and lasts the thirty days chosen');
+  check(days > 6.9 && days < 7.1, 'and lasts the seven days chosen');
   check((await evaluate(`${q('#pair-codes')}.textContent`)).includes('复制链接') && (await evaluate(`${q('#pair-codes')}.textContent`)).includes('复制邀请文案'), 'the listed code offers its link and message');
   await type('#pair-code', pairCode); await click('#pair-join');
   await assertText('自己的配对码', 'nobody pairs with their own code');
@@ -318,7 +318,7 @@ try {
   await waitFor('document.querySelector(".sidenav")');
   await goto(base + '/app/#/pairing');
   await waitFor(q('#pair-join-form'));
-  await type('#pair-code', 'AAAAA-AAAAA'); await click('#pair-join');
+  await type('#pair-code', 'AAA-AAA'); await click('#pair-join');
   await assertText('配对码不对', 'a wrong code is refused');
   await type('#pair-code', pairCode.toLowerCase()); await click('#pair-join');
   await waitFor(q('#pair-restricted'));
@@ -338,7 +338,7 @@ try {
   const web = (method, path, body) => evaluate(`fetch(${JSON.stringify(path)}, { method: ${JSON.stringify(method)}, headers: { 'X-Sharetoken-Web': '1', 'Content-Type': 'application/json' }, credentials: 'same-origin', body: ${JSON.stringify(body ? JSON.stringify(body) : null)} }).then(r => r.json())`);
   const pairLink = (await web('POST', '/api/v1/pairing/codes', { label: 'friends' })).link_token;
   const shareAsk = (await web('POST', '/api/v1/sharing/invites', { ttl_hours: 24, approval: true })).link_token;
-  check(/^[0-9A-Za-z]{12}$/.test(pairLink) && /^[0-9A-Za-z]{12}$/.test(shareAsk), 'a code and an invite (asking for approval) get link tokens');
+  check(/^[0-9A-Za-z]{8}$/.test(pairLink) && /^[0-9A-Za-z]{8}$/.test(shareAsk), 'a code and an invite (asking for approval) get link tokens');
   await clickText('.topbar button', '退出'); await sleep(800);
   // The downloads the page offers are the portal's own packages, this system's first.
   const dlDir = readFileSync(STACK + '/env', 'utf8').match(/^DOWNLOADS=(.*)$/m)[1];
@@ -382,7 +382,7 @@ try {
   check(await evaluate(`${q('#invite-result')}.dataset.pending`) === '1' && (await text()).includes('等待对方确认'), 'accepting files a request that waits for approval');
   await shot('06c-invite-pending');
   // Broken and dead links.
-  await goto(base + '/p#AAAAAAAAAAAA'); await waitFor(q('#invite-error'));
+  await goto(base + '/p#AAAAAAAA'); await waitFor(q('#invite-error'));
   await assertText('邀请已失效', 'a dead link says the invite no longer works');
   await goto(base + '/s#'); await sleep(300); await evaluate('location.reload()'); await sleep(800); await waitFor(q('#invite-error'));
   await assertText('邀请链接不完整', 'a cut link says it is incomplete');

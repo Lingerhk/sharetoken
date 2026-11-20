@@ -229,7 +229,6 @@
   "配对码已生成": "Pairing code created",
   "1 天": "1 day",
   "7 天": "7 days",
-  "30 天": "30 days",
   "到期后不能再用它配对，已经配对的买家不受影响。": "After it expires it can no longer be used to pair. Buyers already paired are not affected.",
   "这个账户现在只向下面的卖家购买，「可用模型」也只列出他们的模型。全部解除后，恢复为向整个网络购买。": "This account now buys only from the sellers below, and Available models lists only their models. Unpair from all of them to buy from the whole network again.",
   "请先登录": "Sign in first",
@@ -530,5 +529,6 @@
   "配对后，你的账户只向配对的卖家购买，使用对方共享的 Claude、Codex 等模型额度。随时可以解除。": "Once paired, your account buys only from the sellers it is paired with, using the Claude, Codex and other model quota they share. You can unpair at any time.",
   "对方开启了确认：你接受后，需要对方确认才生效。": "The sender asks to approve each use: after you accept, it takes effect once they approve.",
   "有效期至 {time}": "Valid until {time}",
-  "这个邀请是从浏览器里的链接打开的。只在你认识对方时接受。": "This invite was opened from a link in your browser. Accept it only if you know the sender."
+  "这个邀请是从浏览器里的链接打开的。只在你认识对方时接受。": "This invite was opened from a link in your browser. Accept it only if you know the sender.",
+  "配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试": "Pairing codes are paused: too many wrong ones across the site. Use the invite link instead, or try again in an hour"
 }

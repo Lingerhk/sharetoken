@@ -257,6 +257,7 @@
       own_code: tr('这是你自己的配对码，请把它发给要配对的买家'),
       limit: tr('已达到数量上限，请先解除或撤销一些'),
       throttled: tr('尝试次数太多，请几分钟后再试'),
+      codes_paused: tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试'),
       wrong_kind: tr('这是共享伙伴的邀请链接，请到下面的「共享伙伴」里输入'),
       not_found: tr('这一项已经不存在了'),
     })[ex.code] || ex.message;
@@ -277,7 +278,7 @@
     } }, h('div', { class: 'row' }, field(tr('配对码或邀请链接'), code)), h('div', null, h('button', { class: 'primary', type: 'submit', id: 'pair-join' }, tr('配对'))));
 
     const label = input({ type: 'text', id: 'pair-label', maxlength: 64, dir: 'auto' });
-    const ttl = h('select', { id: 'pair-ttl' }, h('option', { value: '24' }, tr('1 天')), h('option', { value: '168' }, tr('7 天')), h('option', { value: '720' }, tr('30 天')));
+    const ttl = h('select', { id: 'pair-ttl' }, h('option', { value: '24' }, tr('1 天')), h('option', { value: '168' }, tr('7 天')));
     const uses = input({ type: 'number', id: 'pair-uses', min: 1, max: 1000, step: 1, placeholder: tr('不限') });
     const approval = approvalBox('pair-approval');
     const codeForm = h('form', { class: 'form', id: 'pair-code-form', onsubmit: async e => {
@@ -347,6 +348,7 @@
       own_code: tr('这是你自己的邀请码，请把它发给要共享的伙伴'),
       limit: tr('已达到数量上限，请先解除或撤销一些'),
       throttled: tr('尝试次数太多，请几分钟后再试'),
+      codes_paused: tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试'),
       wrong_kind: tr('这是配对的邀请链接，请到上面的「配对的卖家」里输入'),
       not_found: tr('这一项已经不存在了'),
     })[ex.code] || ex.message;

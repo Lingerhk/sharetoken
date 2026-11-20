@@ -79,7 +79,7 @@ sharetoken up                               # 客户端已在运行时，share �
 | `provider models <name>`、`provider test <name> [-model M] [-prompt TEXT]` | 列出凭据可用的模型；经该 provider 发一个小请求。 |
 | `provider on <name>`、`provider off <name>`、`provider rm <name>` | 开始出售它的模型、停止，或连同凭据一起删除。 |
 | `pair` | 本账户和谁配对，以及它的配对码。 |
-| `pair code [-label L] [-ttl 24h] [-uses N]` | 卖家：生成一个配对码发给买家。默认有效 24 小时，`-ttl` 可改（最长 30 天）；默认不限买家数，`-uses` 可限制。 |
+| `pair code [-label L] [-ttl 24h] [-uses N]` | 卖家：生成一个配对码发给买家。默认有效 24 小时，`-ttl` 可改（最长 7 天）；默认不限买家数，`-uses` 可限制。 |
 | `pair join <code>` | 买家：和生成这个配对码的卖家配对。此后本账户只向配对的卖家购买。 |
 | `pair leave <seller id>`、`pair rm <buyer id>`、`pair revoke <code id>` | 买家一侧或卖家一侧解除配对；让一个配对码不再接纳新买家。 |
 | `pair private on\|off` | 卖家：私有模式。开启期间，只有和本账户配对的买家会被撮合过来，也只有他们能看到它的模型。 |

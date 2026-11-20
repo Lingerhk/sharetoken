@@ -196,11 +196,11 @@ If a Google account has no project of its own, `gemini` and `antigravity` need a
 
 There are two ways to share. One is buying and selling: buyers pay credits and sellers earn them. Pairing with your buyers (below) is part of it; it only narrows who buys from whom. The other is share partners: two people pair up as partners and each uses the other's nodes **for free**: nothing is held or charged, and there is no platform fee. It suits two people who each have some models or API quota and want to cover for each other.
 
-One makes an invite (it prints a code such as `ABCDE-FGHIJ` and an [invite link](#invite-links), good for 24 hours unless you pass `-ttl`, 168 hours at most), the other enters the code or the link:
+One makes an invite (it prints a code such as `ABC-DEF` and an [invite link](#invite-links), good for 24 hours unless you pass `-ttl`, 168 hours at most), the other enters the code or the link:
 
 ```bash
 {{exe}} partner invite
-{{exe}} partner join ABCDE-FGHIJ
+{{exe}} partner join ABC-DEF
 ```
 
 From then on, when you ask for a model, the coordinator first looks among your partners' online nodes. When one of them can take the request, it is free. When your partners do not offer the model, are offline or busy, or used up what they share, the request goes to the network and is paid as usual.
@@ -235,10 +235,10 @@ Pairing ties buyers to you. Make a pairing code and hand it to the people you wa
 {{exe}} pair code -label team
 ```
 
-The command prints the code, for example `ABCDE-FGHIJ`, and its [invite link](#invite-links). It lasts 24 hours unless you pass `-ttl` (30 days at most), and admits any number of buyers unless you pass `-uses`. Each buyer then opens the link, or runs:
+The command prints the code, for example `ABC-DEF`, and its [invite link](#invite-links). It lasts 24 hours unless you pass `-ttl` (7 days at most), and admits any number of buyers unless you pass `-uses`. Each buyer then opens the link, or runs:
 
 ```bash
-{{exe}} pair join ABCDE-FGHIJ
+{{exe}} pair join ABC-DEF
 ```
 
 | Action | Command |
@@ -262,7 +262,7 @@ The desktop app has the same under **Pairing → My buyers** for sellers and **P
 
 ## Invite links {#invite-links}
 
-Every pairing code and share invite also has a link on the portal's site, `https://sharetoken.app/p#7kQm3xV9pT2b` for a pairing code and `https://sharetoken.app/s#…` for a share invite. The command line prints it next to the code; the desktop app and the portal have **Copy link** and **Copy invitation message** (the link, the code and how long they last, ready to paste into a chat).
+Every pairing code and share invite also has a link on the portal's site, `https://sharetoken.app/p#7kQm3xV9` for a pairing code and `https://sharetoken.app/s#…` for a share invite. The command line prints it next to the code; the desktop app and the portal have **Copy link** and **Copy invitation message** (the link, the code and how long they last, ready to paste into a chat).
 
 The link works for someone who has nothing installed yet. Its page says who invites them (their account name, partly hidden) and how long the link lasts. They sign in or sign up there with their email address and click **Accept invite**: the pairing, or the partnership, is made on their account at once. The page then offers the app for their system; once they install it and sign in with the same address, it is ready.
 
@@ -271,12 +271,12 @@ Someone who already has the desktop app can click **Open in ShareToken** on the 
 A link can also be pasted wherever a code goes: in the app, on the portal's pairing page, or on the command line:
 
 ```bash
-{{exe}} accept https://sharetoken.app/p#7kQm3xV9pT2b
+{{exe}} accept https://sharetoken.app/p#7kQm3xV9
 ```
 
 - **Treat it like the code:** whoever has the link can use it, within the code's limits. Revoke the code and the link stops working too.
 - **One portal:** a link belongs to the portal that made it; an app signed in to another portal says so and does not accept it.
-- **Guessing:** a code is 10 random characters and a link 12. Wrong codes and links are counted per account and per address, with fewer tries for new accounts and a daily cap; when many come in at once from everywhere, everyone gets fewer and the administrators are told.
+- **Guessing:** a code is 6 characters, to be easy to type, and a link 8. Because a code is short, wrong codes and links are limited hard: 5 per 15 minutes and 15 a day per account (3 in all for an account in its first day), and a cap per address. When too many wrong codes come in from the whole site, codes stop working for everyone for up to an hour; the link keeps working, so send the link when you can.
 
 ## Concurrency and performance {#tuning}
 

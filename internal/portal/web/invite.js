@@ -35,6 +35,8 @@
       own_code: tr('这是你自己的邀请链接，请把它发给要邀请的人。'),
       limit: tr('已达到数量上限：{msg}', { msg: e.message }),
       throttled: tr('尝试次数过多，请几分钟后再试'),
+      links_paused: tr('邀请链接暂时无法预览：全站输错的次数太多。请一小时后再试'),
+      codes_paused: tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试'),
       rate_limited: tr('请求太频繁，请稍后再试'),
       wrong_kind: tr('这个链接的类型不对'),
     })[e.code] || e.message;
@@ -127,7 +129,7 @@
 
   // ---- the invite ----
   async function show(acceptNow) {
-    if (!/^[0-9A-Za-z]{12}$/.test(token)) {
+    if (!/^[0-9A-Za-z]{8}([0-9A-Za-z]{4})?$/.test(token)) {
       frame(h('h1', null, tr('邀请链接不完整')), h('p', { class: 'muted', id: 'invite-error' }, tr('链接缺了一部分。请复制完整的链接重新打开，或者让对方重新发一次。')),
         h('p', null, h('a', { href: '/' }, tr('← 返回官网'))));
       return;

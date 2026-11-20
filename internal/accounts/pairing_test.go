@@ -24,7 +24,7 @@ func TestPairing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(code.Code) != 10 || !ValidLinkToken(code.LinkToken) || code.Approval || code.Label != "team" || code.ExpiresAt != now.Add(DefaultPairingTTL).UnixNano() {
+	if len(code.Code) != 6 || !ValidLinkToken(code.LinkToken) || code.Approval || code.Label != "team" || code.ExpiresAt != now.Add(DefaultPairingTTL).UnixNano() {
 		t.Fatalf("code: %+v", code)
 	}
 

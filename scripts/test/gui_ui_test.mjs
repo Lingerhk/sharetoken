@@ -541,7 +541,7 @@ console.log('pairing');
 // The other accounts of the stack act through the command line: `seller` sells
 // mock-fast, `idle` sells nothing.
 const cli = (home, ...args) => execFileSync(`${dir}/bin/sharetoken`, ['-home', `${dir}/${home}`, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-const codeOf = out => out.match(/\b[A-Z2-7]{5}-[A-Z2-7]{5}\b/)[0];
+const codeOf = out => out.match(/\b[A-Z2-7]{3}-[A-Z2-7]{3}\b/)[0];
 const buyOnce = async () => {
   const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKeyFile().key }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
   return { status: r.status, body: await r.text() };
@@ -557,7 +557,7 @@ ok(!(await has('#pair-restricted')) && (await text('#paired-sellers-body')).incl
 await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
 await click('#pair-join-ok');
 await waitFor(`${el('#pair-join-error')}.textContent.includes('请输入')`);
-await fill('#pair-code-input', 'AAAAA-AAAAA'); await click('#pair-join-ok');
+await fill('#pair-code-input', 'AAA-AAA'); await click('#pair-join-ok');
 await waitFor(`${el('#pair-join-error')}.textContent.includes('配对码不对')`);
 ok(true, 'an empty and a wrong pairing code are refused');
 const idleCode = codeOf(cli('idle', 'pair', 'code', '-label', '<b>idle</b> team'));
@@ -596,14 +596,14 @@ await click('#pair-private');
 await waitFor(`!${el('#pair-private')}.checked && !${el('#pair-private')}.disabled`);
 ok(!(await isPrivate()), 'and off again');
 await click('#pair-new-code'); await waitFor(el('#dlg-pair-code'));
-ok(await ev(`${el('#pair-ttl')}.value`) === '24' && await ev(`[...${el('#pair-ttl')}.options].map(o => o.value).join()`) === '24,168,720', 'a code lasts one day, or seven or thirty when chosen');
+ok(await ev(`${el('#pair-ttl')}.value`) === '24' && await ev(`[...${el('#pair-ttl')}.options].map(o => o.value).join()`) === '24,168', 'a code lasts one day, or seven when chosen');
 await fill('#pair-uses', 'many'); await click('#pair-code-ok');
 await waitFor(`${el('#pair-code-error')}.textContent.includes('整数')`);
 await fill('#pair-label', 'friends'); await choose('#pair-ttl', '168'); await fill('#pair-uses', '2'); await click('#pair-code-ok');
 await waitFor(el('#dlg-pair-shown'));
 const ownCode = await text('#pair-shown-code');
-ok(/^[A-Z2-7]{5}-[A-Z2-7]{5}$/.test(ownCode), 'a new code is shown once it is made');
-ok(/\/p#[0-9A-Za-z]{12}$/.test(await text('#pair-shown-link')) && await has('#pair-shown-text'), 'with its link and a button that copies an invitation message');
+ok(/^[A-Z2-7]{3}-[A-Z2-7]{3}$/.test(ownCode), 'a new code is shown once it is made');
+ok(/\/p#[0-9A-Za-z]{8}$/.test(await text('#pair-shown-link')) && await has('#pair-shown-text'), 'with its link and a button that copies an invitation message');
 await shot('24-pair-code');
 await click('#pair-shown-done');
 const pairingText = () => text('#pairing-body');
@@ -669,8 +669,8 @@ ok(await ev(`[...${el('#partner-ttl')}.options].map(o => o.value).join()`) === '
 await click('#partner-invite-ok');
 await waitFor(el('#dlg-partner-shown'));
 const invite = await text('#partner-shown-code');
-ok(/^[A-Z2-7]{5}-[A-Z2-7]{5}$/.test(invite), 'an invite code is shown');
-ok(/\/s#[0-9A-Za-z]{12}$/.test(await text('#partner-shown-link')), 'with its link');
+ok(/^[A-Z2-7]{3}-[A-Z2-7]{3}$/.test(invite), 'an invite code is shown');
+ok(/\/s#[0-9A-Za-z]{8}$/.test(await text('#partner-shown-link')), 'with its link');
 await shot('25-partner-invite');
 await click('#partner-shown-done');
 await waitFor(`${el('#share-partners-body')}.textContent.includes(${q(invite)})`);
@@ -739,7 +739,7 @@ console.log('invite links');
 const linkOf = out => out.match(/^link\s+(\S+)$/m)[1];
 const askOut = cli('seller', 'pair', 'code', '-approve');
 const askLink = linkOf(askOut);
-ok(/\/p#[0-9A-Za-z]{12}$/.test(askLink) && askOut.includes('approval'), 'the command line prints the link of a code, and that it asks for approval');
+ok(/\/p#[0-9A-Za-z]{8}$/.test(askLink) && askOut.includes('approval'), 'the command line prints the link of a code, and that it asks for approval');
 const askToken = askLink.split('#')[1];
 const portalHost = new URL(env.PORTAL).host;
 const openLink = l => ev(`kfetch('/api/v1/invite/pending', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ${q(JSON.stringify({ link: l }))} }).then(r => r.status)`);
@@ -764,7 +764,7 @@ await fullShot('26b-invite-approved');
 await clickRow('#paired-sellers', 'se***', '.pair-leave'); await waitFor(el('#dlg-confirm')); await click('#confirm-ok');
 await waitFor(el('#pair-sellers-empty'));
 // A link of another portal is shown but cannot be accepted here; dismissing forgets it.
-ok(await openLink('sharetoken://s/AAAAAAAAAAAA?h=elsewhere.example') === 200, 'a link of another portal is kept too');
+ok(await openLink('sharetoken://s/AAAAAAAA?h=elsewhere.example') === 200, 'a link of another portal is kept too');
 await ev(`window.dispatchEvent(new Event('focus'))`);
 await waitFor(el('#invite-other-portal'));
 ok(await ev(`${el('#invite-accept')}.disabled`), 'but cannot be accepted here');
@@ -772,7 +772,7 @@ await shot('26c-invite-other-portal');
 await click('#invite-dismiss');
 await waitFor(`!${el('#dlg-invite')}`);
 ok(!(await ev(`kfetch('/api/v1/session').then(r => r.json())`)).invite, 'dismissing forgets the link');
-ok(await openLink('ABCDE-FGHIJ') === 400, 'the daemon takes links only');
+ok(await openLink('ABC-DEF') === 400, 'the daemon takes links only');
 // A share invite's link pasted where a code goes.
 const shareLink = linkOf(cli('seller', 'partner', 'invite'));
 await click('#tab-pairing-partners');
@@ -814,7 +814,7 @@ await waitFor(el('#signin-form'));
 ok(await ev(`${el('#email')}.value`) === NORMAL, 'after logout the email is pre-filled');
 // Signed out, an invite link that arrives is announced beside the sign-in form.
 ok(!(await shown('#auth-invite')), 'no invite is announced when none came');
-await openLink('sharetoken://p/AAAAAAAAAAAA?h=' + portalHost);
+await openLink('sharetoken://p/AAAAAAAA?h=' + portalHost);
 await waitFor(`${el('#auth-invite')} && !${el('#auth-invite')}.hidden`, 8000); // without a focus event: the page looks every few seconds
 ok(await ev(`(() => { const s = getComputedStyle(${el('#auth-invite')}); return s.color !== s.backgroundColor && ${el('#auth-invite')}.textContent.length > 10; })()`), 'signed out, an arriving invite is announced beside the sign-in form, readable');
 await shot('10a-auth-invite');

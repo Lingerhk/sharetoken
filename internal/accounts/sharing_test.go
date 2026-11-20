@@ -21,7 +21,7 @@ func TestSharePartners(t *testing.T) {
 	alice, bob, carol := user("alice"), user("bob"), user("carol")
 
 	inv, err := s.CreateShareInvite(alice.ID, 0)
-	if err != nil || len(inv.Code) != 10 || !ValidLinkToken(inv.LinkToken) || inv.ExpiresAt != now.Add(DefaultShareTTL).UnixNano() {
+	if err != nil || len(inv.Code) != 6 || !ValidLinkToken(inv.LinkToken) || inv.ExpiresAt != now.Add(DefaultShareTTL).UnixNano() {
 		t.Fatalf("invite: %+v %v", inv, err)
 	}
 	if _, err := s.CreateShareInvite(alice.ID, MaxShareTTL+time.Hour); !errors.Is(err, ErrInvalid) {

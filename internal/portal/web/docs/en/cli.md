@@ -124,7 +124,7 @@ A seller hands out a pairing code. A buyer that joins with it buys only from the
 | Command | What it does |
 |---|---|
 | `pair` | Show who you are paired with, and your pairing codes |
-| `pair code [-label L] [-ttl 24h] [-uses N] [-approve]` | Seller: make a code for your buyers, and print its invite link. It lasts 24 hours (30 days at most) and admits any number of buyers unless you say otherwise; `-approve`: each buyer waits for your approval |
+| `pair code [-label L] [-ttl 24h] [-uses N] [-approve]` | Seller: make a code for your buyers, and print its invite link. It lasts 24 hours (7 days at most) and admits any number of buyers unless you say otherwise; `-approve`: each buyer waits for your approval |
 | `pair join <code\|link>` | Buyer: pair with the seller that made the code or link |
 | `pair approve <request id>`, `pair reject <request id>` | Seller: approve or reject a buyer waiting for your approval |
 | `pair withdraw <request id>` | Buyer: withdraw your own request |
@@ -135,8 +135,8 @@ A seller hands out a pairing code. A buyer that joins with it buys only from the
 
 ```bash
 {{exe}} pair code -label team -ttl 72h
-{{exe}} pair join ABCDE-FGHIJ
-{{exe}} pair join https://sharetoken.app/p#7kQm3xV9pT2b
+{{exe}} pair join ABC-DEF
+{{exe}} pair join https://sharetoken.app/p#7kQm3xV9
 ```
 
 The ids are the ones `pair` lists. See [Pair with your buyers](/docs/share#pairing).
@@ -158,7 +158,7 @@ Two users who pair up as partners use each other's nodes first, for free; when n
 
 ```bash
 {{exe}} partner invite
-{{exe}} partner join ABCDE-FGHIJ
+{{exe}} partner join ABC-DEF
 {{exe}} partner set -limit 200000 -share 50
 ```
 
@@ -173,7 +173,7 @@ Every pairing code and share invite also has an invite link, `https://sharetoken
 | `accept <link\|code>` | Accept an invite link, or a code of either kind |
 
 ```bash
-{{exe}} accept https://sharetoken.app/s#Hx82LpQe0aZt
+{{exe}} accept https://sharetoken.app/s#Hx82LpQe
 ```
 
 A link can only be accepted by a client signed in to the portal it is from. See [Invite links](/docs/share#invite-links).

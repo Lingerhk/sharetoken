@@ -338,5 +338,7 @@
   "当前账户：{name}": "Sesión iniciada como {name}",
   "换个账户": "Usar otra cuenta",
   "还没有客户端？": "¿Aún no tienes la aplicación?",
-  "可以先在这里接受邀请（配对记在账户上），再下载客户端，用同一个邮箱登录。也可以装好客户端后，把这个链接粘贴到客户端的「输入配对码」里。": "Puedes aceptar la invitación aquí primero (queda en tu cuenta), luego descargar la aplicación e iniciar sesión con el mismo correo. O instala la aplicación y pega este enlace donde pide un código."
+  "可以先在这里接受邀请（配对记在账户上），再下载客户端，用同一个邮箱登录。也可以装好客户端后，把这个链接粘贴到客户端的「输入配对码」里。": "Puedes aceptar la invitación aquí primero (queda en tu cuenta), luego descargar la aplicación e iniciar sesión con el mismo correo. O instala la aplicación y pega este enlace donde pide un código.",
+  "配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试": "Los códigos de emparejamiento están en pausa: demasiados intentos erróneos en todo el sitio. Usa el enlace de invitación o vuelve a intentarlo en una hora",
+  "邀请链接暂时无法预览：全站输错的次数太多。请一小时后再试": "No se pueden previsualizar los enlaces de invitación ahora: demasiados intentos erróneos en todo el sitio. Vuelve a intentarlo en una hora"
 }

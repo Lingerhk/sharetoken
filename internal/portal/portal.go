@@ -88,8 +88,9 @@ type Server struct {
 
 	failMu sync.Mutex
 	fails  map[string][]time.Time // login failures per username and per IP
-	// surgeAlerted is when the administrators last heard that codes are being guessed (invites.go).
-	surgeAlerted time.Time
+	// codesPaused and linksPaused: until when codes, and the public preview
+	// of links, are refused for everyone because they are being guessed (invites.go).
+	codesPaused, linksPaused time.Time
 	pushoverURL  string // tests point alerts elsewhere (default pushoverAPI)
 
 	feedbackMu sync.Mutex

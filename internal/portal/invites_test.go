@@ -130,9 +130,10 @@ func TestInviteLinks(t *testing.T) {
 		t.Fatalf("after rejection: %+v", sv)
 	}
 
-	// A wrong link counts as a wrong code; the preview has its own budget.
-	for i := 2; i < maxFails*4; i++ { // two wrong ones above
-		a.call("GET", "/api/v1/invite/p/AAAAAAAAAAAA", "", nil, 404, nil)
+	// A wrong link in the preview counts against the address.
+	clock = clock.Add(guessDay + time.Second)
+	for range ipMaxFails {
+		a.call("GET", "/api/v1/invite/p/AAAAAAAA", "", nil, 404, nil)
 	}
 	a.call("GET", "/api/v1/invite/p/"+code.LinkToken, "", nil, 429, nil)
 }
@@ -140,43 +141,76 @@ func TestInviteLinks(t *testing.T) {
 func TestCodeGuessingLimits(t *testing.T) {
 	clock := time.Now()
 	s, a := newPortal(t, Config{OpenRegistration: true, Now: func() time.Time { return clock }})
-	oldTok, _ := func() (string, int64) { u, tok := testUser(t, s, "old@example.com"); return tok, u.ID }()
-	clock = clock.Add(2 * time.Hour)
-	newTok, _ := func() (string, int64) { u, tok := testUser(t, s, "new@example.com"); return tok, u.ID }()
-	wrong := map[string]string{"code": "AAAAA-AAAAA"}
+	user := func(name string) (string, int64) { u, tok := testUser(t, s, name); return tok, u.ID }
+	oldTok, oldID := user("old@example.com")
+	old2, _ := user("old2@example.com")
+	old3, _ := user("old3@example.com")
+	clock = clock.Add(guessDay + time.Hour)
+	newTok, _ := user("new@example.com")
+	wrong := map[string]string{"code": "AAA-AAA"}
+	var e ErrorBody
 
-	// A new account gets fewer tries than an old one (the address has its own count).
+	// A new account gets newAccountMaxFails for its first day.
 	for range newAccountMaxFails {
 		a.call("POST", "/api/v1/pairing/redeem", newTok, wrong, 404, nil)
 	}
 	a.call("POST", "/api/v1/pairing/redeem", newTok, wrong, 429, nil)
-	clock = clock.Add(failWindow + time.Second)
-	for range maxFails {
-		a.call("POST", "/api/v1/invite/accept", oldTok, map[string]string{"code": "AAAAA-AAAAA", "kind": "p"}, 404, nil)
-	}
-	a.call("POST", "/api/v1/invite/accept", oldTok, map[string]any{"code": "AAAAA-AAAAA", "kind": "p"}, 429, nil)
+	clock = clock.Add(guessWindow + time.Second)
+	a.call("POST", "/api/v1/pairing/redeem", newTok, wrong, 429, nil)
 
-	// Over a day an account has dailyMaxFails, however slowly it tries.
-	clock = clock.Add(failWindow + time.Second)
-	for range dailyMaxFails - maxFails {
-		s.recordFailure("inv:day:u:1")
+	// An account gets userMaxFails per guessWindow ...
+	for range userMaxFails {
+		a.call("POST", "/api/v1/invite/accept", oldTok, map[string]string{"code": "AAA-AAA", "kind": "p"}, 404, nil)
 	}
-	a.call("POST", "/api/v1/invite/accept", oldTok, map[string]string{"code": "AAAAA-AAAAA"}, 429, nil)
-	clock = clock.Add(failDay)
-	a.call("POST", "/api/v1/invite/accept", oldTok, map[string]string{"code": "AAAAA-AAAAA"}, 404, nil)
+	a.call("POST", "/api/v1/invite/accept", oldTok, map[string]any{"code": "AAA-AAA", "kind": "p"}, 429, &e)
+	if e.Error.Code != "throttled" {
+		t.Fatalf("refused with %q", e.Error.Code)
+	}
+	// ... and userDayMaxFails per day, however slowly it tries.
+	clock = clock.Add(guessWindow + time.Second)
+	for range userDayMaxFails - userMaxFails - 1 {
+		s.recordFailure(fmt.Sprintf("inv:ud:%d", oldID))
+	}
+	a.call("POST", "/api/v1/invite/accept", oldTok, map[string]string{"code": "AAA-AAA"}, 404, nil)
+	a.call("POST", "/api/v1/invite/accept", oldTok, map[string]string{"code": "AAA-AAA"}, 429, nil)
+	clock = clock.Add(guessDay)
+	a.call("POST", "/api/v1/invite/accept", oldTok, map[string]string{"code": "AAA-AAA"}, 404, nil)
 
-	// When wrong codes pour in from everyone, each account gets surgeMaxFails.
-	clock = clock.Add(failWindow + time.Second)
-	for range surgeFails {
-		s.recordFailure(allFailsKey)
+	// An address gets ipMaxFails per guessWindow, whichever accounts try.
+	clock = clock.Add(guessDay)
+	for range userMaxFails {
+		a.call("POST", "/api/v1/sharing/join", old2, wrong, 404, nil)
 	}
-	for range surgeMaxFails {
-		a.call("POST", "/api/v1/sharing/join", oldTok, wrong, 404, nil)
+	for range ipMaxFails - userMaxFails {
+		a.call("POST", "/api/v1/sharing/join", old3, wrong, 404, nil)
 	}
 	a.call("POST", "/api/v1/sharing/join", oldTok, wrong, 429, nil)
-	if s.surgeAlerted.IsZero() {
-		t.Fatal("the administrators were not told")
+
+	// codeSurgeFails wrong codes from everyone in an hour stop codes for
+	// everyone; links go on.
+	clock = clock.Add(guessDay)
+	for range codeSurgeFails - 1 {
+		s.recordFailure(codeFailsKey)
 	}
+	a.call("POST", "/api/v1/sharing/join", oldTok, wrong, 404, nil)
+	a.call("POST", "/api/v1/sharing/join", old2, wrong, 429, &e)
+	if e.Error.Code != "codes_paused" || !s.paused(&s.codesPaused) {
+		t.Fatalf("codes not paused: %q", e.Error.Code)
+	}
+	a.call("POST", "/api/v1/invite/accept", old2, map[string]string{"link": "https://x.example/p#AAAAAAAA"}, 404, nil)
+	clock = clock.Add(surgePause + time.Second)
+	a.call("POST", "/api/v1/sharing/join", old2, wrong, 404, nil)
+
+	// linkSurgeFails wrong links stop the public preview; accepting goes on.
+	for range linkSurgeFails - 1 {
+		s.recordFailure(linkFailsKey)
+	}
+	a.call("GET", "/api/v1/invite/s/AAAAAAAA", "", nil, 404, nil)
+	a.call("GET", "/api/v1/invite/s/AAAAAAAA", "", nil, 429, &e)
+	if e.Error.Code != "links_paused" {
+		t.Fatalf("previews not paused: %q", e.Error.Code)
+	}
+	a.call("POST", "/api/v1/invite/accept", old3, map[string]string{"link": "https://x.example/s#AAAAAAAA"}, 404, nil)
 }
 
 func TestSurgeAlertPushover(t *testing.T) {
@@ -190,8 +224,11 @@ func TestSurgeAlertPushover(t *testing.T) {
 	os.WriteFile(creds, []byte("# alerts\nPUSHOVER_TOKEN=\"tok\"\nPUSHOVER_USER=usr\n"), 0o600)
 	clock := time.Unix(1_800_000_000, 0)
 	s := &Server{cfg: Config{Now: func() time.Time { return clock }, PushoverFile: creds}, log: slog.New(slog.DiscardHandler), fails: map[string][]time.Time{}, pushoverURL: api.URL}
-	s.surgeAlert()
-	s.surgeAlert() // within surgeAlertEvery: no second alert
+	for range codeSurgeFails - 1 {
+		s.recordFailure(codeFailsKey)
+	}
+	s.guessFailed(false, codeFailsKey)
+	s.guessFailed(false, codeFailsKey) // during the pause: no second alert
 	s.background.Wait()
 	select {
 	case f := <-got:
@@ -202,13 +239,13 @@ func TestSurgeAlertPushover(t *testing.T) {
 		t.Fatal("no alert sent")
 	}
 	if len(got) != 0 {
-		t.Fatal("alerted twice within an hour")
+		t.Fatal("alerted twice in one pause")
 	}
-	clock = clock.Add(surgeAlertEvery)
+	clock = clock.Add(surgePause)
 	s.cfg.PushoverFile = filepath.Join(t.TempDir(), "missing")
-	s.surgeAlert() // no account: only logged
+	s.guessFailed(false, codeFailsKey) // a new pause, but no account: only logged
 	s.background.Wait()
-	if len(got) != 0 {
-		t.Fatal("alert sent without an account")
+	if len(got) != 0 || !s.paused(&s.codesPaused) {
+		t.Fatal("alert sent without an account, or no new pause")
 	}
 }

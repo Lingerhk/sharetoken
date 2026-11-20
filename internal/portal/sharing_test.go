@@ -29,7 +29,7 @@ func TestSharingAPI(t *testing.T) {
 
 	var inv accounts.ShareInvite
 	a.call("POST", "/api/v1/sharing/invites", alice, map[string]any{"ttl_hours": 2}, 201, &inv)
-	if len(inv.Code) != 11 || len(inv.LinkToken) != 12 || strings.Count(inv.Code, "-") != 1 || inv.ExpiresAt-inv.CreatedAt != int64(2*3600e9) {
+	if len(inv.Code) != 7 || len(inv.LinkToken) != 8 || strings.Count(inv.Code, "-") != 1 || inv.ExpiresAt-inv.CreatedAt != int64(2*3600e9) {
 		t.Fatalf("invite: %+v", inv)
 	}
 	a.call("POST", "/api/v1/sharing/invites", alice, map[string]any{"ttl_hours": 169}, 400, nil)

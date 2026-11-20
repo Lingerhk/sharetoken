@@ -179,18 +179,24 @@ models. The rule is applied by the coordinator on every request, for every
 device of the account, also when the request names a node, so a modified client
 cannot step around it.
 
-- A code is 50 random bits (10 base32 characters), expires (one day by default,
-  30 days at most) and can be limited to a number of buyers and revoked. Its
-  invite link carries a separate token of 71 bits (12 base62 characters) after
-  the `#`, so it reaches no server log or Referer. Only a token gets a preview
-  without an account (who invites, masked; the label; the expiry): a code is
-  short enough to guess, a token is not.
-- Wrong codes and links are counted: per account and per address within five
-  minutes, like failed logins (three for an account younger than an hour), and
-  30 a day per account. When wrong codes pour in from everywhere at once (300 in
-  five minutes), every account and address gets three, and the administrators
-  get a Pushover alert (`alerts.pushover_file`), at most once an hour
-  (`internal/portal/invites.go`).
+- A code is 30 random bits (6 base32 characters, easy to type), expires (one
+  day by default, 7 days at most) and can be limited to a number of buyers and
+  revoked. Its invite link carries a separate token of about 47.6 bits (8 base62
+  characters) after the `#`, so it reaches no server log or Referer. Only a
+  token gets a preview without an account (who invites, masked; the label; the
+  expiry): a code is short enough to guess, a token is not.
+- Because a code is short, wrong codes and links are limited hard: an account
+  may enter 5 wrong ones per 15 minutes and 15 a day (an account younger than a
+  day only 3), an address 10 per 15 minutes and 50 a day. Guessers with many
+  accounts and addresses are stopped over everyone: 100 wrong codes in an hour
+  from the whole site stop codes for everyone for an hour (invite links still
+  work), and 2000 wrong links stop the public preview of links for an hour.
+  Each pause sends the administrators a Pushover alert
+  (`alerts.pushover_file`; `internal/portal/invites.go`). So at most about
+  2400 codes can be tried a day, whoever tries: with 10 000 live codes, one is
+  hit about every 45 days, and that only reaches the buyer side of a pairing
+  or a share partnership the owner sees and can end (or a request, when the
+  owner approves each use).
 - A seller may ask to approve each use of a code: a leaked code then only files
   requests, which the seller sees and rejects.
 - Any web page can open `sharetoken://`, so the desktop app never accepts an
@@ -222,8 +228,8 @@ so the job moves no credits. Nothing else about the job changes: the partner's
 node sees the prompt as any seller would, and receipts, hashes and audits work
 as usual.
 
-- An invite is a secret like a pairing code: 50 random bits with a 71-bit link
-  token, one day by default and 7 days at most, admits one person, can ask for
+- An invite is a secret like a pairing code: 30 random bits with a 47.6-bit
+  link token, one day by default and 7 days at most, admits one person, can ask for
   the inviter's approval, and can be withdrawn. Wrong codes and links are
   counted as for pairing codes. A
   leaked invite lets a stranger use the inviter's nodes for free within its

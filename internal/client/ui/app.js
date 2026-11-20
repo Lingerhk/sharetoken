@@ -1074,6 +1074,7 @@ I18N.ready.then(() => {
       if (e.code === 'not_logged_in') return tr('请先登录');
       if (e.code === 'wrong_kind') return tr('这是共享伙伴的邀请链接，请到「共享伙伴」里输入');
       if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
+      if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
       return message(e);
     }
 
@@ -1158,7 +1159,7 @@ I18N.ready.then(() => {
         err.el, okBtn));
     }
 
-    const TTLS = [[24, tr('1 天')], [168, tr('7 天')], [720, tr('30 天')]];
+    const TTLS = [[24, tr('1 天')], [168, tr('7 天')]];
     function codeDialog() {
       const label = h('input', { type: 'text', id: 'pair-label', maxlength: '64', dir: 'auto' });
       const ttl = h('select', { id: 'pair-ttl' }, TTLS.map(([hours, text]) => h('option', { value: String(hours), selected: hours === 24 }, text)));
@@ -1226,6 +1227,7 @@ I18N.ready.then(() => {
       if (e.code === 'not_logged_in') return tr('请先登录');
       if (e.code === 'wrong_kind') return tr('这是配对的邀请链接，请到「我的卖家」里输入');
       if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
+      if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
       return message(e);
     }
 
@@ -1846,6 +1848,7 @@ I18N.ready.then(() => {
       if (e.code === 'own_code') return tr('这是你自己的邀请链接，请把它发给要邀请的人。');
       if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
       if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
+      if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
       return message(e);
     }
     async function openInvite(inv) {

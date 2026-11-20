@@ -79,7 +79,7 @@ Before it sends anything, the client decides how to trust the portal:
 | `provider models <name>`, `provider test <name> [-model M] [-prompt TEXT]` | List the models the credentials may use; send one small request through the provider. |
 | `provider on <name>`, `provider off <name>`, `provider rm <name>` | Sell its models, stop, or remove it with its credentials. |
 | `pair` | Who this account is paired with, and its pairing codes. |
-| `pair code [-label L] [-ttl 24h] [-uses N]` | Seller: make a pairing code to hand to buyers. It lasts 24 hours unless `-ttl` says otherwise (at most 30 days) and admits any number of buyers unless `-uses` limits it. |
+| `pair code [-label L] [-ttl 24h] [-uses N]` | Seller: make a pairing code to hand to buyers. It lasts 24 hours unless `-ttl` says otherwise (at most 7 days) and admits any number of buyers unless `-uses` limits it. |
 | `pair join <code>` | Buyer: pair with the seller that made the code. From then on the account buys only from the sellers it is paired with. |
 | `pair leave <seller id>`, `pair rm <buyer id>`, `pair revoke <code id>` | End a pairing from the buyer's side or the seller's side; stop a code from admitting more buyers. |
 | `pair private on\|off` | Seller: private mode. While it is on, only the buyers paired with this account are matched to it and see its models. |

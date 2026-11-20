@@ -124,7 +124,7 @@
 | 命令 | 作用 |
 |---|---|
 | `pair` | 显示你和谁配对，以及你的配对码 |
-| `pair code [-label L] [-ttl 24h] [-uses N] [-approve]` | 卖家：生成一个给买家用的配对码，同时打印它的邀请链接。默认 24 小时有效（最长 30 天），不限买家数量；`-approve`：每个买家要你确认才生效 |
+| `pair code [-label L] [-ttl 24h] [-uses N] [-approve]` | 卖家：生成一个给买家用的配对码，同时打印它的邀请链接。默认 24 小时有效（最长 7 天），不限买家数量；`-approve`：每个买家要你确认才生效 |
 | `pair join <code\|link>` | 买家：用配对码或邀请链接，和生成它的卖家配对 |
 | `pair approve <request id>`、`pair reject <request id>` | 卖家：确认或拒绝一个等待你确认的买家 |
 | `pair withdraw <request id>` | 买家：撤回自己等待确认的申请 |
@@ -135,8 +135,8 @@
 
 ```bash
 {{exe}} pair code -label team -ttl 72h
-{{exe}} pair join ABCDE-FGHIJ
-{{exe}} pair join https://sharetoken.app/p#7kQm3xV9pT2b
+{{exe}} pair join ABC-DEF
+{{exe}} pair join https://sharetoken.app/p#7kQm3xV9
 ```
 
 命令里的 id 就是 `pair` 列出的编号。详见[和买家配对](/docs/share#pairing)。
@@ -158,7 +158,7 @@
 
 ```bash
 {{exe}} partner invite
-{{exe}} partner join ABCDE-FGHIJ
+{{exe}} partner join ABC-DEF
 {{exe}} partner set -limit 200000 -share 50
 ```
 
@@ -173,7 +173,7 @@
 | `accept <link\|code>` | 接受一个邀请链接，或任意一种邀请码 |
 
 ```bash
-{{exe}} accept https://sharetoken.app/s#Hx82LpQe0aZt
+{{exe}} accept https://sharetoken.app/s#Hx82LpQe
 ```
 
 链接属于哪个门户，就只能在登录那个门户的客户端里接受。详见[邀请链接](/docs/share#invite-links)。

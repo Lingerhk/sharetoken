@@ -58,7 +58,8 @@ const (
 
 // Limits on links and requests.
 const (
-	LinkTokenLen       = 12                 // base62 characters: 71 bits
+	LinkTokenLen       = 8                  // base62 characters: 47.6 bits
+	oldLinkTokenLen    = 12                 // tokens made before, still valid until they expire
 	RequestTTL         = 7 * 24 * time.Hour // how long a request waits for approval
 	MaxWaitingRequests = 10                 // requests one user may have waiting
 )
@@ -84,7 +85,7 @@ func newLinkToken() (string, error) {
 
 // ValidLinkToken reports whether s has the form of a link token.
 func ValidLinkToken(s string) bool {
-	if len(s) != LinkTokenLen {
+	if len(s) != LinkTokenLen && len(s) != oldLinkTokenLen {
 		return false
 	}
 	for i := 0; i < len(s); i++ {

@@ -63,9 +63,9 @@ const (
 	MaxPairedSellers   = 3                   // sellers one buyer may be paired with
 	MaxPairedBuyers    = 1000                // buyers one seller may have
 	DefaultPairingTTL  = 24 * time.Hour      // lifetime of a code when none is asked for
-	MaxPairingTTL      = 30 * 24 * time.Hour // longest lifetime of a code
+	MaxPairingTTL      = 7 * 24 * time.Hour  // longest lifetime of a code
 	minPairingTTL      = time.Minute
-	pairingCodeLen     = 10 // base32 characters: 50 bits
+	pairingCodeLen     = 6 // base32 characters: 30 bits, so the portal limits wrong ones hard (portal/invites.go)
 	maxPairingLabelLen = 64
 )
 
@@ -111,10 +111,13 @@ func NormalizePairingCode(code string) string {
 }
 
 // FormatPairingCode writes a code in groups for reading aloud: two groups of
-// five (ABCDE-FGHIJ), or fours for codes of other lengths made before.
+// three (ABC-DEF); codes made before in two of five (ten characters) or fours.
 func FormatPairingCode(code string) string {
 	group := 4
-	if len(code) == pairingCodeLen {
+	switch len(code) {
+	case pairingCodeLen:
+		group = 3
+	case 10:
 		group = 5
 	}
 	var b strings.Builder

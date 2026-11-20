@@ -71,7 +71,7 @@ sharetoken-gui（Wails v3 窗口，gui/）        sharetoken daemon（internal/c
 | 厂商 API | 添加厂商（API key 或账号登录）、启用停用、更换凭据、删除 | `/api/v1/providers`、`/api/v1/providers/oauth/start`、`/finish` |
 | 厂商的模型 | 从厂商的模型列表里选（或手填），设网络 ID、输入输出价、输出上限；测试、编辑、移除 | `/api/v1/providers/{name}/models`、`/test` |
 | 本机模型服务 | 地址和并发数；探测模型后添加、编辑、移除 | `PUT /api/v1/share`、`GET /api/v1/share/detect` |
-| 配对 | 私有模式（只为配对的买家服务）。生成配对码（备注；有效期 1、7 或 30 天；可配对的买家数）、复制、撤销；和本账户配对的买家，以及移除其中一个 | `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`DELETE /api/v1/pairing/buyers/{id}`、`PUT /api/v1/pairing/private` |
+| 配对 | 私有模式（只为配对的买家服务）。生成配对码（备注；有效期 1 或 7 天；可配对的买家数）、复制、撤销；和本账户配对的买家，以及移除其中一个 | `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`DELETE /api/v1/pairing/buyers/{id}`、`PUT /api/v1/pairing/private` |
 | 共享伙伴 | 邀请伙伴（只能一人使用的邀请码，有效期 1、3 或 7 天），复制和撤销未用的邀请码，用别人的邀请码加入；伙伴列表，以及最近 24 小时给每个伙伴和从每个伙伴用了多少 token，解除伙伴关系。设置：只用伙伴的节点、每日上限（每 24 小时的 token 数，所有伙伴合计）、每个节点并发的比例（0 表示暂停），以及已给出的 token 数 | `GET /api/v1/sharing`、`POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}`、`POST /api/v1/sharing/join`、`DELETE /api/v1/sharing/partners/{id}`、`PUT /api/v1/sharing/settings` |
 
 - 数据来自每 5 秒一次的 `GET /api/v1/status`（`share.providers`、`share.serving`、`warnings`）。列表内容没变就不重绘。表单都在对话框里，轮询不会动它，输入不会丢。

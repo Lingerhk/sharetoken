@@ -16,7 +16,7 @@ func TestLinkTokensAndParsing(t *testing.T) {
 		}
 		seen[tok] = true
 		c, err := newPairingCode()
-		if err != nil || len(c) != 10 || NormalizePairingCode(FormatPairingCode(c)) != c || strings.Count(FormatPairingCode(c), "-") != 1 {
+		if err != nil || len(c) != 6 || NormalizePairingCode(FormatPairingCode(c)) != c || strings.Count(FormatPairingCode(c), "-") != 1 {
 			t.Fatalf("code %q %v", c, err)
 		}
 	}

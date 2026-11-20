@@ -511,7 +511,7 @@ func (c *cmdCtx) pair(args []string) error {
 	case "code", "new":
 		fs := flag.NewFlagSet("pair code", flag.ExitOnError)
 		label := fs.String("label", "", "a note for yourself: who the code is for")
-		ttl := fs.Duration("ttl", 0, "how long the code can be used (default 24h, at most 720h)")
+		ttl := fs.Duration("ttl", 0, "how long the code can be used (default 24h, at most 168h)")
 		uses := fs.Int64("uses", 0, "how many buyers it admits (default: any number)")
 		approve := fs.Bool("approve", false, "each pairing waits for you to approve it")
 		_ = fs.Parse(args)

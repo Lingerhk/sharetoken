@@ -301,7 +301,7 @@ codex
 默认情况下，你的请求会发给协调器选中的任意节点。如果只想发给你认识的卖家，就和他们配对。卖家给你一个配对码或[邀请链接](/docs/share#invite-links)，你用它配对：
 
 ```bash
-{{exe}} pair join ABCDE-FGHIJ
+{{exe}} pair join ABC-DEF
 ```
 
 此后这个账户只向已配对的卖家购买，名下所有设备都一样。`models` 和 `/v1/models` 也只列出他们的模型。
