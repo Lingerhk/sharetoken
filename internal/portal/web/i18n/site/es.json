@@ -208,7 +208,6 @@
   "查看配对说明": "Leer sobre el emparejamiento",
   "共享伙伴": "Socios de uso compartido",
   "登录与账户": "Inicio de sesión y cuenta",
-  "编程助手": "Agentes de programación",
   "开源": "Código abierto",
   "配对成为共享伙伴后，双方可以共享对方的 token 资源；伙伴节点不可用时，自动切换回 P2P 网络。": "Una vez emparejados como socios, cada uno puede usar los recursos de token del otro; cuando los nodos del socio no están disponibles, las solicitudes vuelven automáticamente a la red P2P.",
   "可以限制给出去的量：每 24 小时最多给多少 tokens，以及伙伴最多占每个节点多少并发。并发比例设为 0 就是暂停共享。": "Limita lo que das: el máximo de tokens cada 24 horas y qué parte de la concurrencia de cada nodo pueden ocupar los socios. Una parte de 0 pausa el uso compartido.",
@@ -224,8 +223,6 @@
   "一键升级：有新版本时点「立即更新」就能下载安装，安装包会先校验发布签名。命令行用 sharetoken upgrade。": "Actualización en un clic: cuando sale una versión nueva, pulsa «Actualizar ahora» para descargarla e instalarla; antes se comprueba la firma de publicación del paquete. En la línea de comandos: sharetoken upgrade.",
   "本机的管理接口需要密钥才能访问；桌面应用连接后台程序前，会先确认对方的身份。": "La API de gestión local exige una clave, y la aplicación de escritorio confirma la identidad del programa en segundo plano antes de conectarse.",
   "本地 OpenAI 兼容端点默认需要 API key（sk-st-…）。可以在设置里或用 sharetoken apikey 查看、更换或关闭。": "El endpoint local compatible con OpenAI exige por defecto una API key (sk-st-…). Puedes verla, cambiarla o desactivarla en Ajustes o con sharetoken apikey.",
-  "sharetoken skill install：让 Claude Code 和 Codex 学会使用 ShareToken 客户端。文档里新增了「在编程助手中使用」一页。": "sharetoken skill install: enseña a Claude Code y Codex a usar el cliente de ShareToken. La guía tiene una página nueva, «Usar con agentes de programación».",
-  "以 MIT 许可证开源。网站和用户页面右上角加了 GitHub 链接。": "Código abierto con licencia MIT. El sitio web y las páginas de usuario enlazan a GitHub arriba a la derecha.",
   "最新版本": "Última versión",
   "回答改用压缩后的二进制帧传输，经中继的流量降到原来的约 1/8；模型出字越快，省得越多。": "Las respuestas viajan en tramas binarias comprimidas: el tráfico por los relés baja a cerca de 1/8, y cuanto más rápido escribe un modelo, más se ahorra.",
   "请求先压缩再发送，长对话历史的上传量降到约 1/4，大请求的首字更快。": "Las solicitudes se comprimen antes de enviarse: subir un historial de conversación largo requiere cerca de 1/4 del tráfico, y las solicitudes grandes reciben antes su primer token.",
@@ -264,5 +261,8 @@
   "第一次连接卖家更快：卖家的地址里有连不上的内网地址时，不再拖住经中继的连接，此前偶尔要多等约 10 秒。": "La primera conexión con un vendedor es más rápida: si entre las direcciones del vendedor hay direcciones de red interna inalcanzables, ya no retrasan la conexión a través del relé; antes esto suponía a veces unos 10 segundos más de espera.",
   "预热：Claude 和 ChatGPT（Codex）订阅的 5 小时窗口从重置后的第一次请求开始计时。客户端可以在你设定的时间发一条极小的请求，让窗口提前开始，工作时更早重置。本机的 Claude Code、Codex 和你出售的 Claude、ChatGPT 登录都可以预热，不经过 ShareToken 网络。在桌面应用的“设置 → 预热”里设置，或用 sharetoken warmup。": "Precalentamiento: la ventana de 5 horas de una suscripción de Claude o ChatGPT (Codex) empieza con la primera solicitud tras reiniciarse. El cliente puede enviar una solicitud mínima a las horas que elijas, para que la ventana empiece antes y se reinicie antes mientras trabajas. Funciona con Claude Code y Codex en este equipo y con los inicios de sesión de Claude y ChatGPT que vendes, y nada pasa por la red de ShareToken. Se configura en Ajustes → Precalentamiento de la aplicación de escritorio o con sharetoken warmup.",
   "“共享”页的厂商卡片显示 Claude 和 ChatGPT 登录的用量窗口和预热设置。": "Las tarjetas de proveedores de la página Compartir muestran las ventanas de uso y el precalentamiento de los inicios de sesión de Claude y ChatGPT.",
-  "经中继的连接不再算在中继的地址上：协调器同时在线的用户数，以及经中继接单的卖家同时服务的买家数，不再受每个中继 32 条（卖家 8 条）连接的限制。": "Las conexiones a través de un relé ya no cuentan contra la dirección del relé: los usuarios conectados al coordinador y los compradores que un vendedor atiende a través de un relé ya no están limitados a 32 conexiones por relé (8 en un vendedor)."
+  "经中继的连接不再算在中继的地址上：协调器同时在线的用户数，以及经中继接单的卖家同时服务的买家数，不再受每个中继 32 条（卖家 8 条）连接的限制。": "Las conexiones a través de un relé ya no cuentan contra la dirección del relé: los usuarios conectados al coordinador y los compradores que un vendedor atiende a través de un relé ya no están limitados a 32 conexiones por relé (8 en un vendedor).",
+  "Skill支持": "Skills",
+  "增加ShareToken Cli端的Skill，可使用sharetoken skill install安装，AI Agent（如codex/claude）中可直接操作。": "Un skill para la CLI de ShareToken, que se instala con sharetoken skill install, permite que agentes de IA como Codex y Claude la manejen directamente.",
+  "本项目以 MIT 许可证开源。": "Este proyecto es de código abierto con licencia MIT."
 }
