@@ -174,7 +174,7 @@ Model servers charge less for input they read from their prompt cache, and Anthr
 {{exe}} provider login openai
 ```
 
-The client shows a sign-in address. Open it in a browser on any computer and sign in. Then, as the client tells you, paste back the authorization code, or the whole address of the page the browser ends on (that page does not load). The login is renewed automatically.
+The client shows a sign-in address. Open it in a browser on any computer and sign in. Then, as the client tells you, paste back the authorization code, or the whole address of the page the browser ends on (that page does not load). The login is renewed automatically. Claude and ChatGPT logins can have their 5-hour windows warmed up at set times each day; see [Warm-up](/docs/cli#warmup).
 
 If a Google account has no project of its own, `gemini` and `antigravity` need a Google Cloud project ID in `-project`.
 

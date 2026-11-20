@@ -104,6 +104,19 @@ Under "Settings", the "Network" tab has the switch for [direct tunnels](/docs/ru
 
 The status bar shows the tunnels in short: "Off"; "On, no tunnel yet"; or the transport, the path, the number of tunnels and their latency, for example "QUIC Direct × 2". A click on it opens these settings. The Overview's network panel says the same.
 
+## Warm-up {#warmup}
+
+A Claude or ChatGPT (Codex) subscription's 5-hour window starts at the first request after it resets. The "Warm-up" tab under "Settings" starts windows early, so they reset sooner while you work. It lists the accounts there are to warm up: the Claude Code and Codex on this computer, and the Claude and ChatGPT logins you added under "Sharing". Each row shows its times of day, whether it warms up on reset, its usage windows now and the last warm-up's result. Click "Settings" on a row to change it; with "Turn the warm-up on" ticked:
+
+| Setting | What it does |
+|---|---|
+| Times of day | This computer's local time; several, separated by commas. At each, one tiny request is sent if the 5-hour window isn't running; a time missed by more than an hour (the computer asleep, say) is skipped |
+| Warm up on reset | The weekly window, or the 5-hour and weekly windows, start again as soon as they reset. Nothing is sent while a window is used up or extra usage is in use |
+| Model | Empty uses the cheapest model |
+| Program path | Only for the Claude Code and Codex on this computer: empty finds the `claude` or `codex` command automatically |
+
+"Warm up now" on a row sends one at once; "Pause every automatic warm-up" stops the scheduled ones. Warm-ups happen while the client runs, do not go through the ShareToken network, and cost no credit. For the command line, see [Warm-up](/docs/cli#warmup).
+
 ## Graphical interface without the app {#browser-ui}
 
 The command-line edition includes the same interface. Run:

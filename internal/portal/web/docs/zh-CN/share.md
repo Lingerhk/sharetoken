@@ -174,7 +174,7 @@ saved provider deepseek (DeepSeek, apikey) sk-…9b35
 {{exe}} provider login openai
 ```
 
-客户端显示一个登录地址。在任意一台电脑的浏览器里打开并登录，然后按提示把授权码、或者浏览器最后跳转到的那个打不开的页面的完整地址粘贴回来。登录凭据会自动续期。
+客户端显示一个登录地址。在任意一台电脑的浏览器里打开并登录，然后按提示把授权码、或者浏览器最后跳转到的那个打不开的页面的完整地址粘贴回来。登录凭据会自动续期。Claude 和 ChatGPT 的登录可以每天定时预热 5 小时窗口，见[预热](/docs/cli#warmup)。
 
 Google 账号没有自带项目时，`gemini` 和 `antigravity` 需要用 `-project` 指定一个 Google Cloud 项目 ID。
 
