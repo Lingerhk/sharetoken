@@ -39,6 +39,8 @@ type inviteForwarder struct {
 	start func() error
 	ep    func() endpoint
 	show  func()
+	// sent, when set, gets each link the daemon took (the invite self-test).
+	sent chan string
 
 	mu   sync.Mutex
 	last string
@@ -60,8 +62,14 @@ func (f *inviteForwarder) forward(link string) {
 		return
 	}
 	go func() {
-		if err := f.send(link); err != nil {
+		err := f.send(link)
+		if err != nil {
 			log.Printf("sharetoken-gui: passing an invite link to the daemon: %v", err)
+		} else if f.sent != nil {
+			select {
+			case f.sent <- link:
+			default:
+			}
 		}
 		if f.show != nil {
 			f.show()
@@ -105,4 +113,37 @@ func (f *inviteForwarder) send(link string) error {
 		last = fmt.Errorf("the daemon answered %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 	return last
+}
+
+// check is the invite self-test: it waits for a link to reach the daemon and
+// reads it back from GET /api/v1/invite/pending.
+func (f *inviteForwarder) check(wait time.Duration) error {
+	var link string
+	select {
+	case link = <-f.sent:
+	case <-time.After(wait):
+		return fmt.Errorf("no sharetoken:// link arrived within %s", wait)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := f.ep().request(ctx, http.MethodGet, "/api/v1/invite/pending", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var got struct {
+		Kind, Token string
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&got); err != nil {
+		return err
+	}
+	if got.Token == "" || !strings.Contains(link, got.Token) {
+		return fmt.Errorf("the daemon holds %+v for %q", got, link)
+	}
+	fmt.Printf("selftest: invite %s %s reached the daemon\n", got.Kind, got.Token)
+	return nil
 }
