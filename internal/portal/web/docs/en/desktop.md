@@ -71,7 +71,7 @@ The app has two parts: the window, and the background service that does the real
 
 Starting the program again only brings back the existing window.
 
-The window has its navigation on the left: Overview, Sharing, Pairing and Activity, with Feedback and Settings at the bottom. The status bar at the bottom of the window shows the connection, the relay in use and its latency; the latency is green, amber or red by how fast it is. The "?" beside a panel's title explains what the panel is for.
+The window has its navigation on the left: Overview, Sharing, Pairing and Activity, with Feedback and Settings at the bottom. The status bar at the bottom of the window shows the connection, the relay in use and its latency, and what the direct tunnels are doing; a latency is green, amber or red by how fast it is. The "?" beside a panel's title explains what the panel is for.
 
 ## Share models {#share}
 
@@ -80,13 +80,44 @@ Once you are signed in and connected to the network, click "Sharing" on the left
 - **Provider APIs**: click "Add provider", choose the provider, and enter an API key or sign in with an account. After saving, choose the models to sell and set each one's model ID on the network and its prices. Each provider can be turned off, given new credentials or deleted, and each model can be tested, repriced or removed.
 - **Local model server**: enter the model server's address under "Settings", then click "Add model"; the app lists the models that server offers.
 - **Status**: once there is at least one model, click "Start sharing" to take jobs. Sharing turns itself off when there is no model left to sell.
-- **Pairing** ("Pairing" on the left, the "My buyers" tab): click "Create pairing code", choose how long it lasts (1, 7 or 30 days) and how many buyers it admits, and give the code to your buyers. The panel lists your codes and your buyers, and lets you revoke a code or remove a buyer. Tick "Private mode" to serve only the buyers paired with you.
+- **Pairing** ("Pairing" on the left, the "My buyers" tab): click "Create pairing code", choose how long it lasts (1 or 7 days), how many buyers it admits and whether each needs your approval, and give the code or its link to your buyers ("Copy link", "Copy invitation message"). The panel lists your codes and your buyers, with anyone waiting for your approval ("Approve", "Reject"), and lets you revoke a code or remove a buyer. Tick "Private mode" to serve only the buyers paired with you.
 
 Prices are in credit per million tokens. API keys and login tokens are stored only on this computer, and the page shows keys masked. For notes on each provider, see [Share a hosted API](/docs/share#providers).
 
-To buy only from sellers you know, use "My sellers" under "Pairing": click "Enter pairing code" and type the code a seller gave you. See [Buy only from sellers you know](/docs/use-models#pairing).
+Under "Settings", the "Requests" tab lets you tick "Only sellers that speak the request's API natively" (Claude Code's requests then go only to sellers whose model server speaks Anthropic Messages, Codex's only to those that speak OpenAI Responses, with no conversion; see [Native and converted](/docs/use-models#native)) and set the budget held for each request (2 credits by default; you pay what a request uses). Both take effect at once.
 
-To share with partners for free, use "Share partners", the first tab under "Pairing". Click "Invite partner", choose how long the code lasts (1, 3 or 7 days) and send it to your partner; they click "Enter invite code". The list shows your partners and the tokens you gave and used in the last 24 hours, and "Unpair" ends a partnership. Under "Sharing settings" you can use partners' nodes only, set a daily limit (tokens per 24 hours, all partners together) and the share of each node's concurrent jobs partners may take (0 pauses sharing). Available models marks the models your partners offer, and Activity shows "Partner (free)" for jobs between partners. See [Share with partners for free](/docs/share#partners).
+To buy only from sellers you know, use "My sellers" under "Pairing": click "Enter pairing code" and type the code, or paste the link, a seller gave you. See [Buy only from sellers you know](/docs/use-models#pairing).
+
+To share with partners for free, use "Share partners", the first tab under "Pairing". Click "Invite partner", choose how long the code lasts (1, 3 or 7 days) and whether you approve whoever uses it, and send the code or its link to your partner; they click "Enter invite code" and type the code or paste the link. The list shows your partners and the tokens you gave and used in the last 24 hours, and "Unpair" ends a partnership. Under "Sharing settings" you can use partners' nodes only, set a daily limit (tokens per 24 hours, all partners together) and the share of each node's concurrent jobs partners may take (0 pauses sharing). Available models marks the models your partners offer, and Activity shows "Partner (free)" for jobs between partners. See [Share with partners for free](/docs/share#partners).
+
+An [invite link](/docs/share#invite-links) clicked in the browser can open the app ("Open in ShareToken" on the link's page; the installers register the app for `sharetoken://` links). The app comes to the front, shows who invites you and asks before it accepts; when you are signed out it asks after you sign in.
+
+## Direct tunnels {#tunnels}
+
+Under "Settings", the "Network" tab has the switch for [direct tunnels](/docs/running#tailnet): an encrypted tunnel between you and the other side of a request, in place of the relays. It works when both sides have it on; otherwise, and whenever a tunnel cannot be set up, requests go through the relays as before. Ticking "Direct tunnels" applies at once and shows the settings:
+
+| Setting | What it does |
+|---|---|
+| Transport | What a connection inside a tunnel runs on, for the connections this computer opens (when you use a model): QUIC, the default, or TCP. When you share a model, both are accepted. QUIC is faster for large requests on a steady network; choose TCP on a link that loses packets or jitters, such as weak Wi-Fi, if you send requests of several megabytes |
+| Wait for a tunnel | How many milliseconds the first request to a seller may wait for its tunnel (0 to 10000). 0, the default, does not wait: that request goes through the relay, and the tunnel takes over the next ones |
+| DERP relays | The relays a tunnel starts through and stays on when no direct path is found. Empty uses the public ones; a network that runs its own gives the URL or the file of its DERP map. Buyer and seller need the same |
+
+"This device" says whether buyers can reach this computer through a tunnel. The "Tunnels" panel lists each tunnel: its direction (to a seller, from a buyer), the peer, the path ("Direct", or "Relayed" with the DERP region), the transport, the latency, and the traffic.
+
+The status bar shows the tunnels in short: "Off"; "On, no tunnel yet"; or the transport, the path, the number of tunnels and their latency, for example "QUIC Direct × 2". A click on it opens these settings. The Overview's network panel says the same.
+
+## Warm-up {#warmup}
+
+A Claude or ChatGPT (Codex) subscription's 5-hour window starts at the first request after it resets. The "Warm-up" tab under "Settings" starts windows early, so they reset sooner while you work. It lists the accounts there are to warm up: the Claude Code and Codex on this computer, and the Claude and ChatGPT logins you added under "Sharing". Each row shows its times of day, whether it warms up on reset, its usage windows now and the last warm-up's result. Click "Settings" on a row to change it; with "Turn the warm-up on" ticked:
+
+| Setting | What it does |
+|---|---|
+| Times of day | This computer's local time; several, separated by commas. At each, one tiny request is sent if the 5-hour window isn't running; a time missed by more than an hour (the computer asleep, say) is skipped |
+| Warm up on reset | The weekly window, or the 5-hour and weekly windows, start again as soon as they reset. Nothing is sent while a window is used up or extra usage is in use |
+| Model | Empty uses the cheapest model |
+| Program path | Only for the Claude Code and Codex on this computer: empty finds the `claude` or `codex` command automatically |
+
+"Warm up now" on a row sends one at once; "Pause every automatic warm-up" stops the scheduled ones. Warm-ups happen while the client runs, do not go through the ShareToken network, and cost no credit. For the command line, see [Warm-up](/docs/cli#warmup).
 
 ## Graphical interface without the app {#browser-ui}
 

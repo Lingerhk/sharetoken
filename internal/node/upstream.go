@@ -4,18 +4,77 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"sharetoken/internal/protocol"
 )
 
 // Upstream is the model server a node serves from.
 type Upstream interface {
-	// Stream sends body (an OpenAI chat-completions request with stream=true)
-	// and calls emit with each streamed chunk payload, in order.
-	Stream(ctx context.Context, body []byte, emit func(payload []byte) error) error
+	// APIs lists the APIs the model server speaks natively
+	// (protocol.APIChat, APIMessages, APIResponses). The node converts a
+	// request in any other API into one of them (package apicompat).
+	APIs() []string
+	// Stream sends req (in one of APIs, asking for a stream) and calls emit
+	// with each streamed event payload, in order: the JSON after "data:".
+	Stream(ctx context.Context, req *Request, emit func(payload []byte) error) error
+}
+
+// Compactor is an Upstream with a native Codex /responses/compact endpoint.
+// Compact answers req (a Responses compact request, not streamed) with one
+// response.completed event whose response holds the compaction item.
+// Upstreams without it get a summary request instead (see compact.go).
+type Compactor interface {
+	Compact(ctx context.Context, req *Request, emit func(payload []byte) error) error
+}
+
+type billingKey struct{}
+
+// Billing is what a model server adapter tells the node about the bill of a
+// job, through the job's context.
+type Billing struct {
+	// PromptCap, when set, caps the prompt tokens billed: an adapter that
+	// adds instructions of its own to the buyer's request (a subscription
+	// login's required system prompt) has the seller pay for them.
+	PromptCap uint64
+	// PromptDiscount, when set, is taken off the prompt tokens the model
+	// server reported: an estimate of what the adapter added to the buyer's
+	// request, which the seller pays for.
+	PromptDiscount uint64
+}
+
+// Prompt lowers u, the usage of a job, to what the adapter lets the node
+// bill of its prompt. reported tells that u is the model server's count
+// rather than the node's estimate of the buyer's request, which holds
+// nothing the adapter added.
+func (b *Billing) Prompt(u protocol.Usage, reported bool) protocol.Usage {
+	if b.PromptCap > 0 {
+		u = u.CapPrompt(b.PromptCap)
+	}
+	if reported && b.PromptDiscount > 0 {
+		u = u.CapPrompt(u.PromptTokens - min(u.PromptTokens, b.PromptDiscount))
+	}
+	return u
+}
+
+// WithBilling attaches b to ctx for the model server adapter to fill in.
+func WithBilling(ctx context.Context, b *Billing) context.Context {
+	return context.WithValue(ctx, billingKey{}, b)
+}
+
+// BillingOf returns the Billing of the job ctx belongs to (a throwaway one
+// outside a job).
+func BillingOf(ctx context.Context) *Billing {
+	if b, ok := ctx.Value(billingKey{}).(*Billing); ok {
+		return b
+	}
+	return &Billing{}
 }
 
 // OpenAICompat talks to any server exposing the OpenAI chat-completions API —
@@ -57,9 +116,15 @@ func (e *StatusError) RequestRejected() bool {
 	return false
 }
 
+// APIs implements Upstream: chat completions only.
+func (u *OpenAICompat) APIs() []string { return []string{protocol.APIChat} }
+
 // Stream implements Upstream.
-func (u *OpenAICompat) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(u.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
+func (u *OpenAICompat) Stream(ctx context.Context, r *Request, emit func([]byte) error) error {
+	if r.API != protocol.APIChat {
+		return fmt.Errorf("node: OpenAICompat speaks chat, not %s", r.API)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(u.BaseURL, "/")+"/chat/completions", bytes.NewReader(r.Body))
 	if err != nil {
 		return err
 	}
@@ -83,6 +148,7 @@ func (u *OpenAICompat) Stream(ctx context.Context, body []byte, emit func([]byte
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), maxSSELine)
+	finished := false
 	for sc.Scan() {
 		line := sc.Bytes()
 		if !bytes.HasPrefix(line, []byte("data:")) {
@@ -95,9 +161,51 @@ func (u *OpenAICompat) Stream(ctx context.Context, body []byte, emit func([]byte
 		if string(payload) == "[DONE]" {
 			return nil
 		}
+		if msg, ok := chatStreamError(payload); ok {
+			return &StatusError{Status: http.StatusBadGateway, Body: clip(msg, 300)}
+		}
+		finished = finished || chatFinished(payload)
 		if err := emit(bytes.Clone(payload)); err != nil {
 			return err
 		}
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if !finished {
+		return errors.New("the stream ended before the answer did")
+	}
+	return nil
+}
+
+// chatStreamError reads an error a chat server sent inside its stream, in
+// place of a chunk: {"error": {"message": …}} or {"error": "…"}.
+func chatStreamError(payload []byte) (string, bool) {
+	if !bytes.Contains(payload, []byte(`"error"`)) {
+		return "", false
+	}
+	var ev struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(payload, &ev) != nil || len(ev.Error) == 0 || string(ev.Error) == "null" {
+		return "", false
+	}
+	var obj struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	}
+	if json.Unmarshal(ev.Error, &obj) == nil && (obj.Message != "" || obj.Type != "") {
+		return strings.TrimSpace(obj.Type + " " + obj.Message), true
+	}
+	return strings.Trim(string(ev.Error), `"`), true
+}
+
+// chatFinished reports whether a chunk carries a finish_reason: the answer
+// is complete, whether or not [DONE] follows.
+func chatFinished(payload []byte) bool {
+	if !bytes.Contains(payload, []byte(`"finish_reason"`)) {
+		return false
+	}
+	info, err := protocol.ParseChunk(payload)
+	return err == nil && info.FinishReason != ""
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
@@ -14,11 +15,13 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/host/autonat"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	circuitproto "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/proto"
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
+	"github.com/libp2p/go-libp2p/x/rate"
 
 	"sharetoken/internal/protocol"
 	"sharetoken/internal/version"
@@ -72,14 +75,66 @@ func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 		opts = append(opts, libp2p.ConnectionManager(cm))
 		limits = hubLimits(cfg.MaxConns, cfg.Memory)
 	}
-	rm, err := rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(limits))
+	rm, err := newResourceManager(limits, cfg.MaxConns > 0)
 	if err != nil {
 		return nil, err
 	}
-	opts = append(opts, libp2p.ResourceManager(rm))
+	opts = append(opts, libp2p.ResourceManager(relayedUncounted{rm}), tolerantQUIC())
 	opts = append(opts, cfg.Options...)
 	return libp2p.New(opts...)
 }
+
+// HubAddrConns is how many connections a hub (a relay, the coordinator)
+// accepts from one IPv4 address, and from one IPv6 /56: four times libp2p's
+// eight. Everyone behind one NAT shares its address: with eight, the ninth
+// client of an office or a home found every relay refusing it ("no relay
+// available"; the relay's log said "connections per ip limit exceeded"). An
+// IPv6 /48 gets four times libp2p's 64 as well.
+const HubAddrConns = 32
+
+// newResourceManager makes the resource manager of a host. A hub counts
+// HubAddrConns connections per address, and lets as many more arrive at once
+// as that takes: libp2p's rate limit per address (sixteen at once, then one
+// in five seconds) would hold back an office reconnecting after the relay
+// restarted. A user host keeps libp2p's limits.
+func newResourceManager(limits rcmgr.ConcreteLimitConfig, hub bool) (network.ResourceManager, error) {
+	if !hub {
+		return rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(limits))
+	}
+	local := []rate.PrefixLimit{ // this machine itself is never held back
+		{Prefix: netip.MustParsePrefix("127.0.0.0/8")},
+		{Prefix: netip.MustParsePrefix("::1/128")},
+	}
+	arrivals := &rate.Limiter{
+		NetworkPrefixLimits: local,
+		SubnetRateLimiter: rate.SubnetLimiter{
+			IPv4SubnetLimits: []rate.SubnetLimit{{PrefixLength: 32, Limit: rate.Limit{RPS: 0.8, Burst: 2 * HubAddrConns}}},
+			IPv6SubnetLimits: []rate.SubnetLimit{
+				{PrefixLength: 56, Limit: rate.Limit{RPS: 0.8, Burst: 2 * HubAddrConns}},
+				{PrefixLength: 48, Limit: rate.Limit{RPS: 2, Burst: 10 * HubAddrConns}},
+			},
+			GracePeriod: time.Minute,
+		},
+	}
+	return rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(limits),
+		rcmgr.WithLimitPerSubnet(
+			[]rcmgr.ConnLimitPerSubnet{{PrefixLength: 32, ConnCount: HubAddrConns}},
+			[]rcmgr.ConnLimitPerSubnet{{PrefixLength: 56, ConnCount: HubAddrConns}, {PrefixLength: 48, ConnCount: 8 * HubAddrConns}}),
+		rcmgr.WithConnRateLimiters(arrivals))
+}
+
+// peerDials is how many addresses of one peer are dialed at a time, in place
+// of libp2p's eight. A node's offer lists all the addresses it listens on,
+// and a dial to one of another network hangs until its timeout. A node with
+// a handful of interfaces filled the eight with those, and the relay
+// address, which libp2p dials a moment after the direct ones, waited behind
+// them: the first job to a node took ten seconds to connect. The resource
+// manager's count of a peer's outgoing connections is raised with it
+// (ClientLimits); without that the dial is refused outright ("cannot
+// reserve outbound connection").
+const peerDials = 64
+
+func init() { swarm.DefaultPerPeerRateLimit = peerDials }
 
 // ClientLimits are the resource manager limits of a user host: libp2p's
 // defaults scaled to the machine, except that a peer may have several pings
@@ -87,11 +142,16 @@ func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 // monitor's ping and a reservation's ping can overlap on the same relay, and
 // a client that refuses its own ping stream would call the relay unreachable
 // (it says "cannot reserve outbound stream: resource limit exceeded").
+//
+// A peer may also have more outgoing connections than libp2p's eight, which
+// count every dial under way; see peerDials. What a peer may open towards
+// this host stays at eight.
 func ClientLimits() rcmgr.ConcreteLimitConfig {
 	scaling := rcmgr.DefaultLimits
 	libp2p.SetDefaultServiceLimits(&scaling)
 	pingPeer := rcmgr.ResourceLimits{Streams: 16, StreamsInbound: 8, StreamsOutbound: 8}
 	partial := rcmgr.PartialLimitConfig{
+		PeerDefault:  rcmgr.ResourceLimits{Conns: peerDials + 8, ConnsOutbound: peerDials},
 		ServicePeer:  map[string]rcmgr.ResourceLimits{ping.ServiceName: pingPeer},
 		ProtocolPeer: map[lproto.ID]rcmgr.ResourceLimits{ping.ID: pingPeer},
 	}

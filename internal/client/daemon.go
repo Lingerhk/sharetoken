@@ -24,6 +24,7 @@ import (
 	"sharetoken/internal/p2p"
 	"sharetoken/internal/portal"
 	"sharetoken/internal/version"
+	"sharetoken/internal/warmup"
 )
 
 // Daemon is the service behind the desktop app. Unlike a bare Agent, it runs
@@ -66,6 +67,8 @@ type Daemon struct {
 	cancel   context.CancelFunc // ends the current run
 	done     chan struct{}      // closed when the current start-up attempts end
 	updates  *UpdateWatcher
+	warmup   *warmup.Service // runs logged in or out: it needs no portal
+	invites  pendingInvites  // the invite link the app was opened with (invites.go)
 
 	stopUpdates context.CancelFunc
 }
@@ -97,12 +100,15 @@ type Session struct {
 	Version    string `json:"version"`
 	APIVersion int    `json:"api_version"`
 	Update     Update `json:"update"`
+	// Invite is an invite link the app was opened with, waiting to be shown.
+	Invite *PendingInvite `json:"invite,omitempty"`
 }
 
 // NewDaemon prepares a daemon with its state in home.
 func NewDaemon(home string) *Daemon {
 	d := &Daemon{home: home, log: slog.Default().With("component", "daemon"), state: StateLoggedOut}
 	d.updates = NewUpdateWatcher(home, "desktop", d.portalAddr)
+	d.warmup = warmup.New(home)
 	return d
 }
 
@@ -164,6 +170,7 @@ func (d *Daemon) Start() error {
 	uctx, stopUpdates := context.WithCancel(context.Background())
 	d.stopUpdates = stopUpdates
 	d.bg.Go(func() { d.updates.Run(uctx) })
+	d.bg.Go(func() { d.warmup.Run(uctx) })
 	if cfg.Portal != "" && cfg.Token != "" {
 		if keys, err := p2p.LoadOrCreateKeys(filepath.Join(d.home, KeyFile)); err == nil {
 			d.mu.Lock()
@@ -211,6 +218,7 @@ func (d *Daemon) Session() Session {
 	defer d.mu.Unlock()
 	s := Session{Env: Env, State: d.state, LoggedIn: d.portal != nil, Portal: d.cfg.Portal, User: d.cfg.User, API: "http://" + d.addr + "/v1", Error: d.lastErr, Version: version.Version, APIVersion: version.API}
 	s.Update = d.updates.Current()
+	s.Invite = d.invites.get()
 	if !s.LoggedIn || s.Portal == "" {
 		s.Portal = PortalAddr() // the sign-in page does not ask for it
 	}
@@ -774,6 +782,8 @@ func (d *Daemon) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, Hello{Env: Env, Version: version.Version, APIVersion: version.API, Proof: LocalProof(d.key, d.addr, nonce)})
 	})
 	mux.HandleFunc("GET /api/v1/session", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, d.Session()) })
+	d.warmup.Routes(mux)
+	d.inviteRoutes(mux)
 	mux.HandleFunc("POST /api/v1/portal/probe", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
 		Portal string `json:"portal"`
 	}) {
@@ -879,6 +889,84 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/account", d.fromPortal("/api/v1/me"))
 	mux.HandleFunc("GET /api/v1/jobs", d.fromPortal("/api/v1/jobs"))
 	mux.HandleFunc("GET /api/v1/ledger", d.fromPortal("/api/v1/ledger"))
+	// The buying settings live in config.json: they can be read and changed
+	// while the client is still joining the network, and reach the running
+	// endpoint at once when it is up.
+	mux.HandleFunc("GET /api/v1/buy", func(w http.ResponseWriter, r *http.Request) {
+		if !d.loggedIn() {
+			writeErrorCode(w, http.StatusUnauthorized, "not_logged_in", "not logged in")
+			return
+		}
+		c, err := LoadConfig(d.home)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, buyView(c.Buy))
+	})
+	mux.HandleFunc("PUT /api/v1/buy", jsonBody(func(w http.ResponseWriter, r *http.Request, v BuySettingsView) {
+		if !d.loggedIn() {
+			writeErrorCode(w, http.StatusUnauthorized, "not_logged_in", "not logged in")
+			return
+		}
+		d.mu.Lock()
+		a := d.agent
+		d.mu.Unlock()
+		var err error
+		if a != nil {
+			err = a.SetBuySettings(v)
+		} else {
+			err = saveBuySettings(d.home, v)
+		}
+		if err != nil {
+			writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		c, err := LoadConfig(d.home)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, buyView(c.Buy))
+	}))
+	// The tailnet settings, like the buying ones, can be read and changed
+	// before the client has joined the network: they are then only saved.
+	// The running client answers for itself (a.handleSetTailnet).
+	tailnetSaved := func(set bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			d.mu.Lock()
+			running, loggedIn := d.agentAPI != nil, d.portal != nil
+			d.mu.Unlock()
+			if running || !loggedIn {
+				d.toAgent(w, r)
+				return
+			}
+			c, err := LoadConfig(d.home)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if set {
+				tc := c.Tailnet // fields left out keep their value
+				if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&tc); err != nil {
+					writeErrorCode(w, http.StatusBadRequest, "bad_request", "malformed JSON")
+					return
+				}
+				if err := tc.validate(); err != nil {
+					writeErrorCode(w, http.StatusBadRequest, "bad_request", err.Error())
+					return
+				}
+				if err := saveTailnet(d.home, tc); err != nil {
+					writeError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				c.Tailnet = tc
+			}
+			writeJSON(w, http.StatusOK, savedTailnetStatus(c.Tailnet))
+		}
+	}
+	mux.HandleFunc("GET /api/v1/tailnet", tailnetSaved(false))
+	mux.HandleFunc("PUT /api/v1/tailnet", tailnetSaved(true))
 	mux.HandleFunc("/api/v1/", d.toAgent)
 	mux.HandleFunc("/v1/", d.toAgent)
 	apiKeyRoutes(mux, d.home)

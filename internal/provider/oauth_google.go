@@ -7,13 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"sharetoken/internal/node"
+	"sharetoken/internal/protocol"
 )
 
 // Gemini (the Gemini CLI's login) and Antigravity are both Google logins to
@@ -41,9 +44,10 @@ const (
 	antigravityDailyURL     = "https://daily-cloudcode-pa.googleapis.com"
 )
 
-var geminiCLIModels = []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.5-flash-lite"}
+var geminiCLIModels = []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.5-flash-lite",
+	"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon"}
 
-var antigravityModels = []string{"claude-sonnet-4-6", "claude-sonnet-4-5", "claude-opus-4-6-thinking", "claude-opus-4-7", "claude-opus-4-8",
+var antigravityModels = []string{"claude-sonnet-4-6", "claude-opus-4-6-thinking", "claude-opus-4-7", "claude-opus-4-8",
 	"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash", "gemini-3-pro-low", "gemini-3-pro-high", "gemini-3.1-pro-low", "gemini-3.1-pro-high"}
 
 // The backend refuses Antigravity requests whose system instruction does not
@@ -151,7 +155,9 @@ func googleFlow(app googleApp, upstream func(*Entry, TokenSource) (node.Upstream
 			if err != nil {
 				return nil, err
 			}
-			return r.token(), nil
+			nt := r.token()
+			app.recheckPlan(ctx, old, nt)
+			return nt, nil
 		},
 		upstream: upstream,
 		models:   models,
@@ -171,83 +177,279 @@ func tierID(raw json.RawMessage) string {
 	return o.ID
 }
 
+// codeAssistLoad is loadCodeAssist's answer.
+type codeAssistLoad struct {
+	Project      json.RawMessage `json:"cloudaicompanionProject"`
+	CurrentTier  json.RawMessage `json:"currentTier"`
+	PaidTier     json.RawMessage `json:"paidTier"`
+	AllowedTiers []struct {
+		ID        string `json:"id"`
+		IsDefault bool   `json:"isDefault"`
+		// UserDefined: the tier bills a Google Cloud project the user
+		// names (Code Assist Standard and Enterprise); onboarding does not
+		// make one.
+		UserDefined bool `json:"userDefinedCloudaicompanionProject"`
+	} `json:"allowedTiers"`
+	// IneligibleTiers are the tiers the account may not have, with Google's
+	// reason: an account of an organization that needs a Code Assist
+	// license, an age or region restriction.
+	IneligibleTiers []struct {
+		TierID          string `json:"tierId"`
+		ReasonCode      string `json:"reasonCode"`
+		ReasonMessage   string `json:"reasonMessage"`
+		ValidationError string `json:"validationErrorMessage"`
+	} `json:"ineligibleTiers"`
+}
+
+// why is Google's reason the account has no tier, or "" when it gave none.
+func (l *codeAssistLoad) why() string {
+	var out []string
+	for _, t := range l.IneligibleTiers {
+		msg := strings.TrimSpace(t.ReasonMessage)
+		if msg == "" {
+			msg = strings.TrimSpace(t.ValidationError)
+		}
+		if msg == "" && t.ReasonCode == "" {
+			continue
+		}
+		if t.ReasonCode != "" {
+			msg = strings.TrimSpace(msg + " (" + t.ReasonCode + ")")
+		}
+		if !slices.Contains(out, msg) {
+			out = append(out, msg)
+		}
+	}
+	return strings.Join(out, "; ")
+}
+
+// noProject is the login error when no project can be had: the seller has
+// to give one with -project, and sees Google's reason first when there is
+// one, rather than a 403 SUBSCRIPTION_REQUIRED at the first request.
+func noProject(what, why string) error {
+	msg := what + ": log in again and give a Google Cloud project ID of the account with -project"
+	if why != "" {
+		msg = "Google says: " + why + ". " + msg
+	}
+	return errors.New(msg)
+}
+
 // findProject asks the backend for the account's project and plan, and signs
-// a new account up for its default tier to get one.
+// a new account up for its default tier to get one. A project the seller
+// gave (-project) is told to the backend, as the Gemini CLI tells it
+// GOOGLE_CLOUD_PROJECT, and is the one used. An account that has a tier
+// but no project of the backend's, or whose tier bills a project the user
+// names, is given the first active project Cloud Resource Manager lists
+// for it before the seller is asked for one.
 func (app googleApp) findProject(ctx context.Context, tok *Token) error {
 	h := bearer(tok.AccessToken, map[string]string{"User-Agent": app.userAgent})
-	var load struct {
-		Project      json.RawMessage `json:"cloudaicompanionProject"`
-		CurrentTier  json.RawMessage `json:"currentTier"`
-		PaidTier     json.RawMessage `json:"paidTier"`
-		AllowedTiers []struct {
-			ID        string `json:"id"`
-			IsDefault bool   `json:"isDefault"`
-		} `json:"allowedTiers"`
+	want := tok.ProjectID
+	meta := maps.Clone(app.metadata)
+	if meta == nil {
+		meta = map[string]any{}
 	}
+	body := map[string]any{"metadata": meta}
+	if want != "" {
+		meta["duetProject"] = want
+		body["cloudaicompanionProject"] = want
+	}
+	var load codeAssistLoad
 	var host string
 	var err error
 	for _, host = range app.hosts {
-		if err = postJSON(ctx, host+"/v1internal:loadCodeAssist", h, map[string]any{"metadata": app.metadata}, &load); err == nil {
+		if err = postJSON(ctx, host+"/v1internal:loadCodeAssist", h, body, &load); err == nil {
 			break
 		}
 	}
 	if err != nil {
-		if tok.ProjectID != "" {
+		if want != "" {
 			return nil
 		}
 		return fmt.Errorf("reading the account's project: %w", err)
 	}
 	current := tierID(load.CurrentTier)
-	if tok.Plan = tierID(load.PaidTier); tok.Plan == "" {
-		tok.Plan = current
-	}
-	if tok.ProjectID != "" {
-		return nil
-	}
-	if tok.ProjectID = tierID(load.Project); tok.ProjectID != "" {
-		return nil
-	}
-	if current == "" {
-		tier := ""
-		for _, t := range load.AllowedTiers {
-			if t.IsDefault || tier == "" {
-				tier = t.ID
-			}
-			if t.IsDefault {
-				break
-			}
-		}
-		if tier != "" {
-			body := map[string]any{"tierId": tier, "metadata": map[string]any{"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}}
-			for range 5 {
-				var ob struct {
-					Done     bool `json:"done"`
-					Response struct {
-						Project json.RawMessage `json:"cloudaicompanionProject"`
-					} `json:"response"`
-				}
-				if err := postJSON(ctx, host+"/v1internal:onboardUser", h, body, &ob); err != nil {
-					break
-				}
-				if ob.Done {
-					if tok.ProjectID = tierID(ob.Response.Project); tok.ProjectID != "" {
-						if tok.Plan == "" {
-							tok.Plan = tier
-						}
-						return nil
-					}
-					break
-				}
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(2 * time.Second):
-				}
-			}
+	tok.Plan = load.plan()
+	if want == "" {
+		if tok.ProjectID = tierID(load.Project); tok.ProjectID != "" {
+			return nil
 		}
 	}
-	return errors.New("this Google account has no Code Assist project: log in again and give a Google Cloud project ID of the account with -project")
+	if current != "" {
+		// Signed up already: onboarding again gives no project.
+		if want != "" {
+			return nil
+		}
+		if tok.ProjectID = resourceProject(ctx, h); tok.ProjectID != "" {
+			return nil
+		}
+		return noProject("this Google account has Code Assist ("+current+") but no project", load.why())
+	}
+	tier, userDefined := load.defaultTier()
+	if tier == "" {
+		if want != "" {
+			return nil
+		}
+		return noProject("this Google account has no Code Assist tier", load.why())
+	}
+	if userDefined && want == "" {
+		if want = resourceProject(ctx, h); want == "" {
+			return noProject("this Google account's Code Assist tier ("+tier+") bills a Google Cloud project the account names", load.why())
+		}
+		tok.ProjectID = want
+	}
+	// A tier other than free bills the project the account names, which
+	// onboarding is told; the free tier makes one of its own.
+	ob := map[string]any{"tierId": tier, "metadata": meta}
+	if tier != "free-tier" && want != "" {
+		ob["cloudaicompanionProject"] = want
+	}
+	project, onboardErr := onboard(ctx, host, h, ob)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if tok.Plan == "" {
+		tok.Plan = tier
+	}
+	switch {
+	case want != "":
+		tok.ProjectID = want
+		return nil
+	case project != "":
+		tok.ProjectID = project
+		return nil
+	}
+	if tok.ProjectID = resourceProject(ctx, h); tok.ProjectID != "" {
+		return nil
+	}
+	what := "this Google account has no Code Assist project"
+	if onboardErr != nil {
+		what += " (signing it up for " + tier + ": " + onboardErr.Error() + ")"
+	}
+	return noProject(what, load.why())
 }
+
+// plan is the account's plan: the paid tier, else the current one.
+func (l *codeAssistLoad) plan() string {
+	if p := tierID(l.PaidTier); p != "" {
+		return p
+	}
+	return tierID(l.CurrentTier)
+}
+
+// defaultTier is the tier a new account is signed up for: the default
+// one, else the first allowed.
+func (l *codeAssistLoad) defaultTier() (id string, userDefined bool) {
+	for _, t := range l.AllowedTiers {
+		if t.IsDefault || id == "" {
+			id, userDefined = t.ID, t.UserDefined
+		}
+		if t.IsDefault {
+			break
+		}
+	}
+	return id, userDefined
+}
+
+// onboard signs the account up (onboardUser), asking again while the
+// backend is not done, and returns the project it gave, if any.
+func onboard(ctx context.Context, host string, h http.Header, ob map[string]any) (string, error) {
+	for range 5 {
+		var r struct {
+			Done     bool `json:"done"`
+			Response struct {
+				Project json.RawMessage `json:"cloudaicompanionProject"`
+			} `json:"response"`
+		}
+		if err := postJSON(ctx, host+"/v1internal:onboardUser", h, ob, &r); err != nil {
+			return "", err
+		}
+		if r.Done {
+			return tierID(r.Response.Project), nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(onboardPoll):
+		}
+	}
+	return "", nil
+}
+
+// resourceManagerURL lists the Google Cloud projects the account can see.
+// The cloud-platform scope both logins ask for covers it; an account that
+// may not list projects (403) or has none gets "", and the seller is asked
+// for one.
+var resourceManagerURL = "https://cloudresourcemanager.googleapis.com/v1/projects"
+
+// resourceProject is the account's project to use for Code Assist: one
+// whose id or name says it is Code Assist's (cloud-ai-companion), else one
+// named default, else the first active one (after sub2api).
+func resourceProject(ctx context.Context, h http.Header) string {
+	var out struct {
+		Projects []struct {
+			ProjectID      string `json:"projectId"`
+			Name           string `json:"name"`
+			LifecycleState string `json:"lifecycleState"`
+		} `json:"projects"`
+	}
+	if getJSON(ctx, resourceManagerURL, h, &out) != nil {
+		return ""
+	}
+	var active, names []string
+	for _, p := range out.Projects {
+		if p.LifecycleState == "ACTIVE" && strings.TrimSpace(p.ProjectID) != "" {
+			active = append(active, strings.TrimSpace(p.ProjectID))
+			names = append(names, strings.ToLower(p.Name))
+		}
+	}
+	for _, words := range [][]string{{"cloud-ai-companion", "cloud ai companion", "code assist"}, {"default"}} {
+		for i, id := range active {
+			for _, w := range words {
+				if strings.Contains(strings.ToLower(id), w) || strings.Contains(names[i], w) {
+					return id
+				}
+			}
+		}
+	}
+	if len(active) > 0 {
+		return active[0]
+	}
+	return ""
+}
+
+// planCheckedKey is when the plan was last read (Token.Extra), RFC 3339.
+const planCheckedKey = "plan_checked"
+
+// planRecheck is how often a running provider reads the account's plan
+// again, so that an account upgraded to Google AI Pro or Ultra is served
+// as one (Antigravity's paid host, its models) without logging in again.
+// It is read when the token is renewed, which Google's hour-long tokens
+// need about as often, and costs one loadCodeAssist.
+var planRecheck = time.Hour
+
+// recheckPlan reads the plan again onto nt, a token renewed from old, when
+// old's is planRecheck old. A plan that cannot be read stays as it was.
+func (app googleApp) recheckPlan(ctx context.Context, old, nt *Token) {
+	if at, err := time.Parse(time.RFC3339, old.Extra[planCheckedKey]); err == nil && time.Since(at) < planRecheck {
+		return
+	}
+	if nt.Extra == nil {
+		nt.Extra = map[string]string{}
+	}
+	nt.Extra[planCheckedKey] = timeNow().UTC().Format(time.RFC3339)
+	h := bearer(nt.AccessToken, map[string]string{"User-Agent": app.userAgent})
+	for _, host := range app.hosts {
+		var load codeAssistLoad
+		if postJSON(ctx, host+"/v1internal:loadCodeAssist", h, map[string]any{"metadata": maps.Clone(app.metadata)}, &load) == nil {
+			if p := load.plan(); p != "" {
+				nt.Plan = p
+			}
+			return
+		}
+	}
+}
+
+// onboardPoll is how long onboardUser is given between asks.
+var onboardPoll = 2 * time.Second
 
 func postJSON(ctx context.Context, url string, header http.Header, in, out any) error {
 	data, err := json.Marshal(in)
@@ -320,15 +522,27 @@ type codeAssistUpstream struct {
 	antigravity bool
 }
 
-func (u *codeAssistUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
-	chat, err := parseChat(body)
+func (u *codeAssistUpstream) APIs() []string { return []string{protocol.APIChat} }
+
+func (u *codeAssistUpstream) Stream(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	if r.API != protocol.APIChat {
+		return fmt.Errorf("code assist: cannot send a %s request", r.API)
+	}
+	chat, err := parseChat(r.Body)
 	if err != nil {
 		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 	}
-	opt := geminiOptions{maxOutput: u.entry.caps()[chat.Model]}
+	// Gemini models want a thought signature on the function calls of the
+	// history (Gemini 3 refuses a call without one): the one the model gave,
+	// which came back in the call's id, or the placeholder.
+	opt := geminiOptions{maxOutput: u.entry.caps()[chat.Model], signFunctionCalls: !strings.HasPrefix(chat.Model, "claude-"),
+		signatures: signatureStore(u.entry.ID), jsonSchema: !u.antigravity}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(r.Body, &raw) == nil {
+		opt.effort = requestEffort(raw)
+	}
 	if u.antigravity {
 		opt.validated = true
-		opt.signFunctionCalls = !strings.HasPrefix(chat.Model, "claude-")
 		if opt.maxOutput == 0 {
 			opt.maxOutput = 64000
 		}
@@ -338,22 +552,71 @@ func (u *codeAssistUpstream) Stream(ctx context.Context, body []byte, emit func(
 		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
 	}
 	requestID := "agent-" + randomUUID()
+	sessionID := "-" + randomDigits()
 	if u.antigravity {
 		antigravitySystem(inner)
-		inner["sessionId"] = "-" + randomDigits()
+		inner["sessionId"] = sessionID
 	}
+	err = u.send(ctx, chat.Model, requestID, inner, opt.signatures, emit)
+	if signatureRefused(err) && signsCalls(inner) {
+		// A signature the backend will not take back (given to another
+		// account, or a different model): the history goes again as
+		// unsigned, which it takes.
+		opt.dropSignatures = true
+		if inner, err = geminiRequest(chat, opt); err != nil {
+			return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
+		}
+		if u.antigravity {
+			antigravitySystem(inner)
+			inner["sessionId"] = sessionID
+		}
+		err = u.send(ctx, chat.Model, requestID, inner, opt.signatures, emit)
+	}
+	return err
+}
+
+// signatureRefused is the backend turning a thought signature away:
+// "Invalid thought signature", "Corrupted thought signature".
+func signatureRefused(err error) bool {
+	var se *node.StatusError
+	if !errors.As(err, &se) || se.Status != http.StatusBadRequest {
+		return false
+	}
+	msg := strings.ToLower(se.Body)
+	return strings.Contains(msg, "thought signature") && (strings.Contains(msg, "invalid") || strings.Contains(msg, "corrupted"))
+}
+
+// signsCalls tells whether a request gives back a signature the model
+// gave, not only placeholders.
+func signsCalls(inner map[string]any) bool {
+	contents, _ := inner["contents"].([]map[string]any)
+	for _, c := range contents {
+		parts, _ := c["parts"].([]any)
+		for _, p := range parts {
+			if pm, ok := p.(map[string]any); ok {
+				if sig, _ := pm["thoughtSignature"].(string); sig != "" && sig != skipThoughtSignature {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// send posts one generateContent request in the backend's envelope.
+func (u *codeAssistUpstream) send(ctx context.Context, model, requestID string, inner map[string]any, sigs *sigStore, emit func([]byte) error) error {
 	return withToken(ctx, u.ts, func(tok *Token) error {
 		if tok.ProjectID == "" {
 			return fmt.Errorf("provider %s has no Google Cloud project: log in again", u.entry.Name)
 		}
-		envelope := map[string]any{"model": chat.Model, "project": tok.ProjectID, "request": inner}
+		envelope := map[string]any{"model": model, "project": tok.ProjectID, "request": inner}
 		base, agent := u.entry.URL(), geminiCLIUserAgent
 		if u.antigravity {
 			base, agent = antigravityHost(u.entry, tok), antigravityUserAgent
 			envelope["requestId"], envelope["userAgent"], envelope["requestType"] = requestID, "antigravity", "agent"
 		}
 		h := bearer(tok.AccessToken, map[string]string{"User-Agent": agent})
-		return streamGemini(ctx, base+"/v1internal:streamGenerateContent?alt=sse", h, envelope, chat.Model, emit)
+		return streamGemini(ctx, base+"/v1internal:streamGenerateContent?alt=sse", h, envelope, model, sigs, emit)
 	})
 }
 

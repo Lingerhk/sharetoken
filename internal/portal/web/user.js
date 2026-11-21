@@ -65,7 +65,9 @@
       { title: tr('模型'), cell: j => j.model },
       { title: tr('状态'), cell: j => [status(j.status), j.dispute_outcome ? h('span', { class: 'muted' }, ' ' + tr('裁决：{outcome}', { outcome: j.dispute_outcome })) : null] },
       { title: tr('对方'), cell: j => peer(j.role === 'buy' ? j.node : j.buyer) },
-      { title: 'tokens', num: true, cell: j => num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
+      { title: 'tokens', num: true, cell: j => (j.cache_read_tokens || j.cache_write_tokens)
+        ? h('span', { title: tr('其中缓存读 {read}，缓存写 {write}', { read: num(j.cache_read_tokens || 0), write: num(j.cache_write_tokens || 0) }) }, num(j.prompt_tokens) + '* / ' + num(j.completion_tokens))
+        : num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
       { title: tr('费用'), num: true, cell: j => credit(j.cost_micros) },
       { title: tr('收入'), num: true, cell: j => j.role === 'sell' && j.earned_micros ? h('span', { class: 'ok' }, '+' + credit(j.earned_micros)) : '' },
   ];
@@ -197,44 +199,98 @@
   }
 
   // Pairing: as a buyer, the sellers this account buys from; as a seller, its
-  // codes, its buyers and private mode. The coordinator applies it.
+  // codes, its buyers and private mode. The coordinator applies it. Below it,
+  // share partners: two accounts that use each other's nodes for free. Every
+  // code and invite also has a link (/p#… or /s#…, invite.js), and may ask its
+  // owner to approve whoever uses it.
+  const inviteLink = (kind, token) => location.origin + '/' + kind + '#' + token;
+  function inviteText(kind, c) {
+    const vars = { link: inviteLink(kind, c.link_token), code: c.code, time: time(c.expires_at) };
+    return kind === 'p'
+      ? tr('我在 ShareToken 共享了 AI 模型额度，点这个链接就能和我配对：{link}', vars) + '\n' + tr('已经装了客户端的话，也可以输入配对码 {code}（{time} 前有效）。', vars)
+      : tr('来做 ShareToken 共享伙伴吧，互相免费使用对方的模型额度。点这个链接接受邀请：{link}', vars) + '\n' + tr('已经装了客户端的话，也可以输入邀请码 {code}（{time} 前有效）。', vars);
+  }
+  function linkCell(kind, c, id) {
+    if (!c.link_token) return '—';
+    return h('span', { class: 'row-actions' },
+      h('button', { class: 'small', id: id + '-link', title: inviteLink(kind, c.link_token), onclick: () => ST.copy(inviteLink(kind, c.link_token)) }, ST.icon('link', 14), ' ', tr('复制链接')),
+      h('button', { class: 'small', id: id + '-text', onclick: () => ST.copy(inviteText(kind, c)) }, tr('复制邀请文案')));
+  }
+  function shownInvite(kind, c, intro) {
+    return modal({ title: kind === 'p' ? tr('配对码已生成') : tr('邀请码已生成'), cancel: false, okText: tr('完成'), body: h('div', { id: kind === 'p' ? 'pair-new' : 'partner-new' },
+      h('p', null, intro),
+      h('label', null, kind === 'p' ? tr('配对码') : tr('邀请码')), secret(c.code),
+      h('label', null, tr('邀请链接（对方没装客户端也能打开）')),
+      h('div', { class: 'secret' }, h('code', { id: kind + '-new-link' }, inviteLink(kind, c.link_token)), h('button', { class: 'small', onclick: () => ST.copy(inviteLink(kind, c.link_token)) }, tr('复制'))),
+      h('div', { class: 'row' }, h('button', { class: 'primary', type: 'button', id: kind + '-new-text', onclick: () => ST.copy(inviteText(kind, c)) }, tr('复制邀请文案'))),
+      c.approval ? h('p', { class: 'muted' }, tr('已开启确认：对方使用后，要你在这里确认才生效。')) : null,
+      h('p', { class: 'muted' }, tr('到期时间：{time}', { time: time(c.expires_at) }))) });
+  }
+  // Requests waiting for this account's approval, and its own waiting for others'.
+  function requestCards(area, v, load, bad) {
+    const requests = v.requests || [], waiting = v.waiting || [];
+    const act = (method, path, okText) => async () => {
+      try { await api(method, path); if (okText) toast(okText, 'ok'); await load(); } catch (ex) { bad(ex); }
+    };
+    return [
+      requests.length ? h('div', { class: 'card warn', id: area + '-requests' }, h('b', null, tr('等待你确认')), table([
+        { title: tr('账户'), cell: r => r.username },
+        { title: tr('备注'), cell: r => r.label || '—' },
+        { title: tr('申请时间'), cell: r => time(r.created_at) },
+        { title: '', cell: r => h('span', { class: 'row-actions' },
+          h('button', { class: 'small primary ' + area + '-approve', onclick: act('POST', '/api/v1/' + area + '/requests/' + r.id + '/approve', tr('已确认')) }, tr('确认')),
+          h('button', { class: 'small danger ' + area + '-reject', onclick: act('DELETE', '/api/v1/' + area + '/requests/' + r.id) }, tr('拒绝'))) },
+      ], requests)) : null,
+      waiting.length ? h('div', { class: 'card', id: area + '-waiting' }, h('b', null, tr('等待对方确认')), table([
+        { title: tr('账户'), cell: r => r.username },
+        { title: tr('申请时间'), cell: r => time(r.created_at) },
+        { title: '', cell: r => h('button', { class: 'small danger ' + area + '-withdraw', onclick: act('DELETE', '/api/v1/' + area + '/waiting/' + r.id) }, tr('撤回')) },
+      ], waiting)) : null,
+    ];
+  }
+  const approvalBox = id => h('input', { type: 'checkbox', id });
+  const acceptedText = (r, pairText, shareText) => r.pending ? tr('已发送，等待 {name} 确认', { name: r.username }) : (r.kind === 's' ? shareText : pairText);
+
   async function pairing(m) {
     const pairErr = ex => ({
       bad_code: tr('配对码不对，或者已经过期、被撤销或用完'),
       own_code: tr('这是你自己的配对码，请把它发给要配对的买家'),
       limit: tr('已达到数量上限，请先解除或撤销一些'),
       throttled: tr('尝试次数太多，请几分钟后再试'),
+      codes_paused: tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试'),
+      wrong_kind: tr('这是共享伙伴的邀请链接，请到下面的「共享伙伴」里输入'),
+      not_found: tr('这一项已经不存在了'),
     })[ex.code] || ex.message;
     const bad = ex => toast(pairErr(ex), 'bad');
     add(m, pageTitle(tr('配对'), h('small', null, tr('卖家发出配对码，买家兑换后只向和它配对的卖家购买'))));
-    const buying = h('div', { id: 'pair-buying' }), selling = h('div', { id: 'pair-selling' });
-    add(m, buying, selling);
+    const buying = h('div', { id: 'pair-buying' }), selling = h('div', { id: 'pair-selling' }), sharing = h('div', { id: 'partners' });
+    add(m, buying, selling, sharing);
 
-    const code = input({ type: 'text', id: 'pair-code', maxlength: 64, placeholder: 'XXXX-XXXX-XXXX-XXXX', class: 'mono', autocapitalize: 'characters', spellcheck: 'false', required: true });
+    const code = input({ type: 'text', id: 'pair-code', maxlength: 256, placeholder: tr('配对码或邀请链接'), class: 'mono', autocapitalize: 'off', spellcheck: 'false', required: true });
     const joinForm = h('form', { class: 'form', id: 'pair-join-form', onsubmit: async e => {
       e.preventDefault();
       try {
         const seller = await api('POST', '/api/v1/pairing/redeem', { code: code.value.trim() });
         code.value = '';
-        toast(tr('已和卖家 {name} 配对', { name: seller.username }));
+        toast(seller.pending ? tr('已发送，等待 {name} 确认', { name: seller.username }) : tr('已和卖家 {name} 配对', { name: seller.username }));
         await load();
       } catch (ex) { bad(ex); }
-    } }, h('div', { class: 'row' }, field(tr('配对码'), code)), h('div', null, h('button', { class: 'primary', type: 'submit', id: 'pair-join' }, tr('配对'))));
+    } }, h('div', { class: 'row' }, field(tr('配对码或邀请链接'), code)), h('div', null, h('button', { class: 'primary', type: 'submit', id: 'pair-join' }, tr('配对'))));
 
     const label = input({ type: 'text', id: 'pair-label', maxlength: 64, dir: 'auto' });
-    const ttl = h('select', { id: 'pair-ttl' }, h('option', { value: '24' }, tr('1 天')), h('option', { value: '168' }, tr('7 天')), h('option', { value: '720' }, tr('30 天')));
+    const ttl = h('select', { id: 'pair-ttl' }, h('option', { value: '24' }, tr('1 天')), h('option', { value: '168' }, tr('7 天')));
     const uses = input({ type: 'number', id: 'pair-uses', min: 1, max: 1000, step: 1, placeholder: tr('不限') });
+    const approval = approvalBox('pair-approval');
     const codeForm = h('form', { class: 'form', id: 'pair-code-form', onsubmit: async e => {
       e.preventDefault();
       try {
-        const c = await api('POST', '/api/v1/pairing/codes', { label: label.value.trim(), ttl_hours: Number(ttl.value), max_uses: Number(uses.value) || 0 });
-        label.value = uses.value = '';
+        const c = await api('POST', '/api/v1/pairing/codes', { label: label.value.trim(), ttl_hours: Number(ttl.value), max_uses: Number(uses.value) || 0, approval: approval.checked });
+        label.value = uses.value = ''; approval.checked = false;
         await load();
-        await modal({ title: tr('配对码已生成'), cancel: false, okText: tr('完成'), body: h('div', { id: 'pair-new' },
-          h('p', null, tr('把它发给要配对的买家。拿到它的人都能和你配对，请只发给你信任的人。')), secret(c.code),
-          h('p', { class: 'muted' }, tr('到期时间：{time}', { time: time(c.expires_at) }))) });
+        await shownInvite('p', c, tr('把配对码或链接发给要配对的买家。拿到它的人都能和你配对，请只发给你信任的人。'));
       } catch (ex) { bad(ex); }
     } }, h('div', { class: 'row' }, field(tr('备注（配对的买家也会看到，可不填）'), label), field(tr('有效期'), ttl), field(tr('可配对的买家数'), uses)),
+      h('label', { class: 'check' }, approval, h('span', null, tr('需要我确认'), ' ', h('span', { class: 'muted' }, tr('买家使用后，要你确认才生效')))),
       h('div', null, h('button', { class: 'primary', type: 'submit', id: 'pair-new-code' }, tr('生成配对码'))));
 
     const who = u => [u.username, u.disabled ? [' ', badge(tr('已停用'), 'bad')] : null];
@@ -254,7 +310,8 @@
           { title: tr('备注'), cell: u => u.label || '—' },
           { title: tr('配对时间'), cell: u => time(u.since) },
           { title: '', cell: u => end('pair-leave', tr('解除'), tr('解除配对'), tr('解除和卖家 {name} 的配对？之后这个账户不再向他购买，除非重新配对。', { name: u.username }), '/api/v1/pairing/sellers/' + u.id) },
-        ], v.sellers, tr('还没有配对卖家，可以向网络上所有卖家购买'))));
+        ], v.sellers, tr('还没有配对卖家，可以向网络上所有卖家购买'))),
+        requestCards('pairing', { waiting: v.waiting }, load, bad));
 
       const priv = h('input', { type: 'checkbox', id: 'pair-private', checked: v.private, onchange: async () => {
         priv.disabled = true;
@@ -264,11 +321,13 @@
       } });
       add(clear(selling),
         section('users', tr('我的买家'), h('small', null, tr('生成配对码发给你的买家'))),
+        requestCards('pairing', { requests: v.requests }, load, bad),
         h('div', { class: 'card' }, h('label', { class: 'check' }, priv, h('span', null, h('b', null, tr('私有模式')), ' ',
           h('span', { class: 'muted' }, tr('只为和你配对的买家服务。开启后，其他买家看不到你的模型，也不能向你购买。'))))),
         h('div', { class: 'card' }, codeForm),
         h('div', { class: 'card', id: 'pair-codes' }, table([
-          { title: tr('配对码'), cell: c => secret(c.code) },
+          { title: tr('配对码'), cell: c => [secret(c.code), c.approval ? badge(tr('需确认'), 'accent') : null] },
+          { title: tr('邀请链接'), cell: c => linkCell('p', c, 'pair-' + c.id) },
           { title: tr('备注'), cell: c => c.label || '—' },
           { title: tr('已配对'), num: true, cell: c => c.max_uses ? num(c.used) + ' / ' + num(c.max_uses) : tr('{n}（不限）', { n: num(c.used) }) },
           { title: tr('到期时间'), cell: c => time(c.expires_at) },
@@ -280,6 +339,63 @@
           { title: tr('配对时间'), cell: u => time(u.since) },
           { title: '', cell: u => end('pair-remove', tr('移除'), tr('移除买家'), tr('移除买家 {name}？如果这是他唯一配对的卖家，他会恢复为向整个网络购买。', { name: u.username }), '/api/v1/pairing/buyers/' + u.id) },
         ], v.buyers, tr('还没有买家和你配对'))));
+      await loadPartners();
+    }
+
+    // ---- share partners ----
+    const partnerErr = ex => ({
+      bad_code: tr('邀请码不对，或者已经过期、被撤销或用过了'),
+      own_code: tr('这是你自己的邀请码，请把它发给要共享的伙伴'),
+      limit: tr('已达到数量上限，请先解除或撤销一些'),
+      throttled: tr('尝试次数太多，请几分钟后再试'),
+      codes_paused: tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试'),
+      wrong_kind: tr('这是配对的邀请链接，请到上面的「配对的卖家」里输入'),
+      not_found: tr('这一项已经不存在了'),
+    })[ex.code] || ex.message;
+    const pbad = ex => toast(partnerErr(ex), 'bad');
+    const pcode = input({ type: 'text', id: 'partner-code', maxlength: 256, placeholder: tr('邀请码或邀请链接'), class: 'mono', autocapitalize: 'off', spellcheck: 'false', required: true });
+    const pjoin = h('form', { class: 'form', id: 'partner-join-form', onsubmit: async e => {
+      e.preventDefault();
+      try {
+        const p = await api('POST', '/api/v1/sharing/join', { code: pcode.value.trim() });
+        pcode.value = '';
+        toast(p.pending ? tr('已发送，等待 {name} 确认', { name: p.username }) : tr('已和 {name} 成为共享伙伴', { name: p.username }));
+        await loadPartners();
+      } catch (ex) { pbad(ex); }
+    } }, h('div', { class: 'row' }, field(tr('邀请码或邀请链接'), pcode)), h('div', null, h('button', { class: 'primary', type: 'submit', id: 'partner-join' }, tr('成为伙伴'))));
+    const pttl = h('select', { id: 'partner-ttl' }, h('option', { value: '24' }, tr('1 天')), h('option', { value: '72' }, tr('3 天')), h('option', { value: '168' }, tr('7 天')));
+    const papproval = approvalBox('partner-approval');
+    const pinvite = h('form', { class: 'form', id: 'partner-invite-form', onsubmit: async e => {
+      e.preventDefault();
+      try {
+        const c = await api('POST', '/api/v1/sharing/invites', { ttl_hours: Number(pttl.value), approval: papproval.checked });
+        papproval.checked = false;
+        await loadPartners();
+        await shownInvite('s', c, tr('把邀请码或链接发给要共享的伙伴。邀请只能用一次。'));
+      } catch (ex) { pbad(ex); }
+    } }, h('div', { class: 'row' }, field(tr('有效期'), pttl)),
+      h('label', { class: 'check' }, papproval, h('span', null, tr('需要我确认'), ' ', h('span', { class: 'muted' }, tr('对方使用后，要你确认才生效')))),
+      h('div', null, h('button', { class: 'primary', type: 'submit', id: 'partner-invite' }, tr('邀请伙伴'))));
+
+    async function loadPartners() {
+      const v = await api('GET', '/api/v1/sharing');
+      add(clear(sharing),
+        section('users', tr('共享伙伴'), h('small', null, tr('双方免费使用对方的节点，最多 {n} 个伙伴', { n: num(v.max_partners) }))),
+        requestCards('sharing', v, loadPartners, pbad),
+        h('div', { class: 'card' }, h('div', { class: 'split' }, pjoin, pinvite)),
+        h('div', { class: 'card', id: 'partner-list' }, table([
+          { title: tr('伙伴'), cell: who },
+          { title: tr('配对时间'), cell: u => time(u.since) },
+          { title: tr('我给出'), num: true, cell: u => num(u.given || 0) },
+          { title: tr('我使用'), num: true, cell: u => num(u.taken || 0) },
+          { title: '', cell: u => end('partner-leave', tr('解除'), tr('解除共享'), tr('解除和 {name} 的共享？之后双方不能再免费使用对方的节点，除非重新配对。', { name: u.username }), '/api/v1/sharing/partners/' + u.id) },
+        ], v.partners, tr('还没有共享伙伴'))),
+        v.invites.length ? h('div', { class: 'card', id: 'partner-invites' }, table([
+          { title: tr('邀请码'), cell: c => [secret(c.code), c.approval ? badge(tr('需确认'), 'accent') : null] },
+          { title: tr('邀请链接'), cell: c => linkCell('s', c, 'partner-' + c.id) },
+          { title: tr('到期时间'), cell: c => time(c.expires_at) },
+          { title: '', cell: c => end('partner-revoke', tr('撤销'), tr('撤销邀请码'), tr('撤销邀请码 {code}？', { code: c.code }), '/api/v1/sharing/invites/' + c.id) },
+        ], v.invites)) : null);
     }
     await load();
   }

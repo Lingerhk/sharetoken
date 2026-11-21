@@ -34,20 +34,21 @@ import (
 
 // Counter counts tokens under a marketplace model's tokenizer.
 type Counter interface {
-	// CountPrompt counts the prompt of an OpenAI chat-completions request body.
-	CountPrompt(ctx context.Context, model string, body []byte) (uint64, error)
+	// CountPrompt counts the prompt of a request body in api.
+	CountPrompt(ctx context.Context, model, api string, body []byte) (uint64, error)
 	// CountText counts generated text.
 	CountText(ctx context.Context, model, text string) (uint64, error)
-	// Exact reports whether counts for model come from its real tokenizer.
-	Exact(model string) bool
+	// Exact reports whether counts for model's requests in api come from its
+	// real tokenizer.
+	Exact(model, api string) bool
 }
 
 // Heuristic estimates without a tokenizer.
 type Heuristic struct{}
 
 // CountPrompt implements Counter.
-func (Heuristic) CountPrompt(_ context.Context, _ string, body []byte) (uint64, error) {
-	return protocol.EstimatePromptTokens(body)
+func (Heuristic) CountPrompt(_ context.Context, _, api string, body []byte) (uint64, error) {
+	return protocol.EstimatePromptTokens(api, body)
 }
 
 // CountText implements Counter.
@@ -56,7 +57,7 @@ func (Heuristic) CountText(_ context.Context, _ string, text string) (uint64, er
 }
 
 // Exact implements Counter.
-func (Heuristic) Exact(string) bool { return false }
+func (Heuristic) Exact(string, string) bool { return false }
 
 // Allowance is the most usage a verifier accepts for counted tokens: tight for
 // an exact count (template and special-token slack only), loose for an estimate.
@@ -89,19 +90,20 @@ func (r *Reference) fallback() Counter {
 	return Heuristic{}
 }
 
-// Exact implements Counter.
-func (r *Reference) Exact(model string) bool {
-	if _, ok := r.Servers[model]; ok {
+// Exact implements Counter. A reference server counts chat requests; the
+// others are estimated.
+func (r *Reference) Exact(model, api string) bool {
+	if _, ok := r.Servers[model]; ok && protocol.NormalAPI(api) == protocol.APIChat {
 		return true
 	}
-	return r.fallback().Exact(model)
+	return r.fallback().Exact(model, api)
 }
 
 // CountPrompt implements Counter.
-func (r *Reference) CountPrompt(ctx context.Context, model string, body []byte) (uint64, error) {
+func (r *Reference) CountPrompt(ctx context.Context, model, api string, body []byte) (uint64, error) {
 	srv, ok := r.Servers[model]
-	if !ok {
-		return r.fallback().CountPrompt(ctx, model, body)
+	if !ok || protocol.NormalAPI(api) != protocol.APIChat {
+		return r.fallback().CountPrompt(ctx, model, api, body)
 	}
 	var in map[string]json.RawMessage
 	if err := json.Unmarshal(body, &in); err != nil {

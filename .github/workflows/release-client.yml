@@ -129,6 +129,7 @@ jobs:
           go-version: ${{ needs.prepare.outputs.go }}
           cache-dependency-path: go.sum
       - run: scripts/build/build-cli.sh prod all
+      - run: scripts/build/build-relay.sh
       - if: needs.prepare.outputs.dev_cli == 'true'
         run: scripts/build/build-cli.sh dev all
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -137,6 +138,7 @@ jobs:
           path: |
             dist/sharetoken-cli-*.tar.gz
             dist/sharetoken-cli-*.zip
+            dist/sharetoken-relay-*.tar.gz
           if-no-files-found: error
           retention-days: 7
 

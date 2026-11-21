@@ -19,7 +19,7 @@ var i18nBundles = map[string]struct {
 	langs []string
 }{
 	"site": {"web", []string{"web/index.html", "web/site.js", "web/docs.html", "web/docs.js", "web/changelog.html", "web/changelog.js"}, nil},
-	"app":  {"web", []string{"web/app.html", "web/common.js", "web/user.js"}, nil},
+	"app":  {"web", []string{"web/app.html", "web/common.js", "web/user.js", "web/invite.html", "web/invite.js"}, nil},
 	// The desktop client is in English and Simplified Chinese only (index.html: data-langs).
 	"client": {"../client/ui", []string{"../client/ui/index.html", "../client/ui/app.js"}, []string{"en"}},
 }

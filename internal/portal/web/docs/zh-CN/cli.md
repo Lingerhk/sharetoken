@@ -76,6 +76,23 @@
 
 显示各中继的延迟。`-measure` 立即重新测速。需要客户端正在运行。
 
+| 命令 | 含义 |
+|---|---|
+| `relays` | 每个中继、延迟，以及本客户端用它做什么 |
+| `relays -measure` | 先重新测速 |
+| `relays add <地址>` | 经自己的中继共享，见[自建中继](/docs/relay) |
+| `relays remove <地址或 ID>` | 不再使用它 |
+
+### tailnet {#tailnet}
+
+直连隧道（见[直连隧道](/docs/running#tailnet)）。正在运行的客户端会立即按修改生效。
+
+| 命令 | 含义 |
+|---|---|
+| `tailnet` | 是否打开、本机作为卖家经哪个 DERP 区域可达、每条隧道的路径和传输 |
+| `tailnet on` | 打开。`-wait <毫秒>`：对新节点的请求最多等这么久隧道（默认 0，最大 10000）；`-derp-map <URL 或文件>`：自己的 DERP 表；`-transport quic\|tcp`：本机连卖家时隧道里跑什么（默认 `quic`） |
+| `tailnet off` | 关闭，回到中继和打洞 |
+
 ### apikey {#apikey}
 
 本地端点的 API key（见[调用模型](/docs/use-models#endpoint)）。正在运行的客户端会立即按修改生效。
@@ -107,8 +124,10 @@
 | 命令 | 作用 |
 |---|---|
 | `pair` | 显示你和谁配对，以及你的配对码 |
-| `pair code [-label L] [-ttl 24h] [-uses N]` | 卖家：生成一个给买家用的配对码。默认 24 小时有效（最长 30 天），不限买家数量 |
-| `pair join <code>` | 买家：和生成这个配对码的卖家配对 |
+| `pair code [-label L] [-ttl 24h] [-uses N] [-approve]` | 卖家：生成一个给买家用的配对码，同时打印它的邀请链接。默认 24 小时有效（最长 7 天），不限买家数量；`-approve`：每个买家要你确认才生效 |
+| `pair join <code\|link>` | 买家：用配对码或邀请链接，和生成它的卖家配对 |
+| `pair approve <request id>`、`pair reject <request id>` | 卖家：确认或拒绝一个等待你确认的买家 |
+| `pair withdraw <request id>` | 买家：撤回自己等待确认的申请 |
 | `pair leave <seller id>` | 买家：解除和某个卖家的配对 |
 | `pair rm <buyer id>` | 卖家：移除一个买家 |
 | `pair revoke <code id>` | 卖家：让配对码不再接纳新买家，已配对的买家不受影响 |
@@ -116,7 +135,8 @@
 
 ```bash
 {{exe}} pair code -label team -ttl 72h
-{{exe}} pair join ABCD-EFGH-IJKL-MNOP
+{{exe}} pair join ABC-DEF
+{{exe}} pair join https://sharetoken.app/p#7kQm3xV9
 ```
 
 命令里的 id 就是 `pair` 列出的编号。详见[和买家配对](/docs/share#pairing)。
@@ -128,19 +148,35 @@
 | 命令 | 作用 |
 |---|---|
 | `partner` | 显示伙伴、最近 24 小时互相用了多少 tokens、未使用的邀请码和你的设置 |
-| `partner invite [-ttl 24h]` | 生成一个邀请码，只能一个人用。默认 24 小时有效（最长 168 小时） |
-| `partner join <code>` | 成为生成这个邀请码的人的伙伴 |
+| `partner invite [-ttl 24h] [-approve]` | 生成一个邀请码和它的邀请链接，只能一个人用。默认 24 小时有效（最长 168 小时）；`-approve`：对方要你确认才生效 |
+| `partner join <code\|link>` | 用邀请码或邀请链接，成为生成它的人的伙伴 |
+| `partner approve <request id>`、`partner reject <request id>` | 确认或拒绝一个等待你确认的人 |
+| `partner withdraw <request id>` | 撤回自己等待确认的申请 |
 | `partner rm <user id>` | 和某个伙伴解除共享 |
 | `partner revoke <invite id>` | 撤销一个未使用的邀请码 |
 | `partner set [-only on\|off] [-limit N] [-share P]` | `-only`：只用伙伴的节点；`-limit`：每 24 小时最多给所有伙伴的 tokens（0 不限）；`-share`：伙伴最多占用你每个节点并发的百分比（0 暂停） |
 
 ```bash
 {{exe}} partner invite
-{{exe}} partner join ABCD-EFGH-IJKL-MNOP
+{{exe}} partner join ABC-DEF
 {{exe}} partner set -limit 200000 -share 50
 ```
 
 详见[和伙伴互相共享](/docs/share#partners)。
+
+## 邀请链接 {#invite-links}
+
+配对码和伙伴邀请码都有一个邀请链接，形如 `https://sharetoken.app/p#…`（配对）或 `https://sharetoken.app/s#…`（共享伙伴），生成时会一起打印出来。收到链接的人不需要分清是哪一种：
+
+| 命令 | 作用 |
+|---|---|
+| `accept <link\|code>` | 接受一个邀请链接，或任意一种邀请码 |
+
+```bash
+{{exe}} accept https://sharetoken.app/s#Hx82LpQe
+```
+
+链接属于哪个门户，就只能在登录那个门户的客户端里接受。详见[邀请链接](/docs/share#invite-links)。
 
 ## 编程助手 {#agents}
 
@@ -159,6 +195,26 @@
 ```
 
 同名但不是客户端写的文件不会被覆盖或删除，除非加 `-force`。已打开的助手会话重启后才会加载。详见[在编程助手中使用](/docs/agents)。
+
+## 预热 {#warmup}
+
+Claude 和 ChatGPT（Codex）订阅的 5 小时窗口从重置后的第一次请求开始计时。客户端可以在你设定的时间发一条极小的请求，让窗口提前开始，工作时更早重置：在 6:00 预热，窗口是 6–11、11–16、16–21；9:00 才开始用，一天只有两个窗口。本机的 Claude Code 和 Codex（通过它们自己的命令）以及你出售的 Claude、ChatGPT 登录都可以预热。不经过 sharetoken 网络。
+
+| 命令 | 作用 |
+|---|---|
+| `warmup` | 所有可以预热的账号、设定的时间、最近一次预热和用量窗口 |
+| `warmup set claude\|codex [-times 06:00,11:05] [-on-reset off\|week\|all] [-off]` | 本机的 Claude Code 或 Codex |
+| `provider warmup <名字> [-times 06:00] [-on-reset off\|week\|all] [-off]` | 你出售的 Claude 或 ChatGPT 登录 |
+| `warmup run [claude\|codex\|provider:<名字>]` | 立即预热（不指定就预热所有已设置的） |
+| `warmup pause`、`warmup resume` | 暂停所有自动预热，或恢复 |
+
+```bash
+{{exe}} warmup set claude -times 06:00,11:05
+{{exe}} warmup set codex -on-reset all
+{{exe}} warmup run claude
+```
+
+到点时只有 5 小时窗口没在运行才会发请求；错过 1 小时以上（比如电脑在睡眠）就不补发。`-on-reset week` 表示周窗口一重置就启动，`all` 表示 5 小时窗口也一样。窗口已用完或正在使用超额额度时不发送。客户端运行时才会预热（桌面应用，或 `up`）；时间按本机时区。桌面应用的“设置 → 预热”里有同样的设置。
 
 ## 其他 {#other}
 

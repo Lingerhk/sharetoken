@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"sharetoken/internal/node"
 )
 
 // httpClient has no overall timeout: streams run long. The job's context
@@ -21,40 +23,110 @@ const maxSSELine = 4 << 20
 // A non-200 answer is a *node.StatusError, which the node sorts into the
 // buyer's fault (400, 413, 422) or its own.
 func postSSE(ctx context.Context, url string, header http.Header, body []byte, on func(data []byte) error) error {
+	_, err := postSSEDone(ctx, url, header, body, on)
+	return err
+}
+
+// postSSEDone is postSSE that also tells whether the answer ended with the
+// "[DONE]" line chat servers close a stream with.
+func postSSEDone(ctx context.Context, url string, header http.Header, body []byte, on func(data []byte) error) (done bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header = header.Clone()
 	req.Header.Set("Content-Type", "application/json")
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "text/event-stream")
 	}
+	// An idempotency key with no value is never sent, but lets Go's transport
+	// send the request again on a new connection when the reused keep-alive
+	// one turns out closed by the server before the request went out
+	// ("EOF", "broken pipe"): the server never had it (after magpie's
+	// replayable).
+	req.Header["X-Idempotency-Key"] = nil
 	resp, err := clientForContext(ctx).Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return responseStatus(resp, string(msg))
+		return false, responseStatus(resp, string(msg))
+	}
+	// A 200 that is one JSON document, not a stream: an error some servers
+	// send this way, or an answer from a server that did not stream. Either
+	// is told as it is rather than as a stream that ended early.
+	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "application/json") {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if e := bareError(resp, msg); e != nil {
+			return false, e
+		}
+		return false, &node.StatusError{Status: http.StatusBadGateway, Body: "the model server answered with JSON, not a stream: " + clip(strings.TrimSpace(string(msg)), 300)}
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), maxSSELine)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if !bytes.HasPrefix(line, []byte("data:")) {
+			// An error written as a bare JSON line between the events
+			// (Code Assist does), not as data: it would otherwise be skipped
+			// and the job fail as "the stream ended" (magpie: sse_bare.go).
+			if bytes.HasPrefix(bytes.TrimSpace(line), []byte("{")) {
+				if e := bareError(resp, line); e != nil {
+					return done, e
+				}
+			}
 			continue
 		}
 		data := bytes.TrimSpace(line[len("data:"):])
-		if len(data) == 0 || string(data) == "[DONE]" {
+		if len(data) == 0 {
+			continue
+		}
+		if string(data) == "[DONE]" {
+			done = true
 			continue
 		}
 		if err := on(data); err != nil {
-			return err
+			return done, err
 		}
 	}
-	return sc.Err()
+	return done, sc.Err()
+}
+
+// bareError reads a JSON error object ({"error": {...}} or {"error": "…"})
+// as the model server's refusal: its status from the error's numeric code
+// (Google's), else from its type, else 502. nil when b is no error.
+func bareError(resp *http.Response, b []byte) *node.StatusError {
+	var v struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(b), &v) != nil || len(v.Error) == 0 || string(v.Error) == "null" {
+		return nil
+	}
+	var obj struct {
+		Code    any    `json:"code"`
+		Type    string `json:"type"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	status := http.StatusBadGateway
+	if json.Unmarshal(v.Error, &obj) == nil {
+		if c, ok := obj.Code.(float64); ok && c >= 400 && c < 600 {
+			status = int(c)
+		} else if strings.Contains(obj.Type, "invalid_request") || obj.Status == "INVALID_ARGUMENT" {
+			status = http.StatusBadRequest
+		} else if strings.Contains(obj.Type, "rate_limit") || obj.Status == "RESOURCE_EXHAUSTED" {
+			status = http.StatusTooManyRequests
+		} else if strings.Contains(obj.Type, "overloaded") || obj.Status == "UNAVAILABLE" {
+			status = http.StatusServiceUnavailable
+		}
+	}
+	e := &node.StatusError{Status: status, Body: clip(strings.TrimSpace(string(b)), 1000)}
+	if status == http.StatusTooManyRequests {
+		e.RetryAt = limitReset(resp.Header, string(b), time.Now())
+	}
+	return e
 }
 
 // getJSON fetches url and decodes the JSON answer.
@@ -166,6 +238,12 @@ func (c *chunks) toolArgs(index int, args string) error {
 // finish closes the answer: the finish reason, then the token counts in a
 // chunk of their own, as OpenAI sends them with stream_options.include_usage.
 func (c *chunks) finish(reason string, prompt, completion uint64) error {
+	return c.finishDetailed(reason, prompt, completion, 0, 0)
+}
+
+// finishDetailed is finish with the prompt tokens read from a cache and the
+// completion tokens spent on reasoning.
+func (c *chunks) finishDetailed(reason string, prompt, completion, cached, reasoning uint64) error {
 	if reason == "" {
 		reason = "stop"
 	}
@@ -175,5 +253,12 @@ func (c *chunks) finish(reason string, prompt, completion uint64) error {
 	if err := c.send(nil, reason, nil); err != nil {
 		return err
 	}
-	return c.send(nil, "", map[string]any{"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion})
+	usage := map[string]any{"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
+	if cached > 0 {
+		usage["prompt_tokens_details"] = map[string]any{"cached_tokens": cached}
+	}
+	if reasoning > 0 {
+		usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": reasoning}
+	}
+	return c.send(nil, "", usage)
 }

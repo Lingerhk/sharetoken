@@ -20,6 +20,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -38,6 +39,7 @@ import (
 
 	"sharetoken/internal/accounts"
 	"sharetoken/internal/agentskill"
+	"sharetoken/internal/buyer"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/client"
 	"sharetoken/internal/node"
@@ -62,6 +64,18 @@ While running:
   status                                connection, relays, sharing
   models                                models on the network, nodes and prices
   relays [-measure]                     relay round-trip times; -measure re-measures now
+  relays add <address>                  share through a relay of your own (a private relay)
+  relays remove <address|peer id>       stop using it
+  tailnet                               the direct path over tunnels: whether it is on, this node's relay region,
+                                        and each tunnel's path (direct, or through which DERP relay)
+  tailnet on [-derp-map URL|FILE] [-wait MS] [-transport quic|tcp]
+                                        reach sellers, and be reached as a seller, through WireGuard tunnels that
+                                        go direct where the NATs allow (Tailscale's data plane; no account, no
+                                        system VPN). Both ends need it on. -derp-map: the relays tunnels start
+                                        through (default: tailcat's public ones); -wait: how long a request waits
+                                        for a new tunnel before it uses the relay (default 0); -transport: what
+                                        a connection through a tunnel runs on (default quic)
+  tailnet off                           back to the relays and libp2p's own direct connections
 
 Account (portal):
   balance                               credits and token usage
@@ -92,13 +106,19 @@ Hosted APIs to share (kept in providers.json, apart from the configuration):
   provider login anthropic [-mode full|inference] [-session-key] [-profile standard|claude-code]
   provider test <name> [-model M]       send one small request through it
   provider on | off <name>              sell its models, or stop
+  provider warmup <name> [-times 06:00,11:05] [-on-reset off|week|all] [-model M] [-off]
+                                        a Claude or ChatGPT login: start its usage windows at times of day,
+                                        or as they reset, with one tiny request (see warmup)
   provider rm <name>
 
 Pairing (a buyer that pairs with a seller buys only from the sellers it is paired with):
   pair                                  who you are paired with, and your pairing codes
-  pair code [-label L] [-ttl 24h] [-uses N]
-                                        seller: make a code to hand to your buyers (any number of them, or -uses N)
-  pair join <code>                      buyer: pair with the seller that made the code
+  pair code [-label L] [-ttl 24h] [-uses N] [-approve]
+                                        seller: make a code and its link to hand to your buyers (any number of them,
+                                        or -uses N); -approve: each pairing waits for you to approve it
+  pair join <code|link>                 buyer: pair with the seller that made the code or link
+  pair approve | reject <request id>    seller: approve or reject a buyer waiting for your approval
+  pair withdraw <request id>            buyer: withdraw your own request
   pair leave <seller id>                buyer: end the pairing with a seller
   pair rm <buyer id>                    seller: remove one of your buyers
   pair revoke <code id>                 seller: stop a code from admitting more buyers
@@ -106,8 +126,12 @@ Pairing (a buyer that pairs with a seller buys only from the sellers it is paire
 
 Share partners (two users use each other's nodes for free, before the market):
   partner                               your partners, open invites, settings and the tokens shared in the last 24 hours
-  partner invite [-ttl 24h]             make an invite for one person (at most 168h)
-  partner join <code>                   become the partner of whoever made the invite
+  partner invite [-ttl 24h] [-approve]  make an invite and its link for one person (at most 168h);
+                                        -approve: joining waits for you to approve it
+  partner join <code|link>              become the partner of whoever made the invite
+  partner approve | reject <request id> approve or reject someone waiting for your approval
+  partner withdraw <request id>         withdraw your own request
+  accept <link|code>                    accept an invite link (https://<portal>/p#… or /s#…) or code of either kind
   partner rm <user id>                  stop sharing with a partner
   partner revoke <invite id>            withdraw an open invite
   partner set [-only on|off] [-limit N] [-share P]
@@ -128,6 +152,14 @@ Coding agents (Claude Code, Codex):
                                         default: every agent found. Run it again after an update
   skill uninstall [-agent …] [-force]   remove it again
   skill show                            print the skill
+
+Warm-up (start a Claude or ChatGPT 5-hour window early, so it resets while you work):
+  warmup                                every account there is to warm up, its times and what was done
+  warmup set claude|codex [-times 06:00,11:05] [-on-reset off|week|all] [-model M] [-binary PATH] [-off]
+                                        the Claude Code or Codex of this machine, through its own CLI
+  warmup run [claude|codex|provider:<name>]
+                                        warm up now (default: every one that is set)
+  warmup pause | resume                 stop every automatic warm-up, or go on
 
   config                                show the configuration file
   version [--check]                     show what this client was built for; --check asks the portal for a newer release
@@ -173,6 +205,8 @@ func main() {
 		run = c.status
 	case "models":
 		run = c.models
+	case "tailnet":
+		run = c.tailnet
 	case "relays":
 		run = c.relays
 	case "balance", "account":
@@ -187,10 +221,14 @@ func main() {
 		run = c.pair
 	case "partner":
 		run = c.partner
+	case "accept":
+		run = c.accept
 	case "apikey":
 		run = c.apikey
 	case "skill":
 		run = c.skill
+	case "warmup":
+		run = c.warmup
 	case "config":
 		run = c.showConfig
 	case "upgrade":
@@ -469,29 +507,39 @@ func (c *cmdCtx) pair(args []string) error {
 	}
 	switch sub {
 	case "", "ls", "list":
-		return showPairing(cx, pc)
+		return showPairing(cx, pc, c.cfg.Portal)
 	case "code", "new":
 		fs := flag.NewFlagSet("pair code", flag.ExitOnError)
 		label := fs.String("label", "", "a note for yourself: who the code is for")
-		ttl := fs.Duration("ttl", 0, "how long the code can be used (default 24h, at most 720h)")
+		ttl := fs.Duration("ttl", 0, "how long the code can be used (default 24h, at most 168h)")
 		uses := fs.Int64("uses", 0, "how many buyers it admits (default: any number)")
+		approve := fs.Bool("approve", false, "each pairing waits for you to approve it")
 		_ = fs.Parse(args)
-		code, err := pc.NewPairingCode(cx, *label, ttl.Hours(), *uses)
+		code, err := pc.NewPairingCode(cx, *label, ttl.Hours(), *uses, *approve)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("pairing code  %s\n", code.Code)
+		fmt.Printf("link          %s\n", accounts.InviteLink(c.cfg.Portal, accounts.KindPair, code.LinkToken))
 		fmt.Printf("  good until %s, for %s\n", time.Unix(0, code.ExpiresAt).Format("2006-01-02 15:04"), usesText(code.MaxUses, 0))
-		fmt.Println("  a buyer runs: sharetoken pair join " + code.Code)
+		fmt.Println("  send the link (it works before the app is installed), or a buyer runs: sharetoken pair join " + code.Code)
+		if code.Approval {
+			fmt.Println("  each buyer waits for your approval: `sharetoken pair` lists them, `sharetoken pair approve <id>` lets one in")
+		}
 		fmt.Println("  from then on that buyer's requests go only to the sellers it is paired with")
 		return nil
 	case "join", "redeem":
 		if len(args) != 1 {
-			return errors.New("usage: sharetoken pair join <code>")
+			return errors.New("usage: sharetoken pair join <code|link>")
 		}
 		seller, err := pc.RedeemPairingCode(cx, args[0])
 		if err != nil {
 			return err
+		}
+		if seller.Pending {
+			fmt.Printf("asked seller %s (id %d) to pair: it waits for their approval\n", seller.Username, seller.ID)
+			fmt.Println("  `sharetoken pair` shows it; you are paired once they approve")
+			return nil
 		}
 		fmt.Printf("paired with seller %s (id %d)\n", seller.Username, seller.ID)
 		fmt.Println("  this account now buys only from the sellers it is paired with; `sharetoken pair leave " + fmt.Sprint(seller.ID) + "` ends it")
@@ -526,6 +574,12 @@ func (c *cmdCtx) pair(args []string) error {
 		}
 		fmt.Println("revoked code", n, "(the buyers already paired with it stay)")
 		return nil
+	case "approve", "reject", "withdraw":
+		n, err := id("request id")
+		if err != nil {
+			return err
+		}
+		return requestAction(cx, pc, "pairing", sub, n)
 	case "private":
 		if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
 			return errors.New("usage: sharetoken pair private on|off")
@@ -540,7 +594,97 @@ func (c *cmdCtx) pair(args []string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("unknown: pair %s (pair | pair code | pair join <code> | pair leave <id> | pair rm <id> | pair revoke <id> | pair private on|off)", sub)
+	return fmt.Errorf("unknown: pair %s (pair | pair code | pair join <code|link> | pair leave <id> | pair rm <id> | pair revoke <id> | pair approve|reject|withdraw <id> | pair private on|off)", sub)
+}
+
+// requestAction approves, rejects or withdraws a request for approval; area
+// is "pairing" or "sharing".
+func requestAction(cx context.Context, pc *client.PortalClient, area, action string, id int64) error {
+	switch action {
+	case "approve":
+		r, err := pc.ApproveRequest(cx, area, id)
+		if err != nil {
+			return err
+		}
+		if area == "pairing" {
+			fmt.Printf("approved: %s is now paired with you as a buyer\n", r.Username)
+		} else {
+			fmt.Printf("approved: %s is now your share partner\n", r.Username)
+		}
+		return nil
+	case "reject":
+		if err := pc.RejectRequest(cx, area, id); err != nil {
+			return err
+		}
+		fmt.Println("rejected request", id)
+		return nil
+	}
+	if err := pc.WithdrawRequest(cx, area, id); err != nil {
+		return err
+	}
+	fmt.Println("withdrew request", id)
+	return nil
+}
+
+// printRequests lists requests waiting for the user's approval and the user's
+// own waiting for someone else's.
+func printRequests(requests, waiting []accounts.InviteRequest, cmd string) {
+	day := func(ns int64) string { return time.Unix(0, ns).Format("2006-01-02 15:04") }
+	if len(requests) > 0 {
+		fmt.Printf("\nwaiting for your approval (sharetoken %s approve|reject <id>):\n", cmd)
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tACCOUNT\tASKED\tLABEL")
+		for _, r := range requests {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\n", r.ID, r.Username, day(r.CreatedAt), r.Label)
+		}
+		_ = tw.Flush()
+	}
+	if len(waiting) > 0 {
+		fmt.Printf("\nyour requests waiting for approval (sharetoken %s withdraw <id>):\n", cmd)
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  ID\tOF\tASKED")
+		for _, r := range waiting {
+			fmt.Fprintf(tw, "  %d\t%s\t%s\n", r.ID, r.Username, day(r.CreatedAt))
+		}
+		_ = tw.Flush()
+	}
+}
+
+// accept takes an invite link or code of either kind.
+func (c *cmdCtx) accept(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: sharetoken accept <link|code>")
+	}
+	pc, err := c.portal()
+	if err != nil {
+		return err
+	}
+	cx, cancel := ctx()
+	defer cancel()
+	if ref := accounts.ParseInvite(args[0]); ref.Host != "" && !strings.EqualFold(ref.Host, hostOfURL(c.cfg.Portal)) {
+		return fmt.Errorf("this link is from %s, but this client uses %s", ref.Host, c.cfg.Portal)
+	}
+	r, err := pc.AcceptInvite(cx, args[0])
+	if err != nil {
+		return err
+	}
+	switch {
+	case r.Pending:
+		fmt.Printf("asked %s (id %d): it waits for their approval\n", r.User, r.ID)
+	case r.Kind == accounts.KindShare:
+		fmt.Printf("now sharing with %s (id %d): each of you uses the other's nodes first, for free\n", r.User, r.ID)
+	default:
+		fmt.Printf("paired with seller %s (id %d): this account now buys only from the sellers it is paired with\n", r.User, r.ID)
+	}
+	return nil
+}
+
+func hostOfURL(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(u.Host, ":443"), ":80")
 }
 
 func usesText(maxUses, used int64) string {
@@ -550,7 +694,7 @@ func usesText(maxUses, used int64) string {
 	return fmt.Sprintf("%d of %d buyers", used, maxUses)
 }
 
-func showPairing(cx context.Context, pc *client.PortalClient) error {
+func showPairing(cx context.Context, pc *client.PortalClient, base string) error {
 	v, err := pc.Pairing(cx)
 	if err != nil {
 		return err
@@ -588,12 +732,20 @@ func showPairing(cx context.Context, pc *client.PortalClient) error {
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "  ID\tCODE\tGOOD UNTIL\tUSED BY\tLABEL")
 		for _, c := range v.Codes {
-			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\t%s\n", c.ID, c.Code, day(c.ExpiresAt), usesText(c.MaxUses, c.Used), c.Label)
+			label := c.Label
+			if c.Approval {
+				label = strings.TrimSpace(label + " (approval)")
+			}
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\t%s\n", c.ID, c.Code, day(c.ExpiresAt), usesText(c.MaxUses, c.Used), label)
+			if c.LinkToken != "" {
+				fmt.Fprintf(tw, "  \t%s\t\t\t\n", accounts.InviteLink(base, accounts.KindPair, c.LinkToken))
+			}
 		}
 		_ = tw.Flush()
 	} else {
 		fmt.Println("\nno pairing codes; `sharetoken pair code` makes one")
 	}
+	printRequests(v.Requests, v.Waiting, "pair")
 	return nil
 }
 
@@ -622,27 +774,36 @@ func (c *cmdCtx) partner(args []string) error {
 	}
 	switch sub {
 	case "", "ls", "list":
-		return showPartners(cx, pc)
+		return showPartners(cx, pc, c.cfg.Portal)
 	case "invite", "new":
 		fs := flag.NewFlagSet("partner invite", flag.ExitOnError)
 		ttl := fs.Duration("ttl", 0, "how long the invite can be used (default 24h, at most 168h)")
+		approve := fs.Bool("approve", false, "joining waits for you to approve it")
 		_ = fs.Parse(args)
-		inv, err := pc.NewShareInvite(cx, ttl.Hours())
+		inv, err := pc.NewShareInvite(cx, ttl.Hours(), *approve)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("share invite  %s\n", inv.Code)
+		fmt.Printf("link          %s\n", accounts.InviteLink(c.cfg.Portal, accounts.KindShare, inv.LinkToken))
 		fmt.Printf("  good until %s, for one person\n", time.Unix(0, inv.ExpiresAt).Format("2006-01-02 15:04"))
-		fmt.Println("  they run: sharetoken partner join " + inv.Code)
+		fmt.Println("  send the link (it works before the app is installed), or they run: sharetoken partner join " + inv.Code)
+		if inv.Approval {
+			fmt.Println("  joining waits for your approval: `sharetoken partner` lists it, `sharetoken partner approve <id>` lets them in")
+		}
 		fmt.Println("  from then on each of you uses the other's nodes first, for free")
 		return nil
 	case "join":
 		if len(args) != 1 {
-			return errors.New("usage: sharetoken partner join <code>")
+			return errors.New("usage: sharetoken partner join <code|link>")
 		}
 		p, err := pc.JoinShare(cx, args[0])
 		if err != nil {
 			return err
+		}
+		if p.Pending {
+			fmt.Printf("asked %s (id %d) to share: it waits for their approval\n", p.Username, p.ID)
+			return nil
 		}
 		fmt.Printf("now sharing with %s (id %d)\n", p.Username, p.ID)
 		fmt.Println("  each of you uses the other's nodes first, for free; `sharetoken partner rm " + fmt.Sprint(p.ID) + "` ends it")
@@ -667,6 +828,12 @@ func (c *cmdCtx) partner(args []string) error {
 		}
 		fmt.Println("withdrew invite", n)
 		return nil
+	case "approve", "reject", "withdraw":
+		n, err := id("request id")
+		if err != nil {
+			return err
+		}
+		return requestAction(cx, pc, "sharing", sub, n)
 	case "set":
 		v, err := pc.Sharing(cx)
 		if err != nil {
@@ -694,7 +861,7 @@ func (c *cmdCtx) partner(args []string) error {
 		printShareSettings(st)
 		return nil
 	}
-	return fmt.Errorf("unknown: partner %s (partner | partner invite | partner join <code> | partner rm <id> | partner revoke <id> | partner set)", sub)
+	return fmt.Errorf("unknown: partner %s (partner | partner invite | partner join <code|link> | partner rm <id> | partner revoke <id> | partner approve|reject|withdraw <id> | partner set)", sub)
 }
 
 func printShareSettings(st accounts.ShareSettings) {
@@ -715,7 +882,7 @@ func printShareSettings(st accounts.ShareSettings) {
 	}
 }
 
-func showPartners(cx context.Context, pc *client.PortalClient) error {
+func showPartners(cx context.Context, pc *client.PortalClient, base string) error {
 	v, err := pc.Sharing(cx)
 	if err != nil {
 		return err
@@ -744,12 +911,20 @@ func showPartners(cx context.Context, pc *client.PortalClient) error {
 	if len(v.Invites) > 0 {
 		fmt.Println("\nopen invites:")
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "  ID\tCODE\tGOOD UNTIL")
+		fmt.Fprintln(tw, "  ID\tCODE\tGOOD UNTIL\tLINK")
 		for _, inv := range v.Invites {
-			fmt.Fprintf(tw, "  %d\t%s\t%s\n", inv.ID, inv.Code, day(inv.ExpiresAt))
+			link := ""
+			if inv.LinkToken != "" {
+				link = accounts.InviteLink(base, accounts.KindShare, inv.LinkToken)
+			}
+			if inv.Approval {
+				link += " (approval)"
+			}
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\n", inv.ID, inv.Code, day(inv.ExpiresAt), link)
 		}
 		_ = tw.Flush()
 	}
+	printRequests(v.Requests, v.Waiting, "partner")
 	return nil
 }
 
@@ -911,6 +1086,9 @@ func (c *cmdCtx) status([]string) error {
 	} else {
 		fmt.Println("not sharing")
 	}
+	if st.Tailnet != nil {
+		printTailnet(*st.Tailnet)
+	}
 	for _, w := range st.Warnings {
 		fmt.Println("warning:", w)
 	}
@@ -998,6 +1176,11 @@ func printRelays(rs []client.RelayView) {
 			rtt = rtt[:40] + "…"
 		}
 		use := ""
+		if r.Private {
+			// Never carries coordinator traffic, so COORD says nothing of it.
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t-\t%s\n", "private", first(relaySummary(r.Addr)), second(relaySummary(r.Addr)), rtt, map[bool]string{true: "sharing"}[r.Reserved])
+			continue
+		}
 		if r.Current {
 			use = "coordinator"
 		}
@@ -1071,7 +1254,22 @@ func cmpOr(a, b string) string {
 	return b
 }
 
+func first(a, _ string) string  { return a }
+func second(_, b string) string { return b }
+
 func (c *cmdCtx) relays(args []string) error {
+	if len(args) > 0 && (args[0] == "add" || args[0] == "remove") {
+		if len(args) != 2 {
+			return fmt.Errorf("usage: sharetoken relays %s <address>", args[0])
+		}
+		method := map[string]string{"add": http.MethodPost, "remove": http.MethodDelete}[args[0]]
+		var rs []client.RelayView
+		if err := c.daemon(method, "/api/v1/relays/private", map[string]string{"addr": args[1]}, &rs); err != nil {
+			return err
+		}
+		printRelays(rs)
+		return nil
+	}
 	fs := flag.NewFlagSet("relays", flag.ExitOnError)
 	measure := fs.Bool("measure", false, "re-measure now")
 	_ = fs.Parse(args)
@@ -1098,12 +1296,130 @@ func (c *cmdCtx) relays(args []string) error {
 	return nil
 }
 
-func (c *cmdCtx) models([]string) error {
+// tailnet shows or changes the direct path over tunnels (client/tailnet.go).
+// The settings are saved first and a running client takes them up at once.
+func (c *cmdCtx) tailnet(args []string) error {
+	if len(args) > 0 {
+		tc := c.cfg.Tailnet
+		switch args[0] {
+		case "on":
+			fs := flag.NewFlagSet("tailnet on", flag.ExitOnError)
+			derp := fs.String("derp-map", tc.DERPMap, "URL or file of the DERP map (empty: tailcat's public relays)")
+			wait := fs.Int("wait", tc.WaitMillis, "milliseconds a request waits for a new tunnel before it uses the relay")
+			proto := fs.String("transport", tc.Transport, "what a connection through a tunnel runs on: quic (the default) or tcp")
+			_ = fs.Parse(args[1:])
+			if fs.NArg() > 0 {
+				return errors.New("usage: sharetoken tailnet on [-derp-map URL|FILE] [-wait MS] [-transport quic|tcp]")
+			}
+			if *proto != "" && *proto != "quic" && *proto != "tcp" {
+				return errors.New("-transport must be quic or tcp")
+			}
+			if *proto == "quic" {
+				*proto = "" // the default is not written down
+			}
+			tc.Transport = *proto
+			if d := *derp; d != "" && !strings.HasPrefix(d, "https://") && !strings.HasPrefix(d, "http://") {
+				abs, err := filepath.Abs(strings.TrimPrefix(d, "file://"))
+				if err != nil {
+					return err
+				}
+				if _, err := os.Stat(abs); err != nil {
+					return fmt.Errorf("DERP map: %w", err)
+				}
+				*derp = abs
+			}
+			tc.Enabled, tc.DERPMap, tc.WaitMillis = true, *derp, *wait
+		case "off":
+			if len(args) != 1 {
+				return errors.New("usage: sharetoken tailnet off")
+			}
+			tc.Enabled = false
+		default:
+			return fmt.Errorf("unknown tailnet command %q (on, off)", args[0])
+		}
+		if tc.WaitMillis < 0 || tc.WaitMillis > client.MaxTailnetWaitMillis {
+			return fmt.Errorf("-wait must be between 0 and %d", client.MaxTailnetWaitMillis)
+		}
+		c.cfg.Tailnet = tc
+		if err := c.save(); err != nil {
+			return err
+		}
+		if err := c.daemon(http.MethodPost, "/api/v1/tailnet/reload", nil, nil); err != nil && !strings.Contains(err.Error(), "not running") {
+			return fmt.Errorf("saved, but the running client refused it: %w", err)
+		}
+	}
+	var st client.TailnetStatus
+	if err := c.daemon(http.MethodGet, "/api/v1/tailnet", nil, &st); err != nil {
+		if !strings.Contains(err.Error(), "not running") {
+			return err
+		}
+		state := "off"
+		if c.cfg.Tailnet.Enabled {
+			state = "on"
+		}
+		fmt.Printf("tailnet %s (the client is not running)\n", state)
+		return nil
+	}
+	printTailnet(st)
+	return nil
+}
+
+func printTailnet(st client.TailnetStatus) {
+	if !st.Enabled {
+		fmt.Println("tailnet off (sharetoken tailnet on)")
+		return
+	}
+	fmt.Printf("tailnet on (%s), relays from %s", st.Proto, st.DERPMap)
+	if st.WaitMillis > 0 {
+		fmt.Printf(", a request waits up to %d ms for a new tunnel", st.WaitMillis)
+	}
+	fmt.Println()
+	switch {
+	case st.Serving:
+		fmt.Printf("   reachable as a seller through DERP region %s\n", st.Region)
+	case st.Error != "":
+		fmt.Println("   not reachable as a seller:", st.Error)
+	default:
+		fmt.Println("   not serving (sharing is off, or the tunnel is starting)")
+	}
+	if len(st.System) > 0 {
+		fmt.Printf("   this machine is on a Tailscale network (%s): a seller announces that address too\n", strings.Join(st.System, ", "))
+	}
+	if len(st.Tunnels) == 0 {
+		fmt.Println("   no tunnels")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "   \tPEER\tPATH\tOVER\tENDPOINT\tRTT\tCONNS\tRX\tTX")
+	for _, t := range st.Tunnels {
+		dir := map[string]string{"out": "to seller", "in": "from buyer"}[t.Dir]
+		rtt := ""
+		if t.Millis > 0 {
+			rtt = fmt.Sprintf("%.1f ms", t.Millis)
+		}
+		conns, rx, tx := "", "", ""
+		if t.Dir == "out" {
+			conns = strconv.Itoa(t.Conns)
+		} else {
+			rx, tx = strconv.FormatInt(t.RxBytes, 10), strconv.FormatInt(t.TxBytes, 10)
+		}
+		fmt.Fprintf(tw, "   %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", dir, short(t.Peer), t.Path, t.Proto, t.Endpoint, rtt, conns, rx, tx)
+	}
+	_ = tw.Flush()
+}
+
+func (c *cmdCtx) models(args []string) error {
+	fs := flag.NewFlagSet("models", flag.ExitOnError)
+	codex := fs.String("codex", "", "write the models as a Codex model catalog to this file (model_catalog_json in ~/.codex/config.toml)")
+	_ = fs.Parse(args)
 	var out struct {
 		Models []protocol.ModelSummary `json:"models"`
 	}
 	if err := c.daemon(http.MethodGet, "/api/v1/models", nil, &out); err != nil {
 		return err
+	}
+	if *codex != "" {
+		return writeCodexCatalog(*codex, out.Models)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "MODEL\tNODES\tTEE\tMIN IN/Mtok\tMIN OUT/Mtok")
@@ -1111,6 +1427,29 @@ func (c *cmdCtx) models([]string) error {
 		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\n", m.Model, m.Nodes, m.AttestedNodes, m.MinPriceIn, m.MinPriceOut)
 	}
 	return tw.Flush()
+}
+
+// writeCodexCatalog writes ms to path as a Codex model catalog and says how
+// to use it. Codex reads the file when it starts, so it is written again
+// when the models change.
+func writeCodexCatalog(path string, ms []protocol.ModelSummary) error {
+	data, err := json.MarshalIndent(buyer.CodexCatalog(ms), "", "  ")
+	if err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	tmp := abs + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, abs); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %d models to %s\nin ~/.codex/config.toml, at the top level:\n  model_catalog_json = %q\n", len(ms), abs, abs)
+	return nil
 }
 
 // ---- sharing ----
@@ -1142,8 +1481,10 @@ func (c *cmdCtx) share(args []string) error {
 		out := fs.Uint64("out", client.DefaultPriceOut, "price per million completion tokens, micro-credits")
 		from := fs.String("provider", "", "the provider whose model this is (default: the local model server)")
 		maxOut := fs.Uint64("max-output", 0, "the model's own limit of output tokens per request, if it refuses the usual one")
+		cacheRead := fs.Int64("cache-read", -1, "price per million prompt tokens read from the prompt cache (default: a tenth of -in)")
+		cacheWrite := fs.Int64("cache-write", -1, "price per million prompt tokens written to the prompt cache (default: 1.25 x -in for Anthropic models, else -in)")
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
-			return errors.New("usage: sharetoken share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-max-output N]")
+			return errors.New("usage: sharetoken share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-cache-read P] [-cache-write P] [-max-output N]")
 		}
 		upstreamModel := args[1]
 		_ = fs.Parse(args[2:])
@@ -1151,6 +1492,14 @@ func (c *cmdCtx) share(args []string) error {
 			*id = upstreamModel
 		}
 		m := node.ModelConfig{ID: *id, UpstreamModel: upstreamModel, PriceInMicros: *in, PriceOutMicros: *out, MaxOutputTokens: *maxOut}
+		if *cacheRead >= 0 {
+			v := uint64(*cacheRead)
+			m.PriceCacheRead = &v
+		}
+		if *cacheWrite >= 0 {
+			v := uint64(*cacheWrite)
+			m.PriceCacheWrite = &v
+		}
 		if *from != "" && *from != "local" {
 			var local []string
 			for _, lm := range sc.Models {
@@ -1432,6 +1781,8 @@ func (c *cmdCtx) provider(args []string) error {
 			fmt.Println(m)
 		}
 		return nil
+	case "warmup":
+		return c.providerWarmup(args[1:])
 	case "test":
 		fs := flag.NewFlagSet("provider test", flag.ExitOnError)
 		model := fs.String("model", "", "the provider's model to ask (default: the first one it sells)")
@@ -1498,7 +1849,7 @@ func addProviderOptionFlags(fs *flag.FlagSet) providerOptionFlags {
 		proxyMode:       fs.String("proxy-mode", "", "environment, direct or custom"),
 		proxyURL:        fs.String("proxy", "", "proxy URL; use SHARETOKEN_PROVIDER_PROXY for a URL containing a password"),
 		profile:         fs.String("profile", "", "Anthropic: standard or claude-code OAuth request profile"),
-		sampling:        fs.String("sampling", "", "Anthropic: strict, or default to ignore unsupported sampling parameters"),
+		sampling:        fs.String("sampling", "", "Anthropic: default (leave out sampling parameters a model refuses), or strict to refuse the request"),
 		tlsProfile:      fs.String("tls-profile", "", "inference TLS transport: native or chrome"),
 		tokenTLSProfile: fs.String("token-tls-profile", "", "login and refresh TLS transport: native or chrome"),
 	}

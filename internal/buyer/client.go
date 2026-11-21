@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net"
@@ -94,9 +95,23 @@ type Client struct {
 	// the client then checks its relay path at once instead of at the next
 	// health check. It must not block.
 	OnCoordinatorUnreachable func()
-	log                      *slog.Logger
-	bg                       sync.WaitGroup // disputes being delivered in the background
-	sticky                   stickyNodes
+	// NodeAddrs, if set, chooses which of a ticket's node addresses may be
+	// dialed (the auditor keeps only circuits through official relays). A
+	// ticket left with none fails.
+	NodeAddrs func([]ma.Multiaddr) []ma.Multiaddr
+	// Direct, if set, is told the node and addresses of every job before
+	// its stream is opened: the client's tailnet uses it to bring up a
+	// direct connection to the node next to the relayed one
+	// (tailnet.Transport.Reach). With mayWait it may hold the job back for
+	// a moment; a job being resumed is not held.
+	Direct func(ctx context.Context, node peer.ID, addrs []ma.Multiaddr, mayWait bool)
+	// ConnPath, if set, names the path of a connection that runs through a
+	// tailnet tunnel ("direct", "derp:<region>"), and "" for any other.
+	ConnPath func(network.Conn) string
+	log      *slog.Logger
+	bg       sync.WaitGroup // disputes being delivered in the background
+	sticky   stickyNodes
+	models   modelsCache
 }
 
 // Attestation is the buyer's TEE trust configuration.
@@ -112,22 +127,37 @@ func New(h host.Host, keys *p2p.Keys, coordinator peer.AddrInfo) *Client {
 		FirstByteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxSilence: 5 * time.Minute, ResumeWindow: 45 * time.Second, log: slog.Default().With("component", "buyer")}
 }
 
-// ChatRequest is one chat-completions call.
+// ChatRequest is one request, in any of the APIs.
 type ChatRequest struct {
-	Model        string // marketplace model ID
-	Body         []byte // OpenAI chat-completions JSON; the node overrides model/stream/max_tokens
+	Model string // marketplace model ID
+	// API is the API Body is in (protocol.APIChat when empty).
+	API string
+	// Header holds the request's HTTP headers the model server may need
+	// (protocol.RequestHeader), lower-case; it travels sealed with Body.
+	Header       protocol.RequestHeader
+	Body         []byte // the request as the tool sent it; the node overrides model, stream and the output limit
 	BudgetMicros uint64 // reserved up front; settlement never exceeds it
 	// MaxTokens, when the request caps its output, lets the coordinator hold
 	// only the worst-case cost of this request instead of the whole budget.
 	MaxTokens   uint64
 	MaxPriceIn  uint64 // optional per-million-token price ceilings
 	MaxPriceOut uint64
-	RequireTEE  bool   // only nodes whose quote passes the client's attestation policy
-	Node        string // optional: only this node
+	RequireTEE  bool // only nodes whose quote passes the client's attestation policy
+	// RequireNative asks for a node whose model server speaks API natively.
+	RequireNative bool
+	// Collect keeps every event payload in the Result (Payloads), for a
+	// caller that answers with one aggregated JSON.
+	Collect bool
+	Node    string // optional: only this node
 	// Session names the conversation the request belongs to (default: its
 	// session_id, else its first messages). The node that served the
 	// session last is asked for again while it is available.
 	Session string
+	// OnProgress, when set, is called for each heartbeat of the node while
+	// the job runs (every few seconds while the model thinks or queues), on
+	// the goroutine that delivers the events: the endpoint keeps its client's
+	// connection alive with it.
+	OnProgress func()
 	// PreferNode is set by Chat from the session; callers leave it empty.
 	PreferNode string
 }
@@ -142,6 +172,8 @@ type Result struct {
 	ToolCalls         []protocol.ToolCall
 	AnthropicThinking []json.RawMessage
 	FinishReason      string
+	Payloads          [][]byte // every event payload, when the request asked to Collect them
+	Sealed            [][]byte // a carried job (Carry): the sealed response frames, in order
 	CostMicros        uint64
 	Verified          bool   // receipt passed every check and was acknowledged
 	Attested          string // allow-list label of the node's verified TEE image, if any
@@ -160,14 +192,18 @@ type Timing struct {
 	Reused      bool    `json:"reused"`        // a connection to the node existed already
 	Relayed     bool    `json:"relayed"`       // the stream ran through a relay
 	Via         string  `json:"via,omitempty"` // that relay's peer ID
-	Preferred   bool    `json:"preferred"`     // the session's previous node served it again
-	Attempts    int     `json:"attempts"`
-	Resumes     int     `json:"resumes"`  // the stream broke and the job went on over a new one
-	Frames      int     `json:"frames"`   // response data frames
-	Progress    int     `json:"progress"` // progress frames (the model was silent)
-	Chunks      int     `json:"chunks"`   // upstream payloads delivered
-	UpBytes     int64   `json:"up_bytes"`
-	DownBytes   int64   `json:"down_bytes"`
+	// Tailnet is set when the stream ran through a tailnet tunnel: "direct"
+	// once its packets go straight between the two machines, "derp:<region>"
+	// while a DERP relay still carries them.
+	Tailnet   string `json:"tailnet,omitempty"`
+	Preferred bool   `json:"preferred"` // the session's previous node served it again
+	Attempts  int    `json:"attempts"`
+	Resumes   int    `json:"resumes"`  // the stream broke and the job went on over a new one
+	Frames    int    `json:"frames"`   // response data frames
+	Progress  int    `json:"progress"` // progress frames (the model was silent)
+	Chunks    int    `json:"chunks"`   // upstream payloads delivered
+	UpBytes   int64  `json:"up_bytes"`
+	DownBytes int64  `json:"down_bytes"`
 }
 
 // Chat runs one request. onChunk, if set, receives each decrypted chunk
@@ -189,13 +225,21 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 		lastRes  *Result
 		rejected int // nodes that refused the request as invalid
 		timing   Timing
+		// asked again: the node whose path broke was asked once more
+		askedAgain bool
 	)
 	start := time.Now()
 	// Compress the request while the coordinator picks a node: sealing needs
 	// the ticket, compressing does not.
 	encoded := make(chan encodedRequest, 1)
+	req.API = protocol.NormalAPI(req.API)
 	go func() {
-		b, err := protocol.EncodeRequest(req.Body)
+		joined, err := protocol.JoinRequest(req.Header, req.Body)
+		if err != nil {
+			encoded <- encodedRequest{nil, err}
+			return
+		}
+		b, err := protocol.EncodeRequest(joined)
 		encoded <- encodedRequest{b, err}
 	}()
 	enc := sync.OnceValue(func() encodedRequest { return <-encoded })
@@ -234,7 +278,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 		if e.err != nil {
 			return nil, e.err
 		}
-		res, delivered, err := c.runJob(ctx, &tr.Ticket, e.plain, req.Body, onChunk, &timing)
+		res, delivered, err := c.runJob(ctx, &tr.Ticket, e.plain, req, onChunk, &timing, nil)
 		timing.Preferred = prefer != "" && tr.Ticket.Node == prefer
 		if delivered || err == nil {
 			c.sticky.put(session, tr.Ticket.Node)
@@ -270,10 +314,57 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 			c.background(func() { c.fileDispute(jobID, "job failed before delivering output: "+err.Error()) })
 		}
 		lastErr, lastRes = err, res
+		// The path to the node broke (a reset stream, a closed connection
+		// or transport): the node itself may be fine, and may be the only
+		// one offering the model. It is asked once more, over a new stream
+		// (a new connection if the old one is gone), after a short pause,
+		// as magpie sends again a request whose connection was closed under
+		// it; a second break moves on to another node.
+		if !askedAgain && pathBroke(err) {
+			askedAgain = true
+			prefer = tr.Ticket.Node
+			c.log.Warn("the path to the node broke before any output reached the caller; asking it again", "node", tr.Ticket.Node, "err", err)
+			select {
+			case <-ctx.Done():
+				return lastRes, lastErr
+			case <-time.After(pathRetryPause):
+			}
+			continue
+		}
 		exclude = append(exclude, tr.Ticket.Node)
 		c.log.Warn("node failed before any output reached the caller; failing over", "node", tr.Ticket.Node, "err", err)
 	}
 	return lastRes, lastErr
+}
+
+// maxOpening bounds the opening events held back before an answer.
+const maxOpening = 32
+
+// pathRetryPause is the pause before a node whose path broke is asked again.
+const pathRetryPause = 250 * time.Millisecond
+
+// pathBroke reports whether err is the stream or connection to the node
+// failing (libp2p's stream reset, a closed QUIC transport or connection,
+// a network error such as "can't assign requested address" after a route
+// change), not something the node answered.
+func pathBroke(err error) bool {
+	if err == nil || protocol.CodeOf(err) != "" {
+		return false
+	}
+	if errors.Is(err, network.ErrReset) || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && !ne.Timeout() {
+		return true
+	}
+	msg := err.Error()
+	for _, w := range []string{"stream reset", "transport closed", "connection closed", "connection reset", "can't assign requested address", "network is unreachable", "no route to host", "broken pipe"} {
+		if strings.Contains(msg, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // background runs fn as a tracked background task (dispute delivery).
@@ -358,6 +449,8 @@ func (c *Client) requestTicketOnce(ctx context.Context, req ChatRequest, exclude
 		protocol.TicketRequest{
 			InferVersions: protocol.SupportedInferVersions,
 			Model:         req.Model,
+			API:           req.API,
+			RequireNative: req.RequireNative,
 			BudgetMicros:  req.BudgetMicros,
 			MaxTokens:     req.MaxTokens,
 			PromptTokens:  promptEst(req),
@@ -387,6 +480,8 @@ func (c *Client) verifyTicket(tr *protocol.TicketResponse, req ChatRequest) (str
 		return "", errors.New("ticket issued to another buyer")
 	case t.Model != req.Model:
 		return "", errors.New("ticket is for a different model")
+	case protocol.NormalAPI(t.API) != protocol.NormalAPI(req.API):
+		return "", errors.New("ticket is for a different API")
 	case req.Node != "" && t.Node != req.Node:
 		return "", errors.New("ticket is for a different node than requested")
 	case t.ReservedMicros > req.BudgetMicros:
@@ -406,8 +501,10 @@ func (c *Client) verifyTicket(tr *protocol.TicketResponse, req ChatRequest) (str
 		return "", errors.New("ticket keys differ from the node's signed offer")
 	case !slices.Equal(o.Addrs, t.NodeAddrs):
 		return "", errors.New("ticket addresses differ from the node's signed offer")
-	case !ok || p.PriceInMicros != t.PriceInMicros || p.PriceOutMicros != t.PriceOutMicros:
+	case !ok || p.Prices() != t.Prices():
 		return "", errors.New("ticket price differs from the node's signed offer")
+	case req.RequireNative && !p.Native(req.API):
+		return "", errors.New("the node does not speak the request's API natively")
 	}
 	var label string
 	if c.Attestation != nil && o.Quote != nil {
@@ -443,7 +540,11 @@ type encodedRequest struct {
 
 // runJob executes one ticket. delivered reports whether any output reached
 // onChunk, after which failing over is no longer possible.
-func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body []byte, onChunk func([]byte) error, tm *Timing) (res *Result, delivered bool, err error) {
+//
+// carry, when set, is a job sealed by someone else (errand.go): its request
+// is sent as it is and the response frames are kept sealed. Everything the
+// node can observe is the same as for a job of the client's own.
+func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte, req ChatRequest, onChunk func([]byte) error, tm *Timing, carry *protocol.ErrandJob) (res *Result, delivered bool, err error) {
 	nodeID, err := peer.Decode(t.Node)
 	if err != nil {
 		return nil, false, err
@@ -454,12 +555,20 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body [
 			addrs = append(addrs, m)
 		}
 	}
+	if c.NodeAddrs != nil {
+		if addrs = c.NodeAddrs(addrs); len(addrs) == 0 {
+			return nil, false, errors.New("no permitted address for the node")
+		}
+	}
 	c.h.Peerstore().AddAddrs(nodeID, addrs, peerstore.TempAddrTTL)
 
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, jobTimeout)
 		defer cancel()
+	}
+	if c.Direct != nil {
+		c.Direct(ctx, nodeID, addrs, true)
 	}
 	tm.Reused = c.h.Network().Connectedness(nodeID) == network.Connected
 	t0 := time.Now()
@@ -470,10 +579,23 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body [
 	}
 	js := &jobStream{st: &countingStream{Stream: raw}}
 	defer func() { tm.UpBytes, tm.DownBytes = js.totals() }()
+	// The path is read when the job ends: a tunnel starts out through DERP
+	// and goes direct a moment later, and a resumed job may be on another
+	// connection than the one it began on.
+	tm.Tailnet = ""
+	defer func() {
+		if c.ConnPath != nil {
+			tm.Tailnet = c.ConnPath(js.cur().Conn())
+		}
+	}()
 	defer func() { _ = js.cur().Close() }()
 	// A caller that goes away (the HTTP client closed the connection) stops
-	// the job: the node stops its model and bills what was delivered.
-	defer context.AfterFunc(ctx, js.cancel)()
+	// the job: the node stops its model and bills what was delivered. Once
+	// the caller has the response's last event it may go (Codex over HTTP
+	// closes at response.completed): the job then runs to its receipt, and
+	// the ack goes out, as if the caller had stayed.
+	stopCancel := context.AfterFunc(ctx, js.cancel)
+	defer stopCancel()
 	st := js.cur()
 	tm.Relayed = p2p.IsRelayed(raw.Conn())
 	tm.Via = ""
@@ -490,18 +612,24 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body [
 	// stream key derives from it. Disclosing it later opens this job and no
 	// other.
 	tr := &transcript{hasher: receipt.NewStreamHasher()}
-	if tr.jobKey, err = box.GenerateIdentity(); err != nil {
-		return nil, false, err
-	}
-	if tr.request, err = box.SealFrom(tr.jobKey, t.NodeBoxPub, encoded, protocol.RequestAAD(t)); err != nil {
-		return nil, false, err
-	}
-	key, err := tr.jobKey.NewStream(t.NodeBoxPub, protocol.ResponseKeyInfo(t, tr.jobKey.Public()))
-	if err != nil {
-		return nil, false, err
+	var key *box.Stream // nil for a carried job: its frames stay sealed
+	jobPub := []byte(nil)
+	if carry != nil {
+		tr.request, jobPub = carry.Request, carry.BuyerBoxPub
+	} else {
+		if tr.jobKey, err = box.GenerateIdentity(); err != nil {
+			return nil, false, err
+		}
+		if tr.request, err = box.SealFrom(tr.jobKey, t.NodeBoxPub, encoded, protocol.RequestAAD(t)); err != nil {
+			return nil, false, err
+		}
+		if key, err = tr.jobKey.NewStream(t.NodeBoxPub, protocol.ResponseKeyInfo(t, tr.jobKey.Public())); err != nil {
+			return nil, false, err
+		}
+		jobPub = tr.jobKey.Public()
 	}
 	t0 = time.Now()
-	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: tr.jobKey.Public(), RequestBytes: uint64(len(tr.request))}); err != nil {
+	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: jobPub, RequestBytes: uint64(len(tr.request))}); err != nil {
 		return nil, false, err
 	}
 	if err := protocol.SendSealedRequest(st, tr.request); err != nil {
@@ -517,11 +645,16 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded, body [
 		thinking                []json.RawMessage
 		finish                  string
 		sr                      receipt.SignedReceipt
+		meter                   protocol.UsageMeter
+		payloads                [][]byte
 	)
 	dec := protocol.NewResponseDecoder()
 	frames := 0
 	lastData := sent
-	resumedAt := 0 // frames received when the stream was last replaced
+	resumedAt := 0       // frames received when the stream was last replaced
+	carried := 0         // bytes of a carried job's frames
+	answered := false    // the caller has the response's last event
+	var opening [][]byte // opening events held back until the first with content
 recv:
 	for {
 		wait := c.IdleTimeout
@@ -544,7 +677,7 @@ recv:
 				// answers a resume and then says nothing is the problem, not
 				// the path to it.
 				_ = js.cur().Reset()
-				if rerr := c.resume(ctx, js, nodeID, t, uint64(len(tr.chunks))); rerr == nil {
+				if rerr := c.resume(ctx, js, nodeID, t, uint64(len(tr.chunks)), tm); rerr == nil {
 					tm.Resumes++
 					resumedAt = frames
 					c.log.Info("resumed a job over a new stream", "job", t.JobID, "from", len(tr.chunks), "after", err)
@@ -561,6 +694,9 @@ recv:
 		switch {
 		case f.Env == nil && f.Kind == protocol.BinProgress:
 			tm.Progress++
+			if req.OnProgress != nil && !answered {
+				req.OnProgress()
+			}
 			if c.MaxSilence > 0 && time.Since(lastData) > c.MaxSilence {
 				js.cancel()
 				return nil, delivered, fmt.Errorf("node stalled: no response data for %v", c.MaxSilence.Round(time.Second))
@@ -578,11 +714,17 @@ recv:
 			}
 			lastData = time.Now()
 			tm.Frames++
+			if carry != nil {
+				if carried += len(sealed); carried > maxCarried {
+					js.cancel()
+					return nil, false, errors.New("the answer of a carried job is too large")
+				}
+			}
 			pos := uint64(len(tr.chunks))
 			tr.chunks = append(tr.chunks, sealed)
 			tr.hasher.WriteChunk(sealed)
-			if tr.corrupt != nil {
-				continue // keep the transcript complete; deliver nothing more
+			if tr.corrupt != nil || key == nil {
+				continue // keep the transcript complete; deliver nothing (more)
 			}
 			plain, err := key.Open(pos, sealed, protocol.ChunkAAD(t, pos))
 			if seq != pos || err != nil {
@@ -596,7 +738,11 @@ recv:
 			}
 			for _, payload := range recs {
 				tm.Chunks++
-				if info, err := protocol.ParseChunk(payload); err == nil {
+				if req.Collect {
+					payloads = append(payloads, payload)
+				}
+				if info, err := protocol.ParseEvent(t.API, payload); err == nil {
+					meter.Add(info)
 					content.WriteString(info.Content)
 					reasoning.WriteString(info.Reasoning)
 					all.WriteString(info.Text())
@@ -606,12 +752,29 @@ recv:
 						finish = info.FinishReason
 					}
 				}
-				if onChunk != nil {
-					delivered = true
-					if err := onChunk(payload); err != nil {
-						js.cancel()
-						return nil, true, err
+				if onChunk != nil && !answered {
+					// Events that only open the answer are held until one
+					// with content: a node that fails right after them has
+					// delivered nothing, and another node is asked
+					// (sub2api's opening buffer).
+					if !delivered && protocol.OpeningEvent(payload) && len(opening) < maxOpening {
+						opening = append(opening, append([]byte(nil), payload...))
+						continue
 					}
+					// The last event: from here the caller may go without
+					// stopping the job (checked before it is handed over, so
+					// a caller that leaves at once cannot race the ack).
+					if protocol.TerminalEvent(t.API, payload) && stopCancel() {
+						answered = true
+					}
+					delivered = true
+					for _, p := range append(opening, payload) {
+						if err := onChunk(p); err != nil {
+							js.cancel()
+							return nil, true, err
+						}
+					}
+					opening = nil
 				}
 			}
 		case f.Env != nil && f.Env.Type == protocol.TypeReceipt:
@@ -627,13 +790,37 @@ recv:
 			return nil, delivered, fmt.Errorf("unexpected frame of kind %d", f.Kind)
 		}
 	}
+	if carry != nil {
+		// The carrier checks what it can: that the node signed for exactly the
+		// bytes that travelled. Whoever sealed the job judges the rest.
+		res = &Result{Ticket: *t, Receipt: sr, Sealed: tr.chunks}
+		if err := receipt.BuyerCheck(&sr, t.JobID, t.Model, t.NodeReceiptKey, receipt.Hash(tr.request), tr.hasher.Sum()); err != nil {
+			_ = js.send(protocol.TypeReject, protocol.Reject{Reason: err.Error()})
+			return res, false, fmt.Errorf("%w: %v", ErrReceiptRejected, err)
+		}
+		if err := js.send(protocol.TypeAck, protocol.Ack{Sig: ed25519.Sign(c.keys.Signer, protocol.AckBytes(&sr.Receipt))}); err != nil {
+			c.log.Warn("could not deliver ack", "job", t.JobID, "err", err)
+		}
+		_ = js.cur().CloseWrite()
+		return res, false, nil
+	}
 	if tr.corrupt == nil && !dec.Done() {
 		tr.corrupt = errors.New("the response ended without its final frame")
 	}
 
-	res = &Result{Ticket: *t, Receipt: sr, Content: content.String(), Reasoning: reasoning.String(), Text: all.String(), ToolCalls: tools.Calls(), FinishReason: finish}
+	if onChunk != nil && len(opening) > 0 && !answered {
+		// an answer of opening events alone: the caller still gets them
+		for _, p := range opening {
+			if err := onChunk(p); err != nil {
+				js.cancel()
+				return nil, true, err
+			}
+		}
+		delivered = true
+	}
+	res = &Result{Ticket: *t, Receipt: sr, Content: content.String(), Reasoning: reasoning.String(), Text: all.String(), ToolCalls: tools.Calls(), FinishReason: finish, Payloads: payloads}
 	res.AnthropicThinking = thinking
-	if err := c.checkReceipt(t, &sr, tr, body, all.String()); err != nil {
+	if err := c.checkReceipt(t, &sr, tr, req.Body, all.String(), meter.Hidden()); err != nil {
 		_ = js.send(protocol.TypeReject, protocol.Reject{Reason: err.Error()})
 		return res, delivered, fmt.Errorf("%w: %v", ErrReceiptRejected, err)
 	}
@@ -644,7 +831,7 @@ recv:
 		c.log.Warn("could not deliver ack", "job", t.JobID, "err", err)
 	}
 	_ = js.cur().CloseWrite()
-	res.CostMicros = protocol.TicketCost(t, sr.Receipt.PromptTokens, sr.Receipt.CompletionTokens)
+	res.CostMicros = protocol.TicketCost(t, protocol.ReceiptUsage(&sr.Receipt))
 	res.Verified = true
 	return res, delivered, nil
 }
@@ -730,7 +917,7 @@ func (j *jobStream) totals() (up, down int64) {
 // resume opens a new stream to the node for job t, from frame from on. The
 // old connection is dropped first: it may be dead without knowing it yet,
 // and the dial then finds another path (another relay, or direct).
-func (c *Client) resume(ctx context.Context, js *jobStream, nodeID peer.ID, t *protocol.Ticket, from uint64) error {
+func (c *Client) resume(ctx context.Context, js *jobStream, nodeID peer.ID, t *protocol.Ticket, from uint64, tm *Timing) error {
 	deadline := time.Now().Add(c.ResumeWindow)
 	for {
 		_ = c.h.Network().ClosePeer(nodeID)
@@ -744,6 +931,16 @@ func (c *Client) resume(ctx context.Context, js *jobStream, nodeID peer.ID, t *p
 			}
 			if err = protocol.SendRequest(st, protocol.TypeResume, protocol.ResumeRequest{JobID: t.JobID, From: from}); err == nil {
 				js.replace(st)
+				tm.Relayed, tm.Via = p2p.IsRelayed(raw.Conn()), ""
+				if tm.Relayed {
+					if v, err := raw.Conn().RemoteMultiaddr().ValueForProtocol(ma.P_P2P); err == nil {
+						tm.Via = v
+					}
+				}
+				if c.Direct != nil {
+					// ClosePeer took the tunnel's connection too.
+					c.Direct(ctx, nodeID, c.h.Peerstore().Addrs(nodeID), false)
+				}
 				return nil
 			}
 			_ = st.Reset()
@@ -764,7 +961,7 @@ func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 // logJob records one attempt's timing.
 func (c *Client) logJob(t *protocol.Ticket, tm *Timing, err error) {
 	args := []any{"job", t.JobID, "node", t.Node, "ticket_ms", tm.TicketMs, "dial_ms", tm.DialMs, "upload_ms", tm.UploadMs,
-		"first_byte_ms", tm.FirstByteMs, "reused", tm.Reused, "relayed", tm.Relayed, "preferred", tm.Preferred,
+		"first_byte_ms", tm.FirstByteMs, "reused", tm.Reused, "relayed", tm.Relayed, "tailnet", tm.Tailnet, "preferred", tm.Preferred,
 		"frames", tm.Frames, "progress", tm.Progress, "chunks", tm.Chunks, "up_bytes", tm.UpBytes, "down_bytes", tm.DownBytes}
 	if err != nil {
 		c.log.Info("job attempt failed", append(args, "err", err)...)
@@ -777,7 +974,7 @@ func (c *Client) logJob(t *protocol.Ticket, tm *Timing, err error) {
 // evidence when the transcript can prove the node wrong (unreadable chunks,
 // inflated usage), as a plain claim when it cannot (the node signed bytes
 // other than those delivered).
-func (c *Client) checkReceipt(t *protocol.Ticket, sr *receipt.SignedReceipt, tr *transcript, body []byte, text string) error {
+func (c *Client) checkReceipt(t *protocol.Ticket, sr *receipt.SignedReceipt, tr *transcript, body []byte, text string, hidden bool) error {
 	if err := receipt.BuyerCheck(sr, t.JobID, t.Model, t.NodeReceiptKey, receipt.Hash(tr.request), tr.hasher.Sum()); err != nil {
 		c.background(func() { c.fileDispute(t.JobID, err.Error()) })
 		return err
@@ -786,11 +983,12 @@ func (c *Client) checkReceipt(t *protocol.Ticket, sr *receipt.SignedReceipt, tr 
 		c.disputeWithEvidence(t, sr, tr, tr.corrupt.Error())
 		return tr.corrupt
 	}
-	estPrompt, err := protocol.EstimatePromptTokens(body)
+	estPrompt, err := protocol.EstimatePromptTokens(t.API, body)
 	if err != nil {
 		return err
 	}
-	if err := protocol.UsagePlausible(sr.Receipt.PromptTokens, sr.Receipt.CompletionTokens, estPrompt, protocol.EstimateTokens(text)); err != nil {
+	limit := protocol.OutputLimit(t, estPrompt, protocol.RequestedOutput(t.API, body))
+	if err := protocol.UsagePlausible(protocol.ReceiptUsage(&sr.Receipt), estPrompt, protocol.EstimateTokens(text), hidden, limit); err != nil {
 		c.disputeWithEvidence(t, sr, tr, "implausible usage: "+err.Error())
 		return err
 	}
@@ -897,8 +1095,24 @@ func (c *Client) Dispute(ctx context.Context, jobID, reason string) error {
 		protocol.DisputeRequest{JobID: jobID, Reason: reason}, protocol.TypeOK, nil)
 }
 
-// Models lists models with live offers.
+// Models lists models with live offers, as the coordinator said within the
+// last minute or so (modelsCache): tools ask often and want it at once.
 func (c *Client) Models(ctx context.Context) ([]protocol.ModelSummary, error) {
+	return c.models.get(ctx, c.fetchModels)
+}
+
+// ModelsNow is the model list as the coordinator has it now, for the
+// client's own pages and commands: a pairing or a partnership just made
+// shows at once there, where the cached list (Models) may lag behind.
+func (c *Client) ModelsNow(ctx context.Context) ([]protocol.ModelSummary, error) {
+	list, err := c.fetchModels(ctx)
+	if err == nil {
+		c.models.put(list)
+	}
+	return list, err
+}
+
+func (c *Client) fetchModels(ctx context.Context) ([]protocol.ModelSummary, error) {
 	var resp protocol.ModelsResponse
 	err := c.call(ctx, protocol.TypeModels, struct{}{}, protocol.TypeModels, &resp)
 	return resp.Models, err
@@ -911,12 +1125,11 @@ func (c *Client) Balance(ctx context.Context) (protocol.BalanceResponse, error) 
 	return resp, err
 }
 
-// promptEst is the prompt estimate sent with a capped request (0 otherwise).
+// promptEst is the prompt estimate sent with a request: with MaxTokens it
+// sizes the hold, and without it it tells whether a balance smaller than the
+// budget still pays for the prompt.
 func promptEst(req ChatRequest) uint64 {
-	if req.MaxTokens == 0 {
-		return 0
-	}
-	n, err := protocol.EstimatePromptTokens(req.Body)
+	n, err := protocol.EstimatePromptTokens(req.API, req.Body)
 	if err != nil {
 		return 0
 	}

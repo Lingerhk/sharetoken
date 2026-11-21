@@ -10,7 +10,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 
 | 角色 | 程序 | 做什么 | 不做什么 |
 |---|---|---|---|
-| **用户** | `sharetoken` | 一个进程同时是买家和卖家：本地 OpenAI 兼容端点（买），可选共享本机模型或托管 API（卖）；自动选择最优中继；提供本地管理 API，供 CLI 和桌面应用使用 | 不需要开放端口，不直连协调器 |
+| **用户** | `sharetoken` | 一个进程同时是买家和卖家：本地 OpenAI 和 Anthropic 接口的端点（买），可选共享本机模型或托管 API（卖）；自动选择最优中继；提供本地管理 API，供 CLI 和桌面应用使用 | 不需要开放端口，不直连协调器 |
 | **中继** | `relay` | 只做 libp2p circuit relay v2 转发；有多个，可由不同运营方部署 | 不记账、无状态、看不到明文（Noise 端到端） |
 | **协调器** | `coordinator` | 算账平台：撮合、签 Ticket、结算、争议与证据裁决、抽检 | **不监听任何端口**，只能通过它在各中继上的预约访问；不管用户 |
 | **门户** | `portal` | 用户管理后端（HTTP JSON API 和网页）：注册登录、API token、设备绑定、credit 余额与发放、账单与 token 用量、中继登记 | 不碰 p2p，不和协调器通信 |
@@ -47,6 +47,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 | `internal/relay`、`internal/relaypass` | 中继及其准入凭证 |
 | `internal/coordinator`、`internal/ledger`、`internal/audit`、`internal/tokens` | 撮合与结算、复式账本、抽检、参考模型的 token 计数 |
 | `internal/portal`、`internal/accounts`、`internal/mailer`、`internal/totp` | 门户、账户存储、邮件、TOTP |
+| `internal/tailnet` | 直连隧道：建在 Tailscale 数据面上的 libp2p 传输（§2.17） |
 | `internal/p2p`、`internal/protocol`、`internal/box`、`internal/receipt`、`internal/evidence`、`internal/attest`、`internal/canon` | libp2p 主机与中继、线上帧格式与消息、内容加密、收据、证据、TEE 证明、规范化签名字节 |
 | `internal/config`、`internal/mysqldb`、`internal/secfile`、`internal/cli`、`internal/version` | 配置文件、数据库层、私有文件、CLI 辅助、版本信息 |
 | `gui/` | 桌面外壳（[desktop.md](desktop.md)） |
@@ -82,6 +83,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 4. 客户端每 10 秒检查一次到协调器的连接。不通就刷新门户列表、重新测速并立即切换。无论如何每 5 分钟做一次全量测速。
 5. 实时链路质量：每次 10 秒检查时顺便 ping 一次当前中继（`p2p.LinkMonitor`）。最近 30 次结果（约 5 分钟）给出当前延迟、平均/最小/最大、抖动（相邻两次 RTT 差的平均）和丢包率，放在状态的 `coordinator.link` 里，供 CLI 和桌面应用显示。换中继时窗口清空重算。持续丢包的中继会被换掉，并在 5 分钟内不再选用。注意它测的是「本机到中继」这一段，不含中继到协调器或卖家那一段。
 6. 共享模型时，客户端在最优的 2 个中继上预约（可配置），Offer 同时通告本机地址和中继地址；预约集合变化时立即重新公告。买家能直连就直连，DCUtR 打洞失败时走中继。
+7. 私有中继。用户可以列出自己的中继（`private_relays`；`relay init` 生成这种中继的配置，它只接纳列出的账号）。它们不参与第 1 到 5 步：客户端把它们放在单独的列表里，和协调器之间的流量从不经过它们，协调器也只在已登记的中继上预约。共享节点在自己的私有中继上预约；只要其中一个预约有效，就不在网络的中继上预约（`share.keep_official` 可以两者都保留）；30 秒内一个都没有时退回第 6 步。见 [security.md](security.md) §2.8。
 
 ### 2.5 Offer 直接公告
 
@@ -175,7 +177,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 
 ### 2.13 配对：把买家绑定到它的卖家
 
-卖家可以把一批买家留给自己，买家也可以限定提示词发给谁，都不需要另建一个网络。卖家生成配对码（`internal/accounts/pairing.go`）：80 位随机数，写成 16 个 base32 字符，默认有效一天，最长 30 天，可以不限买家数，也可以限定人数。买家在门户兑换后，两个账户就配对了。一个卖家可以有很多买家（最多 1000 个），一个买家最多配对 3 个卖家。任何一方都可以解除配对；撤销配对码不影响用它建立的配对。
+卖家可以把一批买家留给自己，买家也可以限定提示词发给谁，都不需要另建一个网络。卖家生成配对码（`internal/accounts/pairing.go`）：30 位随机数，写成 6 个 base32 字符（方便手输，所以输错的次数限得很紧，见 docs/security.md 第 2.6 节），默认有效一天，最长 7 天，可以不限买家数，也可以限定人数。每个配对码还有一个链接令牌，8 个 base62 字符（约 47.6 位），用于门户网站上的邀请链接 `/p#<令牌>`（伙伴邀请是 `/s#<令牌>`）；令牌放在 `#` 后面，不会进任何服务器日志。链接页面（`web/invite.js`）通过无需账户的预览显示是谁邀请，让访客登录或注册，并在该账户上接受；桌面应用以 `sharetoken://p/<令牌>` 接收同样的链接，接受前总会再问一次（`internal/accounts/invites.go`、`internal/portal/invites.go`、`gui/invite.go`）。配对码可以要求卖家确认每次使用：兑换时只生成一条请求（`invite_requests`），由卖家确认或拒绝。买家在门户兑换配对码或链接后，两个账户就配对了。一个卖家可以有很多买家（最多 1000 个），一个买家最多配对 3 个卖家。任何一方都可以解除配对；撤销配对码不影响用它建立的配对。
 
 执行这条规则的是协调器，不是客户端。给一个节点签发 Ticket 或列出模型时，协调器查出它的账户配对了哪些卖家；只要有，其他账户的节点一律排除，请求指定了节点也一样。没有配对的买家照常撮合，卖家也照常服务没有和它配对的买家，除非它开启了私有模式：这时只有和它配对的买家会被撮合过来，也只有他们能看到它的模型。私有卖家照样接受抽检：抽检身份和配对的买家一样能被撮合到它。每次请求都从数据库读配对，所以改动在下一次请求生效。
 
@@ -203,9 +205,26 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 - **会话粘性。** 买家按会话（请求的 `session_id`，没有时用模型名加前两条消息）记住上次服务它的节点，保留 30 分钟，下次请求时再要这个节点（Ticket 请求里的 `prefer_node`）。只要这个节点是候选（在线、没满、在买家的价格上限内），协调器就选它，即使别的节点打分更高：连接是热的（这时往往已经是直连），模型服务器的 prompt 缓存里也有这段对话。这个偏好除了这一个字段，不会离开买家的机器。
 - **耗时。** 每一单都记录 Ticket、拨号、上传、首字节的耗时，是否经中继（以及经哪个中继）、是否复用了连接、帧数和字节数（`buyer.Timing`）。客户端写进日志，本地 API 通过 `X-Sharetoken-Timing` 和流式响应结尾的注释行返回。
 
+### 2.16 三种模型接口
+
+本地端点支持 OpenAI chat completions、Anthropic Messages（Claude Code）和 OpenAI Responses（Codex）。Ticket 记下请求的接口（`Ticket.API`，纳入签名），协调器优先匹配模型服务器原生支持它的节点（`ModelPrice.APIs`），节点透传或转换请求（`internal/apicompat`）。收据分别记下从 prompt 缓存读出和写入缓存的 prompt token，按各自的价格计费。见 [apis.md](apis.md)。
+
+### 2.17 走 Tailscale 数据面的直连隧道
+
+买卖双方都在 NAT 后面、libp2p 打洞又不成功时，整单都压在中继上。tailnet（`internal/tailnet`，默认关闭：`sharetoken tailnet on`）是第二条直连的路：建在 [tailcat](https://github.com/tailscale/tailcat) 之上的一个 libp2p 传输。tailcat 是去掉控制面的 Tailscale 数据面（WireGuard、magicsock、DERP 和用户态网络栈）：不需要账号，不装系统 VPN，不需要特权。
+
+- **地址。** 共享节点启动一个 tailcat 服务端，在它里面监听，并把 `/tailcat/<地址>` 加进报价。地址里是服务端的密钥和所在的 DERP 区域。它只进报价，不进 libp2p identify 告诉每个对端的地址。协调器照旧把报价里的地址抄进 Ticket；没有 tailnet 的客户端跳过这个地址。
+- **拨号。** 买家在节点的各个地址里先拨它，并且另外单独拨一次、要求直连（`Transport.Reach`）：libp2p 的拨号器在中继接通后会停掉其余尝试，隧道永远建不完。隧道先经 DERP 接通，再换到直连路径；libp2p 的新流优先开在直连连接上。隧道里跑的是 libp2p 连接，所以对端身份、Ticket、收据和所有协议都和其他连接上一样。
+- **隧道里跑 QUIC 或 TCP。** 共享节点在隧道的同一个端口上两种都提供，地址也是同一个；由买家选（`tailnet.transport`，默认 `quic`）。QUIC 是 quic-go，每条连接占隧道里的一条 UDP 流，用 libp2p 的 TLS 身份；包最大 1232 字节，即隧道能整包承载的最大数据报，不再探测更大的。TCP 是隧道的用户态 TCP，加上通常的安全握手和 yamux。QUIC 让隧道里少一层重传和队头阻塞，它的连接也不计入隧道地址共用的按子网限额（所有隧道同在一个 /48）。QUIC 连接等隧道从 DERP 换到直连路径之后才开始（最多等 12 秒，之后就在 DERP 上开始）：QUIC 在往返时间变长时结束慢启动，DERP 那条路更短时，在它上面起步的连接传大请求会一直很慢（4 MB 要 8 秒，而不是 0.7 秒）。QUIC 拨不通不会退到 TCP：隧道里走不了 QUIC 时，这一单留在节点的其他路径上。
+- **买家自己的 DERP 表。** 买家只跟随地址去自己表里的 DERP（`tailnet.derp_map`；默认是 tailcat 的公共 DERP）：地址里的区域只用来在自己的表里查找，不会照原样使用，卖家无法把买家引到它指定的主机。自己运行 DERP 的网络把同一张表发给两端。
+- **系统里的 Tailscale。** 装了 Tailscale 的机器有一个同一 tailnet 的设备都能直接到达的地址，它在 libp2p 不公布的那块网卡上。tailnet 打开时，共享节点把自己在这个地址上的监听也加进报价。
+- **回退。** 任何一端没开、DERP 不可达、隧道建不起来：这一单照旧走中继；隧道在一单进行中断开，则在节点的其他路径上续传。中继、协调器和门户不知道隧道的存在。
+
+一单走的路径记在它的耗时里：`tailnet=direct`、`derp:<区域>` 或 `system`。
+
 ## 3. 数据库
 
-门户、协调器和邮件服务共用一个 MySQL 8（InnoDB）数据库（`internal/mysqldb`）。用 `-db mysql://user@host:port/db`（`database.dsn`）指定，可以放在另一台机器上。
+门户、协调器和邮件服务共用一个 MySQL 8.4（InnoDB）数据库（`internal/mysqldb`）。用 `-db mysql://user@host:port/db`（`database.dsn`）指定，可以放在另一台机器上。
 
 | 表 | 写入方 | 读取方 |
 |---|---|---|

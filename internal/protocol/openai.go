@@ -2,25 +2,6 @@ package protocol
 
 import "encoding/json"
 
-// Usage is the token accounting an OpenAI-compatible server reports in the
-// final streamed chunk when stream_options.include_usage is set.
-type Usage struct {
-	PromptTokens     uint64 `json:"prompt_tokens"`
-	CompletionTokens uint64 `json:"completion_tokens"`
-}
-
-// ChunkInfo is what the node and the buyer each extract from one streamed
-// chat.completion.chunk payload.
-type ChunkInfo struct {
-	Content           string
-	Reasoning         string
-	ToolArgs          string
-	ToolCalls         []ToolCallDelta
-	FinishReason      string
-	Usage             *Usage
-	AnthropicThinking []json.RawMessage
-}
-
 // ToolCallDelta is one streamed fragment of a tool call. Fragments with the
 // same Index belong to the same call: ID, Type and Name usually arrive once,
 // Arguments in pieces.
@@ -78,10 +59,7 @@ func (a *ToolCallAccumulator) Add(ds []ToolCallDelta) {
 // Calls returns the assembled calls (nil when there were none).
 func (a *ToolCallAccumulator) Calls() []ToolCall { return a.calls }
 
-// Text is everything in the chunk that consumed completion tokens.
-func (c ChunkInfo) Text() string { return c.Content + c.Reasoning + c.ToolArgs }
-
-// ParseChunk extracts deltas, finish reason and usage from one payload. Servers
+// ParseChunk extracts from a chat.completion.chunk deltas, finish reason and usage from one payload. Servers
 // differ on the name of the reasoning field, so both common spellings are read.
 func ParseChunk(payload []byte) (ChunkInfo, error) {
 	var c struct {
@@ -103,14 +81,37 @@ func ParseChunk(payload []byte) (ChunkInfo, error) {
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage *Usage `json:"usage"`
+		Usage *struct {
+			PromptTokens        uint64 `json:"prompt_tokens"`
+			CompletionTokens    uint64 `json:"completion_tokens"`
+			PromptTokensDetails struct {
+				CachedTokens        uint64 `json:"cached_tokens"`
+				CacheCreationTokens uint64 `json:"cache_creation_tokens"`
+			} `json:"prompt_tokens_details"`
+			CompletionTokensDetails struct {
+				ReasoningTokens uint64 `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
+			// DeepSeek counts cache hits under names of its own.
+			PromptCacheHitTokens uint64 `json:"prompt_cache_hit_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(payload, &c); err != nil {
 		return ChunkInfo{}, err
 	}
-	info := ChunkInfo{Usage: c.Usage}
+	var info ChunkInfo
+	if u := c.Usage; u != nil {
+		cr := u.PromptTokensDetails.CachedTokens
+		if cr == 0 {
+			cr = u.PromptCacheHitTokens
+		}
+		info.Usage = &Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens,
+			CacheReadTokens: cr, CacheWriteTokens: u.PromptTokensDetails.CacheCreationTokens,
+			ReasoningTokens: u.CompletionTokensDetails.ReasoningTokens}
+		info.Hidden = u.CompletionTokensDetails.ReasoningTokens > 0
+	}
 	for _, ch := range c.Choices {
 		info.AnthropicThinking = append(info.AnthropicThinking, ch.Delta.AnthropicThinking...)
+		info.Hidden = info.Hidden || len(ch.Delta.AnthropicThinking) > 0
 		info.Content += ch.Delta.Content
 		info.Reasoning += ch.Delta.ReasoningContent + ch.Delta.Reasoning
 		for _, tc := range ch.Delta.ToolCalls {

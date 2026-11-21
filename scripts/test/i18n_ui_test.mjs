@@ -24,9 +24,13 @@ if (!portal || !daemon || !STACK) { console.error('usage: STACK=<gui_stack.sh di
 const mailedCode = email => execFileSync(new URL('gui_stack.sh', import.meta.url).pathname, ['code', STACK, email], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 mkdirSync(shots, { recursive: true });
 const runtime = readFileSync(new URL('../../internal/portal/web/i18n.js', import.meta.url), 'utf8');
-const ALL = [...runtime.slice(runtime.indexOf('const LANGS = {'), runtime.indexOf('};')).matchAll(/'?([A-Za-z-]+)'?: '/g)].map(m => m[1]);
+const langsAt = runtime.indexOf('const ALL_LANGS = {');
+const ALL = [...runtime.slice(langsAt, runtime.indexOf('};', langsAt)).matchAll(/'?([A-Za-z-]+)'?: '/g)].map(m => m[1]);
+if (ALL.length < 2) { console.error('no languages found in i18n.js'); process.exit(2); }
 const LANGS = process.env.LANGS ? process.env.LANGS.split(',') : ALL;
 const HAN_OK = new Set(['zh-CN', 'zh-TW', 'ja']);
+// The desktop client has languages of its own (client/ui/index.html, data-langs).
+const CLIENT_LANGS = readFileSync(new URL('../../internal/client/ui/index.html', import.meta.url), 'utf8').match(/data-langs="([^"]+)"/)[1].split(',');
 
 const chrome = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const port = 9341;
@@ -155,11 +159,13 @@ for (const lang of LANGS) {
   await inspect(lang, 'login');
   await shot(`login-${lang}`);
 
-  await size(1040, 760);
-  await go(`${daemon}/?lang=${lang}`);
-  await waitFor(`document.getElementById('signin-form')`, 20000);
-  await inspect(lang, 'client sign-in');
-  await shot(`client-auth-${lang}`);
+  if (CLIENT_LANGS.includes(lang)) {
+    await size(1040, 760);
+    await go(`${daemon}/?lang=${lang}`);
+    await waitFor(`document.getElementById('signin-form')`, 20000);
+    await inspect(lang, 'client sign-in');
+    await shot(`client-auth-${lang}`);
+  }
 }
 
 // ---- signed in ----
@@ -185,6 +191,21 @@ for (const lang of LANGS) {
   await ev(`location.hash = '#/home'`); await sleep(400); // the sidebar takes .22 s to slide away after the resize
   await inspect(lang, 'portal phone');
   await shot(`portal-phone-${lang}`);
+}
+
+// The page an invite link opens (web/invite.js), signed in, at desktop and phone width.
+const inviteToken = await ev(`ST.api('POST', '/api/v1/pairing/codes', { label: 'team' }).then(c => c.link_token)`);
+for (const lang of LANGS) {
+  await size(1280, 900);
+  await go(`${portal}/p?lang=${lang}#${inviteToken}`);
+  await waitFor(`document.getElementById('invite-title')`);
+  await ev(`document.querySelector('.invite-later').open = true`);
+  await inspect(lang, 'invite link page');
+  await shot(`invite-${lang}`);
+  await size(390, 800);
+  await go(`${portal}/p?lang=${lang}#${inviteToken}`);
+  await waitFor(`document.getElementById('invite-title')`);
+  await inspect(lang, 'invite link page, phone');
 }
 
 // A dialog built from a translated sentence.
@@ -220,7 +241,7 @@ const post = (path, body) => ev(`kfetch(${JSON.stringify(path)}, { method: 'POST
 const sent = await post('/api/v1/auth/code', { pin: probe.fingerprint, email: clientUser });
 const reg = await post('/api/v1/auth/verify', { pin: probe.fingerprint, email: clientUser, code: mailedCode(clientUser) });
 ok(sent === 200 && reg === 200, `the client signs up with a mailed code (HTTP ${sent}, ${reg})`);
-for (const lang of LANGS) {
+for (const lang of LANGS.filter(l => CLIENT_LANGS.includes(l))) {
   await go(`${daemon}/?lang=${lang}`);
   await waitFor(`document.getElementById('tile-available')`, 20000);
   await waitFor(`document.querySelector('#network-body table') || document.getElementById('network-down')`, 20000);

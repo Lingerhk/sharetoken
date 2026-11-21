@@ -3,7 +3,7 @@
 # it links this release's glibc, GTK 4 and WebKitGTK 6.0. Wails v3 needs GTK 4.10
 # or later (GtkFileDialog), which Ubuntu 22.04 (4.6) and Debian 12 (4.8) lack.
 FROM ubuntu:24.04
-ARG GO_VERSION=go1.27.3
+ARG GO_VERSION=go1.27.4
 RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends ca-certificates curl build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev nsis perl >/dev/null \
  && arch=$(dpkg --print-architecture) \

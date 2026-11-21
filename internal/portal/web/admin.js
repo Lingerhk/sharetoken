@@ -328,7 +328,7 @@
     const list = ST.listView({ path, key: 'jobs', empty: '没有作业', columns: [
       { title: '时间', cell: j => time(j.created_at) }, { title: '角色', cell: j => badge(j.role === 'buy' ? '买入' : '卖出', j.role === 'buy' ? 'accent' : 'ok') },
       { title: '模型', cell: j => j.model }, { title: '状态', cell: j => status(j.status) }, { title: '作业', cell: j => peer(j.job_id) },
-      { title: 'tokens', num: true, cell: j => num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
+      { title: 'tokens', num: true, cell: j => (j.cache_read_tokens || j.cache_write_tokens) ? h('span', { title: '其中缓存读 ' + num(j.cache_read_tokens || 0) + '，缓存写 ' + num(j.cache_write_tokens || 0) + (j.api ? '，' + j.api + ' API' : '') }, num(j.prompt_tokens) + '* / ' + num(j.completion_tokens)) : num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
       { title: '费用', num: true, cell: j => credit(j.cost_micros) }, { title: '手续费', num: true, cell: j => credit(j.fee_micros) },
     ] });
     await list.reload();
@@ -506,7 +506,7 @@
         { title: '状态', cell: j => [status(j.status), j.dispute_outcome ? h('div', { class: 'muted' }, '裁决 ' + j.dispute_outcome) : null] },
         { title: '买家', cell: j => [peer(j.buyer), h('div', { class: 'muted mono' }, j.buyer_acct)] },
         { title: '节点', cell: j => [peer(j.node), h('div', { class: 'muted mono' }, j.node_acct)] },
-        { title: 'tokens', num: true, cell: j => num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
+        { title: 'tokens', num: true, cell: j => (j.cache_read_tokens || j.cache_write_tokens) ? h('span', { title: '其中缓存读 ' + num(j.cache_read_tokens || 0) + '，缓存写 ' + num(j.cache_write_tokens || 0) + (j.api ? '，' + j.api + ' API' : '') }, num(j.prompt_tokens) + '* / ' + num(j.completion_tokens)) : num(j.prompt_tokens) + ' / ' + num(j.completion_tokens) },
         { title: '费用', num: true, cell: j => credit(j.cost_micros) }, { title: '手续费', num: true, cell: j => credit(j.fee_micros) },
         { title: '完成', cell: j => time(j.done_at) },
       ] });
@@ -529,14 +529,51 @@
       { title: '状态', cell: n => n.suspended_until > now ? badge('暂停至 ' + time(n.suspended_until), 'bad') : badge('正常', 'ok') },
     ], r.nodes, '还没有节点记录')));
   }
+  const AUDIT_METHODS = { tf: '逐 token 核对', div: '分叉检查', none: '仅核对计费', '': '相似度（旧）' };
+  function auditScore(a) {
+    if (a.method === 'tf') return a.score.toFixed(3) + ' / ' + a.threshold.toFixed(3);
+    if (a.method === 'div') return a.score + ' 题失败';
+    if (a.method === 'none') return '—';
+    return a.similarity.toFixed(2);
+  }
+  function auditQuestions(a) {
+    let qs = [];
+    try { qs = JSON.parse(a.scores || '[]') || []; } catch (ex) { qs = []; }
+    const rows = qs.map((q, i) => {
+      const s = q.score || {};
+      const score = s.method === 'tf' ? 'top-1 ' + (s.top1 || 0).toFixed(3) + '（' + s.tokens + ' 个位置）' + (s.end_agrees === false ? '，结尾不一致' : '')
+        : s.method === 'div' ? (s.diverged ? s.div_kind + (s.div_rank ? '，排名 ' + s.div_rank : '') + (s.div_gap ? '，差 ' + s.div_gap.toFixed(2) + ' nat' : '') : '未分叉') + (s.fail ? '（失败）' : '')
+        : '—';
+      return h('div', { class: 'audit-q' },
+        h('div', null, h('b', null, '第 ' + (i + 1) + ' 题 '), score, h('span', { class: 'muted' }, ' · 计费 ' + (q.billed || []).join(' / ') + ' token' + (q.via ? ' · 经中继 ' + ST.short(q.via, 8) : ''))),
+        h('div', { class: 'muted' }, q.question || ''), h('div', { class: 'audit-val' }, q.answer || ''));
+    });
+    const body = h('div', { class: 'audit-modal' }, kv([
+      ['时间', new Date(a.at / 1e6).toLocaleString('zh-CN', { hour12: false })], ['节点', h('code', { class: 'mono' }, a.node)], ['模型', a.model],
+      ['方法', AUDIT_METHODS[a.method] || a.method], ['结论', a.detail], ['影子模式', a.shadow ? '是（只记录，不影响信誉）' : '否'], ['首个作业', h('code', { class: 'mono' }, a.job_id)],
+    ]), rows.length ? rows : h('p', { class: 'muted' }, '没有逐题记录'));
+    modal({ title: '审计明细', body, okText: '关闭', cancel: false });
+  }
   async function audits(m) {
     const V = { match: ['一致', 'ok'], mismatch: ['不符', 'bad'], inconclusive: ['无法判定', 'warn'] };
+    const cal = await api('GET', '/api/v1/admin/audit-calibrations');
+    const latest = [];
+    for (const c of cal.calibrations) if (!latest.some(x => x.model === c.model)) latest.push(c);
+    const calCard = h('div', { class: 'card' }, h('h3', null, '参考模型校准'), table([
+      { title: '模型', cell: c => c.model }, { title: '方法', cell: c => AUDIT_METHODS[c.method] || c.method }, { title: '时间', cell: c => time(c.at) },
+      { title: '题数', num: true, cell: c => String(c.samples) },
+      { title: '诚实分数', cell: c => c.method === 'tf' ? '均值 ' + c.honest_mean.toFixed(3) + ' · 5 题均值中位 ' + c.honest_median.toFixed(3) + ' · p0.1 ' + c.honest_p001.toFixed(3) : '诚实回答失败率 ' + (100 * c.fail_rate).toFixed(1) + '%' },
+      { title: '阈值', num: true, cell: c => c.method === 'tf' ? c.threshold.toFixed(3) : '—' },
+      { title: '状态', cell: c => c.drift ? badge('漂移：只记录', 'warn') : badge('正常', 'ok') },
+    ], latest, '还没有校准记录：协调器配置了参考模型后每天自动校准，也可运行 coordinator audit calibrate'));
     const list = ST.listView({ path: '/api/v1/admin/audits', key: 'audits', empty: '还没有审计记录', columns: [
       { title: '时间', cell: a => time(a.at) }, { title: '节点', cell: a => peer(a.node) }, { title: '模型', cell: a => a.model },
-      { title: '结论', cell: a => badge((V[a.verdict] || [a.verdict])[0], (V[a.verdict] || [])[1]) },
-      { title: '相似度', num: true, cell: a => a.similarity.toFixed(2) }, { title: '详情', cell: a => a.detail }, { title: '作业', cell: a => peer(a.job_id) },
+      { title: '结论', cell: a => [badge((V[a.verdict] || [a.verdict])[0], (V[a.verdict] || [])[1]), a.shadow ? [' ', badge('影子', 'warn')] : null] },
+      { title: '方法', cell: a => AUDIT_METHODS[a.method] || a.method },
+      { title: '得分 / 阈值', num: true, cell: a => auditScore(a) }, { title: '详情', cell: a => a.detail },
+      { title: '', cell: a => h('button', { class: 'small', onclick: () => auditQuestions(a) }, '明细') },
     ] });
-    add(m, pageTitle('推理审计', h('small', null, '平台抽检：用参考模型复算节点的回答。管理员的操作记录在「操作日志」')), list.el);
+    add(m, pageTitle('推理审计', h('small', null, '平台抽检：每次向节点提几道开放题，由参考模型逐 token 核对回答；只经官方中继连接节点。管理员的操作记录在「操作日志」')), calCard, list.el);
     await list.reload();
   }
   async function disputes(m) {

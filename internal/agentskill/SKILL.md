@@ -1,6 +1,6 @@
 ---
 name: sharetoken
-description: Use the ShareToken client (the `sharetoken` command) on this machine - buy model inference from the ShareToken network through its local OpenAI-compatible endpoint, check the client's status, balance, jobs, models and relays, share a local model or a hosted API to earn credits, and manage pairing. Use when the user mentions ShareToken, sharetoken, its credits, or wants to call or sell models through it.
+description: Use the ShareToken client (the `sharetoken` command) on this machine - buy model inference from the ShareToken network through its local endpoint (OpenAI chat completions and Responses, Anthropic Messages), check the client's status, balance, jobs, models and relays, share a local model or a hosted API to earn credits, and manage pairing. Use when the user mentions ShareToken, sharetoken, its credits, or wants to call or sell models through it.
 ---
 
 <!-- Installed by `sharetoken skill install`; `sharetoken skill uninstall` removes it. -->
@@ -16,14 +16,14 @@ This copy of the skill was installed by a @ENV@ build of the client:
 | Command | `@CMD@` |
 | Portal | @PORTAL@ |
 | State directory | `@HOME@` (settings in `config.json`; `-home DIR` or `$SHARETOKEN_HOME` selects another) |
-| OpenAI-compatible endpoint | `http://@HTTP@/v1` (only while the client runs) |
+| Model endpoint | `http://@HTTP@/v1` (OpenAI and Anthropic APIs; only while the client runs) |
 
 The examples below write `sharetoken`; use the command above if `sharetoken` is not on the PATH.
 @PLATFORM@
 ## Ground rules
 
 - **Credits are money.** Requests through the endpoint spend the user's credits. Do not send large batches, loops or long generations without the user's go-ahead, and set `max_tokens` on requests.
-- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private`, `partner invite/join/rm/revoke/set`, `apikey on/off/rotate`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `share`, `provider`, `pair`, `partner`, `config`) is always fine.
+- **Ask before changing state:** `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private/approve/reject/withdraw`, `partner invite/join/rm/revoke/set/approve/reject/withdraw`, `accept`, `apikey on/off/rotate`, `relays add/remove`, `tailnet on/off`, `warmup set/run/pause/resume`, `provider warmup`. Reading (`status`, `balance`, `jobs`, `models`, `relays`, `tailnet`, `share`, `provider`, `pair`, `partner`, `warmup`, `config`) is always fine.
 - **Never put secrets on a command line.** A provider API key goes in through standard input or `$SHARETOKEN_PROVIDER_KEY`, never as an argument. Never print the `token` from `config.json` or `providers.json`; `sharetoken config` masks it.
 - **Sign-in needs the user.** `login` mails a six-digit code to the user's address. Ask the user for the address and then for the code; do not guess them.
 - **`up` runs until stopped.** Start it in the background (or ask the user to run it in a terminal); never wait on it in the foreground.
@@ -70,7 +70,8 @@ r = client.chat.completions.create(model="MODEL_ID", max_tokens=256,
                                    messages=[{"role": "user", "content": "Hello"}])
 ```
 
-- Only `POST /v1/chat/completions` and `GET /v1/models` exist (streaming works). There is no embeddings or Anthropic-format endpoint.
+- Endpoints: `POST /v1/chat/completions` (OpenAI), `POST /v1/messages` and `/v1/messages/count_tokens` (Anthropic: Claude Code with `ANTHROPIC_BASE_URL=http://@HTTP@` and `ANTHROPIC_AUTH_TOKEN` set to the key), `POST /v1/responses` (OpenAI Responses: Codex with a provider whose `base_url` is `http://@HTTP@/v1` and `wire_api = "responses"`; Codex reads a custom provider's models only from a catalog file: `sharetoken models -codex FILE` writes one, named by `model_catalog_json` at the top of its config.toml), `GET /v1/models` (`apis` lists the APIs each model is served in natively). Streaming works; there is no embeddings endpoint.
+- Any model works in any of the three APIs: a node whose model server speaks another one converts the request. `X-Sharetoken-Require-Native: true` (or `buy.require_native`) takes only nodes that need no conversion.
 - Set `max_tokens`: only its worst-case cost is held. Without it the whole per-request budget (`buy.budget_micros`) is held. Reasoning models spend part of `max_tokens` on reasoning; a small value can leave `content` empty.
 - Response headers: `X-Sharetoken-Job`, `X-Sharetoken-Node`, `X-Sharetoken-Verified`, `X-Sharetoken-Cost-Micros`, and `X-Sharetoken-TEE` for an attested node.
 - Errors are `{"error":{"code":…}}`: `no_offers` 503 (nobody sells that model: check `models`), `capacity` 503 (busy, retry after `Retry-After`), `insufficient_funds` 402, `budget` 400, `upgrade_required` 426 (`sharetoken version --check`), `upstream_error` / `receipt_rejected` 502 (retry; the client already tried another node when it could).
@@ -84,6 +85,12 @@ Amounts: 1 credit = 1,000,000 micro-credits. Prices are micro-credits per millio
 sharetoken balance                     # available and held credits, tokens bought and sold
 sharetoken jobs [-role buy|sell] [-n 20]
 sharetoken relays [-measure]           # relay round-trip times; the link quality of the current relay
+sharetoken relays add <address>        # share through a relay the user runs themselves (a private relay)
+sharetoken relays remove <address|id>  # stop using it
+sharetoken tailnet                     # direct tunnels (off by default): whether on, each tunnel's path (direct, or derp:<region>) and transport
+sharetoken tailnet on | off            # direct WireGuard tunnels between buyer and seller in place of the relay; both ends need it on
+sharetoken tailnet on -transport tcp   # run TCP inside the tunnel in place of QUIC (the default), for this machine's connections to sellers
+sharetoken tailnet on -wait 3000       # let the first request to a seller wait up to 3 s for its tunnel instead of using the relay
 sharetoken version --check             # is a newer client released?
 sharetoken upgrade                      # install it (asks first; checks the release signature). Only when the user asks
 ```
@@ -96,7 +103,7 @@ Sharing commands take effect at once on a running client.
 sharetoken share                        # current sharing settings
 sharetoken share detect                 # models of the local model server (default Ollama, http://127.0.0.1:11434/v1)
 sharetoken share upstream URL           # another OpenAI-compatible local server (vLLM, LM Studio, llama.cpp …)
-sharetoken share add qwen2.5:7b [-id NAME] [-in PRICE] [-out PRICE] [-max-output N]
+sharetoken share add qwen2.5:7b [-id NAME] [-in PRICE] [-out PRICE] [-cache-read PRICE] [-cache-write PRICE] [-max-output N]
 sharetoken share rm ID
 sharetoken share on | off
 ```
@@ -113,6 +120,20 @@ sharetoken share add MODEL -provider NAME            # then share one of its mod
 sharetoken provider on | off | rm NAME
 ```
 
+## Warm-up
+
+A Claude or ChatGPT (Codex) 5-hour window starts at the first request after it resets. The client can send one tiny request at times of day, so the window resets sooner while the user works: for the Claude Code and Codex of this machine (through their own CLI) and for a sold Claude or ChatGPT login. Each warm-up is a real request on the user's subscription: set it up only when asked.
+
+```bash
+sharetoken warmup                                   # every account, its times, the last result, its windows
+sharetoken warmup set claude|codex [-times 06:00,11:05] [-on-reset off|week|all] [-off]
+sharetoken provider warmup NAME [-times 06:00] [-on-reset off|week|all] [-off]
+sharetoken warmup run [claude|codex|provider:NAME]  # now (needs the client running)
+sharetoken warmup pause | resume
+```
+
+Warm-ups are sent only while the client runs (`sharetoken up` or the desktop app); times are the machine's local time.
+
 `provider login` prints an address the user must open in a browser and then asks for the code or callback address: hand that step to the user.
 
 ## Pairing
@@ -121,8 +142,10 @@ A buyer paired with sellers buys only from them (at most 3). A seller in private
 
 ```bash
 sharetoken pair                                   # pairings and live codes
-sharetoken pair code [-label L] [-ttl 24h] [-uses N]   # seller: make a code for buyers
-sharetoken pair join CODE                         # buyer
+sharetoken pair code [-label L] [-ttl 24h] [-uses N] [-approve]   # seller: make a code and its invite link for buyers
+sharetoken pair join CODE_OR_LINK                 # buyer
+sharetoken pair approve | reject REQUEST_ID       # seller, for a code made with -approve
+sharetoken pair withdraw REQUEST_ID               # buyer: withdraw a request waiting for approval
 sharetoken pair leave SELLER_ID | pair rm BUYER_ID | pair revoke CODE_ID
 sharetoken pair private on | off
 ```
@@ -133,8 +156,10 @@ Two users who pair as partners use each other's nodes first and free (no credits
 
 ```bash
 sharetoken partner                                # partners, tokens given/used in 24h, open invites, settings
-sharetoken partner invite [-ttl 24h]              # a one-person invite code
-sharetoken partner join CODE
+sharetoken partner invite [-ttl 24h] [-approve]   # a one-person invite code and its invite link
+sharetoken partner join CODE_OR_LINK
+sharetoken partner approve | reject | withdraw REQUEST_ID
+sharetoken accept LINK_OR_CODE                    # an invite link (https://<portal>/p#… or /s#…) or code of either kind
 sharetoken partner rm USER_ID | partner revoke INVITE_ID
 sharetoken partner set [-only on|off] [-limit TOKENS_PER_24H] [-share PERCENT]
 ```

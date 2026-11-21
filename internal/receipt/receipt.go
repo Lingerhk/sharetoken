@@ -58,8 +58,13 @@ type Receipt struct {
 	ResponseHash     []byte            `json:"resp_hash"` // StreamHasher digest of the sealed response chunks
 	PromptTokens     uint64            `json:"prompt_tokens"`
 	CompletionTokens uint64            `json:"completion_tokens"`
-	UnixNano         int64             `json:"ts"`
-	Nonce            []byte            `json:"nonce"` // random, prevents receipt reuse across jobs
+	// CacheReadTokens and CacheWriteTokens are the part of PromptTokens the
+	// model server read from and wrote to its prompt cache; they are priced
+	// at the ticket's cache prices instead of its input price.
+	CacheReadTokens  uint64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens uint64 `json:"cache_write_tokens,omitempty"`
+	UnixNano         int64  `json:"ts"`
+	Nonce            []byte `json:"nonce"` // random, prevents receipt reuse across jobs
 }
 
 // SignedReceipt is a Receipt plus the node's Ed25519 signature over its
@@ -138,6 +143,8 @@ func (r *Receipt) canonical() []byte {
 		Bytes(r.ResponseHash).
 		U64(r.PromptTokens).
 		U64(r.CompletionTokens).
+		U64(r.CacheReadTokens).
+		U64(r.CacheWriteTokens).
 		I64(r.UnixNano).
 		Bytes(r.Nonce).
 		Sum()

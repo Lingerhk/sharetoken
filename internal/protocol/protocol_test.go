@@ -192,7 +192,7 @@ func TestEstimates(t *testing.T) {
 		t.Errorf("CJK estimate = %d, want 3", got)
 	}
 	body := []byte(`{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":[{"type":"text","text":"hello world!"}]}]}`)
-	got, err := protocol.EstimatePromptTokens(body)
+	got, err := protocol.EstimatePromptTokens(protocol.APIChat, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,10 +202,11 @@ func TestEstimates(t *testing.T) {
 }
 
 func TestUsagePlausible(t *testing.T) {
-	if err := protocol.UsagePlausible(120, 60, 100, 50); err != nil {
+	u := func(p, c uint64) protocol.Usage { return protocol.Usage{PromptTokens: p, CompletionTokens: c} }
+	if err := protocol.UsagePlausible(u(120, 60), 100, 50, false, 4096); err != nil {
 		t.Errorf("honest usage rejected: %v", err)
 	}
-	if protocol.UsagePlausible(100, 5_000, 100, 50) == nil {
+	if protocol.UsagePlausible(u(100, 5_000), 100, 50, false, 4096) == nil {
 		t.Error("100x inflated completion accepted")
 	}
 }
@@ -267,7 +268,7 @@ func TestHoldForCoversMaxTokens(t *testing.T) {
 			t.Errorf("%+v: hold %d allows %d output tokens", c, h, got)
 		}
 		// A prompt up to twice the estimate is still covered in full.
-		full := protocol.TicketCost(&protocol.Ticket{PriceInMicros: c.pin, PriceOutMicros: c.pout, ReservedMicros: 1 << 62}, 2*c.prompt, c.maxTok)
+		full := protocol.TicketCost(&protocol.Ticket{PriceInMicros: c.pin, PriceOutMicros: c.pout, ReservedMicros: 1 << 62}, protocol.Usage{PromptTokens: 2 * c.prompt, CompletionTokens: c.maxTok})
 		if full > h {
 			t.Errorf("%+v: hold %d < cost %d", c, h, full)
 		}

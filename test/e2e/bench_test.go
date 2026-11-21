@@ -147,7 +147,7 @@ func benchUpstream(t *testing.T, sc *scenario) *httptest.Server {
 		}
 		var buf bytes.Buffer
 		_, _ = buf.ReadFrom(r.Body)
-		prompt, _ := protocol.EstimatePromptTokens(buf.Bytes())
+		prompt, _ := protocol.EstimatePromptTokens(protocol.APIChat, buf.Bytes())
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
 		rng := rand.New(rand.NewPCG(1, 2))

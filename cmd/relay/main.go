@@ -7,6 +7,11 @@
 // The file's access.networks lists the deployments the relay serves, each with
 // its portal key and coordinator. Without any, the relay is open.
 //
+//	relay init -portal https://sharetoken.app -account user:3 -out relay.yaml
+//
+// writes the configuration of a private relay: one that serves only the
+// devices of the accounts named (private.go).
+//
 // Register the printed address with the portal (portal relay add <addr>);
 // the coordinator then reserves a slot on it and users start measuring it.
 package main
@@ -21,9 +26,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -79,6 +86,20 @@ type NetworkFile struct {
 	AllowPeers        []string `yaml:"allow_peers"`
 	MaxDevicesPerUser int      `yaml:"max_devices_per_user"`
 	MaxReservations   int      `yaml:"max_reservations"` // 0: only limits.max_reservations
+	// AllowAccounts makes the relay private to these accounts (private.go).
+	AllowAccounts []string `yaml:"allow_accounts"`
+	// PortalURL, if set, is where the relay reads the network's pass key,
+	// in addition to PortalKeys.
+	PortalURL string `yaml:"portal_url"`
+}
+
+// checkYAML decodes a configuration held in memory the way config.Load
+// decodes a file.
+func checkYAML(text string, f *File) error {
+	*f = defaults()
+	dec := yaml.NewDecoder(strings.NewReader(text))
+	dec.KnownFields(true)
+	return dec.Decode(f)
 }
 
 func defaults() File {
@@ -147,7 +168,13 @@ func relayConfig(f File) (relay.Config, error) {
 		}
 	}
 	for _, nf := range f.Access.Networks {
-		n := relay.Network{Name: nf.Name, MaxDevicesPerAccount: nf.MaxDevicesPerUser, MaxReservations: nf.MaxReservations}
+		n := relay.Network{Name: nf.Name, MaxDevicesPerAccount: nf.MaxDevicesPerUser, MaxReservations: nf.MaxReservations,
+			AllowAccounts: nf.AllowAccounts}
+		if nf.PortalURL != "" {
+			if u, err := url.Parse(nf.PortalURL); err != nil || u.Host == "" || (u.Scheme != "https" && !(u.Scheme == "http" && isLoopback(u.Host))) {
+				errs = append(errs, fmt.Errorf("access.networks %s: portal_url %q must be an https URL", nf.Name, nf.PortalURL))
+			}
+		}
 		for _, k := range nf.PortalKeys {
 			pub, err := relaypass.ParseKey(k)
 			if err != nil {
@@ -192,6 +219,12 @@ func main() {
 		fmt.Println(version.String("relay"))
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "init" {
+		if err := initPrivate(os.Args[2:], os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	f, check, printID, err := loadArgs(os.Args[1:])
 	if err != nil {
 		log.Fatal(err)
@@ -229,8 +262,15 @@ func main() {
 	if len(cfg.Networks) == 0 {
 		log.Print("WARNING: no access.networks: open relay, anyone may reserve; list the portal's key to admit only registered users")
 	}
+	private := len(cfg.Networks) > 0
 	for _, n := range cfg.Networks {
-		if len(n.AllowPeers) == 0 {
+		private = private && n.Private()
+		switch {
+		case n.Private() && len(n.AllowPeers) > 0:
+			log.Printf("WARNING: network %s lists allow_accounts and allow_peers: a private relay should not carry a coordinator, which serves every user", n.Name)
+		case n.Private():
+			log.Printf("network %s: private, for %d account(s)", n.Name, len(n.AllowAccounts))
+		case len(n.AllowPeers) == 0:
 			log.Printf("WARNING: network %s has no allow_peers: its coordinator cannot reserve here, so its users cannot reach it through this relay", n.Name)
 		}
 	}
@@ -251,7 +291,12 @@ func main() {
 	for _, a := range r.Addrs() {
 		fmt.Println("  ", a)
 	}
-	fmt.Printf("register it with:\n   portal relay add '%s' [name] [region]\n", registerAddr(r.Host.ID(), r.Host.Addrs()))
+	if private {
+		fmt.Printf("add it to the devices that share through it:\n   sharetoken relays add '%s'\n", registerAddr(r.Host.ID(), r.Host.Addrs()))
+	} else {
+		fmt.Printf("register it with:\n   portal relay add '%s' [name] [region]\n", registerAddr(r.Host.ID(), r.Host.Addrs()))
+	}
+	go refreshKeys(ctx, r, f.Access.Networks)
 	if !hasIPv6(r.Host.Addrs()) {
 		log.Print("note: no IPv6 address; IPv6-only users cannot reach this relay")
 	}

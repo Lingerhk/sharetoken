@@ -1,0 +1,21 @@
+# A private sharetoken relay under systemd: the package unpacked to
+# /opt/sharetoken-relay with relay.yaml in it, owned by the user below.
+[Unit]
+Description=sharetoken relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=sharetoken-relay
+WorkingDirectory=/opt/sharetoken-relay
+ExecStart=/opt/sharetoken-relay/sharetoken-relay -config relay.yaml
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

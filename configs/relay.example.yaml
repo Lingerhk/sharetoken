@@ -45,6 +45,12 @@ access:
       # Devices of one user that may hold a reservation at once. Accounts are
       # counted per network.
       max_devices_per_user: 4
+      # A private relay (one a user runs for their own devices) lists accounts
+      # instead of a coordinator: only their devices may reserve.
+      # `relay init -account user:3 -out relay.yaml` writes such a file, with
+      # portal_url, where the relay keeps reading the portal's pass key.
+      # allow_accounts: [user:3]
+      # portal_url: https://sharetoken.app
     - name: dev
       portal_keys:
         - ed25519:<dev portal pass-key hex>

@@ -63,9 +63,9 @@ const (
 	MaxPairedSellers   = 3                   // sellers one buyer may be paired with
 	MaxPairedBuyers    = 1000                // buyers one seller may have
 	DefaultPairingTTL  = 24 * time.Hour      // lifetime of a code when none is asked for
-	MaxPairingTTL      = 30 * 24 * time.Hour // longest lifetime of a code
+	MaxPairingTTL      = 7 * 24 * time.Hour  // longest lifetime of a code
 	minPairingTTL      = time.Minute
-	pairingCodeBytes   = 10 // 80 bits: 16 base32 characters
+	pairingCodeLen     = 6 // base32 characters: 30 bits, so the portal limits wrong ones hard (portal/invites.go)
 	maxPairingLabelLen = 64
 )
 
@@ -76,13 +76,16 @@ var ErrOwnCode = errors.New("accounts: this is your own pairing code")
 var ErrLimit = errors.New("accounts: limit reached")
 
 // PairingCode is a code a seller made. Code is the secret itself: the seller
-// reads it again to share it, and whoever holds it can pair.
+// reads it again to share it, and whoever holds it can pair. LinkToken is the
+// same secret for a link (invites.go): whoever opens the link can pair too.
 type PairingCode struct {
 	ID        int64  `json:"id"`
 	Code      string `json:"code"`
+	LinkToken string `json:"link_token"`
 	Label     string `json:"label"`
 	MaxUses   int64  `json:"max_uses"` // 0: no limit
 	Used      int64  `json:"used"`
+	Approval  bool   `json:"approval"` // each pairing waits for the seller to approve it
 	CreatedAt int64  `json:"created_at"`
 	ExpiresAt int64  `json:"expires_at"` // unix nanoseconds
 }
@@ -94,6 +97,11 @@ type PairedUser struct {
 	Label    string `json:"label,omitempty"` // label of the code the pairing was made with
 	Since    int64  `json:"since"`
 	Disabled bool   `json:"disabled,omitempty"`
+	// Pending: the seller asks to approve each pairing, and has not yet; the
+	// pairing starts once it does (invites.go).
+	Pending bool `json:"pending,omitempty"`
+	// NewRequest: this call filed the request Pending stands for.
+	NewRequest bool `json:"-"`
 }
 
 // NormalizePairingCode strips what people add when they pass a code on:
@@ -102,11 +110,19 @@ func NormalizePairingCode(code string) string {
 	return strings.ToUpper(strings.NewReplacer(" ", "", "-", "", "\t", "", "\n", "", "\r", "").Replace(code))
 }
 
-// FormatPairingCode writes a code in groups of four for reading aloud.
+// FormatPairingCode writes a code in groups for reading aloud: two groups of
+// three (ABC-DEF); codes made before in two of five (ten characters) or fours.
 func FormatPairingCode(code string) string {
+	group := 4
+	switch len(code) {
+	case pairingCodeLen:
+		group = 3
+	case 10:
+		group = 5
+	}
 	var b strings.Builder
 	for i, r := range code {
-		if i > 0 && i%4 == 0 {
+		if i > 0 && i%group == 0 {
 			b.WriteByte('-')
 		}
 		b.WriteRune(r)
@@ -115,21 +131,46 @@ func FormatPairingCode(code string) string {
 }
 
 func newPairingCode() (string, error) {
-	b := make([]byte, pairingCodeBytes)
+	b := make([]byte, (pairingCodeLen*5+7)/8)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b), nil
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)[:pairingCodeLen], nil
 }
 
-const pairingCodeColumns = `id, code, label, max_uses, used, created_at, expires_at`
+// uniqueCode makes a code that table (pairing_codes or share_invites) does not
+// hold yet. Codes are short, so a clash is rare but possible; the UNIQUE key
+// still catches a race between two transactions.
+func uniqueCode(tx *sql.Tx, table string) (string, error) {
+	return uniqueValue(tx, table, "code", newPairingCode)
+}
+
+// uniqueValue makes a value with gen that column of table does not hold yet.
+func uniqueValue(tx *sql.Tx, table, column string, gen func() (string, error)) (string, error) {
+	for range 8 {
+		code, err := gen()
+		if err != nil {
+			return "", err
+		}
+		var one int
+		switch err := tx.QueryRow(`SELECT 1 FROM `+table+` WHERE `+column+` = ?`, code).Scan(&one); {
+		case errors.Is(err, sql.ErrNoRows):
+			return code, nil
+		case err != nil:
+			return "", err
+		}
+	}
+	return "", errors.New("accounts: no free code found")
+}
+
+const pairingCodeColumns = `id, code, COALESCE(link_token, ''), label, max_uses, used, approval, created_at, expires_at`
 
 // pairingCodeLive selects codes that can still be redeemed; its argument is now.
 const pairingCodeLive = `revoked = 0 AND expires_at > ? AND (max_uses = 0 OR used < max_uses)`
 
 func scanPairingCode(row interface{ Scan(...any) error }) (*PairingCode, error) {
 	var c PairingCode
-	if err := row.Scan(&c.ID, &c.Code, &c.Label, &c.MaxUses, &c.Used, &c.CreatedAt, &c.ExpiresAt); err != nil {
+	if err := row.Scan(&c.ID, &c.Code, &c.LinkToken, &c.Label, &c.MaxUses, &c.Used, &c.Approval, &c.CreatedAt, &c.ExpiresAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -141,7 +182,21 @@ func scanPairingCode(row interface{ Scan(...any) error }) (*PairingCode, error) 
 // CreatePairingCode makes a code for sellerID. ttl 0 means DefaultPairingTTL;
 // maxUses 0 means any number of buyers.
 func (s *Store) CreatePairingCode(sellerID int64, label string, ttl time.Duration, maxUses int64) (*PairingCode, error) {
-	label = strings.TrimSpace(label)
+	return s.CreatePairingCodeWith(sellerID, PairingCodeOptions{Label: label, TTL: ttl, MaxUses: maxUses})
+}
+
+// PairingCodeOptions is what a seller chooses for a new code.
+type PairingCodeOptions struct {
+	Label    string
+	TTL      time.Duration // 0: DefaultPairingTTL
+	MaxUses  int64         // 0: any number of buyers
+	Approval bool          // each pairing waits for the seller to approve it
+}
+
+// CreatePairingCodeWith makes a code for sellerID, and the link token that
+// stands for it.
+func (s *Store) CreatePairingCodeWith(sellerID int64, o PairingCodeOptions) (*PairingCode, error) {
+	label, ttl, maxUses := strings.TrimSpace(o.Label), o.TTL, o.MaxUses
 	if ttl == 0 {
 		ttl = DefaultPairingTTL
 	}
@@ -153,13 +208,9 @@ func (s *Store) CreatePairingCode(sellerID int64, label string, ttl time.Duratio
 	case maxUses < 0 || maxUses > MaxPairedBuyers:
 		return nil, fmt.Errorf("%w: uses must be between 0 (no limit) and %d", ErrInvalid, MaxPairedBuyers)
 	}
-	code, err := newPairingCode()
-	if err != nil {
-		return nil, err
-	}
 	now := s.now()
 	var out *PairingCode
-	err = s.tx(func(tx *sql.Tx) error {
+	err := s.tx(func(tx *sql.Tx) error {
 		var live int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM pairing_codes WHERE seller_id = ? AND `+pairingCodeLive, sellerID, now.UnixNano()).Scan(&live); err != nil {
 			return err
@@ -167,8 +218,16 @@ func (s *Store) CreatePairingCode(sellerID int64, label string, ttl time.Duratio
 		if live >= MaxPairingCodes {
 			return fmt.Errorf("%w: %d pairing codes are in use; revoke one first", ErrLimit, live)
 		}
-		res, err := tx.Exec(`INSERT INTO pairing_codes (seller_id, code, label, max_uses, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			sellerID, code, label, maxUses, now.UnixNano(), now.Add(ttl).UnixNano())
+		code, err := uniqueCode(tx, "pairing_codes")
+		if err != nil {
+			return err
+		}
+		token, err := uniqueValue(tx, "pairing_codes", "link_token", newLinkToken)
+		if err != nil {
+			return err
+		}
+		res, err := tx.Exec(`INSERT INTO pairing_codes (seller_id, code, link_token, label, max_uses, approval, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			sellerID, code, token, label, maxUses, boolInt(o.Approval), now.UnixNano(), now.Add(ttl).UnixNano())
 		if err != nil {
 			return err
 		}
@@ -213,18 +272,34 @@ func (s *Store) RevokePairingCode(sellerID, id int64) error {
 // that seller. It is ErrNotFound for a code that is wrong, expired, revoked or
 // used up, ErrOwnCode for the buyer's own code, and ErrLimit when either side
 // has as many pairings as it may. Redeeming a code of a seller the buyer is
-// already paired with changes nothing and takes no use.
+// already paired with changes nothing and takes no use. When the code asks the
+// seller to approve each pairing, nothing is paired yet: the request waits for
+// the seller (invites.go) and the seller comes back with Pending set.
 func (s *Store) RedeemPairingCode(buyerID int64, code string) (*PairedUser, error) {
 	code = NormalizePairingCode(code)
 	if code == "" {
 		return nil, ErrNotFound
 	}
+	return s.redeemPairing(buyerID, "code", code)
+}
+
+// RedeemPairingLink is RedeemPairingCode for the link token of a code.
+func (s *Store) RedeemPairingLink(buyerID int64, token string) (*PairedUser, error) {
+	if !ValidLinkToken(token) {
+		return nil, ErrNotFound
+	}
+	return s.redeemPairing(buyerID, "link_token", token)
+}
+
+func (s *Store) redeemPairing(buyerID int64, column, value string) (*PairedUser, error) {
 	now := s.now().UnixNano()
 	var out *PairedUser
 	err := s.tx(func(tx *sql.Tx) error {
 		var codeID, sellerID int64
 		var label string
-		err := tx.QueryRow(`SELECT id, seller_id, label FROM pairing_codes WHERE code = ? AND `+pairingCodeLive, code, now).Scan(&codeID, &sellerID, &label)
+		var approval bool
+		err := tx.QueryRow(`SELECT id, seller_id, label, approval FROM pairing_codes WHERE `+column+` = ? AND `+pairingCodeLive+` FOR UPDATE`, value, now).
+			Scan(&codeID, &sellerID, &label, &approval)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -250,29 +325,51 @@ func (s *Store) RedeemPairingCode(buyerID int64, code string) (*PairedUser, erro
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
-		var sellers, buyers int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM pairings WHERE buyer_id = ?`, buyerID).Scan(&sellers); err != nil {
+		if err := pairingLimits(tx, buyerID, sellerID); err != nil {
 			return err
 		}
-		if sellers >= MaxPairedSellers {
-			return fmt.Errorf("%w: you are paired with %d sellers; leave one first", ErrLimit, sellers)
-		}
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM pairings WHERE seller_id = ?`, sellerID).Scan(&buyers); err != nil {
+		if approval {
+			out.Pending = true
+			out.Since, out.NewRequest, err = addRequest(tx, KindPair, codeID, sellerID, buyerID, now)
 			return err
 		}
-		if buyers >= MaxPairedBuyers {
-			return fmt.Errorf("%w: this seller has as many buyers as it may", ErrLimit)
-		}
-		if _, err := tx.Exec(`INSERT INTO pairings (buyer_id, seller_id, code_id, created_at) VALUES (?, ?, ?, ?)`, buyerID, sellerID, codeID, now); err != nil {
-			return err
-		}
-		_, err = tx.Exec(`UPDATE pairing_codes SET used = used + 1 WHERE id = ?`, codeID)
-		return err
+		return pairTx(tx, buyerID, sellerID, codeID, now)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// pairingLimits fails with ErrLimit when buyerID may not pair with one more
+// seller, or sellerID with one more buyer.
+func pairingLimits(tx *sql.Tx, buyerID, sellerID int64) error {
+	var sellers, buyers int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pairings WHERE buyer_id = ?`, buyerID).Scan(&sellers); err != nil {
+		return err
+	}
+	if sellers >= MaxPairedSellers {
+		return fmt.Errorf("%w: you are paired with %d sellers; leave one first", ErrLimit, sellers)
+	}
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pairings WHERE seller_id = ?`, sellerID).Scan(&buyers); err != nil {
+		return err
+	}
+	if buyers >= MaxPairedBuyers {
+		return fmt.Errorf("%w: this seller has as many buyers as it may", ErrLimit)
+	}
+	return nil
+}
+
+// pairTx pairs buyerID with sellerID through code codeID, which takes a use.
+func pairTx(tx *sql.Tx, buyerID, sellerID, codeID, now int64) error {
+	if err := pairingLimits(tx, buyerID, sellerID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO pairings (buyer_id, seller_id, code_id, created_at) VALUES (?, ?, ?, ?)`, buyerID, sellerID, codeID, now); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`UPDATE pairing_codes SET used = used + 1 WHERE id = ?`, codeID)
+	return err
 }
 
 // Pairings lists who userID is paired with: the sellers it buys from, and the

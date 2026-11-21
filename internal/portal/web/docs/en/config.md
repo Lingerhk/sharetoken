@@ -61,11 +61,14 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 ```json
 {
   "buy": {
-    "budget_micros": 200000,
+    "budget_micros": 2000000,
     "max_price_in": 0,
     "max_price_out": 0,
     "evidence": true,
     "require_tee": false,
+    "require_native": false,
+    "loop_guard": true,
+    "spot_checks": true,
     "queue_seconds": 30,
     "first_byte_seconds": 30,
     "idle_seconds": 30
@@ -75,11 +78,14 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 
 | Field | Meaning | Default |
 |---|---|---|
-| `budget_micros` | The most to hold for each request, in micro-credit. Whatever is unused is returned | `200000` (0.2 credit) |
+| `budget_micros` | The most to hold for each request, in micro-credit. Whatever is unused is returned | `2000000` (2 credits) |
 | `max_price_in` | The most you will pay per million input tokens. `0` means no limit | `0` |
 | `max_price_out` | The most you will pay per million output tokens. `0` means no limit | `0` |
 | `evidence` | If a node overstates usage, hand over the key for that job to get an automatic refund | `true` |
 | `require_tee` | Send requests only to TEE nodes | `false` |
+| `require_native` | Send requests only to nodes whose model server speaks the request's API natively, never converted ([Native and converted](/docs/use-models#native)). A request can also ask for it with the header `X-Sharetoken-Require-Native: true` | `false` |
+| `loop_guard` | Stop paying for a model stuck in a loop. An answer whose reasoning or text keeps repeating the same few sentences is cut off as if it had reached its output limit, and the seller stops the model; a request whose last 8 turns are the same tool call with the same result is answered on your machine with a notice and not sent. Set `false` to turn it off | `true` |
+| `spot_checks` | Help the platform spot-check sellers. The platform checks at random that sellers really run the model they advertise; with this on, the client now and then carries one short check to a seller, the way it sends your own requests, so the seller cannot tell a check from a buyer. The request and the answer are encrypted (your machine cannot read them) and it costs no credit. The seller sees your device's address as it does for any request you send. It is on unless this file turns it off; the desktop app has no switch for it | `true` |
 | `queue_seconds` | How long to wait when all nodes are full. A negative value fails immediately | `30` |
 | `first_byte_seconds` | Time limit for the node's first frame. On timeout, another node is used. Nodes send a progress frame every 10 seconds while the model is thinking, so slow models do not need a higher value | `30` |
 | `idle_seconds` | Time limit between two frames. On timeout, the job is judged stuck. A job that gets only progress frames and no output for 5 minutes is judged stuck too | `30` |
@@ -108,8 +114,9 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 | `upstream` | The OpenAI-compatible address of the local model server | Ollama: `http://127.0.0.1:11434/v1` |
 | `upstream_key_env` | The name of the environment variable that holds the local model server's API key | Empty |
 | `concurrency` | Number of requests handled at the same time | `2` |
-| `relays` | How many relays to register on | `2` |
-| `models` | The models you share. Usually managed with `share add` | Empty |
+| `relays` | How many of the network's relays to register on | `2` |
+| `keep_official` | With a [private relay](/docs/relay): also stay on the network's relays while it works | `false` |
+| `models` | The models you share. Usually managed with `share add`. A model may also set `price_cache_read` and `price_cache_write`, the prices of input tokens read from and written to the prompt cache; see [cache prices](/docs/share#cache-prices) | Empty |
 | `tee` | Confidential VM type: `off`, `auto`, `sev-snp`, `tdx` | `off` |
 
 Hosted APIs you share (providers) are not in this file: they are kept, with their API keys and logins, in `providers.json` in the same directory. Manage them with the [`provider` command](/docs/share#providers) rather than editing the file.
@@ -124,3 +131,8 @@ When you change settings with the `share` subcommands, the running client applie
 | `listen` | libp2p listen addresses | All network interfaces, IPv4 and IPv6, TCP and QUIC |
 | `nat` | UPnP, NAT-PMP and hole punching | `true` |
 | `relays` | If not empty, overrides the relay list from the portal | Empty |
+| `private_relays` | Relays of your own that your sharing runs through, see [Run your own relay](/docs/relay). Managed with `relays add` | Empty |
+| `tailnet.enabled` | Direct tunnels, see [Direct tunnels](/docs/running#tailnet). Managed with `tailnet on` / `tailnet off` | `false` |
+| `tailnet.wait_ms` | How long a request to a new node waits for the tunnel before it uses the relay (0 to 10000 ms) | `0` |
+| `tailnet.transport` | What this machine's connections to sellers run over inside the tunnel: `quic` or `tcp`. A seller accepts both | `quic` |
+| `tailnet.derp_map` | The DERP map tunnels start through: a URL or a file; empty for tailcat's public DERP relays | Empty |

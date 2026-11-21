@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -76,7 +77,7 @@ func (m *market) waitDispute(node string, done func(coordinator.DisputeInfo) boo
 // coordinator refunds it on the evidence alone: no human involved.
 func TestInflatedBillIsRefundedOnEvidence(t *testing.T) {
 	m := newMarket(t)
-	_, nodeKeys := m.addNode(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut)
+	_, nodeKeys := m.addNodeCfg(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut, nil, overbill)
 	m.waitOffers(1)
 	cl, _, buyerKeys := m.addBuyer(5_000_000)
 
@@ -104,7 +105,7 @@ func TestInflatedBillIsRefundedOnEvidence(t *testing.T) {
 // the job, so the same dispute waits for an arbitrator instead.
 func TestWithoutEvidenceTheDisputeWaitsForArbitration(t *testing.T) {
 	m := newMarket(t)
-	_, nodeKeys := m.addNode(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut)
+	_, nodeKeys := m.addNodeCfg(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut, nil, overbill)
 	m.waitOffers(1)
 	cl, _, _ := m.addBuyer(5_000_000)
 	cl.Evidence = false
@@ -118,10 +119,30 @@ func TestWithoutEvidenceTheDisputeWaitsForArbitration(t *testing.T) {
 	}
 }
 
-// The auditor buys from each node under a fresh identity and replays the
-// request on its reference model. The honest node passes; a cheaper node
-// serving a different model fails twice, is suspended, and buyers then get
-// the honest node even though it costs more.
+// answerVerifier stands in for a token-level reference: an answer is the
+// reference model's own (top-1 rate 1) when it is what answer gives for the
+// question, else nobody's (0).
+type answerVerifier struct{ answer func(string) string }
+
+func (answerVerifier) Method() string { return audit.MethodTF }
+
+func (v answerVerifier) Generate(_ context.Context, q audit.Question) (string, bool, error) {
+	return v.answer(q.Messages[len(q.Messages)-1].Content), true, nil
+}
+
+func (v answerVerifier) Score(_ context.Context, q audit.Question, answer string, _ bool, _ int) (*audit.Score, error) {
+	s := &audit.Score{Method: audit.MethodTF, Tokens: len(strings.Fields(answer)) + 1, Calls: 1}
+	if answer == v.answer(q.Messages[len(q.Messages)-1].Content) {
+		s.Top1 = 1
+	}
+	s.RefPrompt = uint64(len(strings.Fields(q.Messages[len(q.Messages)-1].Content)) + 8)
+	return s, nil
+}
+
+// The auditor buys from each node under a fresh identity, several questions
+// per audit, and scores every answer against its reference model. The honest
+// node passes; a cheaper node serving a different model fails twice, is
+// suspended, and buyers then get the honest node even though it costs more.
 func TestAuditCatchesASubstitutedModel(t *testing.T) {
 	m := newMarket(t)
 	_, honest := m.addNode(answerUpstream(t, echoAnswer, 0).URL, 2*priceIn, 2*priceOut)
@@ -134,8 +155,10 @@ func TestAuditCatchesASubstitutedModel(t *testing.T) {
 		References: []audit.Reference{{
 			Model: model, UpstreamModel: "mock-7b",
 			Upstream: &node.OpenAICompat{BaseURL: answerUpstream(t, echoAnswer, 0).URL + "/v1"},
+			Verifier: answerVerifier{echoAnswer},
 		}},
 		Coordinator: m.info,
+		Questions:   3,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -161,12 +184,18 @@ func TestAuditCatchesASubstitutedModel(t *testing.T) {
 
 	// Audits were paid like any job, out of platform funds; once settled, the
 	// audit identities' leftovers go back to the platform.
-	m.coord.Engine.Tick(time.Now().Add(2 * time.Minute))
+	m.coord.Engine.Tick(time.Now().Add(coordinator.AuditorLifetime + time.Minute))
 	if err := m.coord.Engine.CheckBooks(); err != nil {
 		t.Fatal(err)
 	}
-	if as, _ := m.coord.Engine.Audits(10); len(as) != 3 {
+	as, _ := m.coord.Engine.Audits(10)
+	if len(as) != 3 {
 		t.Fatalf("want 3 recorded audits, got %d", len(as))
+	}
+	for _, a := range as {
+		if a.Method != audit.MethodTF || a.Questions != 3 || a.Shadow || a.Scores == "" || a.Threshold != 0.85 {
+			t.Fatalf("audit record: %+v", a)
+		}
 	}
 }
 
@@ -211,14 +240,16 @@ func TestRequireTEEUsesOnlyAttestedNodes(t *testing.T) {
 // the audit job is refunded on evidence before the audit identity goes away.
 func TestAuditOfAnInflatingNodeIsAMismatchAndItsJobIsRefunded(t *testing.T) {
 	m := newMarket(t)
-	_, inflator := m.addNode(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut)
+	_, inflator := m.addNodeCfg(answerUpstream(t, echoAnswer, 50_000).URL, priceIn, priceOut, nil, overbill)
 	m.waitOffers(1)
 	aud, err := audit.New(m.coord.Engine, audit.Config{
 		References: []audit.Reference{{
 			Model: model, UpstreamModel: "mock-7b",
 			Upstream: &node.OpenAICompat{BaseURL: answerUpstream(t, echoAnswer, 0).URL + "/v1"},
+			Verifier: answerVerifier{echoAnswer},
 		}},
 		Coordinator: m.info,
+		Questions:   3,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -237,3 +268,6 @@ func TestAuditOfAnInflatingNodeIsAMismatchAndItsJobIsRefunded(t *testing.T) {
 		t.Fatalf("an inflating node was paid %d for audit jobs", got)
 	}
 }
+
+// overbill makes a node sign the inflated usage its model server reports.
+func overbill(c *node.Config) { c.Overbill = true }

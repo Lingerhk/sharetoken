@@ -81,15 +81,44 @@ const (
 	TypeReject        = "reject"
 	TypeEvidence      = "evidence"
 	TypeVerdict       = "verdict"
+	TypeErrandPoll    = "errand_poll"   // a client asks the coordinator for an errand
+	TypeErrand        = "errand"        // the coordinator's answer: an errand, or none
+	TypeErrandReport  = "errand_report" // a client hands back what an errand's node returned
 )
 
 // ModelPrice is a node's price for one model. Amounts are micro-credits
 // (1e-6 credit) per one million tokens; all money math is integer.
+//
+// Prompt tokens read from or written to the model server's prompt cache have
+// prices of their own (Anthropic charges a tenth of the input price for a
+// cache read and 1.25 times it for a cache write; OpenAI a fraction for a
+// read and nothing extra for a write).
 type ModelPrice struct {
-	Model          string `json:"model"`
-	PriceInMicros  uint64 `json:"price_in"`
-	PriceOutMicros uint64 `json:"price_out"`
+	Model           string `json:"model"`
+	PriceInMicros   uint64 `json:"price_in"`
+	PriceOutMicros  uint64 `json:"price_out"`
+	PriceCacheRead  uint64 `json:"price_cache_read"`
+	PriceCacheWrite uint64 `json:"price_cache_write"`
+	// APIs are the APIs the node's model server speaks natively for this
+	// model (APIChat, APIMessages, APIResponses). Every node serves all of
+	// them, converting the others; buyers prefer a node that needs no
+	// conversion.
+	APIs []string `json:"apis"`
+	// Meta is what the node knows of the model (its window, output limit,
+	// reasoning), for clients' model lists; nil when it knows nothing. It
+	// is advisory and not signed (signingBytes): the coordinator's model
+	// list, where buyers read it, is not signed either, and a peer of an
+	// older release that drops the field still verifies the offer.
+	Meta *ModelMeta `json:"meta,omitempty"`
 }
+
+// Prices are the rates a ticket charges.
+func (m ModelPrice) Prices() Prices {
+	return Prices{In: m.PriceInMicros, Out: m.PriceOutMicros, CacheRead: m.PriceCacheRead, CacheWrite: m.PriceCacheWrite}
+}
+
+// Native reports whether the model server speaks api without conversion.
+func (m ModelPrice) Native(api string) bool { return slices.Contains(m.APIs, NormalAPI(api)) }
 
 // Offer is a node's signed advertisement, announced to the coordinator
 // (TypeAnnounce) every few seconds; it doubles as the node's heartbeat.
@@ -117,7 +146,7 @@ func (o *Offer) signingBytes() []byte {
 		Bytes(o.ReceiptKey).
 		U64(uint64(len(o.Models)))
 	for _, m := range o.Models {
-		e.String(m.Model).U64(m.PriceInMicros).U64(m.PriceOutMicros)
+		e.String(m.Model).U64(m.PriceInMicros).U64(m.PriceOutMicros).U64(m.PriceCacheRead).U64(m.PriceCacheWrite).Strings(m.APIs)
 	}
 	e.U64(uint64(o.MaxConcurrency)).I64(o.IssuedAt).I64(o.ExpiresAt).Bool(o.Quote != nil)
 	if q := o.Quote; q != nil {
@@ -169,6 +198,11 @@ func (o *Offer) VerifySignature() error {
 			return errors.New("offer: empty or duplicate model id")
 		}
 		seen[m.Model] = true
+		for _, api := range m.APIs {
+			if !ValidAPI(api) {
+				return errors.New("offer: unknown API " + api)
+			}
+		}
 	}
 	if o.Quote != nil && (o.Quote.Backend == "" || len(o.Quote.Evidence) == 0) {
 		return errors.New("offer: empty attestation quote")
@@ -218,11 +252,18 @@ type Ticket struct {
 	Buyer          string   `json:"buyer"`
 	PriceInMicros  uint64   `json:"price_in"`
 	PriceOutMicros uint64   `json:"price_out"`
-	ReservedMicros uint64   `json:"reserved"`   // held from the buyer; settlement never exceeds it
-	IssuedAt       int64    `json:"issued_at"`  // unix nanos
-	ExpiresAt      int64    `json:"expires_at"` // the node must accept the job before this
-	Coordinator    string   `json:"coordinator"`
-	InferVersion   uint32   `json:"infer_version"` // the infer protocol version buyer and node use for this job
+	PriceCacheRead uint64   `json:"price_cache_read"`
+	// PriceCacheWrite is the price of prompt tokens written to the cache.
+	PriceCacheWrite uint64 `json:"price_cache_write"`
+	ReservedMicros  uint64 `json:"reserved"`   // held from the buyer; settlement never exceeds it
+	IssuedAt        int64  `json:"issued_at"`  // unix nanos
+	ExpiresAt       int64  `json:"expires_at"` // the node must accept the job before this
+	Coordinator     string `json:"coordinator"`
+	InferVersion    uint32 `json:"infer_version"` // the infer protocol version buyer and node use for this job
+	// API is the API of the buyer's request (APIChat, APIMessages,
+	// APIResponses): the node reads the request and writes the response in
+	// it, and so do dispute judges and auditors.
+	API string `json:"api"`
 	// Shared marks a job between share partners (accounts/sharing.go): the
 	// node runs it as any other, but it costs nothing: no credits are held,
 	// charged or paid. The prices still bound the output by the reservation.
@@ -241,11 +282,14 @@ func (t *Ticket) signingBytes() []byte {
 		String(t.Buyer).
 		U64(t.PriceInMicros).
 		U64(t.PriceOutMicros).
+		U64(t.PriceCacheRead).
+		U64(t.PriceCacheWrite).
 		U64(t.ReservedMicros).
 		I64(t.IssuedAt).
 		I64(t.ExpiresAt).
 		String(t.Coordinator).
 		U64(uint64(t.InferVersion)).
+		String(t.API).
 		Bool(t.Shared).
 		Sum()
 }
@@ -272,6 +316,11 @@ func (t *Ticket) Equal(o *Ticket) bool {
 	return bytes.Equal(t.signingBytes(), o.signingBytes()) && bytes.Equal(t.Sig, o.Sig)
 }
 
+// Prices are the rates the ticket charges.
+func (t *Ticket) Prices() Prices {
+	return Prices{In: t.PriceInMicros, Out: t.PriceOutMicros, CacheRead: t.PriceCacheRead, CacheWrite: t.PriceCacheWrite}
+}
+
 // RequestAAD binds a sealed request to one job, buyer and node, so it cannot be
 // replayed into another job or to another node.
 func RequestAAD(t *Ticket) []byte {
@@ -295,6 +344,11 @@ func AckBytes(r *receipt.Receipt) []byte {
 type TicketRequest struct {
 	InferVersions []uint32 `json:"infer_versions"` // infer protocol versions the buyer speaks; required
 	Model         string   `json:"model"`
+	// API is the API the request is in (empty: APIChat). Nodes whose model
+	// server speaks it natively are preferred.
+	API string `json:"api,omitempty"`
+	// RequireNative asks for a node that speaks API natively only.
+	RequireNative bool     `json:"require_native,omitempty"`
 	BudgetMicros  uint64   `json:"budget"`
 	MaxPriceIn    uint64   `json:"max_price_in,omitempty"` // 0 = no limit
 	MaxPriceOut   uint64   `json:"max_price_out,omitempty"`
@@ -309,8 +363,9 @@ type TicketRequest struct {
 	// Optional: the buyer's prompt estimate (EstimatePromptTokens) and the
 	// request's max_tokens. With both set, the hold is sized to the worst-case
 	// cost at the matched node's price instead of the whole budget, so a
-	// balance supports many more requests in flight. Understating them only
-	// truncates the buyer's own output.
+	// balance supports many more requests in flight. With a balance below the
+	// hold, the balance is held when it pays for the prompt and a short
+	// answer. Understating them only truncates the buyer's own output.
 	PromptTokens uint64 `json:"prompt_tokens,omitempty"`
 	MaxTokens    uint64 `json:"max_tokens,omitempty"`
 }
@@ -386,9 +441,13 @@ type ModelSummary struct {
 	AttestedNodes int    `json:"attested_nodes,omitempty"` // nodes whose TEE quote the coordinator verified
 	MinPriceIn    uint64 `json:"min_price_in"`
 	MinPriceOut   uint64 `json:"min_price_out"`
+	// APIs are the APIs some node serves the model in natively.
+	APIs []string `json:"apis,omitempty"`
 	// SharedNodes counts the nodes of the asker's share partners among Nodes:
 	// the asker uses them for free, before the market.
 	SharedNodes int `json:"shared_nodes,omitempty"`
+	// Meta is what the offering nodes say of the model, merged (MergeMeta).
+	Meta *ModelMeta `json:"meta,omitempty"`
 }
 
 // ModelsResponse lists models with live offers.
@@ -455,6 +514,52 @@ type Evidence struct {
 	Chunks    uint64                 `json:"chunks"`
 	// RequestBytes is the length of the sealed request that follows.
 	RequestBytes uint64 `json:"request_bytes"`
+}
+
+// Errands. The coordinator checks nodes with jobs of its own (package audit).
+// Sent from its own machine they would be told apart from buyers' jobs: by
+// the address they come from, by a peer ID no node has seen before, and by
+// never arriving over a direct connection. So it asks a client to carry the
+// job instead: the client asks for an errand from time to time (ErrandPoll)
+// and may get one job (ErrandJob), sealed by the coordinator with a job key
+// only the coordinator holds. The client runs it as a job of its own, under
+// its own device identity and over its own connection, without being able to
+// read the request or the answer, and hands the sealed answer and the node's
+// receipt back (ErrandReport). The receipt signs the hashes of both, so the
+// client can neither forge an answer nor change one. The job is paid from
+// the platform's account, never the client's.
+
+// ErrandPoll asks the coordinator for an errand.
+type ErrandPoll struct{}
+
+// Errand answers an ErrandPoll.
+type Errand struct {
+	// PollAfter is how many seconds to wait before asking again.
+	PollAfter uint32     `json:"poll_after"`
+	Job       *ErrandJob `json:"job,omitempty"`
+}
+
+// ErrandJob is one job to carry: what an InferRequest needs, ready made.
+type ErrandJob struct {
+	Ticket      Ticket `json:"ticket"` // issued to the carrying client
+	Offer       Offer  `json:"offer"`  // the node's signed offer, as with any ticket
+	BuyerBoxPub []byte `json:"buyer_box_pub"`
+	Request     []byte `json:"request"` // the sealed request
+}
+
+// MaxErrandRequest bounds an errand's sealed request.
+const MaxErrandRequest = 1 << 20
+
+// ErrandReport returns an errand: the node's receipt and, following it on the
+// same stream, exactly Chunks BinData frames (the sealed response frames as
+// received, in order). Error says why there is nothing to return.
+type ErrandReport struct {
+	JobID   string                 `json:"job_id"`
+	Receipt *receipt.SignedReceipt `json:"receipt,omitempty"`
+	Chunks  uint64                 `json:"chunks"`
+	Error   string                 `json:"error,omitempty"`
+	Relayed bool                   `json:"relayed,omitempty"` // the job ran through a relay
+	Via     string                 `json:"via,omitempty"`     // that relay's peer ID
 }
 
 // MaxEvidenceChunks bounds the response frames that may follow an Evidence frame.

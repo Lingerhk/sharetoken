@@ -29,7 +29,7 @@ func TestSharingAPI(t *testing.T) {
 
 	var inv accounts.ShareInvite
 	a.call("POST", "/api/v1/sharing/invites", alice, map[string]any{"ttl_hours": 2}, 201, &inv)
-	if len(inv.Code) != 19 || strings.Count(inv.Code, "-") != 3 || inv.ExpiresAt-inv.CreatedAt != int64(2*3600e9) {
+	if len(inv.Code) != 7 || len(inv.LinkToken) != 8 || strings.Count(inv.Code, "-") != 1 || inv.ExpiresAt-inv.CreatedAt != int64(2*3600e9) {
 		t.Fatalf("invite: %+v", inv)
 	}
 	a.call("POST", "/api/v1/sharing/invites", alice, map[string]any{"ttl_hours": 169}, 400, nil)
@@ -91,7 +91,7 @@ func TestSharingAPI(t *testing.T) {
 	a.call("DELETE", fmt.Sprintf("/api/v1/sharing/invites/%d", inv.ID), bob, nil, 404, nil)
 	a.call("DELETE", fmt.Sprintf("/api/v1/sharing/invites/%d", inv.ID), alice, nil, 200, nil)
 	a.call("POST", "/api/v1/sharing/join", bob, map[string]string{"code": inv.Code}, 404, nil)
-	for i := 2; i < maxFails; i++ {
+	for i := 1; i < newAccountMaxFails; i++ { // bob's account is new: it gets fewer tries (invites.go)
 		a.call("POST", "/api/v1/sharing/join", bob, map[string]string{"code": "AAAA-AAAA-AAAA-AAAA"}, 404, nil)
 	}
 	a.call("POST", "/api/v1/sharing/join", bob, map[string]string{"code": "AAAA-AAAA-AAAA-AAAA"}, 429, nil)

@@ -117,8 +117,13 @@ func main() {
 	mode := os.Getenv("SHARETOKEN_GUI_SELFTEST")
 	trayCheck := mode == "tray"
 	updateCheck := mode == "update"
-	selftest := mode != "" && !trayCheck && !updateCheck
-	useTray := !selftest && !updateCheck && trayAvailable()
+	// =invite: start hidden, wait for a sharetoken:// link (an argument, or on
+	// macOS an Apple Event), pass it to the daemon, read it back, report and quit
+	// (invite.go; the release checks open such a link with the app this way).
+	inviteCheck := mode == "invite"
+	selftest := mode != "" && !trayCheck && !updateCheck && !inviteCheck
+	useTray := !selftest && !updateCheck && !inviteCheck && trayAvailable()
+	var inviteCheckErr atomic.Pointer[error]
 	var trayCheckErr atomic.Pointer[error]
 
 	result := make(chan string, 1)
@@ -175,6 +180,20 @@ func main() {
 			}
 			fmt.Println("selftest: ok (the update is installing)")
 		}
+		if inviteCheck {
+			e := inviteCheckErr.Load()
+			msg := "ok"
+			if e == nil || *e != nil {
+				msg = "failed: " + errText(e)
+			}
+			fmt.Println("selftest:", msg)
+			if f := os.Getenv("SHARETOKEN_GUI_SELFTEST_REPORT"); f != "" {
+				_ = os.WriteFile(f, []byte(version+" invite "+msg+"\n"), 0o600)
+			}
+			if msg != "ok" {
+				os.Exit(1)
+			}
+		}
 		if trayCheck {
 			if e := trayCheckErr.Load(); e == nil || *e != nil {
 				fmt.Println("selftest: failed:", errText(e))
@@ -201,13 +220,41 @@ func main() {
 		Windows: application.WindowsOptions{DisableQuitOnLastWindowClosed: useTray},
 		Linux:   application.LinuxOptions{DisableQuitOnLastWindowClosed: useTray, ProgramName: daemonName()},
 	}
-	if useTray {
+	invites := &inviteForwarder{start: start, ep: sup.endpoint, show: showWindow}
+	if inviteCheck {
+		invites.show = nil
+		invites.sent = make(chan string, 1)
+	}
+	// One app per data directory: a second start (an invite link clicked in
+	// the browser, or the app opened again) hands its arguments over and ends.
+	if !selftest && !updateCheck && !trayCheck && !inviteCheck {
+		opts.SingleInstance = &application.SingleInstanceOptions{
+			UniqueID: singleInstanceID(sup.home),
+			OnSecondInstanceLaunch: func(d application.SecondInstanceData) {
+				if link := inviteArg(d.Args); link != "" {
+					invites.forward(link)
+					return
+				}
+				showWindow()
+			},
+		}
+	} else if useTray {
 		opts.SingleInstance = &application.SingleInstanceOptions{
 			UniqueID:               singleInstanceID(sup.home),
 			OnSecondInstanceLaunch: func(application.SecondInstanceData) { showWindow() },
 		}
 	}
 	app = application.New(opts)
+	// macOS hands a clicked link over as an Apple Event, at start or later;
+	// Windows and Linux report a first start's argument this way too.
+	app.Event.OnApplicationEvent(events.Common.ApplicationLaunchedWithUrl, func(e *application.ApplicationEvent) {
+		if link := inviteArg([]string{e.Context().URL()}); link != "" {
+			invites.forward(link)
+		}
+	})
+	if link := inviteArg(os.Args[1:]); link != "" {
+		invites.forward(link)
+	}
 
 	if goruntime.GOOS == "darwin" { // Windows and Linux windows have no menu bar; the webview handles the keys
 		m := app.NewMenu()
@@ -232,7 +279,7 @@ func main() {
 		MinWidth:  minWindowWidth,
 		MinHeight: minWindowHeight,
 		URL:       "/",
-		Hidden:    selftest || updateCheck,
+		Hidden:    selftest || updateCheck || inviteCheck,
 		Mac:       application.MacWindow{TitleBar: application.MacTitleBarHiddenInset},
 	})
 	if useTray {
@@ -250,7 +297,14 @@ func main() {
 		if useTray {
 			nt.Store(startTray(app, windowTitle(), showWindow, app.Quit))
 		}
-		if !selftest && !updateCheck {
+		if inviteCheck {
+			go func() {
+				err := invites.check(60 * time.Second)
+				inviteCheckErr.Store(&err)
+				app.Quit()
+			}()
+		}
+		if !selftest && !updateCheck && !inviteCheck {
 			if !trayCheck {
 				tray.notify = (&desktopNotifier{ns: notifier, show: showWindow}).send
 			}

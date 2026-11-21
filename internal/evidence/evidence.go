@@ -74,11 +74,14 @@ type Judge struct {
 	dec      *protocol.ResponseDecoder
 	request  []byte // decrypted request body
 	early    *Verdict
+	meter    protocol.UsageMeter // signs of hidden reasoning in the response
 	hasher   *receipt.StreamHasher
 	next     uint64
 	badChunk int64
 	badWhy   string
 	text     strings.Builder
+	content  strings.Builder // the answer's visible content, without reasoning and tool arguments
+	finish   string
 }
 
 // New starts judging ev for ticket t, whose sealed request is request.
@@ -122,7 +125,11 @@ func New(t *protocol.Ticket, settled, presented *receipt.SignedReceipt, ev *prot
 			j.decide(Dismissed, "the request does not open with the disclosed key")
 			break
 		}
-		if j.request, err = protocol.DecodeRequest(opened); err != nil {
+		joined, err := protocol.DecodeRequest(opened)
+		if err == nil {
+			_, j.request, err = protocol.SplitRequest(joined)
+		}
+		if err != nil {
 			j.decide(Dismissed, "the request the buyer sealed does not decode")
 			break
 		}
@@ -142,6 +149,11 @@ func (j *Judge) decide(o Outcome, detail string) {
 
 // Receipt is the receipt being judged.
 func (j *Judge) Receipt() *receipt.SignedReceipt { return j.r }
+
+// Answer is the content of the response read so far (what the model said,
+// without its reasoning and tool arguments) and its finish reason. An auditor
+// that sealed a job itself reads the answer here.
+func (j *Judge) Answer() (content, finish string) { return j.content.String(), j.finish }
 
 // Add feeds the next sealed response frame, exactly as the buyer received it.
 func (j *Judge) Add(seq uint64, sealed []byte) error {
@@ -164,8 +176,15 @@ func (j *Judge) Add(seq uint64, sealed []byte) error {
 		return nil
 	}
 	for _, payload := range recs {
-		if info, err := protocol.ParseChunk(payload); err == nil && j.text.Len() < maxText {
-			j.text.WriteString(info.Text())
+		if info, err := protocol.ParseEvent(j.t.API, payload); err == nil {
+			j.meter.Add(info)
+			if j.text.Len() < maxText {
+				j.text.WriteString(info.Text())
+				j.content.WriteString(info.Content)
+			}
+			if info.FinishReason != "" {
+				j.finish = info.FinishReason
+			}
 		}
 	}
 	return nil
@@ -187,15 +206,18 @@ func (j *Judge) Finish(ctx context.Context, counter tokens.Counter) Verdict {
 	if counter == nil {
 		counter = tokens.Heuristic{}
 	}
-	exact := counter.Exact(j.t.Model)
-	cp, err1 := counter.CountPrompt(ctx, j.t.Model, j.request)
+	if r.CacheReadTokens > r.PromptTokens || r.CacheWriteTokens > r.PromptTokens-r.CacheReadTokens {
+		return Verdict{Upheld, fmt.Sprintf("billed %d cache read and %d cache write tokens of %d prompt tokens", r.CacheReadTokens, r.CacheWriteTokens, r.PromptTokens)}
+	}
+	exact := counter.Exact(j.t.Model, j.t.API)
+	cp, err1 := counter.CountPrompt(ctx, j.t.Model, j.t.API, j.request)
 	cc, err2 := counter.CountText(ctx, j.t.Model, j.text.String())
 	if err1 != nil || err2 != nil {
 		// The reference server is unavailable: judge on the estimate rather
 		// than not at all. Its bounds are loose, so this cannot wrong an
 		// honest node.
 		exact = false
-		cp, _ = tokens.Heuristic{}.CountPrompt(ctx, j.t.Model, j.request)
+		cp, _ = tokens.Heuristic{}.CountPrompt(ctx, j.t.Model, j.t.API, j.request)
 		cc, _ = tokens.Heuristic{}.CountText(ctx, j.t.Model, j.text.String())
 	}
 	how := "estimated"
@@ -203,6 +225,12 @@ func (j *Judge) Finish(ctx context.Context, counter tokens.Counter) Verdict {
 		how = "counted with the model's tokenizer"
 	}
 	allowP, allowC := tokens.Allowance(exact, cp, cc)
+	if j.meter.Hidden() {
+		// Reasoning the response does not show may be billed up to the
+		// job's output limit (protocol.UsagePlausible).
+		est, _ := protocol.EstimatePromptTokens(j.t.API, j.request)
+		allowC = max(allowC, protocol.OutputLimit(j.t, est, protocol.RequestedOutput(j.t.API, j.request)))
+	}
 	if r.PromptTokens > allowP || r.CompletionTokens > allowC {
 		return Verdict{Upheld, fmt.Sprintf("billed %d prompt + %d completion tokens, but the transcript holds %d + %d (%s; at most %d + %d accepted)",
 			r.PromptTokens, r.CompletionTokens, cp, cc, how, allowP, allowC)}

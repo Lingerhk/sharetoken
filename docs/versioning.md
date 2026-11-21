@@ -129,12 +129,13 @@ dist/sharetoken-1.0.0-linux-arm64.deb             scripts/build/build-gui-linux.
 dist/sharetoken-cli-1.0.0-linux-amd64.tar.gz      scripts/build/build-cli.sh prod linux amd64 ("all" builds three systems, two architectures)
 dist/sharetoken-cli-1.0.0-windows-amd64.zip       scripts/build/build-cli.sh prod windows amd64
 dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 scripts/build/build.sh relay
+dist/sharetoken-relay-1.0.3-linux-amd64.tar.gz   scripts/build/build-relay.sh amd64 (no argument: both architectures): the relay, a unit file and a README
 dist/sharetoken-1.0.0-macos-arm64.app.zip         the same: the .app zipped, for one-click updates
 dist/SHA256SUMS-1.0.0
 dist/SIGNATURES-1.0.0                             scripts/release/release-files.sh, with the release key
 ```
 
-**Publishing packages.** A release is 14 packages (desktop installers, the two macOS .app.zip files and command-line archives, for three systems and two architectures), signed with the release key and put into the portal's downloads directory (`downloads.dir` in the portal's configuration), which is replaced as a whole; the portal serves them under `/downloads/`. There are two ways to make one, and both run the same scripts:
+**Publishing packages.** A release is 16 packages (desktop installers, the two macOS .app.zip files, command-line archives for three systems and two architectures, and the relay for Linux on two architectures, which is what someone running a [private relay](security.md) downloads), signed with the release key and put into the portal's downloads directory (`downloads.dir` in the portal's configuration), which is replaced as a whole; the portal serves them under `/downloads/`. There are two ways to make one, and both run the same scripts:
 
 - **From a Mac:** `scripts/release/publish-packages.sh <version> <user@host> <directory> [--with-dev-cli] [--owner <user>]` builds the packages, signs them, uploads them, verifies them on the server and swaps the directory. `--owner` installs the files through sudo as the user the portal runs as. `--with-dev-cli` adds six `sharetoken-cli-dev-*` packages for testing: `GET /api/v1/downloads` does not list them, and they can only be fetched by file name.
 - **From GitHub Actions:** the workflow "Client release" ([`.github/workflows/release-client.yml`](../.github/workflows/release-client.yml)). Pushing the tag `v<VERSION>`, or moving it (`git tag -f -a v1.0.1 -m ... && git push -f origin v1.0.1`), builds the packages on GitHub's runners: the macOS app for both architectures on an Apple silicon runner, the Windows app cross-compiled and packed with makensis on Linux, the `.deb` in the Docker image of `build-gui-linux.sh` on a Linux runner of each architecture, and the command line on Linux. Every package gets the Go of `scripts/build/gui-builder.Dockerfile` and the same build time. The job "Sign and publish on GitHub" then signs them and creates the GitHub release with every file (for a moved tag it replaces the files of the existing release), and "Publish to the portal" swaps the downloads directory. "Run workflow" on a release tag does the same and asks whether to publish to the portal; on a branch it is a trial: everything is built and checked, nothing is signed or published, and the packages stay with the run for a week. A tag that does not match `VERSION` fails the run.
@@ -162,7 +163,7 @@ See [desktop.md](desktop.md) for the client packages, [development.md](developme
 
 ## Tests
 
-- `scripts/test/test.sh`: starts MySQL 8 in Docker and runs all Go tests.
+- `scripts/test/test.sh`: starts MySQL 8.4 in Docker and runs all Go tests.
 - [`internal/protocol/golden_test.go`](../internal/protocol/golden_test.go): fixed vectors for the signed messages.
 - [`internal/mysqldb`](../internal/mysqldb): migration order, resuming after an interruption, concurrent start-up, older programs meeting a breaking migration.
 - [`scripts/test/version_ui_test.mjs`](../scripts/test/version_ui_test.mjs): the version pages and the update notice, in headless Chrome.

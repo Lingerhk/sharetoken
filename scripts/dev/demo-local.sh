@@ -70,7 +70,7 @@ waitlog portal.log "listening"
 echo "   relays registered (IPv4 + IPv6): relay-a, relay-b"
 
 "$BIN/coordinator" "${COORD[@]}" -fee-bps 800 \
-  -reference "id=gemma-4-e4b,upstream=$MODEL_UPSTREAM,url=$OLLAMA" -audit-interval 5s > coord.log 2>&1 & COORD_PID=$!; PIDS+=($COORD_PID)
+  -reference "id=gemma-4-e4b,upstream=$MODEL_UPSTREAM,url=$OLLAMA" -audit-interval 5s -audit-questions 2 -audit-spread 0s > coord.log 2>&1 & COORD_PID=$!; PIDS+=($COORD_PID)
 waitlog coord.log "via relay"
 grep -E "^coordinator|listening|via relay" coord.log | strip | sed 's/^/   /'
 for _ in $(seq 1 50); do curl -s $PORTAL/api/v1/network | grep -q '"ok":true.*"ok":true' && break; sleep 0.2; done

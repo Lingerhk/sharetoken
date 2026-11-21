@@ -52,9 +52,9 @@ sharetoken-gui（Wails v3 窗口，gui/）        sharetoken daemon（internal/c
 窗口是一个小窗口（默认 880×600，最小 760×520），页面按应用而不是网页来排版（[`internal/client/ui/app.css`](../../internal/client/ui/app.css)）：
 
 - **窗口本身不滚动。** 左侧是图标导航（概览、共享、配对、记录；底部是反馈和设置），中间是当前视图，底部是状态栏。长列表在各自的面板里滚动；窗口太矮放不下时，滚动的是视图，不是窗口。
-- **视图**：概览（余额等卡片、本地接口地址、网络和可用模型并排）、共享（标签：状态、厂商 API、本机模型）、配对（标签：共享伙伴、我的卖家、我的买家）、记录（标签：全部、卖出）、设置（账户和退出登录、语言、版本和检查更新、反馈、我的设备）。所有视图都留在页面里，轮询会更新隐藏的视图，切换时立即显示。
+- **视图**：概览（余额等卡片、本地接口地址、网络和可用模型并排）、共享（标签：状态、厂商 API、本机模型）、配对（标签：共享伙伴、我的卖家、我的买家）、记录（标签：全部、卖出）、设置（标签：通用，有账户和退出登录、语言、版本和检查更新、反馈；调用；网络，是 [tailnet.md](tailnet.md) 的直连隧道：开关，开启后还有传输协议、等待隧道、DERP 表和隧道列表；我的设备）。所有视图都留在页面里，轮询会更新隐藏的视图，切换时立即显示。
 - **按需展开**：面板的说明文字收在标题旁的“?”里，点击才显示；反馈是一个对话框；升级提示只占一行，详情在对话框里。
-- **状态栏**：连接状态、当前中继和它的延迟、账户、版本。
+- **状态栏**：连接状态、当前中继和它的延迟、直连隧道（未开启；已开启但还没有隧道；或者协议、路径、隧道数量和平均延迟，例如“QUIC 直连 × 2”；点击打开它的设置）、账户、版本。隧道开启时，概览的网络面板也显示这一行。
 - **延迟的颜色**和门户一致：低于 80 ms 绿色，低于 250 ms 黄色，其余红色（`app.js` 的 `rtt`）。网络面板的中继表、链路质量、中继预约和状态栏都用它。
 - 文字默认不可选中，只有适合复制的内容（地址、代码、表格、提示）可以选中。
 - **macOS** 隐藏标题栏（`application.MacTitleBarHiddenInset`），页面一直铺到窗口顶部。窗口壳的启动脚本给 `<html>` 加上 `os-<系统>` 类；`os-darwin` 下侧边栏给红绿灯按钮留出位置，侧边栏和视图标题栏可以拖动窗口（`--wails-draggable`，由 Wails 的页面运行时处理），其中的按钮不可拖。Windows 和 Linux 保留系统标题栏。
@@ -71,7 +71,7 @@ sharetoken-gui（Wails v3 窗口，gui/）        sharetoken daemon（internal/c
 | 厂商 API | 添加厂商（API key 或账号登录）、启用停用、更换凭据、删除 | `/api/v1/providers`、`/api/v1/providers/oauth/start`、`/finish` |
 | 厂商的模型 | 从厂商的模型列表里选（或手填），设网络 ID、输入输出价、输出上限；测试、编辑、移除 | `/api/v1/providers/{name}/models`、`/test` |
 | 本机模型服务 | 地址和并发数；探测模型后添加、编辑、移除 | `PUT /api/v1/share`、`GET /api/v1/share/detect` |
-| 配对 | 私有模式（只为配对的买家服务）。生成配对码（备注；有效期 1、7 或 30 天；可配对的买家数）、复制、撤销；和本账户配对的买家，以及移除其中一个 | `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`DELETE /api/v1/pairing/buyers/{id}`、`PUT /api/v1/pairing/private` |
+| 配对 | 私有模式（只为配对的买家服务）。生成配对码（备注；有效期 1 或 7 天；可配对的买家数）、复制、撤销；和本账户配对的买家，以及移除其中一个 | `GET /api/v1/pairing`、`POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}`、`DELETE /api/v1/pairing/buyers/{id}`、`PUT /api/v1/pairing/private` |
 | 共享伙伴 | 邀请伙伴（只能一人使用的邀请码，有效期 1、3 或 7 天），复制和撤销未用的邀请码，用别人的邀请码加入；伙伴列表，以及最近 24 小时给每个伙伴和从每个伙伴用了多少 token，解除伙伴关系。设置：只用伙伴的节点、每日上限（每 24 小时的 token 数，所有伙伴合计）、每个节点并发的比例（0 表示暂停），以及已给出的 token 数 | `GET /api/v1/sharing`、`POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}`、`POST /api/v1/sharing/join`、`DELETE /api/v1/sharing/partners/{id}`、`PUT /api/v1/sharing/settings` |
 
 - 数据来自每 5 秒一次的 `GET /api/v1/status`（`share.providers`、`share.serving`、`warnings`）。列表内容没变就不重绘。表单都在对话框里，轮询不会动它，输入不会丢。
@@ -129,6 +129,7 @@ macOS 在菜单栏、Windows 在通知区、Linux 以状态通知项（StatusNot
 | `POST /api/v1/feedback`、`GET /api/v1/feedback/mine` | 向门户提交反馈，以及列出本账户提交过的反馈 |
 | `/api/v1/pairing…` | 配对码和配对，转给门户（[guide.md](guide.md) 第 3 节） |
 | `/api/v1/sharing…` | 共享伙伴：邀请、伙伴和设置，转给门户（[guide.md](guide.md) 第 3 节） |
+| `GET`、`PUT /api/v1/tailnet` | 直连隧道（[tailnet.md](tailnet.md)）：`{enabled, proto, derp_map, serving, region, error, tunnels, wait_ms, settings}`，其中 `settings` 是 `config.json` 里保存的 `tailnet` 一节，其余是当前生效的状态。`PUT` 接受 `enabled`、`transport`、`wait_ms`、`derp_map` 中的任意几项（没给的保持原值），立即生效；还没接入网络时守护进程只保存。取值超出范围返回 400 `bad_request` |
 | 其余 `/api/*` 和 `/v1/*` | 同 `sharetoken up`（见 [guide.md](guide.md)）。未登录时 401 `not_logged_in`，还没接入网络时 503 `not_connected` |
 
 **登录失效。** Agent 每分钟向门户确认一次 token 是否仍然有效（门户不可达不算被拒绝）。设备密钥在 token 吊销后仍能和协调器交易，所以客户端必须停下：daemon 转为 `expired`，`sharetoken up` 退出并提示重新登录。

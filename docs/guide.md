@@ -79,7 +79,7 @@ Before it sends anything, the client decides how to trust the portal:
 | `provider models <name>`, `provider test <name> [-model M] [-prompt TEXT]` | List the models the credentials may use; send one small request through the provider. |
 | `provider on <name>`, `provider off <name>`, `provider rm <name>` | Sell its models, stop, or remove it with its credentials. |
 | `pair` | Who this account is paired with, and its pairing codes. |
-| `pair code [-label L] [-ttl 24h] [-uses N]` | Seller: make a pairing code to hand to buyers. It lasts 24 hours unless `-ttl` says otherwise (at most 30 days) and admits any number of buyers unless `-uses` limits it. |
+| `pair code [-label L] [-ttl 24h] [-uses N]` | Seller: make a pairing code to hand to buyers. It lasts 24 hours unless `-ttl` says otherwise (at most 7 days) and admits any number of buyers unless `-uses` limits it. |
 | `pair join <code>` | Buyer: pair with the seller that made the code. From then on the account buys only from the sellers it is paired with. |
 | `pair leave <seller id>`, `pair rm <buyer id>`, `pair revoke <code id>` | End a pairing from the buyer's side or the seller's side; stop a code from admitting more buyers. |
 | `pair private on\|off` | Seller: private mode. While it is on, only the buyers paired with this account are matched to it and see its models. |
@@ -129,7 +129,7 @@ Notes:
   "nat": true,
   "relays": [],
   "buy": {
-    "budget_micros": 200000,
+    "budget_micros": 2000000,
     "max_price_in": 0,
     "max_price_out": 0,
     "evidence": true,
@@ -177,7 +177,7 @@ Notes:
 
 ### 2.1 What a deployment consists of
 
-The smallest deployment is one public machine running the portal, the coordinator, MySQL 8 and one relay. Add relays in other network locations as needed.
+The smallest deployment is one public machine running the portal, the coordinator, MySQL 8.4 and one relay. Add relays in other network locations as needed.
 
 | Program | Role | Listens on |
 |---|---|---|
@@ -192,7 +192,7 @@ This section sets the programs up by hand. For Docker Compose see [self-hosting.
 
 ### 2.2 MySQL
 
-The database is MySQL 8 (InnoDB) only. `-db` (or `database.dsn`) is `mysql://user@host:port/database`. Put the password in the environment variable `SHARETOKEN_DB_PASSWORD`, or name a file with `database.password_file`; do not write it into the URL, where it would show in the process list. Other query parameters of the URL are passed to the server as session variables.
+The database is MySQL (InnoDB) only: 8.4 LTS, or 8.0. `-db` (or `database.dsn`) is `mysql://user@host:port/database`. Put the password in the environment variable `SHARETOKEN_DB_PASSWORD`, or name a file with `database.password_file`; do not write it into the URL, where it would show in the process list. Other query parameters of the URL are passed to the server as session variables.
 
 ```sql
 CREATE DATABASE sharetoken CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
@@ -203,7 +203,7 @@ GRANT ALL ON sharetoken.* TO 'sharetoken'@'10.0.0.%';
 - The portal and the coordinator create and upgrade the tables when they start, in either order. Their account needs the right to create and alter tables (`ALL ON sharetoken.*`). Schema versions are described in [versioning.md](versioning.md).
 - Recommended server settings: `transaction_isolation = READ-COMMITTED` (the programs also set it on every session); `skip_name_resolve = ON` (otherwise every new connection can stall for seconds on reverse DNS); `innodb_flush_log_at_trx_commit = 1` (the ledger needs commits on disk); `tmp_table_size = 256M` (the ledger replay groups by account, and the 16 MB default spills to disk); an `innodb_buffer_pool_size` that holds the `jobs` table (about 6 KB of data and indexes per job). Allow port 3306 only from the machines that run the portal and the coordinator.
 - Consistency: every write transaction first locks the single row of the table `st_write_lock`, so the writes of the portal and the coordinator are strictly serial. Balances are read, computed and written back, and concurrent writers would lose updates. Read-only queries are not affected. A writer waits at most 10 seconds for the lock; after that the database counts as busy (the portal answers 503 `busy`; at start both programs retry for a while).
-- Tests: `scripts/test/test.sh` starts a MySQL 8 in Docker and runs `go test` against it. To use an existing server, set `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`; each test creates a database named `sttest_<time>_<random>`, and later runs delete those older than an hour. More in [development.md](development.md).
+- Tests: `scripts/test/test.sh` starts a MySQL 8.4 in Docker and runs `go test` against it. To use an existing server, set `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`; each test creates a database named `sttest_<time>_<random>`, and later runs delete those older than an hour. More in [development.md](development.md).
 
 ### 2.3 Starting the programs
 
@@ -270,6 +270,7 @@ coordinator -db $DSN -fee-bps 500 \
 | `portal pass-key` | The public key relays verify passes with. |
 | `coordinator id` | The coordinator's peer ID. |
 | `coordinator disputes`, `resolve <job-id> pay\|refund`, `nodes`, `audits`, `relays`, `check`, `balance <peer-id>` | Disputes and their manual resolution, node records, audits, relay registry, a check of the books, a device's balance. |
+| `coordinator audit calibrate [-samples n] [model]`, `audit try <node-peer-id> <model>`, `audit calibrations` | Measure the reference models' honest scores (and with them the audit thresholds); audit one node now, through the official relays, recorded in shadow mode; list the calibrations. |
 | `portal check-config`, `coordinator check-config`, `relay -check-config` | Validate the configuration and print the effective settings. |
 
 Operator commands work on the database directly and can run beside the live services.
@@ -393,7 +394,8 @@ Lists take `limit` (default 50, at most 500), `page` or `offset`, `from` and `to
 | `GET /api/v1/admin/relays`, `POST /api/v1/admin/relays`, `PATCH …/{id}`, `POST …/{id}/enable`, `POST …/{id}/disable`, `DELETE …/{id}` | admin | Relay registry: add, rename or set the region, enable, disable, remove. |
 | `GET /api/v1/admin/jobs?status=&user=&account=&before=&limit=` | admin | All jobs, with both accounts, dispute reason and resolution. |
 | `GET /api/v1/admin/nodes` | admin | Node reputation records, with the owning user. |
-| `GET /api/v1/admin/audits?limit=` | admin | Inference audits. |
+| `GET /api/v1/admin/audits?limit=` | admin | Inference audits (method, score and threshold, shadow, each question's score). |
+| `GET /api/v1/admin/audit-calibrations` | admin | Calibrations of the reference models: honest score distribution, threshold, drift. |
 | `GET /api/v1/admin/disputes?limit=` | admin | Disputes, the unresolved first. |
 | `POST /api/v1/admin/disputes/{job}/resolve` | admin | `{decision: "pay"\|"refund"}`: manual resolution. |
 | `GET /api/v1/admin/ledger?account=&before=&limit=` | admin | The global journal, with the user name behind each `user:<id>` account. |

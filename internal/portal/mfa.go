@@ -175,6 +175,9 @@ func (s *Server) secondFactor(w http.ResponseWriter, r *http.Request, u *account
 	if !u.Admin && !u.MFAEnrolled() {
 		return true, false
 	}
+	if s.adminSignInRefused(w, r, u.Admin) {
+		return false, false
+	}
 	if len(s.mfaKey) == 0 {
 		s.internal(w, errMFAUnavailable)
 		return false, false
@@ -262,6 +265,9 @@ func (s *Server) completeChallenge(w http.ResponseWriter, r *http.Request, req m
 		writeErr(w, http.StatusUnauthorized, "challenge_expired", "start the login again")
 		return nil
 	}
+	if s.adminSignInRefused(w, r, u.Admin) {
+		return nil
+	}
 	ip := s.clientIP(r)
 	if s.throttled("u:"+u.Username) || s.throttled("ip:"+ip) {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many failed logins; try again in a few minutes")
@@ -331,6 +337,9 @@ func (s *Server) handleWebMFASetup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "challenge_expired", "start the login again")
 		return
 	}
+	if s.adminSignInRefused(w, r, true) {
+		return
+	}
 	s.mfaMu.Lock()
 	if c.secret == nil {
 		c.secret, err = totp.NewSecret()
@@ -375,6 +384,9 @@ func (s *Server) handleWebMFAConfirm(w http.ResponseWriter, r *http.Request) {
 	if err != nil || u.Disabled || !u.Admin || u.MFAEnrolled() {
 		s.dropChallenge(req.Challenge)
 		writeErr(w, http.StatusUnauthorized, "challenge_expired", "start the login again")
+		return
+	}
+	if s.adminSignInRefused(w, r, true) {
 		return
 	}
 	ip := s.clientIP(r)

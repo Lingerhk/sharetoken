@@ -30,6 +30,10 @@ type PairingView struct {
 	Private bool `json:"private"`
 	// MaxSellers is how many sellers one buyer may be paired with.
 	MaxSellers int `json:"max_sellers"`
+	// Requests wait for the caller to approve them, as a seller; Waiting are
+	// the caller's own, waiting for a seller.
+	Requests []accounts.InviteRequest `json:"requests"`
+	Waiting  []accounts.InviteRequest `json:"waiting"`
 }
 
 func (s *Server) pairingRoutes(mux *http.ServeMux) {
@@ -87,8 +91,16 @@ func (s *Server) pairingView(userID int64) (*PairingView, error) {
 	if err != nil {
 		return nil, err
 	}
+	requests, err := s.store.InviteRequests(userID, accounts.KindPair)
+	if err != nil {
+		return nil, err
+	}
+	waiting, err := s.store.WaitingRequests(userID, accounts.KindPair)
+	if err != nil {
+		return nil, err
+	}
 	return &PairingView{Sellers: maskPaired(sellers), Buyers: maskPaired(buyers), Codes: formatCodes(codes), Restricted: len(sellers) > 0,
-		Private: private, MaxSellers: accounts.MaxPairedSellers}, nil
+		Private: private, MaxSellers: accounts.MaxPairedSellers, Requests: maskRequests(requests), Waiting: maskRequests(waiting)}, nil
 }
 
 func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request, cu ctxUser) {
@@ -116,6 +128,7 @@ func (s *Server) handleNewPairingCode(w http.ResponseWriter, r *http.Request, cu
 		Label    string  `json:"label"`
 		TTLHours float64 `json:"ttl_hours"` // 0: the default, one day
 		MaxUses  int64   `json:"max_uses"`  // 0: any number of buyers
+		Approval bool    `json:"approval"`  // each pairing waits for the caller's approval
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -124,7 +137,7 @@ func (s *Server) handleNewPairingCode(w http.ResponseWriter, r *http.Request, cu
 		writeErr(w, http.StatusBadRequest, "bad_request", "ttl_hours is out of range")
 		return
 	}
-	c, err := s.store.CreatePairingCode(cu.user.ID, req.Label, time.Duration(req.TTLHours*float64(time.Hour)), req.MaxUses)
+	c, err := s.store.CreatePairingCodeWith(cu.user.ID, accounts.PairingCodeOptions{Label: req.Label, TTL: time.Duration(req.TTLHours * float64(time.Hour)), MaxUses: req.MaxUses, Approval: req.Approval})
 	if err != nil {
 		s.pairingErr(w, err)
 		return
@@ -153,25 +166,14 @@ func (s *Server) handleRedeemPairingCode(w http.ResponseWriter, r *http.Request,
 	if !readJSON(w, r, &req) {
 		return
 	}
-	// Wrong codes count like failed logins, so nobody searches for a live one.
-	keys := []string{"pair:u:" + strconv.FormatInt(cu.user.ID, 10), "pair:ip:" + s.clientIP(r)}
-	if s.throttled(keys[0]) || s.throttled(keys[1]) {
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong pairing codes; try again in a few minutes")
+	// The code may also be a link to it, or its bare link token. Wrong codes
+	// count like failed logins, so nobody searches for a live one (invites.go).
+	ref := accounts.ParseInvite(req.Code)
+	if ref.Kind == accounts.KindShare {
+		writeErr(w, http.StatusBadRequest, "wrong_kind", "this is a link to a share invite, not to a pairing code")
 		return
 	}
-	seller, err := s.store.RedeemPairingCode(cu.user.ID, req.Code)
-	if err != nil {
-		if errors.Is(err, accounts.ErrNotFound) {
-			s.recordFailure(keys...)
-			writeErr(w, http.StatusNotFound, "bad_code", "this pairing code is wrong, expired, revoked or used up")
-			return
-		}
-		s.pairingErr(w, err)
-		return
-	}
-	seller.Username = maskName(seller.Username)
-	s.log.Info("paired", "buyer", cu.user.ID, "seller", seller.ID)
-	writeJSON(w, http.StatusOK, seller)
+	s.serveInvite(w, r, cu, []string{accounts.KindPair}, ref, true)
 }
 
 // handleUnpair ends one pairing: asSeller removes one of the caller's buyers,

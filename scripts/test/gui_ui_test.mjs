@@ -68,6 +68,8 @@ const text = s => ev(`${el(s)}?.textContent ?? ''`);
 // Types the way a user does, so that the page's own input element keeps the value.
 const fill = (s, v) => ev(`(() => { const e = ${el(s)}; e.focus(); e.value = ${q(v)}; e.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 const click = s => ev(`${el(s)}.click()`);
+const shown = s => ev(`(() => { const e = ${el(s)}; return !!e && e.getClientRects().length > 0; })()`);
+const choose = (s, v) => ev(`(() => { const e = ${el(s)}; e.value = ${q(v)}; e.dispatchEvent(new Event('change', { bubbles: true })); })()`);
 let passed = 0;
 function ok(cond, what) { if (!cond) throw new Error('FAILED: ' + what); passed++; console.log('  ok  ' + what); }
 async function errorIs(needle, what) { await waitFor(`${el('#error')}?.textContent.includes(${q(needle)})`); ok(true, what); }
@@ -265,7 +267,112 @@ const key2 = apiKeyFile().key;
 ok(key2 !== key1 && await v1Status(key1) === 401 && await v1Status(key2) === 200, 'a new key replaces the old one');
 await waitFor(`${el('#apikey-text')}.textContent.endsWith(${q(key2.slice(-4))})`);
 ok(true, 'and the settings show it');
+
+console.log('buying settings');
+const buyConfig = () => JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8')).buy;
+await click('#tab-settings-buy');
+await waitFor(`!${el('#buy-native')}.disabled && ${el('#buy-budget')}.value !== ''`);
+ok(!(await ev(`${el('#buy-native')}.checked`)) && await ev(`${el('#buy-budget')}.value`) === '2', 'the defaults: converting sellers allowed, a budget of 2 credits');
+ok((await text('#buy-native-hint')).length > 40 && (await text('#buy-budget-hint')).length > 30, 'each setting is explained');
+await click('#buy-native');
+await waitFor(`${el('#buy-note')}.classList.contains('ok')`);
+ok(buyConfig().require_native === true, 'ticking it saves require_native at once');
+await fill('#buy-budget', 'lots');
+await click('#buy-budget-save');
+await waitFor(`${el('#buy-note')}.classList.contains('warn-text')`);
+ok(buyConfig().budget_micros === 2000000, 'a budget that is not a number is refused, and says why');
+await fill('#buy-budget', '3.5');
+await click('#buy-budget-save');
+await waitFor(`${el('#buy-note')}.classList.contains('ok')`);
+ok(buyConfig().budget_micros === 3500000 && buyConfig().require_native === true, 'the budget is saved in micro-credits, require_native kept');
+await shot('09c-buy-settings');
+await ev(`${el('#buy-note')}.className = ''`);
+await click('#buy-native');
+await waitFor(`${el('#buy-note')}.classList.contains('ok') && !${el('#buy-native')}.checked`);
+ok(buyConfig().require_native === false || buyConfig().require_native === undefined, 'and unticking it saves that too');
+ok(await ev(`!${el('#buy-spot')}`) && buyConfig().spot_checks === undefined, 'carrying spot checks is not a setting of the app: only config.json turns it off');
+
+console.log('direct tunnels');
+const tailnetConfig = () => JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8')).tailnet || {};
+const saved = async want => { for (let i = 0; i < 50 && !want(tailnetConfig()); i++) await sleep(100); return want(tailnetConfig()); };
+await waitFor(`${el('#status-tunnel-text')}.textContent === '未开启'`);
+ok((await text('#status-tunnel')).startsWith('隧道'), 'the status bar says the direct tunnels are off');
+await click('#status-tunnel');
+await waitFor(`!${el('#pane-settings-network')}.hidden && !${el('#tailnet-enabled')}.disabled`);
+ok(!(await ev(`${el('#tailnet-enabled')}.checked`)) && !(await shown('#tailnet-transport')) && !(await shown('#tunnels')), 'a click on it opens their settings: off, and nothing else to set');
+ok((await text('#tailnet-hint')).length > 60, 'what the switch does is explained');
+await click('#tailnet-enabled');
+await waitFor(`${el('#tailnet-note')}.classList.contains('ok') && ${el('#tailnet-enabled')}.checked`);
+ok(tailnetConfig().enabled === true, 'ticking it turns the tunnels on at once and saves that');
+await waitFor(`${el('#status-tunnel-text')}.textContent === '已开启，暂无连接'`);
+ok(await shown('#tailnet-transport') && await shown('#tailnet-wait') && await shown('#tailnet-derp') && await shown('#tunnels-empty'), 'their settings appear, and the list of tunnels, empty; the status bar follows');
+ok(await ev(`${el('#tailnet-transport')}.value`) === 'quic' && await ev(`${el('#tailnet-wait')}.value`) === '0' && await ev(`${el('#tailnet-derp')}.value`) === '', 'the defaults: QUIC, no wait, the public relays');
+ok((await text('#tailnet-transport-hint')).length > 60 && (await text('#tailnet-wait-hint')).length > 40 && (await text('#tailnet-derp-hint')).length > 40 && (await text('#tailnet-serving')).length > 5, 'each setting is explained, and what buyers can do with this device');
+await choose('#tailnet-transport', 'tcp');
+ok(await saved(c => c.transport === 'tcp'), 'choosing TCP saves the transport');
+await fill('#tailnet-wait', 'soon');
+await click('#tailnet-save');
+await waitFor(`${el('#tailnet-note')}.classList.contains('warn-text')`);
+ok(tailnetConfig().wait_ms === undefined, 'a wait that is not a number is refused, and says why');
+await fill('#tailnet-wait', '1500');
+await click('#tailnet-save');
+await waitFor(`${el('#tailnet-note')}.classList.contains('ok')`);
+ok(await saved(c => c.wait_ms === 1500 && c.transport === 'tcp' && c.enabled === true), 'the wait is saved in milliseconds, the rest kept');
+await shot('09d-tailnet-settings');
 await click('#nav-overview');
+await waitFor(`${el('#tunnel-line')} && ${el('#tunnel-line')}.textContent.includes('已开启')`);
+ok(true, 'the overview says so too');
+await click('#nav-settings');
+await choose('#tailnet-transport', 'quic');
+await fill('#tailnet-wait', '0');
+await click('#tailnet-save');
+ok(await saved(c => c.transport === 'quic' && !c.wait_ms), 'back to QUIC and no wait');
+await click('#tailnet-enabled');
+await waitFor(`!${el('#tailnet-enabled')}.checked && ${el('#status-tunnel-text')}.textContent === '未开启'`);
+ok(tailnetConfig().enabled === false && !(await shown('#tailnet-transport')) && !(await has('#tunnel-line')), 'unticking turns the tunnels off and hides their settings');
+await click('#tab-settings-general');
+await click('#nav-overview');
+
+console.log('warm-up');
+{
+  // A stand-in for Claude Code: the test sends nothing to a real account.
+  const fake = dir + '/fake-claude';
+  writeFileSync(fake, '#!/bin/sh\ncase "$*" in\n  *--version*) echo "9.9.9 (Claude Code)";;\n  */usage*) echo "Current session: 0% used"; echo "Current week (all models): 5% used";;\n' +
+    '  *) cat >/dev/null; echo \'{"type":"result","is_error":false,"result":"Hi"}\';;\nesac\n', { mode: 0o755 });
+  const warmup = async () => (await fetch(env.DAEMON + '/api/v1/warmup', { headers: { Authorization: 'Bearer ' + env.DAEMON_KEY } })).json();
+  const id = s => `[id=${q(s)}]`;
+  await click('#nav-settings'); await click('#tab-settings-warmup');
+  await waitFor(`${el('#warmup-body')}?.textContent.includes('Claude Code（本机）')`);
+  ok((await text('#warmup-body')).includes('Codex（本机）'), 'the warm-up lists the agents of this machine');
+  ok(await fits() && await viewFits('settings'), 'the warm-up tab fits the window');
+  await click(id('warmup-edit-local:claude')); await waitFor(el('#dlg-warmup'));
+  ok(!(await ev(`${el('#warmup-on')}.checked`)), 'it starts off');
+  await click('#warmup-on');
+  await fill('#warmup-times', '6:00, 11:05');
+  await ev(`${el('#warmup-on-reset')}.value = 'all'`);
+  await fill('#warmup-binary', fake);
+  await click('#warmup-save'); await waitFor(`!${el('#dlg-warmup')}`);
+  const c = (await warmup()).settings.claude;
+  ok(c.enabled && c.times.join(',') === '06:00,11:05' && c.on_reset === 'all' && c.binary === fake, 'its settings are saved, times as 06:00');
+  await waitFor(`${el('#warmup-body')}.textContent.includes('06:00 11:05')`);
+  await click(id('warmup-edit-local:claude')); await waitFor(el('#dlg-warmup'));
+  await fill('#warmup-times', '25:00');
+  await click('#warmup-save'); await waitFor(`${el('#warmup-dlg-error')}.textContent.includes('06:00')`);
+  ok(true, 'a bad time of day is refused with an example');
+  await click('#dlg-warmup-close');
+  await click(id('warmup-run-local:claude'));
+  await waitFor(`${el('#warmup-body')}.textContent.includes('已预热')`, 30000);
+  const t = (await warmup()).targets.find(t => t.id === 'local:claude');
+  ok(t.result === 'warmed' && t.version.startsWith('9.9.9') && t.usage.windows.length === 2, 'warm up now runs the CLI and reads its windows after');
+  await shot('09c-warmup');
+  await click('#warmup-paused');
+  await waitFor(`${el('#warmup-paused')}.checked`);
+  ok((await warmup()).paused, 'every automatic warm-up can be paused');
+  await click('#warmup-paused');
+  await waitFor(`!${el('#warmup-paused')}.checked`);
+  await click('#tab-settings-general');
+  await click('#nav-overview');
+}
 
 console.log('feedback');
 ok(!(await has('#feedback-text')), 'the feedback form is not on the page until asked for');
@@ -284,8 +391,6 @@ await click('#dlg-feedback-close');
 ok(!(await has('#dlg-feedback')), 'and the dialog closes');
 
 console.log('sharing: a hosted API');
-const choose = (s, v) => ev(`(() => { const e = ${el(s)}; e.value = ${q(v)}; e.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-const shown = s => ev(`(() => { const e = ${el(s)}; return !!e && e.getClientRects().length > 0; })()`);
 const KEY = 'sk-test-secret-0123456789';
 await click('#nav-share');
 await waitFor(el('#provider-add'));
@@ -436,7 +541,7 @@ console.log('pairing');
 // The other accounts of the stack act through the command line: `seller` sells
 // mock-fast, `idle` sells nothing.
 const cli = (home, ...args) => execFileSync(`${dir}/bin/sharetoken`, ['-home', `${dir}/${home}`, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-const codeOf = out => out.match(/[A-Z2-7]{4}(?:-[A-Z2-7]{4}){3}/)[0];
+const codeOf = out => out.match(/\b[A-Z2-7]{3}-[A-Z2-7]{3}\b/)[0];
 const buyOnce = async () => {
   const r = await fetch(env.DAEMON + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKeyFile().key }, body: JSON.stringify({ model: 'mock-fast', max_tokens: 20, messages: [{ role: 'user', content: 'hi' }] }) });
   return { status: r.status, body: await r.text() };
@@ -452,7 +557,7 @@ ok(!(await has('#pair-restricted')) && (await text('#paired-sellers-body')).incl
 await click('#pair-join'); await waitFor(el('#dlg-pair-join'));
 await click('#pair-join-ok');
 await waitFor(`${el('#pair-join-error')}.textContent.includes('请输入')`);
-await fill('#pair-code-input', 'AAAA-AAAA-AAAA-AAAA'); await click('#pair-join-ok');
+await fill('#pair-code-input', 'AAA-AAA'); await click('#pair-join-ok');
 await waitFor(`${el('#pair-join-error')}.textContent.includes('配对码不对')`);
 ok(true, 'an empty and a wrong pairing code are refused');
 const idleCode = codeOf(cli('idle', 'pair', 'code', '-label', '<b>idle</b> team'));
@@ -491,13 +596,14 @@ await click('#pair-private');
 await waitFor(`!${el('#pair-private')}.checked && !${el('#pair-private')}.disabled`);
 ok(!(await isPrivate()), 'and off again');
 await click('#pair-new-code'); await waitFor(el('#dlg-pair-code'));
-ok(await ev(`${el('#pair-ttl')}.value`) === '24' && await ev(`[...${el('#pair-ttl')}.options].map(o => o.value).join()`) === '24,168,720', 'a code lasts one day, or seven or thirty when chosen');
+ok(await ev(`${el('#pair-ttl')}.value`) === '24' && await ev(`[...${el('#pair-ttl')}.options].map(o => o.value).join()`) === '24,168', 'a code lasts one day, or seven when chosen');
 await fill('#pair-uses', 'many'); await click('#pair-code-ok');
 await waitFor(`${el('#pair-code-error')}.textContent.includes('整数')`);
 await fill('#pair-label', 'friends'); await choose('#pair-ttl', '168'); await fill('#pair-uses', '2'); await click('#pair-code-ok');
 await waitFor(el('#dlg-pair-shown'));
 const ownCode = await text('#pair-shown-code');
-ok(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){3}$/.test(ownCode), 'a new code is shown once it is made');
+ok(/^[A-Z2-7]{3}-[A-Z2-7]{3}$/.test(ownCode), 'a new code is shown once it is made');
+ok(/\/p#[0-9A-Za-z]{8}$/.test(await text('#pair-shown-link')) && await has('#pair-shown-text'), 'with its link and a button that copies an invitation message');
 await shot('24-pair-code');
 await click('#pair-shown-done');
 const pairingText = () => text('#pairing-body');
@@ -563,7 +669,8 @@ ok(await ev(`[...${el('#partner-ttl')}.options].map(o => o.value).join()`) === '
 await click('#partner-invite-ok');
 await waitFor(el('#dlg-partner-shown'));
 const invite = await text('#partner-shown-code');
-ok(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){3}$/.test(invite), 'an invite code is shown');
+ok(/^[A-Z2-7]{3}-[A-Z2-7]{3}$/.test(invite), 'an invite code is shown');
+ok(/\/s#[0-9A-Za-z]{8}$/.test(await text('#partner-shown-link')), 'with its link');
 await shot('25-partner-invite');
 await click('#partner-shown-done');
 await waitFor(`${el('#share-partners-body')}.textContent.includes(${q(invite)})`);
@@ -626,6 +733,59 @@ await click('#confirm-ok');
 await waitFor(el('#partners-empty'));
 ok((await buyPaid()).cost > 0, 'after parting, requests are paid again');
 
+console.log('invite links');
+// A seller makes a code that asks for approval; the app gets its link as the
+// shell hands it over when the browser opens sharetoken:// (POST /api/v1/invite/pending).
+const linkOf = out => out.match(/^link\s+(\S+)$/m)[1];
+const askOut = cli('seller', 'pair', 'code', '-approve');
+const askLink = linkOf(askOut);
+ok(/\/p#[0-9A-Za-z]{8}$/.test(askLink) && askOut.includes('approval'), 'the command line prints the link of a code, and that it asks for approval');
+const askToken = askLink.split('#')[1];
+const portalHost = new URL(env.PORTAL).host;
+const openLink = l => ev(`kfetch('/api/v1/invite/pending', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: ${q(JSON.stringify({ link: l }))} }).then(r => r.status)`);
+ok(await openLink('sharetoken://p/' + askToken + '?h=' + portalHost) === 200, 'the daemon keeps the link the shell hands over');
+await ev(`window.dispatchEvent(new Event('focus'))`);
+await waitFor(el('#dlg-invite'));
+await waitFor(`${el('#invite-who')}?.textContent.includes('se***')`);
+ok(await has('#invite-approval') && await has('#invite-origin') && !(await ev(`${el('#invite-accept')}.disabled`)), 'the app shows who invites and that they approve, and asks before accepting');
+await shot('26-invite-dialog');
+await click('#invite-accept');
+await waitFor(`!${el('#dlg-invite')}`);
+await waitFor(`${el('#pair-join-flash')}?.textContent.includes('等待')`);
+await waitFor(`${el('#paired-sellers-body')}.textContent.includes('等待对方确认')`);
+ok(true, 'accepted, the request waits for the seller');
+ok(!(await ev(`kfetch('/api/v1/session').then(r => r.json())`)).invite, 'and the link is no longer pending');
+const reqId = cli('seller', 'pair').match(/waiting for your approval[^\n]*\n\s+ID[^\n]*\n\s+(\d+)/)[1];
+ok(cli('seller', 'pair', 'approve', reqId).includes('approved'), 'the seller approves from the command line');
+await waitFor(`${el('#pair-restricted')} && !${el('#paired-sellers-body')}.textContent.includes('等待对方确认')`, 40000);
+ok((await text('#paired-sellers-body')).includes('se***'), 'and the buyer is paired');
+ok(!(await has('#pair-join-flash')), 'the note that it waits for approval is gone');
+await fullShot('26b-invite-approved');
+await clickRow('#paired-sellers', 'se***', '.pair-leave'); await waitFor(el('#dlg-confirm')); await click('#confirm-ok');
+await waitFor(el('#pair-sellers-empty'));
+// A link of another portal is shown but cannot be accepted here; dismissing forgets it.
+ok(await openLink('sharetoken://s/AAAAAAAA?h=elsewhere.example') === 200, 'a link of another portal is kept too');
+await ev(`window.dispatchEvent(new Event('focus'))`);
+await waitFor(el('#invite-other-portal'));
+ok(await ev(`${el('#invite-accept')}.disabled`), 'but cannot be accepted here');
+await shot('26c-invite-other-portal');
+await click('#invite-dismiss');
+await waitFor(`!${el('#dlg-invite')}`);
+ok(!(await ev(`kfetch('/api/v1/session').then(r => r.json())`)).invite, 'dismissing forgets the link');
+ok(await openLink('ABC-DEF') === 400, 'the daemon takes links only');
+// A share invite's link pasted where a code goes.
+const shareLink = linkOf(cli('seller', 'partner', 'invite'));
+await click('#tab-pairing-partners');
+await click('#partner-join'); await waitFor(el('#dlg-partner-join'));
+await fill('#partner-code-input', askLink); await click('#partner-join-ok');
+await waitFor(`${el('#partner-join-error')}.textContent.includes('配对的邀请链接')`);
+ok(true, 'a pairing link pasted as a share invite is pointed to the right place');
+await fill('#partner-code-input', shareLink); await click('#partner-join-ok');
+await waitFor(`${el('#share-partners-body')}.textContent.includes('se***')`, 40000);
+ok(true, 'a share invite link pasted in the app makes partners');
+await clickRow('#share-partners', 'se***', '.partner-leave'); await waitFor(el('#dlg-confirm')); await click('#confirm-ok');
+await waitFor(el('#partners-empty'));
+
 console.log('languages');
 await cdp('Page.navigate', { url: env.DAEMON + '/?lang=en' });
 await waitFor(`${el('#nav-share')}?.textContent === 'Sharing'`);
@@ -652,6 +812,13 @@ ok(await text('#who') === NORMAL, 'a reload stays logged in');
 await click('#logout');
 await waitFor(el('#signin-form'));
 ok(await ev(`${el('#email')}.value`) === NORMAL, 'after logout the email is pre-filled');
+// Signed out, an invite link that arrives is announced beside the sign-in form.
+ok(!(await shown('#auth-invite')), 'no invite is announced when none came');
+await openLink('sharetoken://p/AAAAAAAA?h=' + portalHost);
+await waitFor(`${el('#auth-invite')} && !${el('#auth-invite')}.hidden`, 8000); // without a focus event: the page looks every few seconds
+ok(await ev(`(() => { const s = getComputedStyle(${el('#auth-invite')}); return s.color !== s.backgroundColor && ${el('#auth-invite')}.textContent.length > 10; })()`), 'signed out, an arriving invite is announced beside the sign-in form, readable');
+await shot('10a-auth-invite');
+await ev(`kfetch('/api/v1/invite/pending', { method: 'DELETE' })`);
 ok(!(await has('#new-account')), 'nothing announces a new account before a code is asked for');
 ok(!(await has('#cert')) , 'the confirmed certificate is not asked about again');
 const oldToken = config.token;

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -142,22 +143,55 @@ func codexHeader(tok *Token) http.Header {
 type codexUpstream struct {
 	base string
 	ts   TokenSource
+	// seals: the encrypted items this account refused, by conversation;
+	// turns: the backend's x-codex-turn-state of each turn in progress
+	seals refusedSeals
+	turns codexTurnStates
 }
 
-func (u *codexUpstream) Stream(ctx context.Context, body []byte, emit func([]byte) error) error {
-	chat, err := parseChat(body)
-	if err != nil {
-		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
+func (u *codexUpstream) APIs() []string { return []string{protocol.APIResponses} }
+
+func (u *codexUpstream) Stream(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	if r.API != protocol.APIResponses {
+		return fmt.Errorf("codex: cannot send a %s request", r.API)
 	}
-	req, err := responsesRequest(chat)
-	if err != nil {
-		return &node.StatusError{Status: http.StatusBadRequest, Body: err.Error()}
-	}
-	estPrompt, _ := protocol.EstimatePromptTokens(body)
-	session := randomUUID()
+	session := u.session(r)
+	seals := sealsKey(r.Header.Get("session_id"), r.Body)
 	return withToken(ctx, u.ts, func(tok *Token) error {
 		h := codexHeader(tok)
 		h.Set("session_id", session)
-		return streamResponses(ctx, u.base+"/responses", h, req, chat.Model, chat.MaxTokens, estPrompt, emit)
+		turn := codexTurnKey(tok.AccountID, r.Header.Get("session_id"), r.Header.Get("x-codex-turn-id"))
+		if st := u.turns.get(turn); st != "" {
+			h.Set("x-codex-turn-state", st)
+		}
+		ctx := ctx
+		if turn != "" {
+			ctx = withHTTPClient(ctx, turnStateTap{next: clientForContext(ctx), heard: func(st string) { u.turns.put(turn, st) }})
+		}
+		return u.seals.retry(seals, r.Body, func(body []byte) error {
+			return streamCodex(ctx, u.base+"/responses", h, body, emit)
+		})
 	})
+}
+
+// Compact implements node.Compactor with the backend's /responses/compact.
+func (u *codexUpstream) Compact(ctx context.Context, r *node.Request, emit func([]byte) error) error {
+	session := u.session(r)
+	seals := sealsKey(r.Header.Get("session_id"), r.Body)
+	return withToken(ctx, u.ts, func(tok *Token) error {
+		h := codexHeader(tok)
+		h.Set("session_id", session)
+		return u.seals.retry(seals, r.Body, func(body []byte) error {
+			return compactCodex(ctx, u.base+"/responses/compact", h, body, emit)
+		})
+	})
+}
+
+// session is the conversation's Codex session: the buyer's, which keeps the
+// backend's prompt cache of the conversation, or a new one.
+func (u *codexUpstream) session(r *node.Request) string {
+	if s := r.Header.Get("session_id"); s != "" {
+		return s
+	}
+	return randomUUID()
 }

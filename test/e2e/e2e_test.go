@@ -11,6 +11,7 @@ package e2e
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,6 +103,7 @@ type market struct {
 	ctx   context.Context
 	coord *coordinator.Service
 	info  peer.AddrInfo
+	db    *sql.DB
 }
 
 func newMarket(t *testing.T) *market { return newMarketWith(t, coordinator.Config{}) }
@@ -124,7 +126,7 @@ func newMarketWith(t *testing.T, cfg coordinator.Config) *market {
 		t.Fatal(err)
 	}
 	t.Cleanup(svc.Close)
-	return &market{t: t, ctx: ctx, coord: svc, info: peer.AddrInfo{ID: h.ID(), Addrs: h.Addrs()}}
+	return &market{t: t, ctx: ctx, coord: svc, info: peer.AddrInfo{ID: h.ID(), Addrs: h.Addrs()}, db: db}
 }
 
 func (m *market) addNode(upstreamURL string, pin, pout uint64) (host.Host, *p2p.Keys) {
@@ -363,7 +365,7 @@ func TestBuyerCancelMidStreamBillsDeliveredPart(t *testing.T) {
 		t.Fatalf("want the caller's error and no result, got %v / %v", res, err)
 	}
 	// Charged for the delivered part only: a few of the 200 chunks.
-	full := int64(protocol.TicketCost(&protocol.Ticket{PriceInMicros: priceIn, PriceOutMicros: priceOut, ReservedMicros: 1 << 40}, 20, 400))
+	full := int64(protocol.TicketCost(&protocol.Ticket{PriceInMicros: priceIn, PriceOutMicros: priceOut, ReservedMicros: 1 << 40}, protocol.Usage{PromptTokens: 20, CompletionTokens: 400}))
 	waitFor(t, 15*time.Second, "the cancelled job to be settled (pending, then final after the dispute window)", func() bool {
 		return m.held(buyerKeys) == 0 && m.balance(buyerKeys) < 5_000_000
 	})
@@ -420,7 +422,7 @@ func sendInfer(t *testing.T, h host.Host, tk protocol.Ticket) error {
 	}
 	defer st.Close()
 	jobKey, _ := box.GenerateIdentity()
-	encoded, _ := protocol.EncodeRequest([]byte(body))
+	encoded, _ := protocol.EncodeRequest(mustJoin(body))
 	sealed, _ := box.SealFrom(jobKey, tk.NodeBoxPub, encoded, protocol.RequestAAD(&tk))
 	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: tk, BuyerBoxPub: jobKey.Public(), RequestBytes: uint64(len(sealed))}); err != nil {
 		return err
@@ -585,4 +587,13 @@ func waitUntil(timeout time.Duration, cond func() bool) bool {
 		}
 	}
 	return true
+}
+
+// mustJoin is a request's plaintext as a buyer seals it.
+func mustJoin(body string) []byte {
+	b, err := protocol.JoinRequest(nil, []byte(body))
+	if err != nil {
+		panic(err)
+	}
+	return b
 }

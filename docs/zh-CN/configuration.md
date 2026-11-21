@@ -33,11 +33,13 @@
 | `identity.key_file` | `-key` | `relay.key` | 身份种子，不存在时以 0600 权限创建。中继的地址里包含由它派生的 peer ID，所以要保留这个文件 |
 | `network.listen` | `-listen` | IPv4 和 IPv6 上的 TCP 与 QUIC，端口 4001 | 监听的 multiaddr。主机没有 IPv6 时跳过 IPv6 监听 |
 | `network.announce` | `-announce` | 空 | 对外公告的公网 multiaddr，代替网卡地址：在 1:1 NAT 后面需要它。接受 `/dns4`、`/dns6` 域名；公告了域名时，中继打印的 `portal relay add` 提示只用域名地址 |
-| `network.max_conns` | `-max-conns` | 8192 | 连接管理器的高水位。资源管理器的全局连接数和流数按它放宽 |
+| `network.max_conns` | `-max-conns` | 8192 | 连接管理器的高水位。资源管理器的全局连接数和流数按它放宽。另外，中继和协调器对同一个 IPv4 地址或同一个 IPv6 /56 接受 32 条连接（/48 为 256 条），是 libp2p 默认值的四倍，容得下同一个 NAT 后面的用户；这一项不可配置 |
 | `access.networks` | — | 空 | 本中继服务的网络，每个网络一项。为空表示开放中继：任何人都可以预约（会打印警告） |
 | `access.networks[].name` | — | — | 必填，不可重复 |
 | `access.networks[].portal_keys` | — | — | 必填。该网络门户的凭证公钥（`portal pass-key`）；密钥轮换期间可以有多把。同一把密钥不能出现在两个网络里 |
 | `access.networks[].allow_peers` | — | 空 | 不需要凭证就能预约的 peer：该网络的协调器（`coordinator id`）。同一个 peer 不能出现在两个网络里。为空时告警，因为协调器将无法在这里预约 |
+| `access.networks[].allow_accounts` | — | 空 | 让中继成为私有中继：只有本网络这些账号（`user:3`）的设备可以预约。私有中继不列 `allow_peers`。`relay init -account … -out relay.yaml` 生成这样的文件（[security.md](security.md) §2.8） |
+| `access.networks[].portal_url` | — | 空 | 该网络的门户。中继启动时以及每 6 小时从它读取凭证公钥，与 `portal_keys` 并用，无人维护的中继因此不受密钥轮换影响。只接受 https |
 | `access.networks[].max_devices_per_user` | — | 4 | 同一用户账户同时持有预约的设备数。账户只在本网络内计数 |
 | `access.networks[].max_reservations` | — | 0 | 该网络全部设备的预约合计上限；协调器不计入。0：只受 `limits.max_reservations` 限制 |
 | `limits.max_reservations` | `-max-reservations` | 4096 | 同时持有的预约数，所有网络合计 |
@@ -85,13 +87,24 @@
 | `jobs.max_offer_ttl` | — | 5m | Offer 可声明的有效期上限 |
 | `jobs.job_retention` | — | 720h | 已完成作业保留多久（账本永久保留） |
 | `jobs.suspend_for` | — | 24h | 抽检多次失败的节点被排除在撮合之外多久 |
-| `references[]` | `-reference`（可重复） | 空 | 模型的参考副本：有了它才能抽检，争议时才能精确计 token。每项有 `id`（市场模型 ID）、`upstream`（上游服务里的模型名）、`url`（OpenAI 兼容的 base URL）和 `api_key_env` |
+| `references[]` | `-reference`（可重复） | 空 | 模型的参考副本：有了它才能抽检，争议时才能精确计 token。每项有 `id`（市场模型 ID）、`upstream`（上游服务里的模型名）、`url`（OpenAI 兼容的 base URL）、`api_key_env` 或 `api_key_file`、`verify`（抽检怎样核对回答：`vllm`、`deepseek-prefix`、`openai-div`，或只核对计费的 `none`；默认 `none`）、`verify_url`（抽检打分用的 base URL，默认同 `url`）和 `params`（抽检请求的附加字段，例如默认会思考的模型用 `{reasoning_effort: none}`） |
 | `audit.interval` | `-audit-interval` | 10m | 抽检的平均间隔；0 关闭抽检 |
-| `audit.budget_micros` | `-audit-budget` | 200000 | 每次抽检的冻结额，由平台手续费支付 |
-| `audit.prompts_file` | `-audit-prompts` | 空 | 挑战 prompt，每行一个。为空：内置的随机 prompt |
-| `audit.max_tokens` | — | 96 | 挑战的输出上限 |
-| `audit.match_at` | — | 0.8 | 相似度达到或超过它算一致 |
-| `audit.mismatch_below` | — | 0.4 | 相似度低于它算不一致 |
+| `audit.budget_micros` | `-audit-budget` | 200000 | 每道题的冻结额，由平台手续费支付 |
+| `audit.prompts_file` | `-audit-prompts` | 空 | 私有题库，每行一题：纯文本，或 `{"system": …, "messages": […]}`。为空：内置的开放题 |
+| `audit.max_tokens` | — | 96 | 每道题的输出上限 |
+| `audit.questions` | `-audit-questions` | 5 | 每次抽检的题数；按全部题目一起判定 |
+| `audit.spread` | `-audit-spread` | 2m | 同一次抽检的两道题之间随机间隔，最长这么久 |
+| `audit.score_tokens` | — | 64 | 每个回答最多核对的位置数（`deepseek-prefix` 每个位置调用一次） |
+| `audit.threshold` | — | 0.85 | top-1 命中率均值低于它，判定节点用的是别的模型；校准后改用校准出的阈值 |
+| `audit.margin` | — | 0.03 | 达到 `threshold + margin` 算一致；两者之间无结论 |
+| `audit.div_fails` | — | 2 | `openai-div`：失败几题算不一致；0 题失败算一致 |
+| `audit.shadow` | `-audit-shadow` | true | 影子模式：只记录结论，不动节点记录（收据本身没通过检查的照常处理） |
+| `audit.calibrate_every` | — | 24h | 每个能打分的参考模型多久校准一次；0：只用 `coordinator audit calibrate` 手动校准 |
+| `audit.calibrate_samples` | — | 40 | 每次校准的题数，至少 10 |
+| `audit.delivery` | — | auto | 题目怎么到节点。`auto`：由本来就可能向该节点购买的用户客户端转交（加密，平台付费），没有这样的客户端时由抽检身份经官方中继去问；`carried`：只用客户端转交；`direct`：只用抽检身份 |
+| `audit.carry_poll` | — | 1m | 客户端多久问一次有没有要转交的题（抽检开启时；否则每 10 分钟）。至少 5s |
+| `audit.carry_wait` | — | 3m | 转交的题最多等多久带回来。至少 10s |
+| `audit.apis` | — | chat, messages, responses | 出题用的接口，每道题随机取一个。参考模型可以用 `apis` 缩小范围 |
 | `tee.policy_file` | `-tee-policy` | 空 | TEE 镜像白名单 JSON；设置后启用 `require_tee` 撮合 |
 | `tee.online_check` | `-tee-online` | false | 另外向 AMD 和 Intel 查询吊销与 TCB 状态（需要联网） |
 | `debug.pprof_listen` | `-debug` | 空 | 提供 Go pprof，例如 `127.0.0.1:6060`；只放在回环地址上 |
@@ -101,9 +114,10 @@
 
 说明：
 
-- 启动时检查的约束：`jobs.start_grace < jobs.settle_grace < jobs.dispute_window ≤ jobs.job_retention`；`0 < audit.mismatch_below < audit.match_at ≤ 1`；参考模型的 ID 不能重复。
-- 给了 `-reference id=…,upstream=…,url=…[,key-env=VAR]` 时，它整体替换 `references[]`。`key-env` 对应 `api_key_env`。
-- `audit.interval: 0` 关闭抽检，但保留参考模型用于精确计 token。这适合由商业 API 提供的模型：它们的输出不确定，抽检会误判，而且每次抽检都要花钱。
+- 启动时检查的约束：`jobs.start_grace < jobs.settle_grace < jobs.dispute_window ≤ jobs.job_retention`；`0 < audit.threshold < audit.threshold + audit.margin ≤ 1`；`1 ≤ audit.div_fails ≤ audit.questions`；参考模型的 ID 不能重复，`verify` 只能是四种之一。
+- 给了 `-reference id=…,upstream=…,url=…[,key-env=VAR]` 时，它整体替换 `references[]`。`key-env` 对应 `api_key_env`，`verify` 对应 `verify`。
+- `audit.interval: 0` 关闭抽检，但保留参考模型用于精确计 token。
+- 商业 API 的输出不完全确定，抽检不再比较文本是否相似，而是逐 token 核对（`docs/zh-CN/security.md` §2.4）：DeepSeek 用 `deepseek-prefix`，OpenAI 的非推理模型用 `openai-div`，不给 logprobs 的模型（Claude、Gemini）只能 `none`。
 - 设置任何一个 `dev.*` 选项都会在启动时打印警告。绝不要在公开网络上使用。
 
 ## 4. portal
@@ -132,6 +146,9 @@
 | `mail.support` | — | 空 | 用户反馈的地址；管理员的回复也从这里发出 |
 | `downloads.dir` | — | 空 | 客户端安装包所在的目录，在 `/downloads/` 提供下载。为空：不提供下载 |
 | `relay_metrics.*` | — | 关闭 | 经 SSH 读取每个中继的 `/metrics`，供管理控制台的仪表盘使用：`key_file`、`known_hosts_file`、`interval`（1m）、`timeout`（20s），以及 `targets[]`，每项有 `relay`（中继登记里的名称）、`ssh`（`user@host[:port]`）和 `command` |
+| `admin.allow_from` | — | 空 | 允许访问管理页面（`/admin/`）、管理 API（`/api/v1/admin/…`）以及管理员登录的来源：IP 地址、CIDR 网段和域名（域名代表它解析出的全部 A 和 AAAA 地址）。来源是对端地址；对端是回环或 `http.trusted_proxies` 里的代理时，取它传来的 `X-Real-IP`。其他来源访问管理端一律 404，管理员输对邮件验证码后也会被拒绝登录（403）；普通用户和客户端不受影响。不会自动放行回环地址。为空：不限制 |
+| `admin.resolve_interval` | — | 5m | 多久重新解析一次 `admin.allow_from` 里的域名（至少 10s）。解析失败时沿用该域名上一次的地址；从未解析成功的域名不放行任何来源 |
+| `alerts.pushover_file` | — | 空 | 一个含 `PUSHOVER_TOKEN=…` 和 `PUSHOVER_USER=…` 两行的文件：给管理员的告警（有人在猜配对码和邀请码）发到这个 Pushover 账号。每次告警时读取，改了不用重启。为空或读不到：告警只写日志 |
 | `sessions.login_ttl` | `serve -login-ttl` | 1440h | 客户端登录时得到的 token 的有效期（60 天） |
 | `sessions.web_session_ttl` | `serve -session-ttl` | 360h | 浏览器会话的有效期（15 天） |
 | `sessions.pass_ttl` | `serve -pass-ttl` | 1h | 中继凭证的有效期；至少 5m。禁用用户最迟在这段时间内在中继上生效 |
@@ -172,6 +189,8 @@
 | `run.json` | 0600 | 正在运行的客户端的地址和 PID，CLI 据此找到它；退出时删除 |
 | `providers.json` | 0600 | 用户用来出售的托管 API，以及它们的 key 和 token（[providers.md](providers.md)） |
 | `update.json` | 0600 | 上次检查新版本的结果 |
+| `warmup.json` | 0600 | 本机 Claude Code 和 Codex 的预热设置（[warmup.md](warmup.md)） |
+| `warmup-state.json` | 0600 | 预热做过什么、读到了什么，重启后据此不重复发送 |
 | `daemon.log` | 0600 | 桌面应用启动的服务的日志（[desktop.md](desktop.md)） |
 
 `config.json` 由客户端自己写（`login`、`share …`，以及桌面应用使用的本地 API）；`sharetoken config` 打印它。写入时先写临时文件再改名，崩溃不会留下半个文件。它的字段：
@@ -186,17 +205,26 @@
 | `listen` | IPv4 和 IPv6 上的 TCP 与 QUIC，端口任意 | libp2p 监听地址 |
 | `nat` | true | UPnP/NAT-PMP 和打洞 |
 | `relays` | 空 | 覆盖门户给出的中继列表 |
-| `buy.budget_micros` | 200000 | 每个请求冻结的额度；没用完的部分退回 |
+| `private_relays` | 空 | 用户自己运行的中继（最多 8 个）。共享节点在上面预约；其他功能都不用它，和协调器之间的流量从不经过它（`sharetoken relays add`，[security.md](security.md) §2.8） |
+| `tailnet.enabled` | false | 买卖双方都打开时，两端之间走 Tailscale 数据面的直连隧道（`sharetoken tailnet on`，[architecture.md](architecture.md) §2.17） |
+| `tailnet.wait_ms` | 0 | 对一个节点的请求最多等新隧道多久，之后走中继（最大 10000） |
+| `tailnet.transport` | quic | 买家的连接在隧道里跑什么：`quic` 或 `tcp`。共享节点两种都提供 |
+| `tailnet.derp_map` | 空 | DERP 中继的来源：URL，或存有 DERP 表的文件；空为 tailcat 的公共 DERP。买卖两端要一致 |
+| `buy.budget_micros` | 2000000 | 每个请求冻结的额度；没用完的部分退回 |
 | `buy.max_price_in`、`buy.max_price_out` | 0（不限） | 每百万 prompt token 和 completion token 的价格上限 |
 | `buy.evidence` | true | 对可以证明有问题的单披露密钥，换取自动退款 |
 | `buy.require_tee`、`buy.tee_policy`、`buy.tee_online` | 关闭 | 只从经过证明的 TEE 节点购买；可信镜像的白名单文件；联网查询吊销状态 |
+| `buy.spot_checks` | 开启 | 协助平台抽检卖家：客户端偶尔替平台把一个很短的加密作业当作自己的作业转交给卖家。不花 credit，客户端也看不到内容（[security.md](security.md) §2.4）。只能在这里关闭，应用里没有这个开关 |
+| `buy.require_native` | 关闭 | 只从模型服务器原生支持请求接口的节点购买（[apis.md](apis.md)） |
+| `buy.loop_guard` | 开启 | 模型陷入循环时不再付费：流式回答的推理或正文原地打转（最近 256 行和句子都在同样的 24 种之内）时截断，按达到输出上限结束（`finish_reason` `length`、`stop_reason` `max_tokens`、`response.incomplete`），节点随即停止模型；请求的最后 8 轮都是同一个工具调用、得到同样的结果时，在本机用一段提示作答，不发给任何节点。动作时响应头 `X-Sharetoken-Loop-Guard` 或流里的注释 `loop_guard=` 会注明。设为 `false` 两项都关闭 |
 | `buy.queue_seconds` | 30 | 所有节点都忙时，请求等待空闲节点多久；负数：立即失败 |
 | `buy.first_byte_seconds`、`buy.idle_seconds` | 30、30 | 一单等待节点第一帧的时间上限，以及两帧之间的时间上限。模型不出声时，节点每 10 秒发一个进度帧 |
 | `share.enabled` | false | 共享的开关 |
 | `share.upstream`、`share.upstream_key_env` | `http://127.0.0.1:11434/v1`、空 | 本机模型服务的 OpenAI 兼容 base URL，以及存放其 API key 的环境变量 |
 | `share.concurrency` | 2 | 并发作业数 |
 | `share.models` | 空 | 从本机模型服务共享的模型 |
-| `share.relays` | 2 | 在几个中继上持有预约 |
+| `share.relays` | 2 | 在网络的几个中继上持有预约 |
+| `share.keep_official` | false | 使用私有中继时：私有中继正常时也保留这些预约。关闭时，网络的中继只在 30 秒内没有任何私有中继可用后作为后备 |
 | `share.tee` | `off` | `off`、`auto`、`sev-snp` 或 `tdx` |
 
 `up` 和 `daemon` 的 `-http`、`-listen`、`-nat` 只在这一次运行中覆盖文件，不保存。

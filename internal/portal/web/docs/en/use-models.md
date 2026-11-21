@@ -1,6 +1,6 @@
 # Call models
 
-While the client runs, it serves an OpenAI-compatible endpoint on your machine. Your request is encrypted and sent only to the selected node. The response carries the node's signed receipt, and the client checks it automatically.
+While the client runs, it serves an endpoint on your machine that speaks the APIs of OpenAI (chat completions and Responses) and Anthropic (Messages), so OpenAI clients, Claude Code and Codex can all use it. Your request is encrypted and sent only to the selected node. The response carries the node's signed receipt, and the client checks it automatically.
 
 ## Local endpoint {#endpoint}
 
@@ -8,7 +8,7 @@ While the client runs, it serves an OpenAI-compatible endpoint on your machine. 
 |---|---|
 | Base URL | `http://127.0.0.1:{{port}}/v1` |
 | API key | This client's key, `sk-st-…`: `{{exe}} apikey -q` prints it, and the desktop app has it next to the endpoint |
-| Interface | `POST /v1/chat/completions`, `GET /v1/models` |
+| Interfaces | `POST /v1/chat/completions` (OpenAI), `POST /v1/messages` (Anthropic, Claude Code), `POST /v1/responses` (OpenAI Responses, Codex; also as a WebSocket), `GET /v1/models` |
 
 First make sure `{{exe}} up` is running, or [run it in the background](/docs/running#background).
 
@@ -155,12 +155,108 @@ $env:OPENAI_API_KEY = ({{exe}} apikey -q)
 
 If a tool on a web page calls the endpoint with a non-local `Origin`, the endpoint returns 403. This stops a malicious web page from spending your credit.
 
+## Use with Claude Code {#claude-code}
+
+Claude Code talks to the endpoint in the Anthropic Messages API. Point it at the client and pick a model from `{{exe}} models`:
+
+::: macos linux
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:{{port}}
+export ANTHROPIC_AUTH_TOKEN=$({{exe}} apikey -q)
+export ANTHROPIC_MODEL=claude-sonnet-4-6          # a model ID from `{{exe}} models`
+export ANTHROPIC_SMALL_FAST_MODEL=claude-sonnet-4-6  # for Claude Code's background tasks
+claude
+```
+:::
+
+::: windows
+```powershell
+$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:{{port}}'
+$env:ANTHROPIC_AUTH_TOKEN = ({{exe}} apikey -q)
+$env:ANTHROPIC_MODEL = 'claude-sonnet-4-6'
+$env:ANTHROPIC_SMALL_FAST_MODEL = 'claude-sonnet-4-6'
+claude
+```
+:::
+
+Tool use, thinking and prompt caching work as with Anthropic. Any model on the network can be used, not only Claude: a node whose model server does not speak the Messages API converts the request (see [Native and converted](#native)). For a model ID it does not know, Claude Code warns that it assumes a context window of 1M tokens. `/v1/messages/count_tokens` is answered on your machine with an estimate.
+
+> [!TIP]
+> Coding agents send long prompts: tens of thousands of tokens with every request. If requests fail with `budget`, the per-request hold does not cover the prompt at the model's price; raise `buy.budget_micros` in the [configuration file](/docs/config#buy) (default `2000000`, 2 credits), or in the desktop app under "Settings > Requests > Budget per request". Only what a request uses is charged.
+
+## Use with Codex {#codex}
+
+Codex talks to the endpoint in the OpenAI Responses API. Add a provider to `~/.codex/config.toml`:
+
+```toml
+model = "gpt-5.5"              # a model ID from `{{exe}} models`
+model_provider = "sharetoken"
+
+[model_providers.sharetoken]
+name = "sharetoken"
+base_url = "http://127.0.0.1:{{port}}/v1"
+env_key = "SHARETOKEN_API_KEY"
+wire_api = "responses"
+supports_websockets = true     # optional: one connection for the whole session
+```
+
+Codex reads a custom provider's models (context window, reasoning levels, when to compact) only from a catalog file; without one it warns "Model metadata … not found" and guesses. Write the network's models to one and name it at the top of `config.toml`:
+
+```bash
+{{exe}} models -codex ~/.codex/sharetoken-models.json
+```
+
+```toml
+model_catalog_json = "/Users/you/.codex/sharetoken-models.json"   # the path the command printed
+```
+
+Run the command again when the models you use change: Codex reads the file when it starts.
+
+Then give Codex the key and start it:
+
+::: macos linux
+```bash
+export SHARETOKEN_API_KEY=$({{exe}} apikey -q)
+codex
+```
+:::
+
+::: windows
+```powershell
+$env:SHARETOKEN_API_KEY = ({{exe}} apikey -q)
+codex
+```
+:::
+
+Tool calls (`apply_patch` included), reasoning and context compaction work with any model on the network. Over a WebSocket, Codex sends only what is new in each request; the client keeps the conversation of the connection and sends it whole, since a node keeps nothing between requests. Over HTTP the client also answers `previous_response_id` (for tools such as the OpenAI Agents SDK): it keeps the last responses of each API key in memory for an hour and sends the conversation they make up; an id it does not have is refused with `previous_response_not_found`, and nothing is kept for a request with `store: false`. Codex's `/v1/responses/compact` is supported: a node with a ChatGPT login compacts natively, any other one has its model write a summary. As with Claude Code, raise `buy.budget_micros` if requests fail with `budget`.
+
 To have Claude Code or Codex check the client, call models and manage sharing for you, see [Use with coding agents](/docs/agents).
+
+## Native and converted {#native}
+
+Every node serves all three APIs. A node whose model server speaks the API of your request natively passes it through unchanged; the others convert it, the way gateways such as sub2api do:
+
+| Seller's model server | Native API |
+|---|---|
+| Anthropic (API key or Claude login) | Messages |
+| OpenAI API key | chat completions, Responses |
+| ChatGPT (Codex) login | Responses |
+| DeepSeek API key | chat completions, Messages |
+| Gemini, Grok, other OpenAI-compatible servers | chat completions |
+
+- **Native first:** the network matches a node that speaks your request's API natively whenever one is free, even if a converting one is cheaper. `/v1/models` lists the native APIs of each model in `apis`.
+- **Only native:** tick "Only sellers that speak the request's API natively" in the desktop app under "Settings > Requests", set `buy.require_native` in the [configuration file](/docs/config#buy), or send the header `X-Sharetoken-Require-Native: true` with a request. With no such node the request fails with `no_offers` instead of being converted.
+- **What a conversion loses:** encrypted reasoning and thinking signatures only work with the model that made them, so they are dropped when a conversation moves to another kind of model; server-side tools (web search, code execution) are not offered by any node.
+- **One node only:** the header `X-Sharetoken-Node: <node ID>` sends a request to that node, for trying a seller.
+
+If an answer fails before anything arrived, the client tries other nodes as usual.
 
 ## How billing works {#billing}
 
 - **Billed by actual tokens:** The node sets the price, and you pay for the token counts on the receipt.
-- **Hold:** When you send a request, an amount is put on hold first, and whatever is not used is returned afterward. If the request has `max_tokens`, only the worst case is held. If not, the whole budget is held (0.2 credit by default).
+- **Prompt cache:** input tokens the model server reads from its prompt cache cost the node's cache read price (by default a tenth of its input price), and tokens it writes to the cache its cache write price (by default 1.25 times the input price for Anthropic models, the input price otherwise). The receipt counts both; the job list on the portal marks such jobs with `*`.
+- **Reasoning you do not see:** some models reason without showing all of it (encrypted, summarized or omitted thinking). When the answer shows that the model reasoned, you pay the output tokens the model server reported, up to the request's output limit (`max_tokens`, `max_output_tokens`) or what the hold covers. Otherwise output is checked against the text you received.
+- **Hold:** When you send a request, an amount is put on hold first, and whatever is not used is returned afterward. If the request has `max_tokens`, only the worst case is held. If not, the whole budget is held (2 credits by default); when your balance is smaller, what there is is held, as long as it covers the prompt and a short answer.
 - **Always set `max_tokens`**, especially for batch or high-concurrency calls. Otherwise a large hold can easily cause `insufficient_funds`.
 - **Stopping midway:** If your program drops a streaming request midway (for example, the user pressed stop), the node stops generating at once and you are billed only for the part that was delivered.
 - **Network breaks:** If the connection breaks because a relay restarted or your network changed, the client reconnects within 60 seconds and the answer continues where it stopped. You do not need to send the request again.
@@ -185,7 +281,7 @@ If a node overstates usage, the client refuses to sign and hands over the key fo
 
 ## Long conversations and large requests {#sessions}
 
-- **Back to the same node:** Later requests of one conversation go to the node that served it last, when it can take them. The connection is already open and the model server's prompt cache is more likely to hit, so the first token comes sooner and the cost may be lower. The client recognizes a conversation by the request's `session_id`, or else by the model and the first two messages. If that node is busy or offline, another node is used as usual.
+- **Back to the same node:** Later requests of one conversation go to the node that served it last, when it can take them. The connection is already open and the model server's prompt cache is more likely to hit, so the first token comes sooner and the cost may be lower. The client recognizes a conversation by its session: a chat request's `session_id`, Claude Code's session, Codex's `prompt_cache_key`; or else by the model and the first two messages. If that node is busy or offline, another node is used as usual.
 - **Request size:** A request can be up to 32 MB (the limit of most cloud Claude APIs), so it can carry images such as screenshots. Requests are compressed before they are sent; a long conversation history usually shrinks to a third to a fifth.
 
 ## Use only TEE nodes {#tee}
@@ -202,10 +298,10 @@ If no node qualifies, the request fails instead of falling back to an ordinary n
 
 ## Buy only from sellers you know {#pairing}
 
-By default your requests go to whichever node the coordinator picks. To send them only to sellers you know, pair with those sellers. A seller gives you a pairing code, and you join with it:
+By default your requests go to whichever node the coordinator picks. To send them only to sellers you know, pair with those sellers. A seller gives you a pairing code or an [invite link](/docs/share#invite-links), and you join with it:
 
 ```bash
-{{exe}} pair join ABCD-EFGH-IJKL-MNOP
+{{exe}} pair join ABC-DEF
 ```
 
 From then on this account buys only from the sellers it is paired with, on all of its devices. `models` and `/v1/models` list only their models.
@@ -224,7 +320,7 @@ You can do the same in the desktop app under **Overview → Paired sellers**, an
 
 ## Errors and retries {#errors}
 
-Errors always have the form `{"error":{"code","message"}}`.
+Errors have the form `{"error":{"code","message"}}`; on `/v1/messages` they have Anthropic's form `{"type":"error","error":{"type","message"}}`, so Claude Code shows them as it shows Anthropic's.
 
 | Code | HTTP | Meaning and what to do |
 |---|---|---|

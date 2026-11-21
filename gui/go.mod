@@ -1,6 +1,6 @@
 module sharetoken/gui
 
-go 1.26.0
+go 1.27.4
 
 require (
 	github.com/godbus/dbus/v5 v5.2.2

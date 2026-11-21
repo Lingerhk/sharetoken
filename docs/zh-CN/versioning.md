@@ -129,12 +129,13 @@ dist/sharetoken-1.0.0-linux-arm64.deb             scripts/build/build-gui-linux.
 dist/sharetoken-cli-1.0.0-linux-amd64.tar.gz      scripts/build/build-cli.sh prod linux amd64（"all" 构建三个系统、两种架构）
 dist/sharetoken-cli-1.0.0-windows-amd64.zip       scripts/build/build-cli.sh prod windows amd64
 dist/relay-1.0.0-linux-amd64                      GOOS=linux GOARCH=amd64 scripts/build/build.sh relay
+dist/sharetoken-relay-1.0.3-linux-amd64.tar.gz   scripts/build/build-relay.sh amd64（不带参数：两种架构）：中继程序、unit 文件和 README
 dist/sharetoken-1.0.0-macos-arm64.app.zip         同上：.app 打成 zip，一键升级用
 dist/SHA256SUMS-1.0.0
 dist/SIGNATURES-1.0.0                             scripts/release/release-files.sh 用发布密钥签名
 ```
 
-**发布安装包。** 一次发布是 14 个包（桌面安装包、两个 macOS 的 .app.zip 和命令行压缩包，三个系统、两种架构），用发布密钥签名，放进门户的下载目录（门户配置里的 `downloads.dir`），整个目录一次替换；门户在 `/downloads/` 下提供下载。有两种做法，跑的是同一套脚本：
+**发布安装包。** 一次发布是 16 个包（桌面安装包、两个 macOS 的 .app.zip、三个系统两种架构的命令行压缩包，以及 Linux 两种架构的中继，供部署[私有中继](security.md)的人下载），用发布密钥签名，放进门户的下载目录（门户配置里的 `downloads.dir`），整个目录一次替换；门户在 `/downloads/` 下提供下载。有两种做法，跑的是同一套脚本：
 
 - **在 Mac 上：** `scripts/release/publish-packages.sh <版本> <user@host> <目录> [--with-dev-cli] [--owner <用户>]` 构建、签名、上传，在服务器上校验，然后替换目录。`--owner` 让脚本经 sudo 以门户的运行用户安装这些文件。`--with-dev-cli` 多加 6 个 `sharetoken-cli-dev-*` 包供测试：`GET /api/v1/downloads` 不列出它们，只能按文件名下载。
 - **用 GitHub Actions：** 工作流“Client release”（[`.github/workflows/release-client.yml`](../../.github/workflows/release-client.yml)）。推送 tag `v<VERSION>`，或者移动它（`git tag -f -a v1.0.1 -m ... && git push -f origin v1.0.1`），就在 GitHub 的 runner 上构建：两种架构的 macOS 应用在 Apple 芯片的 runner 上构建，Windows 应用在 Linux 上交叉编译并用 makensis 打包，`.deb` 在每种架构各自的 Linux runner 上用 `build-gui-linux.sh` 的 Docker 镜像构建，命令行在 Linux 上构建。所有包用 `scripts/build/gui-builder.Dockerfile` 里的 Go 版本，构建时间相同。接着“Sign and publish on GitHub”签名，并创建带全部文件的 GitHub Release（tag 被移动时替换已有 Release 的文件）；“Publish to the portal”替换下载目录。在发布 tag 上手动“Run workflow”效果相同，并会询问是否发布到门户；在分支上运行是试运行：全部构建并检查，不签名也不发布，安装包作为这次运行的产物保留一周。tag 和 `VERSION` 不一致时运行失败。
@@ -162,7 +163,7 @@ dist/SIGNATURES-1.0.0                             scripts/release/release-files.
 
 ## 测试
 
-- `scripts/test/test.sh`：在 Docker 里启动 MySQL 8，运行全部 Go 测试。
+- `scripts/test/test.sh`：在 Docker 里启动 MySQL 8.4，运行全部 Go 测试。
 - [`internal/protocol/golden_test.go`](../../internal/protocol/golden_test.go)：签名消息的固定向量。
 - [`internal/mysqldb`](../../internal/mysqldb)：迁移顺序、中断后续跑、并发启动、旧程序遇到破坏性迁移。
 - [`scripts/test/version_ui_test.mjs`](../../scripts/test/version_ui_test.mjs)：版本页面和升级提醒，在无头 Chrome 里测试。

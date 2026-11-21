@@ -59,14 +59,38 @@ references:
     upstream: qwen2.5:7b         # the model's name on the server
     url: http://127.0.0.1:11434/v1
     api_key_env: ""              # environment variable holding the server's API key
+    api_key_file: ""             # or a file holding it (wins)
+    # How audits check a node's answers against this reference (docs/security.md):
+    #   vllm             self-hosted vLLM/SGLang: token-level check, one call per answer
+    #   deepseek-prefix  DeepSeek API: token-level check through prefix completion, one call per token
+    #   openai-div       OpenAI API: first-divergence check on the reference's own logprobs
+    #   none             the reference reports no logprobs: only the bill is checked
+    verify: none
+    verify_url: ""               # base URL audits score against; empty: url
+    # params: {reasoning_effort: none}   # extra fields of audit requests (a model that thinks by default)
 
 audit:
   interval: 10m                  # mean time between audits; 0 turns them off
-  budget_micros: 200000          # held for each audit, paid from the platform's fees
-  prompts_file: ""               # challenge prompts, one per line; empty: built-in random ones
-  max_tokens: 96                 # output limit of a challenge
-  match_at: 0.8                  # similarity at or above this: the same model
-  mismatch_below: 0.4            # similarity below this: a different model
+  budget_micros: 200000          # held for each question, paid from the platform's fees
+  prompts_file: ""               # private question pool, one per line: text or {"system":..,"messages":[..]}; empty: built-in open questions
+  max_tokens: 96                 # output limit of a question
+  questions: 5                   # questions per audit; the verdict is on all of them together
+  spread: 2m                     # random pause of up to this long between an audit's questions
+  score_tokens: 64               # positions scored per answer (deepseek-prefix: one call each)
+  threshold: 0.85                # mean top-1 rate below which the node serves another model,
+                                 # until a calibration measures one for the reference
+  margin: 0.03                   # threshold + margin and above: a match; in between: inconclusive
+  div_fails: 2                   # openai-div: failed answers (of questions) that make a mismatch
+  shadow: true                   # record verdicts only; nodes' records are untouched
+  calibrate_every: 24h           # measure each reference's honest scores (0: only by `coordinator audit calibrate`)
+  calibrate_samples: 40          # questions per calibration
+  delivery: auto                 # how a question reaches a node. auto: a user's client that could buy from the
+                                 # node carries it (sealed: the client reads neither question nor answer, the
+                                 # platform pays), and an audit identity asks through an official relay when no
+                                 # such client is there; carried: clients only; direct: audit identities only
+  carry_poll: 1m                 # how often clients ask for a question to carry
+  carry_wait: 3m                 # how long a carried question may take to come back
+  apis: [chat, messages, responses]  # the APIs questions are asked in, one drawn per question
 
 tee:
   policy_file: ""                # JSON allow-list of TEE images; setting it enables matching for require_tee

@@ -3,7 +3,7 @@
 #
 #   docker build -t sharetoken .
 #   docker build -t sharetoken --build-arg ST_VERSION=1.0.0 --build-arg ST_COMMIT=$(git rev-parse --short=7 HEAD) .
-ARG GO_VERSION=1.27
+ARG GO_VERSION=1.27.4
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
       -ldflags "-s -w -X $P.Version=$V -X $P.Commit=$ST_COMMIT -X $P.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       -o /out/ ./cmd/portal ./cmd/coordinator ./cmd/relay ./cmd/mailserver
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata \
  && adduser -D -H -u 10001 sharetoken \
  && install -d -o sharetoken -g sharetoken -m 700 \

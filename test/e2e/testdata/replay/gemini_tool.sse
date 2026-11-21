@@ -1,0 +1,4 @@
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"text": "**Reading the file**\n\nThe user wants the file's content, so I will run a command.","thought": true}]}}],"usageMetadata": {"trafficType": "PROVISIONED_THROUGHPUT"},"modelVersion": "{{MODEL}}","createTime": "2026-11-15T13:00:00.000000Z","responseId": "{{ID}}"},"traceId": "t{{ID}}"}
+
+data: {"response": {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"name": "{{TOOL}}","args": {{ARGS_OBJECT}}},"thoughtSignature": "CiQB0e2Kb{{ID}}VGhvdWdodFNpZ25hdHVyZQ=="}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 4310,"candidatesTokenCount": 31,"totalTokenCount": 4519,"cachedContentTokenCount": 4096,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 4310}],"thoughtsTokenCount": 178,"trafficType": "PROVISIONED_THROUGHPUT"},"modelVersion": "{{MODEL}}","createTime": "2026-11-15T13:00:00.000000Z","responseId": "{{ID}}"},"traceId": "t{{ID}}"}
+

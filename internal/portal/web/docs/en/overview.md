@@ -6,7 +6,7 @@ ShareToken is a P2P network for sharing open-weight models. This guide explains 
 
 One client and one account can both buy and sell:
 
-- **Call models:** The client opens an OpenAI-compatible endpoint on your machine. Any tool that speaks the OpenAI protocol works once you change the base URL.
+- **Call models:** The client opens an endpoint on your machine in the OpenAI and Anthropic APIs. OpenAI tools, Claude Code and Codex work once you change the base URL.
 - **Share models:** Share the models served by your local Ollama or similar service with the network and earn credit while the machine is idle. You do not need a public IP or open ports.
 
 ## Choose an edition {#editions}

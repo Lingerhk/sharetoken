@@ -190,8 +190,18 @@ I18N.ready.then(() => {
     const auth = { probe: null, sent: null, invite: false, mfa: false, confirmed: false, busy: false, error: '' };
     // The brand on one side stays; the form beside it is redrawn.
     const root = h('div', { class: 'auth-main', id: 'auth' });
+    // An invite link the app was opened with waits for the sign-in.
+    const inviteNote = h('div', { class: 'notice small', id: 'auth-invite', hidden: !session.invite },
+      tr('你收到了一个邀请。登录或注册后，会请你确认是否接受。'));
+    const checkInvite = async () => {
+      try { const s = await api('GET', '/api/v1/session'); inviteNote.hidden = !s.invite; } catch (e) { /* stays as it was */ }
+    };
+    window.addEventListener('focus', checkInvite);
+    // A window brought forward may not get the focus (GNOME on Wayland keeps it
+    // where it was), so look now and then too; the dashboard's stopPolling ends it.
+    poll = setInterval(checkInvite, 3000);
     app.replaceChildren(h('div', { class: 'auth' },
-      h('div', { class: 'auth-side' }, h('img', { class: 'auth-logo', src: '/ui/favicon.svg', alt: '' }), h('h1', null, 'ShareToken'), h('p', { class: 'tagline' }, tr('共享和使用模型算力'))),
+      h('div', { class: 'auth-side' }, h('img', { class: 'auth-logo', src: '/ui/favicon.svg', alt: '' }), h('h1', null, 'ShareToken'), h('p', { class: 'tagline' }, tr('共享和使用模型算力')), inviteNote),
       root));
 
     const lastEmail = (session.user || '').includes('@') ? session.user : '';
@@ -481,6 +491,22 @@ I18N.ready.then(() => {
   // The sharing view: whether this device sells, the hosted APIs it sells
   // through with their models, and the models of the local model server.
   // getMarket: the models on the network, for a price hint.
+  // A subscription's usage windows in a line, as the warm-up and the
+  // providers' answers read them (internal/provider/limits.go).
+  function usageText(u) {
+    if (!u || !u.windows || !u.windows.length) return '—';
+    const now = Date.now();
+    const at = d => new Date(d).toLocaleString(I18N.lang, d - now > 86400e3
+      ? { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' } : { hour12: false, hour: '2-digit', minute: '2-digit' });
+    return u.windows.map(w => {
+      const r = w.resets_at ? Date.parse(w.resets_at) : 0;
+      const name = w.name === '5h' ? tr('5 小时') : w.name === '7d' ? tr('周') : w.name;
+      if (r && r <= now) return tr('{name} 已重置', { name });
+      const pct = Math.round(w.used) + '%';
+      return r ? tr('{name} {pct}，{time} 重置', { name, pct, time: at(r) }) : name + ' ' + pct;
+    }).join(' · ');
+  }
+
   function shareView(getMarket) {
     let st = null;    // the last /api/v1/status; null while the network is not joined
     let kinds = null; // what can be added; fetched once
@@ -601,7 +627,10 @@ I18N.ready.then(() => {
             h('span', { class: 'mono' }, p.base_url),
             p.token_expires ? h('span', null, p.can_refresh ? tr('令牌有效期至 {time}（会自动续期）', { time: clock(p.token_expires) }) : tr('令牌有效期至 {time}（需重新登录续期）', { time: clock(p.token_expires) })) : null,
             p.runtime?.retry_at && new Date(p.runtime.retry_at) > new Date() ? h('span', null, tr('上游限流，{time} 后恢复', { time: clock(p.runtime.retry_at) })) : null,
-            p.headers && p.headers.length ? h('span', null, tr('附加请求头：{names}', { names: p.headers.join(', ') })) : null),
+            p.headers && p.headers.length ? h('span', null, tr('附加请求头：{names}', { names: p.headers.join(', ') })) : null,
+            p.warm_capable && p.usage ? h('span', { class: 'prov-usage' }, tr('用量：{text}', { text: usageText(p.usage) })) : null,
+            p.warm_capable ? h('span', { class: 'prov-warmup', title: tr('在“设置 → 预热”里修改') }, p.warmup && (p.warmup.times || []).length ? tr('预热：每天 {times}', { times: p.warmup.times.join(' ') })
+              : p.warmup && p.warmup.on_reset ? tr('预热：窗口重置时') : tr('预热：未开启')) : null),
           p.models.length === 0 ? h('div', { class: 'empty prov-empty' }, tr('还没有要出售的模型')) : modelTable(p, p.models, serving))));
 
       const lm = s.models || [];
@@ -963,6 +992,64 @@ I18N.ready.then(() => {
       update(next) { st = next; render(); }, account(me, jobs) { acct = me; sold = jobs || []; render(); } };
   }
 
+  // ---- invite links ----
+
+  // Every pairing code and share invite also has a link on the portal this
+  // app uses (/p#… or /s#…): it works for someone who has no app yet, and it
+  // opens in this app once installed (sharetoken://, the shell). A code or
+  // invite may ask its owner to approve whoever uses it.
+  let portalBase = '';
+  const inviteLink = (kind, token) => portalBase.replace(/\/+$/, '') + '/' + kind + '#' + token;
+  function inviteText(kind, c) {
+    const vars = { link: inviteLink(kind, c.link_token), code: c.code, time: time(c.expires_at) };
+    return kind === 'p'
+      ? tr('我在 ShareToken 共享了 AI 模型额度，点这个链接就能和我配对：{link}', vars) + '\n' + tr('已经装了客户端的话，也可以输入配对码 {code}（{time} 前有效）。', vars)
+      : tr('来做 ShareToken 共享伙伴吧，互相免费使用对方的模型额度。点这个链接接受邀请：{link}', vars) + '\n' + tr('已经装了客户端的话，也可以输入邀请码 {code}（{time} 前有效）。', vars);
+  }
+  const linkButtons = (kind, c, id) => c.link_token ? h('span', { class: 'row-actions' },
+    copyButton(() => inviteLink(kind, c.link_token), id + '-link', tr('复制链接')),
+    copyButton(() => inviteText(kind, c), id + '-text', tr('复制邀请文案'))) : null;
+  // shownInvite: the dialog after a code or invite is made.
+  function shownInvite(kind, c, intro) {
+    const prefix = kind === 'p' ? 'pair' : 'partner';
+    modal('dlg-' + prefix + '-shown', kind === 'p' ? tr('配对码已生成') : tr('邀请码已生成'),
+      h('p', { class: 'small muted' }, intro),
+      h('div', { class: 'endpoint' }, h('code', { id: prefix + '-shown-code', class: 'pair-code big' }, c.code), copyButton(() => c.code, prefix + '-shown-copy')),
+      h('p', { class: 'small muted' }, tr('邀请链接（对方没装客户端也能打开）')),
+      h('div', { class: 'endpoint' }, h('code', { id: prefix + '-shown-link', class: 'invite-link' }, inviteLink(kind, c.link_token)), copyButton(() => inviteLink(kind, c.link_token), prefix + '-shown-link-copy')),
+      c.approval ? h('p', { class: 'small notice', id: prefix + '-shown-approval' }, tr('已开启确认：对方使用后，要你在这里确认才生效。')) : null,
+      h('p', { class: 'small muted', id: prefix + '-shown-meta' }, tr('到期时间：{time}', { time: time(c.expires_at) })),
+      h('div', { class: 'modal-actions' },
+        copyButton(() => inviteText(kind, c), prefix + '-shown-text', tr('复制邀请文案')),
+        h('button', { type: 'button', class: 'primary', id: prefix + '-shown-done', onclick: () => closeModal() }, tr('完成'))));
+  }
+  // Requests waiting for this account's approval, and its own waiting for
+  // someone else's. area: "pairing" or "sharing".
+  function requestTables(area, requests, waiting, after, explain) {
+    const act = (cls, label, method, path, danger) => r => h('button', { type: 'button', class: 'mini ' + cls + (danger ? ' danger' : ' accent'), 'data-id': String(r.id), onclick: async e => {
+      e.currentTarget.disabled = true;
+      try { await api(method, path(r)); } catch (ex) { await after({ cls: 'bad', text: explain(ex) }); return; }
+      await after(null);
+    } }, label);
+    // One flat list: a panel's set() flattens one level only.
+    return [
+      requests && requests.length ? [h('h3', { class: 'sub-title', id: area + '-requests-title' }, tr('等待你确认')), table([
+        { title: tr('账户'), get: r => r.username },
+        { title: tr('备注'), get: r => r.label || '—' },
+        { title: tr('申请时间'), get: r => time(r.created_at) },
+        { title: '', get: r => h('span', { class: 'row-actions' },
+          act(area + '-approve', tr('确认'), 'POST', r => '/api/v1/' + area + '/requests/' + r.id + '/approve')(r),
+          act(area + '-reject', tr('拒绝'), 'DELETE', r => '/api/v1/' + area + '/requests/' + r.id, true)(r)) },
+      ], requests)] : null,
+      waiting && waiting.length ? [h('h3', { class: 'sub-title', id: area + '-waiting-title' }, tr('等待对方确认')), table([
+        { title: tr('账户'), get: r => r.username },
+        { title: tr('申请时间'), get: r => time(r.created_at) },
+        { title: '', get: act(area + '-withdraw', tr('撤回'), 'DELETE', r => '/api/v1/' + area + '/waiting/' + r.id, true) },
+      ], waiting)] : null,
+    ].flat().filter(Boolean);
+  }
+  const approvalField = id => h('label', { class: 'check' }, h('input', { type: 'checkbox', id }), h('span', null, tr('需要我确认'), ' ', h('span', { class: 'small muted' }, tr('对方使用后，要你确认才生效'))));
+
   // ---- pairing ----
 
   // Pairing ties this account, as a buyer, to the sellers whose codes it
@@ -985,6 +1072,9 @@ I18N.ready.then(() => {
       if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
       if (e.code === 'not_found') return tr('这一项已经不存在了');
       if (e.code === 'not_logged_in') return tr('请先登录');
+      if (e.code === 'wrong_kind') return tr('这是共享伙伴的邀请链接，请到「共享伙伴」里输入');
+      if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
+      if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
       return message(e);
     }
 
@@ -1000,8 +1090,11 @@ I18N.ready.then(() => {
     const flashLine = (f, id) => f ? h('div', { class: 'notice ' + f.cls, id }, f.text) : null;
 
     function render() {
-      const v = view || { sellers: [], buyers: [], codes: [], restricted: false, private: false, max_sellers: 0 };
-      sellers.set([v.sellers, v.restricted, v.max_sellers, error, flash.sellers, !view],
+      const v = view || { sellers: [], buyers: [], codes: [], restricted: false, private: false, max_sellers: 0, requests: [], waiting: [] };
+      const after = async f => { flash.sellers = flash.buyers = f; await reload(); };
+      // "waiting for approval" goes once nothing waits any more
+      if (view && flash.sellers && flash.sellers.pending && !(v.waiting || []).length) flash.sellers = null;
+      sellers.set([v.sellers, v.restricted, v.max_sellers, v.waiting, error, flash.sellers, !view],
         failed(),
         flashLine(flash.sellers, 'pair-join-flash'),
         v.restricted ? h('div', { class: 'notice warn small', id: 'pair-restricted' }, tr('这个账户现在只向下面的卖家购买，「可用模型」也只列出他们的模型。全部解除后，恢复为向整个网络购买。')) : null,
@@ -1011,14 +1104,17 @@ I18N.ready.then(() => {
           { title: tr('备注'), get: u => u.label || '—' },
           { title: tr('配对时间'), get: u => time(u.since) },
           { title: '', get: u => h('button', { type: 'button', class: 'mini danger pair-leave', 'data-id': String(u.id), onclick: () => leave(u) }, tr('解除')) },
-        ], v.sellers));
+        ], v.sellers),
+        requestTables('pairing', null, v.waiting, after, pairError));
 
-      buyers.set([v.buyers, v.codes, v.private, error, flash.buyers, !view],
+      buyers.set([v.buyers, v.codes, v.private, v.requests, portalBase, error, flash.buyers, !view],
         failed(),
         flashLine(flash.buyers, 'pair-code-flash'),
+        requestTables('pairing', v.requests, null, after, pairError),
         privateToggle(v),
         v.codes.length === 0 ? h('div', { class: 'empty', id: 'pair-codes-empty' }, tr('没有有效的配对码')) : table([
-          { title: tr('配对码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'pair-copy-' + c.id)) },
+          { title: tr('配对码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'pair-copy-' + c.id), c.approval ? h('span', { class: 'pill pair-approval' }, tr('需确认')) : null) },
+          { title: tr('邀请链接'), get: c => linkButtons('p', c, 'pair-' + c.id) },
           { title: tr('备注'), get: c => c.label || '—' },
           { title: tr('已配对'), num: true, get: uses },
           { title: tr('到期时间'), get: c => time(c.expires_at) },
@@ -1049,46 +1145,41 @@ I18N.ready.then(() => {
     }
 
     function joinDialog() {
-      const code = h('input', { type: 'text', id: 'pair-code-input', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', maxlength: '64', placeholder: 'XXXX-XXXX-XXXX-XXXX', class: 'mono' });
+      const code = h('input', { type: 'text', id: 'pair-code-input', autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false', maxlength: '256', placeholder: tr('配对码或邀请链接'), class: 'mono' });
       const err = errorBox('pair-join-error');
       const okBtn = h('button', { class: 'primary', type: 'submit', id: 'pair-join-ok' }, tr('配对'));
       modal('dlg-pair-join', tr('输入配对码'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
         if (!code.value.trim()) throw new Error(tr('请输入配对码'));
         const seller = await api('POST', '/api/v1/pairing/redeem', { code: code.value.trim() });
         closeModal();
-        flash.sellers = { cls: 'ok', text: tr('已和卖家 {name} 配对', { name: seller.username }) };
+        flash.sellers = { cls: 'ok', pending: !!seller.pending, text: seller.pending ? tr('已发送，等待 {name} 确认', { name: seller.username }) : tr('已和卖家 {name} 配对', { name: seller.username }) };
         await reload();
       }, pairError); } },
-        field(tr('配对码'), code, tr('配对后，这个账户的所有设备都只向配对的卖家购买。随时可以解除。')),
+        field(tr('配对码或邀请链接'), code, tr('配对后，这个账户的所有设备都只向配对的卖家购买。随时可以解除。')),
         err.el, okBtn));
     }
 
-    const TTLS = [[24, tr('1 天')], [168, tr('7 天')], [720, tr('30 天')]];
+    const TTLS = [[24, tr('1 天')], [168, tr('7 天')]];
     function codeDialog() {
       const label = h('input', { type: 'text', id: 'pair-label', maxlength: '64', dir: 'auto' });
       const ttl = h('select', { id: 'pair-ttl' }, TTLS.map(([hours, text]) => h('option', { value: String(hours), selected: hours === 24 }, text)));
       const limit = h('input', { type: 'text', id: 'pair-uses', inputmode: 'numeric', placeholder: tr('不限') });
+      const approval = approvalField('pair-approval');
       const err = errorBox('pair-code-error');
       const okBtn = h('button', { class: 'primary', type: 'submit', id: 'pair-code-ok' }, tr('生成'));
       modal('dlg-pair-code', tr('生成配对码'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
         const n = limit.value.trim() === '' ? 0 : Number(limit.value.trim());
         if (!Number.isInteger(n) || n < 0 || n > 1000) throw new Error(tr('可配对的买家数需要是 1 到 1000 的整数，不填表示不限'));
-        const c = await api('POST', '/api/v1/pairing/codes', { label: label.value.trim(), ttl_hours: Number(ttl.value), max_uses: n });
+        const c = await api('POST', '/api/v1/pairing/codes', { label: label.value.trim(), ttl_hours: Number(ttl.value), max_uses: n, approval: approval.querySelector('input').checked });
         flash.buyers = null;
         await reload();
-        shownCode(c);
+        shownInvite('p', c, tr('把配对码或链接发给要配对的买家。拿到它的人都能和你配对，请只发给你信任的人。'));
       }, pairError); } },
         field(tr('备注（配对的买家也会看到，可不填）'), label),
         field(tr('有效期'), ttl, tr('到期后不能再用它配对，已经配对的买家不受影响。')),
         field(tr('可配对的买家数'), limit, tr('不填表示不限。')),
+        approval,
         err.el, okBtn));
-    }
-    function shownCode(c) {
-      modal('dlg-pair-shown', tr('配对码已生成'),
-        h('p', { class: 'small muted' }, tr('把它发给要配对的买家。拿到它的人都能和你配对，请只发给你信任的人。')),
-        h('div', { class: 'endpoint' }, h('code', { id: 'pair-shown-code', class: 'pair-code big' }, c.code), copyButton(() => c.code, 'pair-shown-copy')),
-        h('p', { class: 'small muted', id: 'pair-shown-meta' }, tr('到期时间：{time}', { time: time(c.expires_at) })),
-        h('div', { class: 'modal-actions' }, h('button', { type: 'button', class: 'primary', id: 'pair-shown-done', onclick: () => closeModal() }, tr('完成'))));
     }
 
     function leave(u) {
@@ -1105,7 +1196,9 @@ I18N.ready.then(() => {
     }
 
     render();
-    return { sellers: sellers.el, buyers: buyers.el, reload };
+    // note: say something above the sellers, as after accepting an invite link.
+    const note = async (text, pending) => { flash.sellers = { cls: 'ok', text, pending }; await reload(); };
+    return { sellers: sellers.el, buyers: buyers.el, reload, note };
   }
 
   // ---- share partners ----
@@ -1132,6 +1225,9 @@ I18N.ready.then(() => {
       if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
       if (e.code === 'not_found') return tr('这一项已经不存在了');
       if (e.code === 'not_logged_in') return tr('请先登录');
+      if (e.code === 'wrong_kind') return tr('这是配对的邀请链接，请到「我的卖家」里输入');
+      if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
+      if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
       return message(e);
     }
 
@@ -1179,10 +1275,13 @@ I18N.ready.then(() => {
     }
 
     function render() {
-      const v = view || { partners: [], invites: [], settings: { only_partners: false, daily_limit_tokens: 0, share_pct: 100 }, served: 0, window_hours: 24, max_partners: 0 };
-      partners.set([v.partners, v.invites, error, flash, !view],
+      const v = view || { partners: [], invites: [], settings: { only_partners: false, daily_limit_tokens: 0, share_pct: 100 }, served: 0, window_hours: 24, max_partners: 0, requests: [], waiting: [] };
+      const after = async f => { flash = f; await reload(); };
+      if (view && flash && flash.pending && !(v.waiting || []).length) flash = null;
+      partners.set([v.partners, v.invites, v.requests, v.waiting, portalBase, error, flash, !view],
         failed(),
         flashLine(flash, 'partner-flash'),
+        requestTables('sharing', v.requests, v.waiting, after, partnerError),
         v.max_partners ? h('p', { class: 'small muted', id: 'partner-max' }, tr('最多同时和 {n} 个伙伴共享。下表是最近 {h} 小时的用量。', { n: num(v.max_partners), h: num(v.window_hours) })) : null,
         v.partners.length === 0 ? h('div', { class: 'empty', id: 'partners-empty' }, tr('还没有共享伙伴')) : table([
           { title: tr('伙伴'), get: u => who(u) },
@@ -1194,7 +1293,8 @@ I18N.ready.then(() => {
         v.invites.length === 0 ? null : [
           h('h3', { class: 'sub-title' }, tr('未使用的邀请码')),
           table([
-            { title: tr('邀请码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'partner-copy-' + c.id)) },
+            { title: tr('邀请码'), get: c => h('span', { class: 'pair-code-cell' }, h('code', { class: 'pair-code' }, c.code), copyButton(() => c.code, 'partner-copy-' + c.id), c.approval ? h('span', { class: 'pill partner-approval' }, tr('需确认')) : null) },
+            { title: tr('邀请链接'), get: c => linkButtons('s', c, 'partner-' + c.id) },
             { title: tr('到期时间'), get: c => time(c.expires_at) },
             { title: '', get: c => h('button', { type: 'button', class: 'mini danger partner-revoke', 'data-id': String(c.id), onclick: () => revoke(c) }, tr('撤销')) },
           ], v.invites)]);
@@ -1212,40 +1312,35 @@ I18N.ready.then(() => {
     }
 
     function joinDialog() {
-      const code = h('input', { type: 'text', id: 'partner-code-input', autocapitalize: 'characters', autocomplete: 'off', spellcheck: 'false', maxlength: '64', placeholder: 'XXXX-XXXX-XXXX-XXXX', class: 'mono' });
+      const code = h('input', { type: 'text', id: 'partner-code-input', autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false', maxlength: '256', placeholder: tr('邀请码或邀请链接'), class: 'mono' });
       const err = errorBox('partner-join-error');
       const okBtn = h('button', { class: 'primary', type: 'submit', id: 'partner-join-ok' }, tr('配对'));
       modal('dlg-partner-join', tr('输入邀请码'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
         if (!code.value.trim()) throw new Error(tr('请输入邀请码'));
         const p = await api('POST', '/api/v1/sharing/join', { code: code.value.trim() });
         closeModal();
-        flash = { cls: 'ok', text: tr('已和 {name} 成为共享伙伴', { name: p.username }) };
+        flash = { cls: 'ok', pending: !!p.pending, text: p.pending ? tr('已发送，等待 {name} 确认', { name: p.username }) : tr('已和 {name} 成为共享伙伴', { name: p.username }) };
         await reload();
       }, partnerError); } },
-        field(tr('邀请码'), code, tr('配对后，你们双方的所有设备都优先使用对方的节点，不扣费。随时可以解除。')),
+        field(tr('邀请码或邀请链接'), code, tr('配对后，你们双方的所有设备都优先使用对方的节点，不扣费。随时可以解除。')),
         err.el, okBtn));
     }
 
     const TTLS = [[24, tr('1 天')], [72, tr('3 天')], [168, tr('7 天')]];
     function inviteDialog() {
       const ttl = h('select', { id: 'partner-ttl' }, TTLS.map(([hours, text]) => h('option', { value: String(hours), selected: hours === 24 }, text)));
+      const approval = approvalField('partner-approval');
       const err = errorBox('partner-invite-error');
       const okBtn = h('button', { class: 'primary', type: 'submit', id: 'partner-invite-ok' }, tr('生成'));
       modal('dlg-partner-invite', tr('邀请伙伴'), h('form', { novalidate: true, onsubmit: e => { e.preventDefault(); run(okBtn, err, async () => {
-        const c = await api('POST', '/api/v1/sharing/invites', { ttl_hours: Number(ttl.value) });
+        const c = await api('POST', '/api/v1/sharing/invites', { ttl_hours: Number(ttl.value), approval: approval.querySelector('input').checked });
         flash = null;
         await reload();
-        shownInvite(c);
+        shownInvite('s', c, tr('把邀请码或链接发给要共享的伙伴。对方接受后，你们就能免费使用对方的节点。'));
       }, partnerError); } },
         field(tr('有效期'), ttl, tr('邀请码只能用一次，到期后失效。')),
+        approval,
         err.el, okBtn));
-    }
-    function shownInvite(c) {
-      modal('dlg-partner-shown', tr('邀请码已生成'),
-        h('p', { class: 'small muted' }, tr('把它发给要共享的伙伴。对方输入后，你们就能免费使用对方的节点。')),
-        h('div', { class: 'endpoint' }, h('code', { id: 'partner-shown-code', class: 'pair-code big' }, c.code), copyButton(() => c.code, 'partner-shown-copy')),
-        h('p', { class: 'small muted', id: 'partner-shown-meta' }, tr('到期时间：{time}', { time: time(c.expires_at) })),
-        h('div', { class: 'modal-actions' }, h('button', { type: 'button', class: 'primary', id: 'partner-shown-done', onclick: () => closeModal() }, tr('完成'))));
     }
 
     function leave(u) {
@@ -1258,7 +1353,8 @@ I18N.ready.then(() => {
     }
 
     render();
-    return { partners: partners.el, settings: settings.el, reload };
+    const note = async (text, pending) => { flash = { cls: 'ok', text, pending }; await reload(); };
+    return { partners: partners.el, settings: settings.el, reload, note };
   }
 
   // subTabs puts panels of one view behind a row of tabs: one shows at a time,
@@ -1279,6 +1375,94 @@ I18N.ready.then(() => {
     return { bar, panes: Object.values(panes), show };
   }
 
+  // ---- warm-up (internal/warmup) ----
+
+  // The warm-up: the Claude Code and Codex of this machine, and the Claude
+  // and ChatGPT logins sold, each with times of day to start its 5-hour
+  // window at, and whether to start windows as they reset.
+  function warmupView() {
+    const panel = section('warmup', tr('预热'), { fill: true, hint: tr('Claude 和 ChatGPT 订阅的 5 小时窗口从重置后的第一次请求开始计时。在设定的时间发一条极小的请求，窗口就提前开始，工作时更早重置。只在本机运行，不经过 sharetoken 网络。') });
+    const err = errorBox('warmup-error');
+    let st = null;
+    const RESET = { '': tr('不预热'), week: tr('周窗口'), all: tr('5 小时和周窗口') };
+    const RESULT = { warmed: tr('已预热'), running: tr('窗口已在运行'), used_up: tr('额度已用完，未发送'), failed: tr('失败') };
+    const SKIP = { paused: tr('已暂停'), disabled: tr('厂商已停用'), not_installed: tr('未找到程序'), off: tr('未开启') };
+    const label = t => t.kind === 'local' ? (t.agent === 'claude' ? tr('Claude Code（本机）') : tr('Codex（本机）')) : t.name;
+    const clock = d => new Date(d).toLocaleString(I18N.lang, { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    function last(t) {
+      if (t.skip && t.skip !== 'off' && !t.last_try) return h('span', { class: 'muted', title: t.skip_error || '' }, SKIP[t.skip] || t.skip);
+      if (!t.last_try) return '—';
+      const text = (RESULT[t.result] || t.result) + ' · ' + clock(t.last_try);
+      return h('span', { class: t.result === 'failed' ? 'warn-text' : null, title: t.error || t.last_model || '' }, text);
+    }
+    function render() {
+      if (!st) return;
+      const pause = h('input', { type: 'checkbox', id: 'warmup-paused', checked: st.paused || null, onchange: async () => {
+        pause.disabled = true;
+        try { st = await api('PUT', '/api/v1/warmup', { paused: pause.checked }); err.say(''); }
+        catch (e) { err.say(message(e)); }
+        render();
+      } });
+      panel.set(JSON.stringify(st), err.el,
+        h('div', { class: 'warmup-top' }, h('label', { class: 'check' }, pause, h('span', null, tr('暂停所有自动预热'))),
+          h('span', { class: 'small muted', id: 'warmup-zone' }, tr('时间按本机时区：{zone}', { zone: st.zone }))),
+        table([
+          { title: tr('账号'), get: t => h('span', { title: t.account || t.binary || '' }, label(t)) },
+          { title: tr('每日时间'), get: t => t.enabled && t.times.length ? t.times.join(' ') : '—' },
+          { title: tr('窗口重置时'), get: t => t.enabled ? RESET[t.on_reset || ''] : '—' },
+          { title: tr('窗口'), get: t => usageText(t.usage) },
+          { title: tr('最近一次'), get: last },
+          { title: '', get: t => h('span', { class: 'actions' },
+            h('button', { type: 'button', class: 'small', id: 'warmup-edit-' + t.id, onclick: () => dialog(t) }, tr('设置')),
+            h('button', { type: 'button', class: 'small', id: 'warmup-run-' + t.id, disabled: t.skip === 'not_installed' || null, onclick: e => runNow(e.currentTarget, t) }, tr('立即预热'))) },
+        ], st.targets));
+    }
+    async function runNow(btn, t) {
+      btn.disabled = true;
+      btn.textContent = tr('预热中…');
+      try { await api('POST', '/api/v1/warmup/run', { target: t.id }); err.say(''); }
+      catch (e) { err.say(tr('{name} 预热失败：{error}', { name: label(t), error: message(e) })); }
+      await reload();
+    }
+    function dialog(t) {
+      const dErr = errorBox('warmup-dlg-error');
+      const on = h('input', { type: 'checkbox', id: 'warmup-on', checked: t.enabled || null });
+      const times = h('input', { id: 'warmup-times', value: (t.times || []).join(', '), placeholder: '06:00, 11:05' });
+      const reset = h('select', { id: 'warmup-on-reset' }, Object.entries(RESET).map(([v, n]) => h('option', { value: v, selected: (t.on_reset || '') === v || null }, n)));
+      const model = h('input', { id: 'warmup-model', value: t.model || '', placeholder: t.agent === 'claude' ? 'haiku' : tr('默认') });
+      const local = t.kind === 'local';
+      const set = local ? (st.settings[t.agent] || {}) : {};
+      const bin = local ? h('input', { id: 'warmup-binary', value: set.binary || '', placeholder: t.binary || tr('自动查找') }) : null;
+      const save = h('button', { type: 'submit', class: 'primary', id: 'warmup-save' }, tr('保存'));
+      modal('dlg-warmup', tr('预热：{name}', { name: label(t) }), h('form', { onsubmit: e => {
+        e.preventDefault();
+        run(save, dErr, async () => {
+          const list = times.value.split(/[\s,，]+/).filter(Boolean);
+          if (local) {
+            const body = {};
+            body[t.agent] = { enabled: on.checked, times: list, on_reset: reset.value, model: model.value.trim(), binary: bin.value.trim() };
+            st = await api('PUT', '/api/v1/warmup', body);
+          } else {
+            const off = !on.checked;
+            st = await api('PUT', '/api/v1/warmup/providers/' + encodeURIComponent(t.name), off ? {} : { times: list, on_reset: reset.value, model: model.value.trim() });
+          }
+          closeModal(); render();
+        }, e => message(e));
+      } },
+        h('label', { class: 'check' }, on, h('span', null, tr('开启预热'))),
+        field(tr('每日时间'), times, tr('本机时间，可填多个，用逗号分隔。到点时 5 小时窗口没在运行就发一条极小的请求；错过 1 小时以上不补发。')),
+        field(tr('窗口重置时预热'), reset, tr('窗口一重置就启动下一个，不浪费空闲时间。窗口已用完或在用超额额度时不发送。')),
+        field(tr('模型'), model, tr('留空用最便宜的模型。')),
+        bin ? field(tr('程序路径'), bin, tr('留空自动查找。')) : null,
+        dErr.el, save));
+    }
+    async function reload() {
+      try { st = await api('GET', '/api/v1/warmup'); err.say(''); render(); }
+      catch (e) { err.say(message(e)); if (!st) panel.set('err', err.el); }
+    }
+    return { el: panel.el, reload };
+  }
+
   // The window after sign-in: a sidebar that chooses the view, the view, and a
   // status bar. Every view stays in the page, so that polling keeps the hidden
   // ones current and switching shows them at once.
@@ -1293,7 +1477,7 @@ I18N.ready.then(() => {
     const accountName = h('span', { class: 'v', id: 'account-name' });
     const banner = h('div', { id: 'banner' });
     const tiles = h('div', { class: 'tiles', id: 'tiles' });
-    const endpoint = section('endpoint', tr('本地 OpenAI 接口'), { row: true, hint: tr('在支持 OpenAI 协议的工具里把 base URL 改成这个地址即可使用。') });
+    const endpoint = section('endpoint', tr('本地模型接口'), { row: true, hint: tr('OpenAI 工具、Claude Code 和 Codex 都可以把 base URL 改成这个地址使用（Claude Code 用不带 /v1 的地址）。') });
     const network = section('network', tr('网络'), { fill: true });
     const models = section('models', tr('可用模型'), { fill: true });
     const devices = section('devices', tr('我的设备'), { fill: true });
@@ -1325,7 +1509,7 @@ I18N.ready.then(() => {
       apiKeyBox.checked = apiKey.required;
       apiKeyBox.disabled = false;
       apiKeyText.textContent = apiKey.key.slice(0, 6) + '…' + apiKey.key.slice(-4);
-      apiKeyNote.textContent = apiKey.required ? tr('工具把它填作 OpenAI API key') : tr('未开启：本机任何程序都能用这个接口花你的 credit');
+      apiKeyNote.textContent = apiKey.required ? tr('工具把它填作 API key') : tr('未开启：本机任何程序都能用这个接口花你的 credit');
       apiKeyNote.className = 'small ' + (apiKey.required ? 'muted' : 'warn-text');
       drawEndpoint();
     }
@@ -1337,20 +1521,179 @@ I18N.ready.then(() => {
     }
     async function loadAPIKey() {
       try { apiKey = await api('GET', '/api/v1/apikey'); drawAPIKey(); } catch (e) { /* shown again at the next try */ }
+      loadBuy();
+    }
+
+    // Buying settings (PUT /api/v1/buy): applied to the running endpoint at
+    // once and saved in config.json.
+    let buyDirty = false;
+    const nativeBox = h('input', { type: 'checkbox', id: 'buy-native', disabled: true, onchange: () => saveBuy(nativeBox) });
+    const budgetInput = h('input', { type: 'text', id: 'buy-budget', class: 'narrow short', inputmode: 'decimal', 'aria-label': tr('每个请求的预算'),
+      oninput: () => { buyDirty = true; }, onkeydown: e => { if (e.key === 'Enter') saveBuy(budgetSave); } });
+    const budgetSave = h('button', { type: 'button', id: 'buy-budget-save', onclick: () => saveBuy(budgetSave) }, tr('保存'));
+    const buyNote = h('span', { class: 'small', id: 'buy-note', role: 'status' });
+    function drawBuy(b) {
+      nativeBox.checked = !!b.require_native;
+      nativeBox.disabled = false;
+      if (!buyDirty && document.activeElement !== budgetInput) budgetInput.value = String(b.budget_micros / 1e6);
+    }
+    async function loadBuy() {
+      try { drawBuy(await api('GET', '/api/v1/buy')); } catch (e) { /* shown again at the next try */ }
+    }
+    async function saveBuy(el) {
+      const credits = Number(budgetInput.value.trim());
+      if (!Number.isFinite(credits) || credits < 0.01 || credits > 1000) {
+        buyNote.className = 'small warn-text';
+        buyNote.textContent = tr('预算需要在 0.01 到 1000 credit 之间');
+        return;
+      }
+      el.disabled = true;
+      try {
+        drawBuy(await api('PUT', '/api/v1/buy', { budget_micros: Math.round(credits * 1e6), require_native: nativeBox.checked }));
+        buyDirty = false;
+        buyNote.className = 'small ok';
+        buyNote.textContent = tr('已保存');
+      } catch (e) {
+        buyNote.className = 'small warn-text';
+        buyNote.textContent = message(e);
+      }
+      el.disabled = false;
     }
 
     const settings = h('section', { class: 'panel', id: 'settings' }, h('div', { class: 'rows' },
       h('span', { class: 'k' }, tr('账户')), accountName, logoutBtn,
-      h('span', { class: 'k' }, tr('API key')), h('label', { class: 'v check' }, apiKeyBox, h('span', null, tr('调用本地 OpenAI 接口需要 API key'))), apiKeyCopy,
+      h('span', { class: 'k' }, tr('API key')), h('label', { class: 'v check' }, apiKeyBox, h('span', null, tr('调用本地模型接口需要 API key'))), apiKeyCopy,
       h('span', { class: 'k' }), h('span', { class: 'v' }, apiKeyText, ' ', apiKeyNote), rotateBtn,
       h('span', { class: 'k' }, tr('语言')), h('span', { class: 'v' }), I18N.picker() || h('span'),
       h('span', { class: 'k' }, tr('版本')), h('span', { class: 'v' }, versionText, ' ', checkResult), checkBtn,
       h('span', { class: 'k' }, tr('反馈')), h('span', { class: 'v muted' }, tr('告诉我们你遇到的问题或建议。')),
       h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈'))));
+    // How requests are bought (PUT /api/v1/buy).
+    const buyPanel = h('section', { class: 'panel', id: 'buy-settings' }, h('div', { class: 'rows' },
+      h('span', { class: 'k' }, tr('原生卖家')), h('label', { class: 'v check' }, nativeBox, h('span', null, tr('只用原生支持请求接口的卖家'))), h('span'),
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'buy-native-hint' }, tr('卖家的模型服务器原生支持请求所用的接口时（如 Claude Code 用 Anthropic Messages，Codex 用 OpenAI Responses）原样转发，不做转换。不勾选时优先选这类卖家，没有空闲的就由其他卖家转换后提供；勾选后没有这类卖家时请求直接失败。')),
+      h('span', { class: 'k' }, tr('每个请求的预算')), h('span', { class: 'v' }, budgetInput, ' ', h('span', { class: 'muted small' }, 'credit'), ' ', buyNote), budgetSave,
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'buy-budget-hint' }, tr('每个请求先冻结这么多，结束后按实际用量扣费，多余的退回。编程助手的 prompt 很长，预算太小会返回 budget 错误。'))));
+    // Direct tunnels (PUT /api/v1/tailnet; internal/client/tailnet.go): a
+    // second way to the other side of a job, next to the relays. The switch
+    // and the transport apply as they change, the two text fields with their
+    // button. The settings are those of config.json; what the tunnels carry
+    // right now is in the table below them, in the status bar and on the
+    // overview.
+    let tn = null, tnDirty = false;
+    const bytes = n => { n = Number(n || 0); return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B'; };
+    const tunnelPath = p => p === 'direct' ? tr('直连') : p && p.startsWith('derp:') ? tr('中转 {region}', { region: p.slice(5) }) : tr('建立中');
+    // What the tunnels are doing, in a few words, and their latency.
+    function tunnelSummary(t) {
+      if (!t || !t.enabled) return { text: tr('未开启'), ms: 0, on: false, n: 0 };
+      const list = t.tunnels || [];
+      if (list.length === 0) return { text: tr('已开启，暂无连接'), ms: 0, on: true, n: 0 };
+      const direct = list.filter(x => x.path === 'direct').length, relayed = list.filter(x => x.path && x.path.startsWith('derp:')).length;
+      const protos = [...new Set(list.map(x => x.proto).filter(Boolean))].map(x => x.toUpperCase()).sort().join('+');
+      const timed = list.filter(x => x.ms > 0);
+      const how = direct === list.length ? tr('直连') : direct === 0 && relayed > 0 ? tr('中转') : direct === 0 ? tr('建立中') : tr('直连 {direct} · 中转 {relayed}', { direct: num(direct), relayed: num(list.length - direct) });
+      return { text: (protos ? protos + ' ' : '') + how + ' × ' + num(list.length), ms: timed.length ? timed.reduce((a, x) => a + x.ms, 0) / timed.length : 0, on: true, n: list.length };
+    }
+    const tnNote = h('span', { class: 'small', id: 'tailnet-note', role: 'status' });
+    async function putTailnet(body, el, text) {
+      el.disabled = true;
+      try {
+        if (text) tnDirty = false;
+        drawTailnet(await api('PUT', '/api/v1/tailnet', body));
+        tnNote.className = 'small ok';
+        tnNote.textContent = tr('已保存');
+      } catch (e) {
+        if (text) tnDirty = true;
+        tnNote.className = 'small warn-text';
+        tnNote.textContent = message(e);
+        if (tn) drawTailnet(tn);
+      }
+      el.disabled = false;
+    }
+    function saveTailnet() {
+      const wait = Number(tnWait.value.trim() || 0);
+      if (!Number.isInteger(wait) || wait < 0 || wait > 10000) {
+        tnNote.className = 'small warn-text';
+        tnNote.textContent = tr('等待时间需要是 0 到 10000 之间的整数（毫秒）');
+        return;
+      }
+      putTailnet({ wait_ms: wait, derp_map: tnMap.value.trim() }, tnSave, true);
+    }
+    const tnBox = h('input', { type: 'checkbox', id: 'tailnet-enabled', disabled: true, onchange: () => putTailnet({ enabled: tnBox.checked }, tnBox) });
+    const tnProto = h('select', { id: 'tailnet-transport', class: 'narrow', 'aria-label': tr('传输协议'), onchange: () => putTailnet({ transport: tnProto.value }, tnProto) },
+      h('option', { value: 'quic' }, tr('QUIC（默认）')), h('option', { value: 'tcp' }, 'TCP'));
+    const tnWait = h('input', { type: 'text', id: 'tailnet-wait', class: 'narrow short', inputmode: 'numeric', 'aria-label': tr('等待隧道'),
+      oninput: () => { tnDirty = true; }, onkeydown: e => { if (e.key === 'Enter') saveTailnet(); } });
+    const tnMap = h('input', { type: 'text', id: 'tailnet-derp', class: 'narrow wide', spellcheck: 'false', placeholder: tr('默认：公共中转服务器'), 'aria-label': tr('中转服务器'),
+      oninput: () => { tnDirty = true; }, onkeydown: e => { if (e.key === 'Enter') saveTailnet(); } });
+    const tnSave = h('button', { type: 'button', id: 'tailnet-save', onclick: saveTailnet }, tr('保存'));
+    const tnServe = h('span', { class: 'v', id: 'tailnet-serving' });
+    // Shown only while the tunnels are on.
+    const tnOn = [
+      h('span', { class: 'k' }, tr('传输协议')), h('span', { class: 'v' }, tnProto), h('span'),
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'tailnet-transport-hint' }, tr('隧道里的连接跑在哪种协议上。只影响本机发起的连接（买模型时）；共享模型时两种都接受。QUIC 在稳定的网络上传大请求更快；网络丢包或抖动较多（例如信号不好的 Wi-Fi）、又常发几 MB 的请求时，TCP 更稳。改动对之后新建的连接生效。')),
+      h('span', { class: 'k' }, tr('等待隧道')), h('span', { class: 'v' }, tnWait, ' ', h('span', { class: 'muted small' }, tr('毫秒'))), h('span'),
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'tailnet-wait-hint' }, tr('第一次请求某个卖家时，最多等这么久让隧道建好再发送。0 表示不等：这个请求先走中继，隧道建好后接管后面的请求。范围 0 到 10000。')),
+      h('span', { class: 'k' }, tr('中转服务器')), h('span', { class: 'v' }, tnMap), tnSave,
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'tailnet-derp-hint' }, tr('隧道刚建立和打不通直连时经它中转，它只看到密文。留空使用公共中转服务器（DERP）；也可以填自建列表的网址或文件路径。买卖双方要用同一组服务器。修改后现有隧道会重建。')),
+      h('span', { class: 'k' }, tr('本机')), tnServe, h('span'),
+    ];
+    const tailnetPanel = h('section', { class: 'panel', id: 'tailnet-settings' }, h('div', { class: 'rows' },
+      h('span', { class: 'k' }, tr('直连隧道')), h('label', { class: 'v check' }, tnBox, h('span', null, tr('和对方直接建立加密隧道，不经过中继'))), tnNote,
+      h('span', { class: 'k' }), h('span', { class: 'hint small muted', id: 'tailnet-hint' }, tr('基于 Tailscale 的协议（WireGuard）：买卖双方都开启后，请求和回答在两台机器之间直接传输，不再经过中继；有一方没开或隧道建不起来时，照常走中继，请求不受影响。不需要 Tailscale 账号，不改动系统网络，也不需要管理员权限。隧道先经中转服务器接通，几秒后换成两端直连。')),
+      tnOn));
+    const tunnels = section('tunnels', tr('当前隧道'), { fill: true, hint: tr('每条隧道通向一个对方：买模型时到卖家，共享模型时来自买家。连接 10 分钟没有新请求就关闭，下次请求时重新建立。') });
+    function drawTailnet(t) {
+      tn = t;
+      const s = t.settings || {};
+      tnBox.checked = !!t.enabled;
+      tnBox.disabled = false;
+      if (document.activeElement !== tnProto) tnProto.value = t.proto === 'tcp' ? 'tcp' : 'quic';
+      if (!tnDirty && document.activeElement !== tnWait && document.activeElement !== tnMap) {
+        tnWait.value = String(s.wait_ms || 0);
+        tnMap.value = s.derp_map || '';
+      }
+      for (const el of tnOn) el.hidden = !t.enabled;
+      tnServe.textContent = t.serving ? tr('买家可以经隧道到达本机（中转区域 {region}）', { region: t.region || '—' })
+        : t.error ? tr('隧道暂不可用，买家走中继：{error}', { error: t.error })
+        : current.state !== 'running' ? tr('连接网络后生效') : tr('没有在共享模型：只在买模型时使用隧道');
+      tnServe.title = tnServe.textContent;
+      const list = t.enabled ? (t.tunnels || []) : [];
+      tunnels.el.hidden = !t.enabled;
+      tunnels.set(list, list.length === 0 ? h('div', { class: 'empty', id: 'tunnels-empty' }, tr('还没有隧道。和同样开启了直连隧道的对方有请求往来时才会建立。')) : table([
+        { title: tr('方向'), get: x => x.dir === 'in' ? tr('来自买家') : tr('到卖家') },
+        { title: tr('对方'), get: x => x.peer ? h('span', { class: 'mono', title: x.peer }, shortPeer(x.peer)) : '—' },
+        { title: tr('路径'), get: x => h('span', { class: 'badge' + (x.path === 'direct' ? ' accent' : ''), title: x.endpoint || null }, tunnelPath(x.path)) },
+        { title: tr('协议'), get: x => x.proto ? x.proto.toUpperCase() : '—' },
+        { title: tr('延迟'), num: true, get: x => rtt(x.ms) },
+        { title: tr('连接'), num: true, get: x => num(x.conns) },
+        { title: tr('流量'), num: true, get: x => '↓ ' + bytes(x.rx_bytes) + '  ↑ ' + bytes(x.tx_bytes) },
+      ], list));
+      drawTunnelStat();
+    }
+    async function loadTailnet() {
+      try { drawTailnet(await api('GET', '/api/v1/tailnet')); } catch (e) { /* shown again at the next try */ }
+    }
+    // The status bar says what kind of path the tunnels give right now and
+    // how fast it answers; a click opens their settings.
+    const tunnelStat = h('button', { type: 'button', class: 'link', id: 'status-tunnel', onclick: () => showView('settings', 'network') });
+    let lastTunnelStat = null;
+    function drawTunnelStat() {
+      const sum = tunnelSummary(tn);
+      const key = sum.text + '|' + Math.round(sum.ms);
+      if (key === lastTunnelStat) return;
+      lastTunnelStat = key;
+      tunnelStat.className = 'link' + (sum.on ? '' : ' off');
+      tunnelStat.replaceChildren(...[h('span', null, tr('隧道')), h('span', { id: 'status-tunnel-text' }, sum.text), sum.ms ? rtt(sum.ms) : null].filter(Boolean));
+      if (lastStatus) renderNetwork(lastStatus);
+    }
+    let lastStatus = null;
+
     let market = [];
     const pairing = pairingView();
     const partners = partnersView();
     const share = shareView(() => market);
+    const warm = warmupView();
 
     // name, label, panels, or tabs of panels.
     const VIEWS = [
@@ -1358,7 +1701,7 @@ I18N.ready.then(() => {
       ['share', tr('共享'), null, [['state', tr('状态'), share.panes.state], ['providers', tr('厂商 API'), share.panes.providers], ['local', tr('本机模型'), share.panes.local]]],
       ['pairing', tr('配对'), null, [['partners', tr('共享伙伴'), [partners.partners, partners.settings]], ['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
       ['activity', tr('记录'), null, [['all', tr('全部'), [jobs.el]], ['sold', tr('卖出'), [share.sold]]]],
-      ['settings', tr('设置'), [settings, devices.el]],
+      ['settings', tr('设置'), null, [['general', tr('通用'), [settings]], ['buy', tr('调用'), [buyPanel]], ['network', tr('网络'), [tailnetPanel, tunnels.el]], ['devices', tr('我的设备'), [devices.el]], ['warmup', tr('预热'), [warm.el]]]],
     ];
     const views = {}, navButtons = {}, tabs = {}, labels = {};
     const title = h('h1', { id: 'view-title' });
@@ -1389,7 +1732,7 @@ I18N.ready.then(() => {
           h('button', { type: 'button', id: 'nav-feedback', onclick: () => feedbackDialog() }, icon('feedback'), h('span', null, tr('反馈'))),
           navButtons.settings)),
       h('main', { class: 'main' }, head, h('div', { class: 'notices' }, updateBox, banner), Object.values(views)),
-      h('footer', { class: 'statusbar' }, pill, relayStat, h('span', { class: 'spacer' }), who, versionLabel)));
+      h('footer', { class: 'statusbar' }, pill, relayStat, tunnelStat, h('span', { class: 'spacer' }), who, versionLabel)));
     let savedView = '';
     try { savedView = localStorage.getItem('st_view') || ''; } catch (e) { /* the overview */ }
     showView(savedView);
@@ -1439,7 +1782,9 @@ I18N.ready.then(() => {
     }
 
     function renderNetwork(st) {
+      lastStatus = st;
       const c = st.coordinator;
+      const tun = tunnelSummary(tn);
       const q = c.link && c.link.samples ? c.link : null;
       // Under 10 ms a whole number would say 0.
       const ms1 = v => { v = Number(v || 0); return v > 0 && v < 10 ? Math.round(v * 10) / 10 : Math.round(v); };
@@ -1447,9 +1792,10 @@ I18N.ready.then(() => {
       const cur = (st.relays || []).find(r => r.current);
       // The live pings of the relay in use say more than the last survey of all relays.
       setRelayStat(cur, link && link[0] ? link[0] : cur && !cur.error ? cur.rtt_ms : 0);
-      network.set([st.relays, c.connected, c.via, st.warnings, link],
+      network.set([st.relays, c.connected, c.via, st.warnings, link, tun.text, Math.round(tun.ms)],
         h('div', { class: 'kv' },
           h('span', { class: 'pill ' + (c.connected ? 'ok' : 'bad'), id: 'coord-line' }, c.connected ? tr('协调器已连接') : tr('协调器未连接')),
+          tun.on ? h('span', { class: 'small', id: 'tunnel-line' }, tr('直连隧道：{state}', { state: tun.text }), tun.ms ? [' ', rtt(tun.ms)] : null) : null,
           link ? h('span', { class: 'small', id: 'link-line' }, I18N.parts('链路质量：平均 {avg} ms · 抖动 {jitter} ms · 丢包 {loss}%', {
             avg: h('strong', { class: link[0] ? rttClass(link[0]) + ' rtt-text' : null }, String(link[0])), jitter: String(link[1]),
             loss: h('strong', { class: link[2] >= 5 ? 'bad rtt-text' : link[2] > 0 ? 'warn rtt-text' : null }, String(link[2])) })) : null),
@@ -1469,6 +1815,7 @@ I18N.ready.then(() => {
       share.update(null);
       setBrief(null);
       setRelayStat(null);
+      lastStatus = null;
     }
 
     function renderModels(ms) {
@@ -1492,8 +1839,63 @@ I18N.ready.then(() => {
       ], js));
     }
 
+    // An invite link the app was opened with (sharetoken://, the shell): shown
+    // once, and accepted only when the user says so; any web page can open
+    // such a link.
+    let invitesShown = '';
+    function inviteError(e) {
+      if (e.code === 'bad_code') return tr('邀请已失效：链接不对，或者已过期、被撤销或用完。请联系对方重新生成。');
+      if (e.code === 'own_code') return tr('这是你自己的邀请链接，请把它发给要邀请的人。');
+      if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
+      if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
+      if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
+      return message(e);
+    }
+    async function openInvite(inv) {
+      showView('pairing', inv.kind === 's' ? 'partners' : 'sellers');
+      const err = errorBox('invite-error');
+      const body = h('div', { id: 'invite-body' }, h('p', { class: 'small muted' }, tr('正在读取邀请…')));
+      const forget = () => api('DELETE', '/api/v1/invite/pending').catch(() => {});
+      const okBtn = h('button', { type: 'button', class: 'primary', id: 'invite-accept', disabled: true, onclick: () => run(okBtn, err, async () => {
+        const r = await api('POST', '/api/v1/invite/accept', { link: inv.link });
+        closeModal();
+        const text = r.pending ? tr('已发送，等待 {name} 确认', { name: r.username })
+          : r.kind === 's' ? tr('已和 {name} 成为共享伙伴', { name: r.username }) : tr('已和卖家 {name} 配对', { name: r.username });
+        await (r.kind === 's' ? partners : pairing).note(text, !!r.pending);
+      }, inviteError) }, tr('接受邀请'));
+      const dismiss = h('button', { type: 'button', id: 'invite-dismiss', onclick: () => { closeModal(); forget(); } }, tr('忽略'));
+      modal('dlg-invite', inv.kind === 's' ? tr('共享伙伴邀请') : tr('配对邀请'), body, err.el, h('div', { class: 'modal-actions' }, dismiss, okBtn));
+      if (inv.other_portal) {
+        body.replaceChildren(h('div', { class: 'notice warn', id: 'invite-other-portal' }, tr('这个邀请来自 {host}，但这个客户端连接的是 {portal}，不能在这里接受。', { host: inv.host, portal: portalBase })));
+        dismiss.textContent = tr('关闭');
+        return;
+      }
+      try {
+        const p = await api('GET', '/api/v1/invite/preview?link=' + encodeURIComponent(inv.link));
+        const name = '\u2068' + p.inviter + '\u2069';
+        body.replaceChildren(...[
+          h('p', { id: 'invite-who' }, h('strong', null, inv.kind === 's' ? tr('{name} 邀请你成为共享伙伴', { name }) : tr('{name} 邀请你配对共享', { name }))),
+          p.label ? h('p', { class: 'small', id: 'invite-label' }, tr('备注：{label}', { label: p.label })) : null,
+          h('p', { class: 'small muted' }, inv.kind === 's'
+            ? tr('成为共享伙伴后，你们双方都可以免费使用对方的节点，不扣 credit。伙伴的节点不可用时，再到网络上付费购买。随时可以解除。')
+            : tr('配对后，你的账户只向配对的卖家购买，使用对方共享的 Claude、Codex 等模型额度。随时可以解除。')),
+          p.approval ? h('p', { class: 'small notice', id: 'invite-approval' }, tr('对方开启了确认：你接受后，需要对方确认才生效。')) : null,
+          h('p', { class: 'small muted' }, tr('有效期至 {time}', { time: time(p.expires_at) })),
+          h('p', { class: 'small muted', id: 'invite-origin' }, tr('这个邀请是从浏览器里的链接打开的。只在你认识对方时接受。'))].filter(Boolean));
+        okBtn.disabled = false;
+      } catch (e) {
+        body.replaceChildren(h('div', { class: 'notice bad', id: 'invite-bad' }, inviteError(e)));
+        dismiss.textContent = tr('关闭');
+      }
+    }
+
     function renderSession(s) {
       current = s;
+      portalBase = s.portal || portalBase;
+      if (s.invite && s.invite.token && s.invite.token !== invitesShown) {
+        invitesShown = s.invite.token;
+        openInvite(s.invite);
+      }
       renderUpdate(s);
       who.textContent = accountName.textContent = s.user || '';
       who.title = s.user || '';
@@ -1622,6 +2024,7 @@ I18N.ready.then(() => {
         // Account data: every third tick; the state: every tick.
         if (tick++ % 3 === 0) {
           loadAPIKey();
+          warm.reload();
           try {
             const [me, j, sj] = await Promise.all([api('GET', '/api/v1/account'), api('GET', '/api/v1/jobs?limit=10'), api('GET', '/api/v1/jobs?role=sell&limit=10')]);
             if (stopped) return;
@@ -1636,6 +2039,8 @@ I18N.ready.then(() => {
             setBanner(tr('暂时连不上门户，下面是上次获取的账户信息（{error}）', { error: message(e) }));
           }
         }
+        await loadTailnet();
+        if (stopped) return;
         if (s.state === 'running') {
           try {
             const st = await api('GET', '/api/v1/status');
@@ -1670,6 +2075,8 @@ I18N.ready.then(() => {
     renderNetworkDown(session);
     refresh();
     poll = setInterval(refresh, 5000);
+    // The shell brings the window forward when it is opened with a link: look at once.
+    window.addEventListener('focus', () => { if (!stopped) refresh(); });
   }
 
   // ---- start ----

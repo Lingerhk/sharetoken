@@ -1,28 +1,8 @@
 package provider
 
-import "fmt"
-
 type cacheControl struct {
 	Type string `json:"type"`
 	TTL  string `json:"ttl,omitempty"`
-}
-
-func (c *cacheControl) valid() error {
-	if c == nil {
-		return nil
-	}
-	if c.Type != "ephemeral" || (c.TTL != "" && c.TTL != "5m" && c.TTL != "1h") {
-		return fmt.Errorf("cache_control must be ephemeral with ttl 5m or 1h")
-	}
-	return nil
-}
-
-func (c *cacheControl) value() map[string]any {
-	m := map[string]any{"type": c.Type}
-	if c.TTL != "" {
-		m["ttl"] = c.TTL
-	}
-	return m
 }
 
 // Normalize after all injected and client breakpoints are present. Execution
@@ -50,11 +30,9 @@ func normalizeAnthropicCache(req map[string]any) {
 	if raw, ok := req["system"].([]any); ok {
 		collect(raw, &system)
 	}
-	if raw, ok := req["messages"].([]map[string]any); ok {
-		for _, msg := range raw {
-			if blocks, ok := msg["content"].([]any); ok {
-				collect(blocks, &messages)
-			}
+	for _, msg := range messageList(req) {
+		if blocks, ok := msg["content"].([]any); ok {
+			collect(blocks, &messages)
 		}
 	}
 	remaining := len(tools) + len(system) + len(messages) - 4
@@ -87,4 +65,22 @@ func normalizeAnthropicCache(req map[string]any) {
 			cc["ttl"] = "1h"
 		}
 	}
+}
+
+// messageList returns a Messages request's messages, whether they were
+// decoded from JSON ([]any) or built here ([]map[string]any).
+func messageList(req map[string]any) []map[string]any {
+	switch v := req["messages"].(type) {
+	case []map[string]any:
+		return v
+	case []any:
+		out := make([]map[string]any, 0, len(v))
+		for _, m := range v {
+			if mm, ok := m.(map[string]any); ok {
+				out = append(out, mm)
+			}
+		}
+		return out
+	}
+	return nil
 }

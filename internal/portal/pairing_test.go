@@ -28,7 +28,7 @@ func TestPairingAPI(t *testing.T) {
 
 	var code accounts.PairingCode
 	a.call("POST", "/api/v1/pairing/codes", seller, map[string]any{"label": "team", "ttl_hours": 2, "max_uses": 0}, 201, &code)
-	if len(code.Code) != 19 || strings.Count(code.Code, "-") != 3 || code.ExpiresAt-code.CreatedAt != int64(2*3600e9) {
+	if len(code.Code) != 7 || len(code.LinkToken) != 8 || strings.Count(code.Code, "-") != 1 || code.ExpiresAt-code.CreatedAt != int64(2*3600e9) {
 		t.Fatalf("code: %+v", code)
 	}
 	a.call("POST", "/api/v1/pairing/codes", seller, map[string]any{"ttl_hours": -1}, 400, nil)
@@ -80,7 +80,7 @@ func TestPairingAPI(t *testing.T) {
 	a.call("POST", "/api/v1/pairing/redeem", b1, map[string]string{"code": code.Code}, 404, nil)
 
 	// Guessing pairing codes is throttled like guessing sign-in codes.
-	for i := 1; i < maxFails; i++ {
+	for i := 1; i < newAccountMaxFails; i++ { // b1's account is new: it gets fewer tries (invites.go)
 		a.call("POST", "/api/v1/pairing/redeem", b1, map[string]string{"code": "AAAA-AAAA-AAAA-AAAA"}, 404, nil)
 	}
 	a.call("POST", "/api/v1/pairing/redeem", b1, map[string]string{"code": "AAAA-AAAA-AAAA-AAAA"}, 429, nil)
@@ -111,9 +111,9 @@ func TestPairingPrivateLimitAndAdminList(t *testing.T) {
 	if len(v.Sellers) != accounts.MaxPairedSellers || v.MaxSellers != 3 || v.Private {
 		t.Fatalf("buyer's view: %+v", v)
 	}
-	// A code lasts 30 days at most.
-	a.call("POST", "/api/v1/pairing/codes", sellers[0], map[string]any{"ttl_hours": 720}, 201, nil)
-	a.call("POST", "/api/v1/pairing/codes", sellers[0], map[string]any{"ttl_hours": 721}, 400, nil)
+	// A code lasts 7 days at most.
+	a.call("POST", "/api/v1/pairing/codes", sellers[0], map[string]any{"ttl_hours": 168}, 201, nil)
+	a.call("POST", "/api/v1/pairing/codes", sellers[0], map[string]any{"ttl_hours": 169}, 400, nil)
 
 	// Private mode is the seller's own switch.
 	a.call("PUT", "/api/v1/pairing/private", "", map[string]bool{"enabled": true}, 401, nil)
