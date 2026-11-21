@@ -8,9 +8,9 @@
 <meta name="theme-color" content="#0a0c10" data-dark="#0a0c10" data-light="#fafaf7">
 <script src="/static/theme.js"></script>
 <title>ShareToken · 共享闲置算力，不交出你的 prompt</title>
-<meta name="description" content="ShareToken 是开源权重模型的 P2P 共享网络。闲时共享算力赚 credit，要用时按 OpenAI 协议调用别人的节点。请求端到端加密，响应带签名收据，虚报用量凭证据退款。">
+<meta name="description" content="ShareToken 是大模型的 P2P 共享网络。本机模型、厂商 API key 和订阅都能共享赚 credit；要用时，本地端点兼容 OpenAI 和 Anthropic 协议。请求端到端加密，响应带签名收据，虚报用量凭证据退款。">
 <meta property="og:title" content="ShareToken · 共享闲置算力，不交出你的 prompt">
-<meta property="og:description" content="开源权重模型的 P2P 共享网络：端到端加密、签名收据、证据裁决。">
+<meta property="og:description" content="大模型的 P2P 共享网络：本机模型、API key、订阅都能共享，端到端加密、签名收据、证据裁决。">
 <meta property="og:type" content="website">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/site.css">
@@ -27,7 +27,7 @@
   </a>
   <nav>
     <a class="wide" href="#security">安全</a>
-    <a class="wide" href="#start">怎么用</a>
+    <a class="wide" href="#start">使用</a>
     <a class="wide" href="#models">模型</a>
     <a class="wide" href="#roles">架构</a>
     <a class="wide" href="#download">下载</a>
@@ -49,9 +49,9 @@
 <section class="hero">
   <canvas id="mesh" aria-hidden="true"></canvas>
   <div class="hero-copy">
-    <p class="eyebrow">开源权重模型的 P2P 共享网络</p>
+    <p class="eyebrow">大模型的 P2P 共享网络</p>
     <h1 data-i18n-rich>共享闲置算力，<br>不交出你的 <em>prompt</em>。</h1>
-    <p class="lead">把机器上的模型接入网络，闲时赚 credit，要用时按 OpenAI 协议调用别人的节点。每个请求都只有目标节点打得开，每份响应都带节点的签名。</p>
+    <p class="lead">把本机模型、厂商 API key 或 Claude、ChatGPT、Gemini 订阅接入网络，闲时赚 credit。要用时，本地端点同时兼容 OpenAI 和 Anthropic 协议，Claude Code、Codex 改个地址就能用。请求端到端加密，响应带节点的签名收据。</p>
     <div class="cta">
       <a class="btn primary" href="#download">下载客户端</a>
       <a class="btn" href="#security">看安全设计</a>
@@ -59,14 +59,24 @@
     </div>
     <p class="note" id="cta-credit" hidden></p>
     <ul class="primitives" aria-label="使用的密码学组件">
-      <li>X25519</li><li>HKDF-SHA256</li><li>AES-256-GCM</li><li>Ed25519</li><li>libp2p Noise</li><li>SEV-SNP / TDX</li>
+      <li>X25519</li><li>HKDF-SHA256</li><li>AES-256-GCM</li><li>Ed25519</li><li>libp2p Noise</li><li>WireGuard</li><li>SEV-SNP / TDX</li>
     </ul>
+  </div>
+  <div class="routes" role="group" aria-label="连接方式">
+    <div class="route-modes">
+      <button class="route-mode" type="button" data-mode="direct" aria-pressed="true">直连</button>
+      <button class="route-mode" type="button" data-mode="relay" aria-pressed="false">中继</button>
+      <button class="route-mode" type="button" data-mode="tailnet" aria-pressed="false">Tailscale 隧道</button>
+    </div>
+    <p class="route-caption" data-mode="direct">公网、IPv6 或打洞成功时，两端直接相连</p>
+    <p class="route-caption" data-mode="relay" hidden>两端都连不进来时经中继转发，中继只见密文</p>
+    <p class="route-caption" data-mode="tailnet" hidden>先经 DERP 接通，几秒内换到两端之间的 WireGuard 直连</p>
   </div>
 </section>
 
 <section class="proof" aria-label="实测数据">
-  <div><b data-count="41435">41,435</b><span>40 分钟长稳测试的请求数</span></div>
-  <div><b data-count="99.98" data-suffix="%">99.98%</b><span>长稳测试成功率</span></div>
+  <div><b>603 / 603</b><span>多协议矩阵测试：3 种 API 协议 × 5 家厂商</span></div>
+  <div><b>3 种连接路径</b><span>直连、Tailscale 隧道、中继，自动选择、自动回退</span></div>
   <div><b>5 个中继 · 3 大洲</b><span>中继节点分布在北美、欧洲和亚洲</span></div>
 </section>
 
@@ -83,17 +93,18 @@
       <span class="num">01</span>
       <h3>封装加密：prompt 只有目标节点打得开</h3>
       <p>每条消息都生成新的临时密钥，用节点在签名 Offer 里公布的公钥协商出一次性的对称密钥。密文还绑定作业 ID 和序号，无法重放到别的作业，也无法在流里调换顺序。</p>
-      <p class="spec">临时 X25519 ECDH → HKDF-SHA256 → AES-256-GCM，外层再走 libp2p Noise 加密通道</p>
+      <p>直连、中继和隧道用的是同一层封装加密：路径变了，能打开它的仍然只有目标节点。</p>
+      <p class="spec">临时 X25519 ECDH → HKDF-SHA256 → AES-256-GCM，外层再走 libp2p 加密通道；走隧道时外面还有一层 WireGuard</p>
     </div>
-    <div class="scene seal" id="seal" role="img" aria-label="演示：买家的 prompt 加密后经过中继，中继只能看到密文，到达目标节点后才被解密。协调器不在数据路径上。">
+    <div class="scene seal" id="seal" role="img" aria-label="演示：买家的 prompt 加密后经过中继或隧道，路上只能看到密文，到达目标节点后才被解密。协调器不在数据路径上。">
       <div class="party">
         <span class="tag">买家</span>
         <div class="box plain" id="seal-in"></div>
       </div>
       <ol class="chips" id="seal-chips"><li>X25519</li><li>HKDF</li><li>AES-GCM</li></ol>
-      <div class="track" id="seal-track"><span class="relay-dot">中继</span><span class="packet"></span></div>
+      <div class="track" id="seal-track"><span class="relay-dot">中继 / 隧道</span><span class="packet"></span></div>
       <div class="party">
-        <span class="tag">中继看到的（本页现场加密的真实密文）</span>
+        <span class="tag">中继或隧道看到的（本页现场加密的真实密文）</span>
         <div class="box cipher" id="seal-relay"></div>
       </div>
       <div class="party">
@@ -151,14 +162,16 @@
     <div class="rows">
       <div class="row"><div><b>网络窃听者</b><span>Noise 通道内还有一层封装加密</span></div><em class="no">看不到</em></div>
       <div class="row"><div><b>中继</b><span>只转发密文，不记账</span></div><em class="no">看不到</em></div>
+      <div class="row"><div><b>隧道的 DERP 中转</b><span>WireGuard 加密，只转发密文</span></div><em class="no">看不到</em></div>
       <div class="row"><div><b>协调器</b><span>不在数据路径上。只有你发起争议并主动交出密钥时，才能解开那一单</span></div><em class="no">看不到</em></div>
       <div class="row" id="node-row"><div><b>卖家节点</b><span id="node-why">运行模型就必须解密，运营者理论上能读到</span></div><em class="yes" id="node-verdict">能看到</em></div>
+      <div class="row"><div><b>模型厂商</b><span>卖家接的是厂商 API 或订阅时，请求以明文发给厂商</span></div><em class="yes">能看到</em></div>
     </div>
     <p class="formula" id="tee-formula" hidden><code>ReportData = SHA-512(canon("sharetoken/attest/v1", ReceiptKey, BoxPub))</code>AMD SEV-SNP / Intel TDX 的 quote 同时绑定签名钥和收件钥，宿主机没法把收件钥放到虚拟机外偷看。</p>
   </article>
 
   <div class="grid-6 reveal">
-    <div><h4>防换模型</h4><p>协调器以新身份随机下单，在参考模型上重算比对。连续两次不符，暂停接单 24 小时。</p></div>
+    <div><h4>逐 token 抽检</h4><p>协调器随机下单，用参考模型逐 token 核对节点的输出；抽检请求可由用户的客户端代为发出，节点分辨不出。核对不符的节点暂停接单。</p></div>
     <div><h4>防蹭中继</h4><p>门户签发 1 小时有效的 Ed25519 凭证，写明设备 peer ID。凭证被偷了也用不了。</p></div>
     <div><h4>防伪造</h4><p>Offer、Ticket、收据、Ack 全部签名。peer ID 本身就是公钥，无需额外的身份目录。</p></div>
     <div><h4>防超扣</h4><p>计费按 Ticket 上的价格结算，不超过预留金额。复式账本启动时回放日志对账。</p></div>
@@ -170,6 +183,7 @@
     <h3>我们不声称的事</h3>
     <ul>
       <li><b>普通节点能读到 prompt。</b>加密把信任边界移到了节点，只有 TEE 才能把运营者也排除在外。敏感内容请选 TEE 节点。</li>
+      <li><b>接厂商 API 的节点会把 prompt 明文发给厂商。</b>厂商按它自己的政策处理这些请求。不想让厂商看到的内容，请用本机模型或 TEE 节点。</li>
       <li><b>协调器仍然是账本的可信方。</b>它伪造不了收据和 Ack，但账本由它记录。</li>
       <li><b>抽检是概率性的。</b>它让作弊长期不划算，但不保证每一单都被查到。</li>
     </ul>
@@ -178,26 +192,28 @@
 
 <section class="block" id="start">
   <div class="head">
-    <p class="eyebrow">怎么用</p>
+    <p class="eyebrow">使用</p>
     <h2>同一个账户，既能卖也能买。</h2>
-    <p class="lead">客户端在本地开一个 OpenAI 兼容端点。任何支持 OpenAI 协议的工具，改一下 base URL 就能用。</p>
+    <p class="lead">客户端在本地开一个端点，同时兼容 OpenAI（Chat Completions、Responses）和 Anthropic Messages 协议。Claude Code、Codex 和其他支持这些协议的工具，改一下 base URL 就能用。</p>
   </div>
   <p class="start-docs"><a class="btn" href="/docs/quickstart">查看快速开始</a></p>
   <div class="two reveal">
     <div class="term">
       <h3>用模型</h3>
       <p>非流式响应在收据验证通过后才交给你；流式响应边到边转发，结尾附验证结果。</p>
-      <pre><code><span class="c"># 客户端登录后，本地端点就绪</span>
+      <pre><code><span class="c"># OpenAI 协议</span>
 curl http://127.0.0.1:9787/v1/chat/completions \
-  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $(sharetoken apikey -q)" \
   -d '{"model":"gemma-4-e4b","messages":[…]}'
 
-<span class="c"># 响应头</span>
-<span class="l">X-Sharetoken-Verified: true</span></code></pre>
+<span class="c"># Claude Code 直接用本地端点</span>
+export ANTHROPIC_BASE_URL=http://127.0.0.1:9787
+export ANTHROPIC_AUTH_TOKEN=$(sharetoken apikey -q)
+claude</code></pre>
     </div>
     <div class="term">
       <h3>赚 credit</h3>
-      <p>把本机 Ollama 里的模型共享出去。不需要公网 IP，节点经中继打通连接；买卖双方都开启直连隧道时，流量在两端之间直接传输。</p>
+      <p>共享本机 Ollama 里的模型，或者你的 API key 和订阅（见下一节）。不需要公网 IP：能直连就直连，否则走隧道或中继。</p>
       <pre><code><span class="c"># 共享一个本地模型</span>
 sharetoken share add gemma4:e4b -id gemma-4-e4b
 
@@ -207,39 +223,39 @@ sharetoken up
 <span class="c"># 查看收益</span>
 sharetoken balance</code></pre>
     </div>
-    <div class="term" id="pair-seller">
-      <h3>留住自己的买家</h3>
-      <p>生成配对码发给你的买家，他们的请求只会发给和自己配对的卖家。开启私有模式后，你只为配对的买家服务。</p>
-      <pre><code><span class="c"># 生成配对码，发给你的买家</span>
+    <div class="term" id="pair">
+      <h3>配对：只和认识的人交易</h3>
+      <p>卖家生成配对码或邀请链接发给买家，配对后买家只向配对的卖家购买，最多同时配对三个。卖家开启私有模式后，只为配对的买家服务。</p>
+      <pre><code><span class="c"># 卖家：生成配对码和邀请链接</span>
 sharetoken pair code -label team
 
-<span class="c"># 只为配对的买家服务</span>
-sharetoken pair private on
+<span class="c"># 买家：用配对码或链接配对</span>
+sharetoken pair join K7Q-F2M
 
-<span class="c"># 查看买家和配对码</span>
-sharetoken pair</code></pre>
+<span class="c"># 卖家：只为配对的买家服务</span>
+sharetoken pair private on</code></pre>
     </div>
-    <div class="term" id="pair-buyer">
-      <h3>只向认识的卖家购买</h3>
-      <p>用卖家给的配对码配对，之后这个账户只向配对的卖家购买，最多同时配对三个。</p>
-      <pre><code><span class="c"># 用卖家给的配对码配对</span>
-sharetoken pair join K7QF-2MXA-9RTD-H3WC
+    <div class="term" id="partners">
+      <h3>共享伙伴：互相免费用</h3>
+      <p>两个人结成伙伴后，互相使用对方的节点，不扣 credit，也不收手续费。可以限制每天给出的 token 数和占用的并发。</p>
+      <pre><code><span class="c"># 生成邀请码和邀请链接，发给对方</span>
+sharetoken partner invite
 
-<span class="c"># 查看配对的卖家</span>
-sharetoken pair
+<span class="c"># 对方接受邀请</span>
+sharetoken partner join ABC-DEF
 
-<span class="c"># 解除后恢复为向整个网络购买</span>
-sharetoken pair leave 42</code></pre>
+<span class="c"># 每 24 小时最多给伙伴 20 万 tokens</span>
+sharetoken partner set -limit 200000</code></pre>
     </div>
   </div>
-  <p class="vendor-note">配对由协调器在撮合时执行，改客户端绕不过去。桌面应用和门户里也能操作。 <a href="/docs/share#pairing">查看配对说明</a></p>
+  <p class="vendor-note">配对和伙伴关系由协调器在撮合时执行，改客户端绕不过去。对方还没装客户端时，打开邀请链接就能注册并接受。桌面应用和门户里也能操作。 <a href="/docs/share#pairing">查看配对说明</a> · <a href="/docs/share#partners">查看伙伴说明</a></p>
 </section>
 
 <section class="block" id="models">
   <div class="head">
     <p class="eyebrow">模型</p>
-    <h2>本机模型和厂商 API，都能共享。</h2>
-    <p class="lead">接入你在模型厂商开通的 API key 或订阅服务。买家即可用 API key 调用，原生支持 Anthropic、OpenAI、Gemini 消息格式和 OpenAI 兼容协议。</p>
+    <h2>本机模型、API key、订阅，都能共享。</h2>
+    <p class="lead">接入你在模型厂商开通的 API key 或订阅服务。买家即可用 API key 调用，原生支持 Anthropic、OpenAI、Gemini 消息格式和 OpenAI 兼容协议。Claude 和 ChatGPT 订阅还可以定时预热，让 5 小时窗口提前开始计时、更早重置。</p>
   </div>
   <!-- 点一家厂商，下面换成它的命令；site.js 的 vendors() 负责切换 -->
   <div class="vendors reveal" role="tablist" aria-label="模型来源">
@@ -274,10 +290,18 @@ sharetoken up</code></pre>
     <p class="lead">转发流量的看不到内容，记账的不碰数据路径，管账户的不撮合交易。</p>
   </div>
   <div class="grid-4 reveal">
-    <div><h4>用户</h4><p>买家和卖家在同一个进程里。自动测 RTT，选最快的中继，中继故障时自动切换；开启直连隧道后，买卖双方经加密隧道直接相连。</p></div>
-    <div><h4>中继</h4><p>有多个，只转发加密流量。读不到明文，不记账，只给持有效凭证的设备预约。</p></div>
+    <div><h4>用户</h4><p>买家和卖家在同一个进程里。能直连就直连，自动测 RTT 选最快的中继，中继故障时自动切换。</p></div>
+    <div><h4>中继</h4><p>官方中继分布在多个地区，你也可以自己部署只给自己账户用的私有中继。只转发加密流量，读不到明文，不记账。</p></div>
     <div><h4>协调器</h4><p>撮合、结算、争议和抽检。不监听任何端口，只能经中继访问，暴露面很小。</p></div>
     <div><h4>门户</h4><p>注册登录、API token、设备绑定、账单和中继登记，就是你现在看到的这个网站。</p></div>
+  </div>
+  <div class="paths reveal">
+    <h3>三种连接方式，自动回退</h3>
+    <ol>
+      <li><b>直连</b><span>公网、IPv6 或打洞成功时，两端直接相连</span></li>
+      <li><b>Tailscale 隧道</b><span>先经 DERP 接通，几秒内换到两端之间的 WireGuard 直连</span><small>双方都开启时生效，不需要 Tailscale 账号</small></li>
+      <li><b>中继</b><span>两端都连不进来时经中继转发，中继只见密文</span></li>
+    </ol>
   </div>
 </section>
 
@@ -316,7 +340,7 @@ sharetoken up</code></pre>
 <footer class="foot">
   <span>© 2026 ShareToken</span>
   <span class="spacer"></span>
-  <a href="#security">安全</a><a href="#download">下载</a><a href="/docs/">文档</a><a href="/changelog/">更新日志</a><a href="/login">登录</a>
+  <a href="#security">安全</a><a href="#download">下载</a><a href="/docs/">文档</a><a href="/changelog/">更新日志</a><a href="https://github.com/Lingerhk/sharetoken" target="_blank" rel="noopener">GitHub</a>
 </footer>
 
 </body>

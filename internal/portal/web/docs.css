@@ -40,6 +40,8 @@ code, pre, kbd { font-family: var(--mono); }
 .menu i { display: block; height: 2px; border-radius: 1px; background: var(--text); }
 .links { display: flex; align-items: center; gap: 16px; margin-inline-start: auto; font-size: 14px; color: var(--muted); }
 .links a:hover { color: var(--text); }
+.gh-link { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px; color: var(--muted); border-radius: 8px; transition: background-color .15s, color .15s; }
+.links a.gh-link:hover { color: var(--text); background: rgba(127, 127, 127, .14); }
 .login { color: var(--text); border: 1px solid var(--line-2); padding: 5px 13px; border-radius: 8px; white-space: nowrap; }
 
 /* search */

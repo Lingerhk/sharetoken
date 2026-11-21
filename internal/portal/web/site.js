@@ -70,7 +70,8 @@ I18N.ready.then(() => {
     ob.observe(el);
   });
 
-  // ---- hero: the mesh, with one encrypted route through a relay ----
+  // ---- hero: the mesh, with one encrypted route for each way a buyer reaches a seller ----
+  // The modes take turns (direct, relay, tailnet) until a button below the route picks one.
   (function mesh() {
     const canvas = $('mesh'), ctx = canvas.getContext('2d');
     // The colours are the stylesheet's, so the animation changes with the theme.
@@ -81,25 +82,29 @@ I18N.ready.then(() => {
       LINE_A = Number(v('--mesh-line')); DOT_A = Number(v('--mesh-dot'));
     }
     palette();
-    let W = 0, H = 0, nodes = [], route = [], running = false;
-    const LABELS = [tr('买家'), tr('中继'), tr('卖家')];
+    let W = 0, H = 0, nodes = [], pt = {}, narrow = false, running = false;
+    const NAME = { buyer: tr('买家'), seller: tr('卖家'), relay: tr('中继'), coord: tr('协调器'), off: tr('不在数据路径上') };
+    const MODES = ['direct', 'relay', 'tailnet'];
+    const PERIOD = { direct: 3600, relay: 4200, tailnet: 7200 };
+    let mode = 'direct', pinned = false;
+    const buttons = [...document.querySelectorAll('.route-mode')], captions = [...document.querySelectorAll('.route-caption')];
 
     function layout() {
       const dpr = Math.min(devicePixelRatio || 1, 2);
       W = canvas.clientWidth; H = canvas.clientHeight;
       canvas.width = W * dpr; canvas.height = H * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const narrow = W < 900;
+      narrow = W < 900;
       const count = narrow ? 26 : 62;
       nodes = Array.from({ length: count }, () => ({
         x: Math.random() * W, y: Math.random() * H,
         vx: (Math.random() - .5) * .16, vy: (Math.random() - .5) * .16, r: 1 + Math.random() * 1.3,
       }));
-      route = narrow
-        ? [[W * .14, H - 100], [W * .5, H - 62], [W * .86, H - 104]]
-        : [[W * .6, H * .7], [W * .74, H * .27], [W * .91, H * .62]];
+      pt = narrow
+        ? { buyer: [W * .14, H - 122], mid: [W * .5, H - 176], seller: [W * .86, H - 122] }
+        : { buyer: [W * .6, H * .56], mid: [W * .755, H * .22], seller: [W * .91, H * .5], coord: [W * .755, H * .72] };
       // The route stays clear of the hero text, which is on the right in RTL.
-      if (!narrow && document.documentElement.dir === 'rtl') route = route.map(([x, y]) => [W - x, y]);
+      if (!narrow && document.documentElement.dir === 'rtl') for (const k in pt) pt[k] = [W - pt[k][0], pt[k][1]];
     }
 
     const LINK = 130;
@@ -118,47 +123,84 @@ I18N.ready.then(() => {
       for (const n of nodes) { ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 7); ctx.fill(); }
     }
 
-    function pointAt(p) {
-      const seg = Math.min(1, Math.floor(p * 2)), k = p * 2 - seg;
-      const [a, b] = [route[seg], route[seg + 1]];
+    // along returns the point at p (0..1) of a path, every segment taking an equal share.
+    function along(path, p) {
+      const n = path.length - 1, seg = Math.min(n - 1, Math.floor(p * n)), k = p * n - seg;
+      const [a, b] = [path[seg], path[seg + 1]];
       return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
     }
-
-    function drawRoute(p, trail) {
-      ctx.strokeStyle = `rgba(${LIME},.32)`; ctx.setLineDash([4, 6]);
-      ctx.beginPath(); ctx.moveTo(...route[0]); ctx.lineTo(...route[1]); ctx.lineTo(...route[2]); ctx.stroke();
+    function line(path, rgb, alpha, dash) {
+      ctx.strokeStyle = `rgba(${rgb},${alpha})`; ctx.setLineDash(dash || []);
+      ctx.beginPath(); ctx.moveTo(...path[0]); for (const q of path.slice(1)) ctx.lineTo(...q); ctx.stroke();
       ctx.setLineDash([]);
-      ctx.font = '11px ui-monospace, Menlo, monospace'; ctx.textAlign = 'center';
-      for (const t of trail) {
-        ctx.fillStyle = `rgba(${LIME},${t.a})`;
-        ctx.fillText(t.c, t.x, t.y);
+    }
+    const SANS = '13px -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif';
+    function node(q, rgb, label, hot, alpha = 1) {
+      ctx.fillStyle = `rgba(${rgb},${(hot ? .28 : .1) * alpha})`;
+      ctx.beginPath(); ctx.arc(q[0], q[1], hot ? 20 : 14, 0, 7); ctx.fill();
+      ctx.fillStyle = `rgba(${rgb},${alpha})`;
+      ctx.beginPath(); ctx.arc(q[0], q[1], 5, 0, 7); ctx.fill();
+      ctx.fillStyle = `rgba(${TEXT},${.82 * alpha})`; ctx.font = SANS; ctx.textAlign = 'center';
+      ctx.fillText(label, q[0], q[1] + 34);
+    }
+
+    // frameState says where the packet is: on which path, how far, and how far the tunnel has moved off DERP.
+    function frameState(phase) {
+      const direct = [pt.buyer, pt.seller], via = [pt.buyer, pt.mid, pt.seller];
+      if (mode === 'direct') return { path: direct, p: phase / .72, moved: 0 };
+      if (mode === 'relay') return { path: via, p: phase / .72, moved: 0 };
+      // tailnet: the first packet goes through DERP, then the tunnel moves onto the direct path.
+      const moved = Math.min(1, Math.max(0, (phase - .44) / .08));
+      return phase < .48 ? { path: via, p: phase / .4, moved } : { path: direct, p: (phase - .52) / .36, moved };
+    }
+
+    function drawRoute(phase, trail) {
+      const s = frameState(phase), hotAt = q => s.p >= 0 && s.p <= 1 && Math.hypot(...along(s.path, s.p).map((v, i) => v - q[i])) < 26;
+      if (pt.coord) {
+        // The coordinator matches and settles beside the data path, never on it.
+        line([pt.buyer, pt.coord, pt.seller], INK, .2, [2, 5]);
+        node(pt.coord, INK, NAME.coord, false, .55);
+        ctx.fillStyle = `rgba(${TEXT},.45)`; ctx.font = '11.5px -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif';
+        ctx.fillText(NAME.off, pt.coord[0], pt.coord[1] + 52);
       }
-      route.forEach((pt, i) => {
-        const near = Math.abs(p - i / 2) < .05;
-        const rgb = i === 1 ? LIME : AMBER;
-        ctx.fillStyle = `rgba(${rgb},${near ? .28 : .1})`;
-        ctx.beginPath(); ctx.arc(pt[0], pt[1], near ? 20 : 14, 0, 7); ctx.fill();
-        ctx.fillStyle = `rgb(${rgb})`;
-        ctx.beginPath(); ctx.arc(pt[0], pt[1], 5, 0, 7); ctx.fill();
-        ctx.fillStyle = `rgba(${TEXT},.82)`;
-        ctx.font = '13px -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif';
-        ctx.fillText(LABELS[i], pt[0], pt[1] + 34);
-        ctx.font = '11px ui-monospace, Menlo, monospace';
-      });
-      if (p >= 0 && p <= 1) {
-        const [x, y] = pointAt(p);
+      if (mode === 'direct') line([pt.buyer, pt.seller], LIME, .45);
+      if (mode === 'relay') line([pt.buyer, pt.mid, pt.seller], LIME, .32, [4, 6]);
+      if (mode === 'tailnet') {
+        line([pt.buyer, pt.mid, pt.seller], LIME, .32 * (1 - .7 * s.moved), [4, 6]);
+        if (s.moved > 0) line([pt.buyer, pt.seller], LIME, .45 * s.moved);
+      }
+      ctx.font = '11px ui-monospace, Menlo, monospace'; ctx.textAlign = 'center';
+      for (const t of trail) { ctx.fillStyle = `rgba(${LIME},${t.a})`; ctx.fillText(t.c, t.x, t.y); }
+      if (mode !== 'direct') node(pt.mid, LIME, mode === 'relay' ? NAME.relay : 'DERP', hotAt(pt.mid), mode === 'tailnet' ? 1 - .5 * s.moved : 1);
+      node(pt.buyer, AMBER, NAME.buyer, hotAt(pt.buyer));
+      node(pt.seller, AMBER, NAME.seller, hotAt(pt.seller));
+      if (s.p >= 0 && s.p <= 1) {
+        const [x, y] = along(s.path, s.p);
         ctx.shadowColor = `rgb(${LIME})`; ctx.shadowBlur = 16;
         ctx.fillStyle = `rgb(${LIME})`;
         ctx.beginPath(); ctx.arc(x, y, 4, 0, 7); ctx.fill();
         ctx.shadowBlur = 0;
       }
+      return s;
     }
 
-    const PERIOD = 4200, trail = [];
+    function show(m) {
+      mode = m;
+      buttons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === m)));
+      captions.forEach(c => { c.hidden = c.dataset.mode !== m; });
+    }
+    const STILL_AT = { direct: .36, relay: .36, tailnet: .7 };
+    const drawStill = () => { ctx.clearRect(0, 0, W, H); drawMesh(); drawRoute(STILL_AT[mode], []); };
+
+    const trail = [];
     let t0 = 0, last = 0, lastGlyph = 0;
     function frame(t) {
       if (!running) return;
       const dt = Math.min(50, t - last); last = t;
+      if (t - t0 >= PERIOD[mode]) {
+        t0 = t;
+        if (!pinned) show(MODES[(MODES.indexOf(mode) + 1) % MODES.length]);
+      }
       ctx.clearRect(0, 0, W, H);
       for (const n of nodes) {
         n.x += n.vx * dt / 16; n.y += n.vy * dt / 16;
@@ -166,28 +208,33 @@ I18N.ready.then(() => {
         if (n.y < 0 || n.y > H) n.vy *= -1;
       }
       drawMesh();
-      const phase = (Math.max(0, t - t0) % PERIOD) / PERIOD, p = phase / .72;  // the rest of the period is a pause
-      if (p <= 1 && t - lastGlyph > 70) {
-        lastGlyph = t;
-        const [x, y] = pointAt(p);
-        trail.push({ x: x + (Math.random() - .5) * 16, y: y + (Math.random() - .5) * 16 - 8, c: GLYPHS[Math.floor(Math.random() * 16)] + GLYPHS[Math.floor(Math.random() * 16)], a: .9 });
-      }
+      const phase = Math.max(0, t - t0) / PERIOD[mode];
       for (const g of trail) g.a -= dt / 900;
       while (trail.length && trail[0].a <= 0) trail.shift();
-      drawRoute(p, trail);
+      const s = drawRoute(phase, trail);
+      if (s.p >= 0 && s.p <= 1 && t - lastGlyph > 70) {
+        lastGlyph = t;
+        const [x, y] = along(s.path, s.p);
+        trail.push({ x: x + (Math.random() - .5) * 16, y: y + (Math.random() - .5) * 16 - 8, c: GLYPHS[Math.floor(Math.random() * 16)] + GLYPHS[Math.floor(Math.random() * 16)], a: .9 });
+      }
       requestAnimationFrame(frame);
     }
     const start = () => { if (!running) { running = true; last = t0 = performance.now(); requestAnimationFrame(frame); } };
+    buttons.forEach(b => b.addEventListener('click', () => {
+      pinned = true; show(b.dataset.mode); trail.length = 0; t0 = last = performance.now();
+      if (still) drawStill();
+    }));
+    show(mode);
     layout();
     let resizing;
     addEventListener('resize', () => {
       clearTimeout(resizing);
-      resizing = setTimeout(() => { layout(); if (still) { ctx.clearRect(0, 0, W, H); drawMesh(); drawRoute(.5, []); } }, 150);
+      resizing = setTimeout(() => { layout(); if (still) drawStill(); }, 150);
     });
     // A moving hero picks the new colours up on its next frame; a still one is drawn again.
-    new MutationObserver(() => { palette(); if (still) { ctx.clearRect(0, 0, W, H); drawMesh(); drawRoute(.5, []); } })
+    new MutationObserver(() => { palette(); if (still) drawStill(); })
       .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    if (still) { drawMesh(); drawRoute(.5, []); return; }
+    if (still) { drawStill(); return; }
     watch(canvas, v => { if (v) start(); else running = false; });
   })();
 
