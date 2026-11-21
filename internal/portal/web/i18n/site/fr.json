@@ -285,5 +285,6 @@
   "逐 token 抽检": "Contrôles token par token",
   "配对和伙伴关系由协调器在撮合时执行，改客户端绕不过去。对方还没装客户端时，打开邀请链接就能注册并接受。桌面应用和门户里也能操作。": "Le coordinateur applique appairages et partenariats lorsqu’il attribue les requêtes : un client modifié ne peut pas les contourner. Sans le client, il suffit d’ouvrir le lien d’invitation pour s’inscrire et accepter. L’application de bureau et le portail proposent la même chose.",
   "配对：只和认识的人交易": "Appairage : n’échanger qu’avec des gens que vous connaissez",
-  "隧道的 DERP 中转": "Serveur DERP du tunnel"
+  "隧道的 DERP 中转": "Serveur DERP du tunnel",
+  "注册即赠送 {n} credit": "Inscrivez-vous et recevez {n} credit"
 }

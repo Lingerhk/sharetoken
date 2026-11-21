@@ -285,5 +285,6 @@
   "逐 token 抽检": "Stichproben auf Token-Ebene",
   "配对和伙伴关系由协调器在撮合时执行，改客户端绕不过去。对方还没装客户端时，打开邀请链接就能注册并接受。桌面应用和门户里也能操作。": "Der Koordinator setzt Kopplungen und Partnerschaften beim Zuordnen durch, ein veränderter Client kommt nicht daran vorbei. Wer den Client noch nicht hat, öffnet den Einladungslink, registriert sich und nimmt an. Die Desktop-App und das Portal bieten dasselbe.",
   "配对：只和认识的人交易": "Kopplung: nur mit Bekannten handeln",
-  "隧道的 DERP 中转": "DERP-Server des Tunnels"
+  "隧道的 DERP 中转": "DERP-Server des Tunnels",
+  "注册即赠送 {n} credit": "Registrieren und {n} credit erhalten"
 }

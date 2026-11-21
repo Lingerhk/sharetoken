@@ -501,5 +501,10 @@ I18N.ready.then(() => {
   fetch('/api/v1/info', { headers: { Accept: 'application/json' } }).then(r => r.ok ? r.json() : null).then(info => {
     if (!info || !info.registration_open) return;
     $('cta-register').hidden = false;
+    if (info.signup_credit_micros > 0) {
+      const note = $('cta-credit');
+      note.textContent = tr('注册即赠送 {n} credit', { n: (info.signup_credit_micros / 1e6).toLocaleString(I18N.lang) });
+      note.hidden = false;
+    }
   }).catch(() => {});
 });

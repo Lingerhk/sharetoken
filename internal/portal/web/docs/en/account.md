@@ -14,7 +14,7 @@ There are no passwords. You sign in with a code sent to your email, and the same
 2. Paste it at the prompt.
 3. When you see `logged in as you@example.com`, you are done and this machine is bound to the account.
 
-A new account gets some credit; the sign-up page shows the amount. If the portal asks for an invite code, add `-invite <code>`. You can also sign in on the [website](/app/) first and then run `login` on each machine.
+A new account gets some credit. See the [home page](/) for the amount. If the portal asks for an invite code, add `-invite <code>`. You can also sign in on the [website](/app/) first and then run `login` on each machine.
 
 If the code does not arrive, check your spam folder first. See [Troubleshooting](/docs/troubleshooting#no-code).
 

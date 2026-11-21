@@ -285,5 +285,6 @@
   "逐 token 抽检": "Token-level spot checks",
   "配对和伙伴关系由协调器在撮合时执行，改客户端绕不过去。对方还没装客户端时，打开邀请链接就能注册并接受。桌面应用和门户里也能操作。": "The coordinator applies pairing and partnerships when it matches requests, so a modified client cannot get around them. Someone without the client can open the invite link to sign up and accept. The desktop app and the portal offer the same.",
   "配对：只和认识的人交易": "Pairing: trade only with people you know",
-  "隧道的 DERP 中转": "The tunnel’s DERP server"
+  "隧道的 DERP 中转": "The tunnel’s DERP server",
+  "注册即赠送 {n} credit": "Sign up and get {n} credit"
 }

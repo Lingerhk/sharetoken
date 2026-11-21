@@ -285,5 +285,6 @@
   "逐 token 抽检": "Verificações token a token",
   "配对和伙伴关系由协调器在撮合时执行，改客户端绕不过去。对方还没装客户端时，打开邀请链接就能注册并接受。桌面应用和门户里也能操作。": "O coordenador aplica pareamentos e parcerias ao distribuir as solicitações, então um cliente modificado não consegue contorná-los. Quem ainda não tem o cliente pode abrir o link de convite para se cadastrar e aceitar. O aplicativo de desktop e o portal oferecem o mesmo.",
   "配对：只和认识的人交易": "Pareamento: negocie só com quem você conhece",
-  "隧道的 DERP 中转": "Servidor DERP do túnel"
+  "隧道的 DERP 中转": "Servidor DERP do túnel",
+  "注册即赠送 {n} credit": "Cadastre-se e ganhe {n} credit"
 }
