@@ -23,7 +23,7 @@
   "交出这一单的密钥": "Remettre la clé de ce job",
   "使用的密码学组件": "Composants cryptographiques utilisés",
   "免费注册": "S'inscrire gratuitement",
-  "共享闲置算力，<br>保障你的不受约束的<em>生产力</em>。": "Partagez la puissance inutilisée,<br>pour une <em>productivité</em> sans entraves.",
+  "共享闲置算力，<br>保障不受约束的<em>生产力</em>": "Partagez la puissance inutilisée,<br>pour une <em>productivité</em> sans entraves",
   "准备好接入了吗？": "Prêt à vous connecter ?",
   "加密把信任边界移到了节点，只有 TEE 才能把运营者也排除在外。敏感内容请选 TEE 节点。": "Le chiffrement déplace la frontière de confiance jusqu'au nœud. Seul un TEE exclut aussi l'opérateur. Pour du contenu sensible, choisissez des nœuds TEE.",
   "协调器": "Coordinateur",

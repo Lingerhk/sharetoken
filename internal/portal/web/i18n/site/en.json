@@ -23,7 +23,7 @@
   "交出这一单的密钥": "Hand over this job's key",
   "使用的密码学组件": "Cryptographic components in use",
   "免费注册": "Sign up free",
-  "共享闲置算力，<br>保障你的不受约束的<em>生产力</em>。": "Share idle compute<br>and keep your <em>productivity</em> unbounded.",
+  "共享闲置算力，<br>保障不受约束的<em>生产力</em>": "Share idle compute<br>for unbounded <em>productivity</em>",
   "准备好接入了吗？": "Ready to join?",
   "加密把信任边界移到了节点，只有 TEE 才能把运营者也排除在外。敏感内容请选 TEE 节点。": "Encryption moves the trust boundary to the node. Only a TEE also shuts out the operator. Choose TEE nodes for sensitive content.",
   "协调器": "Coordinator",
