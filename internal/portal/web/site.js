@@ -135,13 +135,19 @@ I18N.ready.then(() => {
       ctx.setLineDash([]);
     }
     const SANS = '13px -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif';
-    function node(q, rgb, label, hot, alpha = 1) {
+    // node draws a party; big marks the one in the middle (relay or DERP), with a ring, so it reads apart from the two ends.
+    function node(q, rgb, label, hot, alpha = 1, big = false) {
+      const k = big ? 1.45 : 1;
       ctx.fillStyle = `rgba(${rgb},${(hot ? .28 : .1) * alpha})`;
-      ctx.beginPath(); ctx.arc(q[0], q[1], hot ? 20 : 14, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(q[0], q[1], (hot ? 20 : 14) * k, 0, 7); ctx.fill();
+      if (big) {
+        ctx.strokeStyle = `rgba(${rgb},${.55 * alpha})`; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(q[0], q[1], 12, 0, 7); ctx.stroke(); ctx.lineWidth = 1;
+      }
       ctx.fillStyle = `rgba(${rgb},${alpha})`;
-      ctx.beginPath(); ctx.arc(q[0], q[1], 5, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(q[0], q[1], big ? 7.5 : 5, 0, 7); ctx.fill();
       ctx.fillStyle = `rgba(${TEXT},${.82 * alpha})`; ctx.font = SANS; ctx.textAlign = 'center';
-      ctx.fillText(label, q[0], q[1] + 34);
+      ctx.fillText(label, q[0], q[1] + (big ? 42 : 34));
     }
 
     // frameState says where the packet is: on which path, how far, and how far the tunnel has moved off DERP.
@@ -155,7 +161,7 @@ I18N.ready.then(() => {
     }
 
     function drawRoute(phase, trail) {
-      const s = frameState(phase), hotAt = q => s.p >= 0 && s.p <= 1 && Math.hypot(...along(s.path, s.p).map((v, i) => v - q[i])) < 26;
+      const s = frameState(phase), hotAt = q => s.p >= 0 && s.p <= 1 && Math.hypot(...along(s.path, s.p).map((v, i) => v - q[i])) < 30;
       if (pt.coord) {
         // The coordinator matches and settles beside the data path, never on it.
         line([pt.buyer, pt.coord, pt.seller], INK, .2, [2, 5]);
@@ -171,7 +177,7 @@ I18N.ready.then(() => {
       }
       ctx.font = '11px ui-monospace, Menlo, monospace'; ctx.textAlign = 'center';
       for (const t of trail) { ctx.fillStyle = `rgba(${LIME},${t.a})`; ctx.fillText(t.c, t.x, t.y); }
-      if (mode !== 'direct') node(pt.mid, LIME, mode === 'relay' ? NAME.relay : 'DERP', hotAt(pt.mid), mode === 'tailnet' ? 1 - .5 * s.moved : 1);
+      if (mode !== 'direct') node(pt.mid, LIME, mode === 'relay' ? NAME.relay : 'DERP', hotAt(pt.mid), mode === 'tailnet' ? 1 - .5 * s.moved : 1, true);
       node(pt.buyer, AMBER, NAME.buyer, hotAt(pt.buyer));
       node(pt.seller, AMBER, NAME.seller, hotAt(pt.seller));
       if (s.p >= 0 && s.p <= 1) {
