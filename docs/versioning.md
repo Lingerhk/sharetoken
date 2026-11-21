@@ -163,7 +163,7 @@ See [desktop.md](desktop.md) for the client packages, [development.md](developme
 
 ## Tests
 
-- `scripts/test/test.sh`: starts MySQL 8 in Docker and runs all Go tests.
+- `scripts/test/test.sh`: starts MySQL 8.4 in Docker and runs all Go tests.
 - [`internal/protocol/golden_test.go`](../internal/protocol/golden_test.go): fixed vectors for the signed messages.
 - [`internal/mysqldb`](../internal/mysqldb): migration order, resuming after an interruption, concurrent start-up, older programs meeting a breaking migration.
 - [`scripts/test/version_ui_test.mjs`](../scripts/test/version_ui_test.mjs): the version pages and the update notice, in headless Chrome.

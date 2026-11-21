@@ -177,7 +177,7 @@ Notes:
 
 ### 2.1 What a deployment consists of
 
-The smallest deployment is one public machine running the portal, the coordinator, MySQL 8 and one relay. Add relays in other network locations as needed.
+The smallest deployment is one public machine running the portal, the coordinator, MySQL 8.4 and one relay. Add relays in other network locations as needed.
 
 | Program | Role | Listens on |
 |---|---|---|
@@ -192,7 +192,7 @@ This section sets the programs up by hand. For Docker Compose see [self-hosting.
 
 ### 2.2 MySQL
 
-The database is MySQL 8 (InnoDB) only. `-db` (or `database.dsn`) is `mysql://user@host:port/database`. Put the password in the environment variable `SHARETOKEN_DB_PASSWORD`, or name a file with `database.password_file`; do not write it into the URL, where it would show in the process list. Other query parameters of the URL are passed to the server as session variables.
+The database is MySQL (InnoDB) only: 8.4 LTS, or 8.0. `-db` (or `database.dsn`) is `mysql://user@host:port/database`. Put the password in the environment variable `SHARETOKEN_DB_PASSWORD`, or name a file with `database.password_file`; do not write it into the URL, where it would show in the process list. Other query parameters of the URL are passed to the server as session variables.
 
 ```sql
 CREATE DATABASE sharetoken CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
@@ -203,7 +203,7 @@ GRANT ALL ON sharetoken.* TO 'sharetoken'@'10.0.0.%';
 - The portal and the coordinator create and upgrade the tables when they start, in either order. Their account needs the right to create and alter tables (`ALL ON sharetoken.*`). Schema versions are described in [versioning.md](versioning.md).
 - Recommended server settings: `transaction_isolation = READ-COMMITTED` (the programs also set it on every session); `skip_name_resolve = ON` (otherwise every new connection can stall for seconds on reverse DNS); `innodb_flush_log_at_trx_commit = 1` (the ledger needs commits on disk); `tmp_table_size = 256M` (the ledger replay groups by account, and the 16 MB default spills to disk); an `innodb_buffer_pool_size` that holds the `jobs` table (about 6 KB of data and indexes per job). Allow port 3306 only from the machines that run the portal and the coordinator.
 - Consistency: every write transaction first locks the single row of the table `st_write_lock`, so the writes of the portal and the coordinator are strictly serial. Balances are read, computed and written back, and concurrent writers would lose updates. Read-only queries are not affected. A writer waits at most 10 seconds for the lock; after that the database counts as busy (the portal answers 503 `busy`; at start both programs retry for a while).
-- Tests: `scripts/test/test.sh` starts a MySQL 8 in Docker and runs `go test` against it. To use an existing server, set `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`; each test creates a database named `sttest_<time>_<random>`, and later runs delete those older than an hour. More in [development.md](development.md).
+- Tests: `scripts/test/test.sh` starts a MySQL 8.4 in Docker and runs `go test` against it. To use an existing server, set `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`; each test creates a database named `sttest_<time>_<random>`, and later runs delete those older than an hour. More in [development.md](development.md).
 
 ### 2.3 Starting the programs
 

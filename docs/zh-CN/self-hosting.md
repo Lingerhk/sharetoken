@@ -2,7 +2,7 @@
 
 [English](../self-hosting.md) | **简体中文**
 
-仓库根目录的 `docker-compose.yml` 可以在一台机器上启动完整的 ShareToken 网络：MySQL 8、门户、协调器和一个中继。它适合试用项目和小规模的私有部署。如果要逐个程序手工安装，见 [guide.md](guide.md)。
+仓库根目录的 `docker-compose.yml` 可以在一台机器上启动完整的 ShareToken 网络：MySQL 8.4、门户、协调器和一个中继。它适合试用项目和小规模的私有部署。如果要逐个程序手工安装，见 [guide.md](guide.md)。
 
 ## 1. 启动
 
@@ -30,7 +30,7 @@ docker compose ps
 
 | 服务 | 运行 | 状态（卷） |
 |---|---|---|
-| `mysql` | MySQL 8，带各程序要求的设置（`utf8mb4_bin`、READ-COMMITTED） | `mysql` |
+| `mysql` | MySQL 8.4，带各程序要求的设置（`utf8mb4_bin`、READ-COMMITTED） | `mysql` |
 | `init` | 每次 `up` 运行一次后退出。三个配置文件不存在时写出它们，创建密钥，把中继登记到门户，创建管理员。 | 下面三个卷 |
 | `portal` | `portal serve` | `portal`：`portal.yaml`、`portal-pass.key`、`portal-tls/` |
 | `relay` | `relay` | `relay`：`relay.yaml`、`relay.key` |

@@ -3,7 +3,7 @@
 **English** | [简体中文](zh-CN/self-hosting.md)
 
 `docker-compose.yml` in the repository root starts a complete ShareToken network
-on one machine: MySQL 8, the portal, the coordinator and one relay. It is meant
+on one machine: MySQL 8.4, the portal, the coordinator and one relay. It is meant
 for trying the project out and for small private deployments. To install the
 programs by hand, one by one, see [guide.md](guide.md).
 
@@ -37,7 +37,7 @@ The coordinator and MySQL publish no port.
 
 | Service | Runs | State (volume) |
 |---|---|---|
-| `mysql` | MySQL 8 with the settings the programs expect (`utf8mb4_bin`, READ-COMMITTED) | `mysql` |
+| `mysql` | MySQL 8.4 with the settings the programs expect (`utf8mb4_bin`, READ-COMMITTED) | `mysql` |
 | `init` | Once per `up`, then exits. Writes the three configuration files if they are missing, creates the keys, registers the relay with the portal and creates the administrator. | all three below |
 | `portal` | `portal serve` | `portal`: `portal.yaml`, `portal-pass.key`, `portal-tls/` |
 | `relay` | `relay` | `relay`: `relay.yaml`, `relay.key` |

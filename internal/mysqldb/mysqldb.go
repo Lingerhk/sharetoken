@@ -1,4 +1,4 @@
-// Package mysqldb opens the MySQL 8 database shared by the portal, the
+// Package mysqldb opens the MySQL 8.4 database shared by the portal, the
 // coordinator and the mail server, and applies its numbered schema migrations.
 //
 // DSN: mysql://user[:password]@host[:port]/database[?param=value…]. Without a

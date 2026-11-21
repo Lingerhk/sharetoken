@@ -224,7 +224,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 
 ## 3. 数据库
 
-门户、协调器和邮件服务共用一个 MySQL 8（InnoDB）数据库（`internal/mysqldb`）。用 `-db mysql://user@host:port/db`（`database.dsn`）指定，可以放在另一台机器上。
+门户、协调器和邮件服务共用一个 MySQL 8.4（InnoDB）数据库（`internal/mysqldb`）。用 `-db mysql://user@host:port/db`（`database.dsn`）指定，可以放在另一台机器上。
 
 | 表 | 写入方 | 读取方 |
 |---|---|---|

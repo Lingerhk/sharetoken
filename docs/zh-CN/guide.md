@@ -177,7 +177,7 @@ sharetoken up                               # 客户端已在运行时，share �
 
 ### 2.1 一套部署包含什么
 
-最小部署是一台公网机器，运行门户、协调器、MySQL 8 和一个中继。需要时在其它网络位置增加中继。
+最小部署是一台公网机器，运行门户、协调器、MySQL 8.4 和一个中继。需要时在其它网络位置增加中继。
 
 | 程序 | 作用 | 监听 |
 |---|---|---|
@@ -192,7 +192,7 @@ sharetoken up                               # 客户端已在运行时，share �
 
 ### 2.2 MySQL
 
-数据库只支持 MySQL 8（InnoDB）。`-db`（或 `database.dsn`）写成 `mysql://user@host:port/database`。密码放在环境变量 `SHARETOKEN_DB_PASSWORD` 里，或者用 `database.password_file` 指定一个文件；不要写进 URL，否则会出现在进程列表里。URL 里的其它查询参数作为会话变量传给服务器。
+数据库只支持 MySQL（InnoDB）：8.4 LTS 或 8.0。`-db`（或 `database.dsn`）写成 `mysql://user@host:port/database`。密码放在环境变量 `SHARETOKEN_DB_PASSWORD` 里，或者用 `database.password_file` 指定一个文件；不要写进 URL，否则会出现在进程列表里。URL 里的其它查询参数作为会话变量传给服务器。
 
 ```sql
 CREATE DATABASE sharetoken CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
@@ -203,7 +203,7 @@ GRANT ALL ON sharetoken.* TO 'sharetoken'@'10.0.0.%';
 - 门户和协调器启动时创建并升级表结构，谁先启动都行。它们的账号需要建表、改表的权限（`ALL ON sharetoken.*`）。表结构版本见 [versioning.md](versioning.md)。
 - 建议的服务器设置：`transaction_isolation = READ-COMMITTED`（程序也会在每个会话上设置）；`skip_name_resolve = ON`（否则每个新连接都可能因反向 DNS 卡住几秒）；`innodb_flush_log_at_trx_commit = 1`（账本要求提交即落盘）；`tmp_table_size = 256M`（账本回放按账户分组，默认的 16 MB 会落盘）；`innodb_buffer_pool_size` 要放得下 `jobs` 表（每个作业的数据加索引约 6 KB）。只允许门户和协调器所在的机器连接 3306 端口。
 - 一致性：每个写事务先锁住 `st_write_lock` 表里唯一的一行，门户和协调器的写入因此严格串行。余额是「读出、计算、写回」，并发写入会丢失更新。只读查询不受影响。写入方最多等锁 10 秒，超时按数据库忙处理（门户返回 503 `busy`；启动时两个程序都会重试一段时间）。
-- 测试：`scripts/test/test.sh` 在 Docker 里启动一个 MySQL 8，再对它运行 `go test`。要使用现成的服务器，设置 `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`；每个测试创建一个名为 `sttest_<时间>_<随机>` 的库，超过一小时的库由之后的测试删除。详见 [development.md](development.md)。
+- 测试：`scripts/test/test.sh` 在 Docker 里启动一个 MySQL 8.4，再对它运行 `go test`。要使用现成的服务器，设置 `SHARETOKEN_TEST_MYSQL=mysql://user@host:3306/`；每个测试创建一个名为 `sttest_<时间>_<随机>` 的库，超过一小时的库由之后的测试删除。详见 [development.md](development.md)。
 
 ### 2.3 启动各个程序
 

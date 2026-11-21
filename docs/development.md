@@ -38,7 +38,7 @@ import paths and do not change when a package moves.
 
 ## 2. Build
 
-Go 1.26 or newer. The server programs and the command-line client need no cgo.
+Go 1.27.4 or newer. The server programs and the command-line client need no cgo.
 
 ```bash
 go build -o bin/ ./cmd/...
@@ -78,7 +78,7 @@ The desktop app is described in [desktop.md](desktop.md).
 
 ## 3. Test
 
-The code runs on MySQL 8 only, and so do the tests. `scripts/test/test.sh` starts a
+The code runs on MySQL only (8.4 LTS; 8.0 works too), and so do the tests. `scripts/test/test.sh` starts a
 MySQL container (`scripts/test/local-mysql.sh`: loopback only, data in memory, kept
 running between runs) and then runs `go test`:
 

@@ -33,7 +33,7 @@ docs/        文档：英文在这一层，简体中文在 docs/zh-CN
 
 ## 2. 构建
 
-需要 Go 1.26 或更新版本。服务端程序和命令行客户端不需要 cgo。
+需要 Go 1.27.4 或更新版本。服务端程序和命令行客户端不需要 cgo。
 
 ```bash
 go build -o bin/ ./cmd/...
@@ -67,7 +67,7 @@ go build -o bin/ ./cmd/...
 
 ## 3. 测试
 
-代码只在 MySQL 8 上运行，测试也一样。`scripts/test/test.sh` 先启动一个 MySQL 容器（`scripts/test/local-mysql.sh`：只监听回环地址，数据放在内存里，两次运行之间保持运行），再执行 `go test`：
+代码只在 MySQL 上运行（8.4 LTS，8.0 也可以），测试也一样。`scripts/test/test.sh` 先启动一个 MySQL 容器（`scripts/test/local-mysql.sh`：只监听回环地址，数据放在内存里，两次运行之间保持运行），再执行 `go test`：
 
 ```bash
 scripts/test/test.sh                        # go test ./...

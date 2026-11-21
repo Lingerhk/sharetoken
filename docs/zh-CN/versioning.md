@@ -163,7 +163,7 @@ dist/SIGNATURES-1.0.0                             scripts/release/release-files.
 
 ## 测试
 
-- `scripts/test/test.sh`：在 Docker 里启动 MySQL 8，运行全部 Go 测试。
+- `scripts/test/test.sh`：在 Docker 里启动 MySQL 8.4，运行全部 Go 测试。
 - [`internal/protocol/golden_test.go`](../../internal/protocol/golden_test.go)：签名消息的固定向量。
 - [`internal/mysqldb`](../../internal/mysqldb)：迁移顺序、中断后续跑、并发启动、旧程序遇到破坏性迁移。
 - [`scripts/test/version_ui_test.mjs`](../../scripts/test/version_ui_test.mjs)：版本页面和升级提醒，在无头 Chrome 里测试。

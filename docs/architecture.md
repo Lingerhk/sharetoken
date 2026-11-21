@@ -224,7 +224,7 @@ The path of a job is in its timing: `tailnet=direct`, `derp:<region>` or `system
 
 ## 3. Database
 
-The portal, the coordinator and the mail server share one MySQL 8 (InnoDB) database (`internal/mysqldb`). It is named with `-db mysql://user@host:port/db` (`database.dsn`) and can run on a separate machine.
+The portal, the coordinator and the mail server share one MySQL 8.4 (InnoDB) database (`internal/mysqldb`). It is named with `-db mysql://user@host:port/db` (`database.dsn`) and can run on a separate machine.
 
 | Tables | Written by | Read by |
 |---|---|---|
