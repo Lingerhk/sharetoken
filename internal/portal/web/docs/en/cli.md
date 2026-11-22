@@ -148,7 +148,7 @@ Two users who pair up as partners use each other's nodes first, for free; when n
 | Command | What it does |
 |---|---|
 | `partner` | Show your partners, the tokens you gave and used in the last 24 hours, open invites and your settings |
-| `partner invite [-ttl 24h] [-approve]` | Make an invite for one person, and print its invite link. It lasts 24 hours unless you pass `-ttl` (168 hours at most); `-approve`: they wait for your approval |
+| `partner invite [-ttl 24h] [-uses N] [-approve]` | Make an invite for one person (or N, up to 100), and print its invite link. It lasts 24 hours unless you pass `-ttl` (168 hours at most); `-approve`: they wait for your approval |
 | `partner join <code\|link>` | Become the partner of whoever made the invite or link |
 | `partner approve <request id>`, `partner reject <request id>` | Approve or reject someone waiting for your approval |
 | `partner withdraw <request id>` | Withdraw your own request |

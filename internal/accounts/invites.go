@@ -166,7 +166,7 @@ func (s *Store) PreviewInvite(kind, token string) (*InvitePreview, error) {
 			Scan(&p.Inviter, &p.Label, &p.Approval, &p.ExpiresAt)
 	case KindShare:
 		err = s.DB.QueryRow(`SELECT u.username, i.approval, i.expires_at FROM share_invites i JOIN users u ON u.id = i.inviter_id
-			WHERE i.link_token = ? AND u.disabled = 0 AND i.revoked = 0 AND i.used_by = 0 AND i.expires_at > ?`, token, now).
+			WHERE i.link_token = ? AND u.disabled = 0 AND i.revoked = 0 AND i.used < i.max_uses AND i.expires_at > ?`, token, now).
 			Scan(&p.Inviter, &p.Approval, &p.ExpiresAt)
 	default:
 		return nil, ErrNotFound
@@ -303,10 +303,10 @@ func (s *Store) ApproveRequest(ownerID, id int64) (*InviteRequest, error) {
 				}
 			}
 		case KindShare:
-			var revoked, usedBy, groupID int64
-			err := tx.QueryRow(`SELECT revoked, used_by, group_id FROM share_invites WHERE id = ? AND inviter_id = ? FOR UPDATE`, codeID, ownerID).
-				Scan(&revoked, &usedBy, &groupID)
-			if errors.Is(err, sql.ErrNoRows) || err == nil && (revoked != 0 || usedBy != 0) {
+			var revoked, maxUses, used, groupID int64
+			err := tx.QueryRow(`SELECT revoked, max_uses, used, group_id FROM share_invites WHERE id = ? AND inviter_id = ? FOR UPDATE`, codeID, ownerID).
+				Scan(&revoked, &maxUses, &used, &groupID)
+			if errors.Is(err, sql.ErrNoRows) || err == nil && (revoked != 0 || used >= maxUses) {
 				return drop()
 			}
 			if err != nil {

@@ -84,7 +84,7 @@ Before it sends anything, the client decides how to trust the portal:
 | `pair leave <seller id>`, `pair rm <buyer id>`, `pair revoke <code id>` | End a pairing from the buyer's side or the seller's side; stop a code from admitting more buyers. |
 | `pair private on\|off` | Seller: private mode. While it is on, only the buyers paired with this account are matched to it and see its models. |
 | `partner` | Share partners: the partners, the tokens given to and used from each in the last 24 hours, open invites and the settings. |
-| `partner invite [-ttl 24h]` | Make a one-person invite (at most 168 hours). Whoever joins with it becomes a share partner: each uses the other's nodes first, for free. |
+| `partner invite [-ttl 24h] [-uses N]` | Make an invite for one person, or for N people (at most 100); it lasts at most 168 hours. Whoever joins with it becomes a share partner: each uses the other's nodes first, for free. |
 | `partner join <code>` | Become the share partner of the user that made the invite. |
 | `partner rm <user id>`, `partner revoke <invite id>` | Stop sharing with a partner; withdraw an open invite. |
 | `partner set [-only on\|off] [-limit N] [-share PCT]` | `-only on`: use partners' nodes only, never buy on the network. `-limit`: tokens this account's nodes give all partners per 24 hours (0: no limit). `-share`: percent of each node's concurrent jobs partners may take (0 pauses sharing). |
@@ -101,7 +101,7 @@ Notes:
 - No port needs to be opened. A seller holds reservations on relays; buyers reach it through a relay or by hole punching.
 - Seller mode for hosted APIs is described in [providers.md](providers.md).
 - Pairing is between accounts, not devices. A buyer may be paired with up to 3 sellers and a seller with up to 1000 buyers. A buyer with at least one pairing is matched only to its paired sellers and `models` lists only what they sell; a buyer with none buys from anyone. Sellers keep serving buyers that are not paired, unless they turn private mode on. Each side sees the other's account name masked (`al***@example.com`). See [architecture.md](architecture.md), section 2.13.
-- Share partners are a separate, free way to share: a request first goes to a partner's node, at no cost to either side, and only when none can take it to the network, paid (or nowhere, with `partner set -only on`). An account may have up to 5 partners; an invite admits one person. Partners are used whatever the account's pairings. See [architecture.md](architecture.md), section 2.14.
+- Share partners are a separate, free way to share: a request first goes to a partner's node, at no cost to either side, and only when none can take it to the network, paid (or nowhere, with `partner set -only on`). An account may have up to 100 partners; an invite admits one person unless made for more (`-uses`, up to 100), and each who joins becomes a partner of the inviter alone. Partners are used whatever the account's pairings. See [architecture.md](architecture.md), section 2.14.
 
 ### 1.4 Files in the state directory
 
@@ -376,7 +376,7 @@ Lists take `limit` (default 50, at most 500), `page` or `offset`, `from` and `to
 | `PUT /api/v1/pairing/private` | yes | `{enabled}`: turn the caller's private mode on or off. |
 | `GET /api/v1/admin/pairings?user=` | admin | Every pairing: buyer, seller (full names), code label, time, whether the seller is private. `user` matches part of either name. |
 | `GET /api/v1/sharing` | yes | The caller's share partners: `partners[]` (`id`, masked `username`, `group_id`, `since`, and the tokens `given` and `taken` and `jobs` between the two in the last `window_hours`), open `invites[]` (`id`, `code`, `created_at`, `expires_at`), `settings`, `served` (tokens its nodes served all partners in the window, what the daily limit counts), `window_hours` (24) and `max_partners` (5). |
-| `POST /api/v1/sharing/invites`, `DELETE /api/v1/sharing/invites/{id}` | yes | Make a one-person invite (`ttl_hours` up to 168; zero means one day) and withdraw one. 409 `limit` at 10 open invites or 5 partners. |
+| `POST /api/v1/sharing/invites`, `DELETE /api/v1/sharing/invites/{id}` | yes | Make an invite (`ttl_hours` up to 168, zero means one day; `max_uses` 1 to 100, zero means one) and withdraw one. 409 `limit` at 10 open invites or 100 partners. |
 | `POST /api/v1/sharing/join` | yes | `{code}`: become the share partner of the invite's maker. 404 `bad_code` (wrong, expired, revoked or used; counted like a failed login, then 429 `throttled`), 409 `own_code`, 409 `limit`. |
 | `DELETE /api/v1/sharing/partners/{id}` | yes | Stop sharing with a partner. |
 | `PUT /api/v1/sharing/settings` | yes | `{only_partners, daily_limit_tokens, share_pct}`: partners only; tokens the caller's nodes give all partners per rolling 24 hours (0: no limit); percent of each node's concurrent slots partner jobs may take (0 pauses, at least one slot otherwise). |

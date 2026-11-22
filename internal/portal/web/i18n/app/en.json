@@ -340,5 +340,8 @@
   "还没有客户端？": "Don’t have the app yet?",
   "可以先在这里接受邀请（配对记在账户上），再下载客户端，用同一个邮箱登录。也可以装好客户端后，把这个链接粘贴到客户端的「输入配对码」里。": "You can accept the invite here first (it is kept on your account), then download the app and sign in with the same email. Or install the app and paste this link where it asks for a code.",
   "配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试": "Pairing codes are paused: too many wrong ones across the site. Use the invite link instead, or try again in an hour",
-  "邀请链接暂时无法预览：全站输错的次数太多。请一小时后再试": "Invite links can't be previewed right now: too many wrong ones across the site. Try again in an hour"
+  "邀请链接暂时无法预览：全站输错的次数太多。请一小时后再试": "Invite links can't be previewed right now: too many wrong ones across the site. Try again in an hour",
+  "可加入的人数": "Number of people who can join",
+  "把邀请码或链接发给要共享的伙伴。最多 {n} 人可以用它加入，每人分别和你成为伙伴。": "Send the code or link to the partners you want to share with. Up to {n} people can join with it, and each becomes your partner.",
+  "已加入": "Joined"
 }

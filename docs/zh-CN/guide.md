@@ -84,7 +84,7 @@ sharetoken up                               # 客户端已在运行时，share �
 | `pair leave <seller id>`、`pair rm <buyer id>`、`pair revoke <code id>` | 买家一侧或卖家一侧解除配对；让一个配对码不再接纳新买家。 |
 | `pair private on\|off` | 卖家：私有模式。开启期间，只有和本账户配对的买家会被撮合过来，也只有他们能看到它的模型。 |
 | `partner` | 共享伙伴：伙伴列表、过去 24 小时给每个伙伴和从每个伙伴用了多少 token、未用的邀请和设置。 |
-| `partner invite [-ttl 24h]` | 生成一个只能一人使用的邀请（最长 168 小时）。用它加入的人成为共享伙伴：双方优先、免费使用对方的节点。 |
+| `partner invite [-ttl 24h] [-uses N]` | 生成一个邀请（最长 168 小时），默认一人使用，`-uses` 最多 100 人。用它加入的人成为共享伙伴：双方优先、免费使用对方的节点。 |
 | `partner join <code>` | 成为生成该邀请的用户的共享伙伴。 |
 | `partner rm <user id>`、`partner revoke <invite id>` | 停止和一个伙伴共享；撤回一个未用的邀请。 |
 | `partner set [-only on\|off] [-limit N] [-share PCT]` | `-only on`：只用伙伴的节点，从不在网络上购买。`-limit`：本账户的节点每 24 小时给所有伙伴的 token 数（0 表示不限）。`-share`：每个节点的并发任务中伙伴可占的百分比（0 表示暂停共享）。 |
@@ -101,7 +101,7 @@ sharetoken up                               # 客户端已在运行时，share �
 - 不需要开放任何端口。卖家在中继上预约，买家经中继或打洞连过来。
 - 出售托管 API 的卖家模式见 [providers.md](providers.md)。
 - 配对发生在账户之间，不是设备之间。一个买家最多配对 3 个卖家，一个卖家最多 1000 个买家。买家只要有一个配对，就只会被撮合到配对的卖家，`models` 也只列出他们出售的模型；没有配对的买家可以向任何人购买。卖家照常服务没有配对的买家，除非开启了私有模式。双方看到的对方账户名是打码的（`al***@example.com`）。见 [architecture.md](architecture.md) 第 2.13 节。
-- 共享伙伴是另一种免费的共享方式：请求先交给伙伴的节点，双方都不花钱；只有伙伴都接不了时才进入网络并付费（用 `partner set -only on` 则直接失败）。一个账户最多 5 个伙伴；一个邀请只能一人使用。不论账户有没有配对，伙伴都会被使用。见 [architecture.md](architecture.md) 第 2.14 节。
+- 共享伙伴是另一种免费的共享方式：请求先交给伙伴的节点，双方都不花钱；只有伙伴都接不了时才进入网络并付费（用 `partner set -only on` 则直接失败）。一个账户最多 100 个伙伴；一个邀请默认只能一人使用，也可以设成多人（`-uses`，最多 100），每个加入的人分别和邀请人成为伙伴。不论账户有没有配对，伙伴都会被使用。见 [architecture.md](architecture.md) 第 2.14 节。
 
 ### 1.4 状态目录里的文件
 
@@ -376,7 +376,7 @@ OpenAI 兼容端点 `/v1/` 用的是 `apikey.json` 里的 API key（除非用 `s
 | `PUT /api/v1/pairing/private` | 是 | `{enabled}`：开启或关闭调用者的私有模式。 |
 | `GET /api/v1/admin/pairings?user=` | 管理员 | 全部配对：买家、卖家（完整账户名）、配对码备注、时间、卖家是否私有。`user` 匹配任一方账户名的一部分。 |
 | `GET /api/v1/sharing` | 是 | 调用者的共享伙伴：`partners[]`（`id`、打码的 `username`、`group_id`、`since`，以及过去 `window_hours` 内双方之间的 `given`、`taken` token 数和 `jobs`），未用的 `invites[]`（`id`、`code`、`created_at`、`expires_at`），`settings`，`served`（窗口内它的节点为所有伙伴处理的 token 数，即每日额度所计的量），`window_hours`（24）和 `max_partners`（5）。 |
-| `POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}` | 是 | 生成一个只能一人使用的邀请（`ttl_hours` 最大 168；0 表示一天）和撤回邀请。未用邀请达到 10 个或伙伴达到 5 个时 409 `limit`。 |
+| `POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}` | 是 | 生成邀请（`ttl_hours` 最大 168，0 表示一天；`max_uses` 1 到 100，0 表示一人）和撤回邀请。未用邀请达到 10 个或伙伴达到 100 个时 409 `limit`。 |
 | `POST /api/v1/sharing/join` | 是 | `{code}`：成为邀请生成者的共享伙伴。404 `bad_code`（错误、过期、已撤回或已使用；和登录失败一样计数，之后 429 `throttled`），409 `own_code`，409 `limit`。 |
 | `DELETE /api/v1/sharing/partners/{id}` | 是 | 停止和一个伙伴共享。 |
 | `PUT /api/v1/sharing/settings` | 是 | `{only_partners, daily_limit_tokens, share_pct}`：只用伙伴；调用者的节点在滚动 24 小时内给所有伙伴的 token 数（0 表示不限）；每个节点的并发槽位中伙伴任务可占的百分比（0 表示暂停，否则至少一个槽位）。 |

@@ -779,14 +779,19 @@ func (c *cmdCtx) partner(args []string) error {
 		fs := flag.NewFlagSet("partner invite", flag.ExitOnError)
 		ttl := fs.Duration("ttl", 0, "how long the invite can be used (default 24h, at most 168h)")
 		approve := fs.Bool("approve", false, "joining waits for you to approve it")
+		uses := fs.Int64("uses", 1, "how many people may join with it; each becomes your partner")
 		_ = fs.Parse(args)
-		inv, err := pc.NewShareInvite(cx, ttl.Hours(), *approve)
+		inv, err := pc.NewShareInvite(cx, ttl.Hours(), *approve, *uses)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("share invite  %s\n", inv.Code)
 		fmt.Printf("link          %s\n", accounts.InviteLink(c.cfg.Portal, accounts.KindShare, inv.LinkToken))
-		fmt.Printf("  good until %s, for one person\n", time.Unix(0, inv.ExpiresAt).Format("2006-01-02 15:04"))
+		who := "one person"
+		if inv.MaxUses > 1 {
+			who = fmt.Sprintf("%d people", inv.MaxUses)
+		}
+		fmt.Printf("  good until %s, for %s\n", time.Unix(0, inv.ExpiresAt).Format("2006-01-02 15:04"), who)
 		fmt.Println("  send the link (it works before the app is installed), or they run: sharetoken partner join " + inv.Code)
 		if inv.Approval {
 			fmt.Println("  joining waits for your approval: `sharetoken partner` lists it, `sharetoken partner approve <id>` lets them in")

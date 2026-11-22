@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -127,7 +128,7 @@ func TestSharePartnerLimit(t *testing.T) {
 	s := testStore(t)
 	users := make([]*User, MaxSharePartners+2)
 	for i := range users {
-		u, err := s.CreateUser("user"+string(rune('a'+i)), false)
+		u, err := s.CreateUser(fmt.Sprintf("user%03d", i), false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,5 +154,92 @@ func TestSharePartnerLimit(t *testing.T) {
 	}
 	if _, err := s.JoinShare(hub.ID, inv.Code); !errors.Is(err, ErrLimit) {
 		t.Fatalf("join past the limit: %v", err)
+	}
+}
+
+func TestShareInviteManyUses(t *testing.T) {
+	s := testStore(t)
+	user := func(name string) *User {
+		t.Helper()
+		u, err := s.CreateUser(name, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	alice, bob, carol, dave := user("alice"), user("bob"), user("carol"), user("dave")
+	for _, n := range []int64{-1, MaxShareInviteUses + 1} {
+		if _, err := s.CreateShareInviteFor(alice.ID, 0, false, n); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("uses %d: %v", n, err)
+		}
+	}
+	inv, err := s.CreateShareInviteFor(alice.ID, 0, false, 2)
+	if err != nil || inv.MaxUses != 2 {
+		t.Fatalf("invite: %+v %v", inv, err)
+	}
+	pb, err := s.JoinShareLink(bob.ID, inv.LinkToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Still open, and it shows one use.
+	if invs, _ := s.ShareInvites(alice.ID); len(invs) != 1 || invs[0].Used != 1 || invs[0].MaxUses != 2 {
+		t.Fatalf("after one use: %+v", invs)
+	}
+	if _, err := s.PreviewInvite(KindShare, inv.LinkToken); err != nil {
+		t.Fatalf("preview after one use: %v", err)
+	}
+	pc, err := s.JoinShare(carol.ID, inv.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each joiner has a group of two with the inviter, not one with the others.
+	if pb.GroupID == pc.GroupID {
+		t.Fatalf("one group for both joiners: %d", pb.GroupID)
+	}
+	if ps, _ := s.SharePartners(bob.ID); len(ps) != 1 || ps[0].ID != alice.ID {
+		t.Fatalf("bob's partners: %+v", ps)
+	}
+	if ps, _ := s.SharePartners(alice.ID); len(ps) != 2 {
+		t.Fatalf("alice's partners: %+v", ps)
+	}
+	// Used up.
+	if _, err := s.JoinShare(dave.ID, inv.Code); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("used-up invite: %v", err)
+	}
+	if invs, _ := s.ShareInvites(alice.ID); len(invs) != 0 {
+		t.Fatalf("open invites after use: %+v", invs)
+	}
+	if err := s.RevokeShareInvite(alice.ID, inv.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoke used-up: %v", err)
+	}
+	// One partner leaving leaves the other partnership as it is.
+	if err := s.LeaveSharePartner(bob.ID, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ps, _ := s.SharePartners(alice.ID); len(ps) != 1 || ps[0].ID != carol.ID {
+		t.Fatalf("alice's partners after bob left: %+v", ps)
+	}
+
+	// With approval, each request is approved on its own while uses remain.
+	ask, err := s.CreateShareInviteFor(alice.ID, 0, true, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []*User{bob, dave} {
+		if p, err := s.JoinShare(u.ID, ask.Code); err != nil || !p.Pending {
+			t.Fatalf("ask %s: %+v %v", u.Username, p, err)
+		}
+	}
+	reqs, err := s.InviteRequests(alice.ID, KindShare)
+	if err != nil || len(reqs) != 2 {
+		t.Fatalf("requests: %+v %v", reqs, err)
+	}
+	for _, r := range reqs {
+		if _, err := s.ApproveRequest(alice.ID, r.ID); err != nil {
+			t.Fatalf("approve %d: %v", r.ID, err)
+		}
+	}
+	if ps, _ := s.SharePartners(alice.ID); len(ps) != 3 {
+		t.Fatalf("alice's partners after approvals: %+v", ps)
 	}
 }

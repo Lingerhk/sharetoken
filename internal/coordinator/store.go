@@ -30,6 +30,8 @@ var Migrations = []mysqldb.Migration{
 	{Version: 8, Name: "token-level audits", SQL: tokenAuditSchema},
 	// Links for pairing codes and share invites, and approval of their use.
 	{Version: 9, Name: "invite links", SQL: accounts.InviteLinkSchema},
+	// A share invite may admit several people.
+	{Version: 10, Name: "share invite uses", SQL: accounts.ShareInviteUsesSchema},
 }
 
 const tokenAuditSchema = `ALTER TABLE audits ADD COLUMN method VARCHAR(16) NOT NULL DEFAULT '',

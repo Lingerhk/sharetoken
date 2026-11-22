@@ -43,7 +43,7 @@
 | `DELETE /api/v1/pairing/buyers/{id}` | 卖家：移除一个买家 |
 | `PUT /api/v1/pairing/private` | 卖家：开启或关闭私有模式。请求体：`{"enabled": true}` |
 | `GET /api/v1/sharing` | 你的共享伙伴及最近 24 小时双方互相用了多少 tokens、未使用的邀请码和你的共享设置 |
-| `POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}` | 生成一个只能一人使用的邀请码（`ttl_hours`，最长 168），或撤销一个 |
+| `POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}` | 生成一个邀请码（`ttl_hours`，最长 168；`max_uses`，1 到 100，默认一人），或撤销一个 |
 | `POST /api/v1/sharing/join` | 成为邀请码生成者的共享伙伴。请求体：`{"code": "…"}` |
 | `DELETE /api/v1/sharing/partners/{id}` | 停止和某个伙伴共享 |
 | `PUT /api/v1/sharing/settings` | 只用伙伴、每日上限和并发比例。请求体：`{"only_partners": false, "daily_limit_tokens": 0, "share_pct": 100}` |

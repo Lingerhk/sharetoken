@@ -148,7 +148,7 @@
 | 命令 | 作用 |
 |---|---|
 | `partner` | 显示伙伴、最近 24 小时互相用了多少 tokens、未使用的邀请码和你的设置 |
-| `partner invite [-ttl 24h] [-approve]` | 生成一个邀请码和它的邀请链接，只能一个人用。默认 24 小时有效（最长 168 小时）；`-approve`：对方要你确认才生效 |
+| `partner invite [-ttl 24h] [-uses N] [-approve]` | 生成一个邀请码和它的邀请链接，默认只能一个人用（`-uses` 最多 100 人）。默认 24 小时有效（最长 168 小时）；`-approve`：对方要你确认才生效 |
 | `partner join <code\|link>` | 用邀请码或邀请链接，成为生成它的人的伙伴 |
 | `partner approve <request id>`、`partner reject <request id>` | 确认或拒绝一个等待你确认的人 |
 | `partner withdraw <request id>` | 撤回自己等待确认的申请 |

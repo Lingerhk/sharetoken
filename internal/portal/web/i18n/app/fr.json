@@ -340,5 +340,8 @@
   "还没有客户端？": "Pas encore l’application ?",
   "可以先在这里接受邀请（配对记在账户上），再下载客户端，用同一个邮箱登录。也可以装好客户端后，把这个链接粘贴到客户端的「输入配对码」里。": "Vous pouvez d’abord accepter l’invitation ici (elle est liée à votre compte), puis télécharger l’application et vous connecter avec la même adresse e-mail. Ou installez l’application et collez ce lien là où un code est demandé.",
   "配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试": "Les codes d'appairage sont suspendus : trop d'erreurs sur l'ensemble du site. Utilisez plutôt le lien d'invitation, ou réessayez dans une heure",
-  "邀请链接暂时无法预览：全站输错的次数太多。请一小时后再试": "Impossible d'afficher les liens d'invitation pour le moment : trop d'erreurs sur l'ensemble du site. Réessayez dans une heure"
+  "邀请链接暂时无法预览：全站输错的次数太多。请一小时后再试": "Impossible d'afficher les liens d'invitation pour le moment : trop d'erreurs sur l'ensemble du site. Réessayez dans une heure",
+  "可加入的人数": "Nombre de personnes pouvant rejoindre",
+  "把邀请码或链接发给要共享的伙伴。最多 {n} 人可以用它加入，每人分别和你成为伙伴。": "Envoyez le code ou le lien aux partenaires avec qui vous voulez partager. Jusqu’à {n} personnes peuvent le rejoindre, chacune devient votre partenaire.",
+  "已加入": "Rejoints"
 }

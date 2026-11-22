@@ -219,7 +219,7 @@ From then on, when you ask for a model, the coordinator first looks among your p
 - **Past the limits:** your partners buy on the network instead, where they may be matched to your nodes again, paying your price.
 - **Partners only:** when no partner node can take a request, it fails and costs nothing. Available models then lists only your partners' (and your own).
 - **Reputation:** jobs between partners do not count toward your nodes' record or reputation on the market.
-- **How many:** an invite works once. An account can have up to 5 partners at a time.
+- **How many:** an invite works once, unless you make it for more people (`-uses`, or "Number of people who can join" on the portal, up to 100); each who joins becomes your partner, not the others'. An account can have up to 100 partners at a time.
 - **Approval:** make the invite with `-approve` ("Require my approval" in the app and the portal) and whoever uses it waits until you approve. `partner` lists who waits; a request lapses after 7 days.
 - **Who sees what:** part of your partner's account name, and the tokens each of you used of the other in the last 24 hours.
 - **Ending it:** either side can end it at any time; then neither uses the other's nodes for free any more.

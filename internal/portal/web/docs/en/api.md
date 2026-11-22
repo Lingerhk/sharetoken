@@ -43,7 +43,7 @@ For usage, see [Call models](/docs/use-models).
 | `DELETE /api/v1/pairing/buyers/{id}` | Seller: remove one of your buyers |
 | `PUT /api/v1/pairing/private` | Seller: turn private mode on or off. Body: `{"enabled": true}` |
 | `GET /api/v1/sharing` | Your share partners with the tokens used each way in the last 24 hours, your open invites and your sharing settings |
-| `POST /api/v1/sharing/invites`, `DELETE /api/v1/sharing/invites/{id}` | Make a one-person invite (`ttl_hours`, 168 at most), or withdraw one |
+| `POST /api/v1/sharing/invites`, `DELETE /api/v1/sharing/invites/{id}` | Make an invite (`ttl_hours`, 168 at most; `max_uses`, 1 to 100, one by default), or withdraw one |
 | `POST /api/v1/sharing/join` | Become the share partner of whoever made the invite. Body: `{"code": "…"}` |
 | `DELETE /api/v1/sharing/partners/{id}` | Stop sharing with a partner |
 | `PUT /api/v1/sharing/settings` | Partners only, the daily limit and the share. Body: `{"only_partners": false, "daily_limit_tokens": 0, "share_pct": 100}` |

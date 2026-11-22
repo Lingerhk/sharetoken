@@ -156,7 +156,7 @@ Two users who pair as partners use each other's nodes first and free (no credits
 
 ```bash
 sharetoken partner                                # partners, tokens given/used in 24h, open invites, settings
-sharetoken partner invite [-ttl 24h] [-approve]   # a one-person invite code and its invite link
+sharetoken partner invite [-ttl 24h] [-uses N] [-approve]   # an invite code and link for one person (or N, up to 100)
 sharetoken partner join CODE_OR_LINK
 sharetoken partner approve | reject | withdraw REQUEST_ID
 sharetoken accept LINK_OR_CODE                    # an invite link (https://<portal>/p#… or /s#…) or code of either kind

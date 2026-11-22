@@ -229,7 +229,7 @@ node sees the prompt as any seller would, and receipts, hashes and audits work
 as usual.
 
 - An invite is a secret like a pairing code: 30 random bits with a 47.6-bit
-  link token, one day by default and 7 days at most, admits one person, can ask for
+  link token, one day by default and 7 days at most, admits one person (or up to 100 when made for more), can ask for
   the inviter's approval, and can be withdrawn. Wrong codes and links are
   counted as for pairing codes. A
   leaked invite lets a stranger use the inviter's nodes for free within its
