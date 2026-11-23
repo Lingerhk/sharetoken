@@ -144,6 +144,20 @@ The OpenAI-compatible endpoint's API key (by default required; tools send it as 
   apikey on | off                       require the key, or let any program of this machine in without it
   apikey rotate                         make a new key; the old one stops working
 
+Claude Code and Codex (their own config files, backed up first; sharetoken models are listed as st-…):
+  connect                               which tools are connected
+  connect claude|codex [-subscription auto|on|off] [-openai-provider] [-force] [-off]
+                                        point the tool at the local endpoint. With its own login (claude.ai,
+                                        ChatGPT) kept, its menu lists the official models and sharetoken's,
+                                        and each request goes where its model is; -off puts the file back
+  official                              the plans' usage seen, and what happens when one runs out
+  official fallback on|off              Claude Code: go on on sharetoken when the plan is used up (default on)
+  official fallback-model <model|auto>  the sharetoken model that takes over
+  official guard <percent>              Codex: hold official models at this share of a window (default 95)
+  codex-unlock on|off                   Codex Desktop (macOS, Windows): a spent ChatGPT plan does not lock the
+                                        input, so sharetoken models go on; trusts a localhost certificate
+  autostart on|off                      run the client at login (the connected tools need it running)
+
 Coding agents (Claude Code, Codex):
   skill                                 which agents are found, and whether they have the skill
   skill install [-agent claude|codex|all] [-force]
@@ -233,6 +247,14 @@ func main() {
 		run = c.showConfig
 	case "upgrade":
 		run = c.upgrade
+	case "connect":
+		run = c.connect
+	case "codex-unlock":
+		run = c.codexUnlock
+	case "official":
+		run = c.officialCmd
+	case "autostart":
+		run = c.autostart
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		flag.Usage()
@@ -1038,6 +1060,9 @@ func (c *cmdCtx) daemon(method, path string, body, out any) error {
 	}
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	hc := &http.Client{Timeout: 90 * time.Second}
 	resp, err := hc.Do(req)

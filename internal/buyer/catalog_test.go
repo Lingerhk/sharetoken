@@ -27,7 +27,7 @@ func TestModelObjectMetadata(t *testing.T) {
 		Meta: &protocol.ModelMeta{ContextWindow: 200000, MaxOutputTokens: 64000, Reasoning: true, ReasoningLevels: []string{"low", "high"}}}
 	o := roundTrip(t, modelObject(m))
 	for k, want := range map[string]any{
-		"id": "claude-x", "context_window": 200000.0, "context_length": 200000.0, "max_input_tokens": 200000.0,
+		"id": "st-claude-x", "context_window": 200000.0, "context_length": 200000.0, "max_input_tokens": 200000.0,
 		"max_output_tokens": 64000.0, "max_tokens": 64000.0, "reasoning": true, "type": "model",
 	} {
 		if o[k] != want {

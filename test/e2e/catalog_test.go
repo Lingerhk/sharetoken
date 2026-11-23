@@ -80,7 +80,7 @@ func TestCatalogShowsModelMetadata(t *testing.T) {
 	t.Cleanup(proxy.Close)
 
 	list := byKey(getList(t, proxy.URL+"/v1/models")["data"], "id")
-	sonnet, gpt, house := list["sonnet"], list["gpt-5.5"], list["house-7b"]
+	sonnet, gpt, house := list["st-sonnet"], list["st-gpt-5.5"], list["st-house-7b"]
 	if sonnet == nil || gpt == nil || house == nil {
 		t.Fatalf("models: %v", list)
 	}
@@ -97,7 +97,7 @@ func TestCatalogShowsModelMetadata(t *testing.T) {
 	}
 
 	codex := byKey(getList(t, proxy.URL+"/v1/models?client_version=0.166.0")["models"], "slug")
-	cs, cg, ch := codex["sonnet"], codex["gpt-5.5"], codex["house-7b"]
+	cs, cg, ch := codex["st-sonnet"], codex["st-gpt-5.5"], codex["st-house-7b"]
 	if cs["context_window"] != 200000.0 || cs["max_context_window"] != 200000.0 || cs["auto_compact_token_limit"] != nil {
 		t.Errorf("codex sonnet: window %v max %v compact %v", cs["context_window"], cs["max_context_window"], cs["auto_compact_token_limit"])
 	}

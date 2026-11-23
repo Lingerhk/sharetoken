@@ -248,8 +248,8 @@ func TestDocsCommandsExist(t *testing.T) {
 	}
 	main := string(raw)
 	commands := map[string]bool{}
-	for _, m := range regexp.MustCompile(`case ((?:"[a-z]+"(?:, )?)+):`).FindAllStringSubmatch(main[strings.Index(main, "switch cmd"):strings.Index(main, "type cmdCtx")], -1) {
-		for _, c := range regexp.MustCompile(`"([a-z]+)"`).FindAllStringSubmatch(m[1], -1) {
+	for _, m := range regexp.MustCompile(`case ((?:"[a-z][a-z-]*"(?:, )?)+):`).FindAllStringSubmatch(main[strings.Index(main, "switch cmd"):strings.Index(main, "type cmdCtx")], -1) {
+		for _, c := range regexp.MustCompile(`"([a-z][a-z-]*)"`).FindAllStringSubmatch(m[1], -1) {
 			commands[c[1]] = true
 		}
 	}
@@ -270,7 +270,7 @@ func TestDocsCommandsExist(t *testing.T) {
 		}
 	}
 
-	invocation := regexp.MustCompile(`\{\{exe\}\}((?: +-home +(?:"[^"]*"|\S+))?) +([a-z]+)((?: +[^|&;>` + "`" + `]*)?)`)
+	invocation := regexp.MustCompile(`\{\{exe\}\}((?: +-home +(?:"[^"]*"|\S+))?) +([a-z][a-z-]*)((?: +[^|&;>` + "`" + `]*)?)`)
 	flagRe := regexp.MustCompile(`(?:^|\s)-([a-z][a-z-]*)`)
 	seen := map[string]bool{}
 	for _, p := range docsNav(t) {

@@ -149,7 +149,11 @@ func (a *Agent) Status() Status {
 // endpoint (/v1/...).
 func (a *Agent) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/v1/", a.proxy.Handler())
+	gw := a.gateway()
+	mux.Handle("/v1/", gw.Wrap(a.proxy.Handler(), a.buyer.Models))
+	mux.HandleFunc("/backend-api/", gw.ServeBackend)
+	mux.HandleFunc("/api/hello", helloOK)
+	gw.Routes(mux)
 	mux.HandleFunc("GET /api/v1/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, a.Status()) })
 	mux.HandleFunc("GET /api/v1/models", a.handleModels)
 	mux.HandleFunc("GET /api/v1/account", a.portalPassthrough("/api/v1/me"))

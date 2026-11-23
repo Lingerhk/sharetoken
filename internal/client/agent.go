@@ -30,6 +30,7 @@ import (
 	"sharetoken/internal/buyer"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/node"
+	"sharetoken/internal/official"
 	"sharetoken/internal/p2p"
 	"sharetoken/internal/portal"
 	"sharetoken/internal/provider"
@@ -110,6 +111,11 @@ type Agent struct {
 	kick    chan struct{}
 
 	loginKick chan struct{}
+
+	// Official routes the endpoint's requests between the network and the
+	// vendor logins of the tools (internal/official); the daemon shares its
+	// own across its agents, else the agent makes one.
+	Official *official.Gateway
 }
 
 type shareState struct {
@@ -207,6 +213,7 @@ func (a *Agent) Start(ctx context.Context) error {
 			return err
 		}
 		a.srv = &http.Server{Handler: requireLocalKey(a.key, agentOpen, gate, a.Handler()), ReadHeaderTimeout: 10 * time.Second}
+		a.gateway().StartUnlock(a.ctx)
 		go func() {
 			if err := a.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				a.log.Error("local API stopped", "err", err)

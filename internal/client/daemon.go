@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"sharetoken/internal/cli"
+	"sharetoken/internal/official"
 	"sharetoken/internal/p2p"
 	"sharetoken/internal/portal"
 	"sharetoken/internal/version"
@@ -69,6 +70,7 @@ type Daemon struct {
 	updates  *UpdateWatcher
 	warmup   *warmup.Service // runs logged in or out: it needs no portal
 	invites  pendingInvites  // the invite link the app was opened with (invites.go)
+	official *official.Gateway
 
 	stopUpdates context.CancelFunc
 }
@@ -109,6 +111,7 @@ func NewDaemon(home string) *Daemon {
 	d := &Daemon{home: home, log: slog.Default().With("component", "daemon"), state: StateLoggedOut}
 	d.updates = NewUpdateWatcher(home, "desktop", d.portalAddr)
 	d.warmup = warmup.New(home)
+	d.official = official.New(home, slog.Default())
 	return d
 }
 
@@ -171,6 +174,8 @@ func (d *Daemon) Start() error {
 	d.stopUpdates = stopUpdates
 	d.bg.Go(func() { d.updates.Run(uctx) })
 	d.bg.Go(func() { d.warmup.Run(uctx) })
+	d.official.StartUnlock(uctx)
+	d.bg.Go(func() { d.connectLoop(uctx) })
 	if cfg.Portal != "" && cfg.Token != "" {
 		if keys, err := p2p.LoadOrCreateKeys(filepath.Join(d.home, KeyFile)); err == nil {
 			d.mu.Lock()
@@ -249,6 +254,7 @@ func (d *Daemon) joinNetwork(ctx context.Context, done chan struct{}, cfg Config
 	limit := cmpDuration(d.RetryMax, time.Minute)
 	for {
 		a := NewAgent(d.home, cfg)
+		a.Official = d.official
 		a.ExternalAPI = d.addr
 		a.Updates = d.updates
 		a.OnLoginEnded = func() { go d.expire(cfg.Token, "the portal rejected the login (expired or revoked)") }
@@ -967,8 +973,12 @@ func (d *Daemon) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /api/v1/tailnet", tailnetSaved(false))
 	mux.HandleFunc("PUT /api/v1/tailnet", tailnetSaved(true))
+	d.official.Routes(mux)
+	d.connectRoutes(mux)
+	mux.HandleFunc("/backend-api/", d.official.ServeBackend)
+	mux.HandleFunc("/api/hello", helloOK)
 	mux.HandleFunc("/api/v1/", d.toAgent)
-	mux.HandleFunc("/v1/", d.toAgent)
+	mux.HandleFunc("/v1/", d.toV1)
 	apiKeyRoutes(mux, d.home)
 	return guardHost(guardAPIOrigin(guardOrigin(requireLocalKey(d.key, daemonOpen, d.apiKeys, mux))))
 }

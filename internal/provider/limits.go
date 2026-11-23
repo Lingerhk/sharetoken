@@ -108,6 +108,12 @@ func (r *limitsRecorder) Do(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
+// UsageFromHeaders reads the windows a vendor reply's headers tell: Claude's
+// (anthropic-ratelimit-unified-*) or the ChatGPT backend's (x-codex-*).
+func UsageFromHeaders(h http.Header, now time.Time) (UsageLimits, bool) {
+	return usageFromHeaders(h, now)
+}
+
 // usageFromHeaders reads the windows h tells, of either vendor.
 func usageFromHeaders(h http.Header, now time.Time) (UsageLimits, bool) {
 	if l, ok := claudeUsageHeaders(h, now); ok {

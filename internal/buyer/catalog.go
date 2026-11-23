@@ -82,8 +82,8 @@ func modelObject(m protocol.ModelSummary) map[string]any {
 		apis = []string{}
 	}
 	o := map[string]any{
-		"id": m.Model, "object": "model", "owned_by": "sharetoken", "created": 0,
-		"type": "model", "display_name": m.Model, "created_at": "1970-01-01T00:00:00Z",
+		"id": ListedModel(m.Model), "object": "model", "owned_by": "sharetoken", "created": 0,
+		"type": "model", "display_name": "ShareToken " + m.Model, "created_at": "1970-01-01T00:00:00Z",
 		"nodes": m.Nodes, "min_price_in": m.MinPriceIn, "min_price_out": m.MinPriceOut,
 		"shared_nodes": m.SharedNodes, "apis": apis,
 	}
@@ -144,7 +144,7 @@ func codexManifest(ms []protocol.ModelSummary) map[string]any {
 			desc += " (native Responses)"
 		}
 		e := map[string]any{
-			"slug": m.Model, "display_name": m.Model, "description": desc,
+			"slug": ListedModel(m.Model), "display_name": "ShareToken " + m.Model, "description": desc,
 			"default_reasoning_level": def, "supported_reasoning_levels": levels,
 			"shell_type": "shell_command", "visibility": "list", "supported_in_api": true, "priority": i,
 			"additional_speed_tiers": []string{}, "service_tiers": []any{}, "default_service_tier": nil,

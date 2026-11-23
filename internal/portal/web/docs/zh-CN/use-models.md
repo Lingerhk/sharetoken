@@ -157,14 +157,14 @@ $env:OPENAI_API_KEY = ({{exe}} apikey -q)
 
 ## 接入 Claude Code {#claude-code}
 
-Claude Code 用 Anthropic Messages 接口访问端点。把它指向客户端，模型从 `{{exe}} models` 里选：
+Claude Code 用 Anthropic Messages 接口访问端点。`{{exe}} connect claude` 可以一步配好（见[同时使用订阅](#subscription)）；手动配置时，把它指向客户端，模型从 `{{exe}} models` 里选。端点列出的网络模型 ID 前面都加了 `st-`，以免和厂商自己的模型混淆；请求里的模型 ID 带不带 `st-` 都可以。
 
 ::: macos linux
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:{{port}}
 export ANTHROPIC_AUTH_TOKEN=$({{exe}} apikey -q)
-export ANTHROPIC_MODEL=claude-sonnet-4-6          # a model ID from `{{exe}} models`
-export ANTHROPIC_SMALL_FAST_MODEL=claude-sonnet-4-6  # for Claude Code's background tasks
+export ANTHROPIC_MODEL=st-claude-sonnet-4-6          # st- and a model ID from `{{exe}} models`
+export ANTHROPIC_SMALL_FAST_MODEL=st-claude-sonnet-4-6  # for Claude Code's background tasks
 claude
 ```
 :::
@@ -173,8 +173,8 @@ claude
 ```powershell
 $env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:{{port}}'
 $env:ANTHROPIC_AUTH_TOKEN = ({{exe}} apikey -q)
-$env:ANTHROPIC_MODEL = 'claude-sonnet-4-6'
-$env:ANTHROPIC_SMALL_FAST_MODEL = 'claude-sonnet-4-6'
+$env:ANTHROPIC_MODEL = 'st-claude-sonnet-4-6'
+$env:ANTHROPIC_SMALL_FAST_MODEL = 'st-claude-sonnet-4-6'
 claude
 ```
 :::
@@ -189,7 +189,7 @@ claude
 Codex 用 OpenAI Responses 接口访问端点。在 `~/.codex/config.toml` 里加一个 provider：
 
 ```toml
-model = "gpt-5.5"              # a model ID from `{{exe}} models`
+model = "st-gpt-5.5"           # st- and a model ID from `{{exe}} models`
 model_provider = "sharetoken"
 
 [model_providers.sharetoken]
@@ -229,6 +229,28 @@ codex
 :::
 
 工具调用（包括 `apply_patch`）、推理和上下文压缩，对网络上的任何模型都能用。走 WebSocket 时，Codex 每次只发新增的内容；节点在请求之间不保存任何东西，所以由客户端记住这条连接上的对话，再整段发出。走 HTTP 时客户端同样支持 `previous_response_id`（供 OpenAI Agents SDK 等工具使用）：它在内存里按 API key 保存最近的回答一小时，再把它们组成的对话整段发出；不认识的 id 返回 `previous_response_not_found`，`store: false` 的请求不保存。Codex 的 `/v1/responses/compact` 也支持：ChatGPT 登录的节点原生压缩，其他节点让模型写一段摘要。和 Claude Code 一样，请求返回 `budget` 错误时请调高 `buy.budget_micros`。
+
+## 同时使用 Claude 或 ChatGPT 订阅 {#subscription}
+
+`{{exe}} connect` 会替你修改 Claude Code 或 Codex 自己的配置文件。修改前每个文件都会复制一份到客户端的 `backups` 目录，`-off` 会把文件恢复原样。工具已经登录官方账号（Claude Code 登录 claude.ai，Codex 登录 ChatGPT）时，会保留这个登录：模型菜单里先列官方模型，后面是网络上的模型（ID 以 `st-` 开头）。每个请求按所选模型分流：官方模型用你自己的订阅额度，`st-` 模型走网络。同一个对话里可以随时切换。
+
+```bash
+{{exe}} connect claude          # Claude Code: ~/.claude/settings.json
+{{exe}} connect codex           # Codex: ~/.codex/config.toml
+{{exe}} connect                 # what is connected
+{{exe}} connect claude -off     # put the file back
+```
+
+改完后重启工具。没有登录官方账号，或加了 `-subscription off` 时，工具只用网络，用 API key 访问。桌面应用的“设置 > 工具接入”里有同样的开关。
+
+工具连官方模型也要经过客户端，所以客户端需要一直运行：`{{exe}} autostart on` 让它在登录系统时自动启动。你的官方登录凭据原样转发给厂商自己的服务器，客户端不保存、不记录，也不发到网络。
+
+订阅额度用完时：
+
+- **Claude Code**：Anthropic 因为额度用完拒绝请求时，客户端会把同一个请求交给网络上最接近的模型（网络上有同一个 Claude 模型就用它）继续，直到额度窗口重置。`{{exe}} official fallback off` 关闭这个功能；`{{exe}} official fallback-model <model>` 指定接手的模型。
+- **Codex**：ChatGPT 额度用完后，Codex Desktop 会锁住输入框，连网络上的模型也发不出去。客户端会在额度窗口用到 95% 时暂停官方模型（`{{exe}} official guard <percent>` 可调），并提示你换成 `st-` 模型。在 macOS 和 Windows 上，也可以用 `{{exe}} codex-unlock on` 让输入框不被锁：系统会请你信任一张只对 localhost 有效的证书，之后 Codex Desktop 需要客户端一直运行。
+
+`{{exe}} official` 显示客户端看到的订阅用量，以及额度用完时会怎样处理。
 
 想让 Claude Code 或 Codex 替你查看客户端、调用模型、管理共享，见[在编程助手中使用](/docs/agents)。
 

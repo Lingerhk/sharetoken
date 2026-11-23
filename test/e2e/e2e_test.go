@@ -534,7 +534,7 @@ func TestLocalProxyIsOpenAICompatible(t *testing.T) {
 	}
 	listing, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(listing), `"id":"test-model"`) {
+	if !strings.Contains(string(listing), `"id":"st-test-model"`) {
 		t.Fatalf("model missing from listing: %s", listing)
 	}
 }

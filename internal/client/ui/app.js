@@ -1463,6 +1463,103 @@ I18N.ready.then(() => {
     return { el: panel.el, reload };
   }
 
+  // ---- Claude Code and Codex (internal/connect, internal/official) ----
+
+  // The coding tools of this machine: whether their config points at the
+  // local endpoint, with or without their own vendor login kept; the plans'
+  // usage seen on the way, what happens when one runs out, and the Codex
+  // Desktop unlock.
+  function toolsView() {
+    const panel = section('tools', tr('Claude Code 与 Codex'), { fill: true, hint: tr('连接后，工具的配置指向本机接口（修改前会备份）。保留官方登录时，模型菜单里官方模型后面会列出 ShareToken 的模型（st- 开头），每个请求按所选模型分流：官方模型用自己的订阅，st- 模型走 ShareToken 网络。工具需要本机客户端一直运行。') });
+    const err = errorBox('tools-error');
+    let cv = null, ov = null, auto = null;
+    const NAMES = { claude: 'Claude Code', codex: 'Codex' };
+    function state(tool) {
+      const a = cv && cv.state[tool];
+      if (!a) return tr('未连接');
+      return a.options.subscription ? tr('已连接 · 保留官方登录') : tr('已连接 · 只用 ShareToken');
+    }
+    function toolRow(tool) {
+      const a = cv.state[tool];
+      const signed = tool === 'claude' ? cv.claude_signed_in : cv.codex_chatgpt;
+      const sub = h('input', { type: 'checkbox', id: 'tools-sub-' + tool, checked: (a ? a.options.subscription : signed) || null });
+      const openai = tool === 'codex' ? h('input', { type: 'checkbox', id: 'tools-openai-provider', checked: (a && a.options.openai_provider) || null }) : null;
+      const go = h('button', { type: 'button', class: 'primary small', id: 'tools-connect-' + tool, onclick: () => run(go, err, async () => {
+        cv = await api('POST', '/api/v1/connect', { tool, subscription: sub.checked, openai_provider: openai ? openai.checked : false });
+        render();
+      }, e => message(e)) }, a ? tr('重新连接') : tr('连接'));
+      const off = a ? h('button', { type: 'button', class: 'small', id: 'tools-off-' + tool, onclick: () => confirmBox(
+        tr('把 {name} 的配置恢复成连接前的样子？', { name: NAMES[tool] }), tr('断开'),
+        async () => { cv = await api('POST', '/api/v1/connect', { tool, off: true }); }, async () => render(), e => message(e)) }, tr('断开')) : null;
+      return h('div', { class: 'tool-row', id: 'tools-row-' + tool },
+        h('div', null, h('strong', null, NAMES[tool]), ' ', h('span', { class: 'small ' + (a ? '' : 'muted'), id: 'tools-state-' + tool }, state(tool))),
+        h('div', { class: 'small muted' }, (tool === 'claude' ? cv.claude_path : cv.codex_path) + ' · ' + (signed ? tr('已登录官方账号') : tr('未登录官方账号'))),
+        h('label', { class: 'check' }, sub, h('span', null, tool === 'claude' ? tr('保留 Claude 订阅登录（共存）') : tr('保留 ChatGPT 登录（共存）'))),
+        openai ? h('label', { class: 'check' }, openai, h('span', null, tr('用 Codex 内置的 OpenAI provider（以前的对话仍可见）'))) : null,
+        h('div', { class: 'actions' }, go, off));
+    }
+    function officialBox() {
+      if (!ov) return null;
+      const s = ov.settings;
+      const save = async (patch, el) => {
+        if (el) el.disabled = true;
+        try { ov = await api('PUT', '/api/v1/official', Object.assign({}, s, patch)); err.say(''); }
+        catch (e) { err.say(message(e)); }
+        render();
+      };
+      const fb = h('input', { type: 'checkbox', id: 'tools-fallback', checked: !s.claude_fallback_off || null, onchange: () => save({ claude_fallback_off: !fb.checked }, fb) });
+      const fbModel = h('input', { id: 'tools-fallback-model', value: s.claude_fallback_model || '', placeholder: tr('自动（与所选模型最接近）') });
+      const fbSave = h('button', { type: 'button', class: 'small', id: 'tools-fallback-model-save', onclick: () => save({ claude_fallback_model: fbModel.value.trim().replace(/^st-/, '') }, fbSave) }, tr('保存'));
+      const guard = h('input', { id: 'tools-guard', type: 'number', min: 1, max: 100, value: s.codex_guard_percent || 95, disabled: s.codex_unlock || null });
+      const gSave = h('button', { type: 'button', class: 'small', id: 'tools-guard-save', disabled: s.codex_unlock || null, onclick: () => {
+        const v = Number(guard.value);
+        if (!(v > 0 && v <= 100)) { err.say(tr('请输入 1 到 100')); return; }
+        save({ codex_guard_percent: v }, gSave);
+      } }, tr('保存'));
+      const unlock = h('input', { type: 'checkbox', id: 'tools-unlock', checked: s.codex_unlock || null, onchange: async () => {
+        unlock.disabled = true;
+        try { ov = await api('POST', '/api/v1/official/unlock', { on: unlock.checked }); cv = await api('GET', '/api/v1/connect'); err.say(''); }
+        catch (e) { err.say(message(e)); }
+        render();
+      } });
+      const c = ov.claude || {};
+      const held = c.held_until ? tr('额度已用完，{time} 前的请求由 ShareToken 处理', { time: new Date(c.held_until).toLocaleString(I18N.lang, { hour12: false }) }) : '';
+      const falls = c.fallbacks ? tr('已转到 ShareToken {n} 次，最近一次用 {model}', { n: num(c.fallbacks), model: c.last_model }) : '';
+      const u = ov.unlock || {};
+      return h('div', { class: 'tools-official', id: 'tools-official' },
+        h('h3', null, 'Claude Code'),
+        h('div', { class: 'small', id: 'tools-claude-usage' }, tr('订阅用量：{text}', { text: usageText(c.usage) })),
+        held ? h('div', { class: 'small warn-text', id: 'tools-claude-held' }, held) : null,
+        falls ? h('div', { class: 'small muted', id: 'tools-claude-fallbacks' }, falls) : null,
+        h('label', { class: 'check' }, fb, h('span', null, tr('订阅额度用完后自动转到 ShareToken 继续'))),
+        field(tr('接手的 ShareToken 模型'), h('div', { class: 'endpoint' }, fbModel, fbSave)),
+        h('h3', null, 'Codex'),
+        (ov.codex || []).length ? (ov.codex || []).map(x => h('div', { class: 'small' }, tr('ChatGPT 订阅用量：{text}', { text: usageText(x.usage) }))) : h('div', { class: 'small muted' }, tr('还没有看到 ChatGPT 订阅的用量')),
+        field(tr('额度用到这个百分比时暂停官方模型'), h('div', { class: 'endpoint' }, guard, gSave), tr('Codex Desktop 在订阅额度用完后会锁住输入框，连 ShareToken 的模型也发不出去。提前暂停官方模型，并提示换成 st- 模型。开启无锁模式后不再暂停。')),
+        h('label', { class: 'check' }, unlock, h('span', null, tr('Codex Desktop 无锁模式（macOS / Windows）'))),
+        h('div', { class: 'small muted hint' }, tr('额度用完后 Codex Desktop 不锁输入框，ShareToken 模型照常可用。打开时系统会请你信任一张只对 localhost 有效的证书，并占用本机 {port} 端口；打开后 Codex Desktop 需要客户端一直运行。需要退出并重新打开 Codex Desktop。', { port: u.port || 443 })),
+        s.codex_unlock ? h('div', { class: 'small ' + (u.listening && u.trusted ? 'muted' : 'warn-text'), id: 'tools-unlock-state' },
+          u.error || (u.listening ? (u.trusted ? tr('无锁模式运行中') : tr('证书未被信任')) : tr('未在监听'))) : null);
+    }
+    function render() {
+      if (!cv) return;
+      const autoBox = auto ? h('label', { class: 'check', id: 'tools-autostart-row' }, h('input', { type: 'checkbox', id: 'tools-autostart', checked: auto.on || null, onchange: async e => {
+        e.target.disabled = true;
+        try { auto = await api('PUT', '/api/v1/autostart', { on: e.target.checked }); err.say(''); }
+        catch (x) { err.say(message(x)); }
+        render();
+      } }), h('span', null, tr('登录系统时自动启动客户端（连接的工具需要它一直运行）'))) : null;
+      panel.set(JSON.stringify([cv, ov, auto]), err.el, toolRow('claude'), toolRow('codex'), autoBox, officialBox());
+    }
+    async function reload() {
+      try {
+        [cv, ov, auto] = await Promise.all([api('GET', '/api/v1/connect'), api('GET', '/api/v1/official'), api('GET', '/api/v1/autostart').catch(() => null)]);
+        err.say(''); render();
+      } catch (e) { err.say(message(e)); if (!cv) panel.set('err', err.el); }
+    }
+    return { el: panel.el, reload };
+  }
+
   // The window after sign-in: a sidebar that chooses the view, the view, and a
   // status bar. Every view stays in the page, so that polling keeps the hidden
   // ones current and switching shows them at once.
@@ -1694,6 +1791,7 @@ I18N.ready.then(() => {
     const partners = partnersView();
     const share = shareView(() => market);
     const warm = warmupView();
+    const tools = toolsView();
 
     // name, label, panels, or tabs of panels.
     const VIEWS = [
@@ -1701,7 +1799,7 @@ I18N.ready.then(() => {
       ['share', tr('共享'), null, [['state', tr('状态'), share.panes.state], ['providers', tr('厂商 API'), share.panes.providers], ['local', tr('本机模型'), share.panes.local]]],
       ['pairing', tr('配对'), null, [['partners', tr('共享伙伴'), [partners.partners, partners.settings]], ['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
       ['activity', tr('记录'), null, [['all', tr('全部'), [jobs.el]], ['sold', tr('卖出'), [share.sold]]]],
-      ['settings', tr('设置'), null, [['general', tr('通用'), [settings]], ['buy', tr('调用'), [buyPanel]], ['network', tr('网络'), [tailnetPanel, tunnels.el]], ['devices', tr('我的设备'), [devices.el]], ['warmup', tr('预热'), [warm.el]]]],
+      ['settings', tr('设置'), null, [['general', tr('通用'), [settings]], ['buy', tr('调用'), [buyPanel]], ['network', tr('网络'), [tailnetPanel, tunnels.el]], ['devices', tr('我的设备'), [devices.el]], ['warmup', tr('预热'), [warm.el]], ['tools', tr('工具接入'), [tools.el]]]],
     ];
     const views = {}, navButtons = {}, tabs = {}, labels = {};
     const title = h('h1', { id: 'view-title' });
@@ -2025,6 +2123,7 @@ I18N.ready.then(() => {
         if (tick++ % 3 === 0) {
           loadAPIKey();
           warm.reload();
+          tools.reload();
           try {
             const [me, j, sj] = await Promise.all([api('GET', '/api/v1/account'), api('GET', '/api/v1/jobs?limit=10'), api('GET', '/api/v1/jobs?role=sell&limit=10')]);
             if (stopped) return;

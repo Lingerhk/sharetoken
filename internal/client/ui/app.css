@@ -270,3 +270,11 @@ html.i18n-pending body { visibility: hidden; }
 .warmup-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-bottom: 6px; }
 .warmup-top .check { margin-top: 0; align-items: center; }
 .warmup-top .check input { margin-top: 0; }
+.tool-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); }
+.tool-row .actions { display: flex; gap: 8px; }
+.tool-row .actions button, .tools-official button { width: auto; }
+.tools-official { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding-top: 6px; }
+.tools-official h3 { margin: 12px 0 2px; font-size: 14px; }
+.tools-official .field { width: 100%; max-width: 560px; }
+.tools-official .endpoint input { width: 220px; }
+#tools-autostart-row { margin-top: 10px; }

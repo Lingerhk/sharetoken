@@ -12,6 +12,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"sharetoken/internal/official"
 )
 
 // The local API's key. Loopback TCP is open to every process and every user of
@@ -78,10 +80,27 @@ func requireLocalKey(key string, open func(method, cleanPath string) bool, api *
 	want := []byte("Bearer " + key)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := path.Clean("/" + r.URL.Path)
+		if rest, key, ok := pathKey(p); ok {
+			// The key in the path (/k/<key>/v1/…): for a tool whose
+			// headers cannot be set, Codex on its built-in OpenAI provider.
+			if !api.matches(key) {
+				writeErrorCode(w, http.StatusUnauthorized, "invalid_api_key", "the API key in the path is not this client's")
+				return
+			}
+			r2 := r.Clone(r.Context())
+			r2.URL.Path, r2.URL.RawPath = rest, ""
+			h.ServeHTTP(w, r2)
+			return
+		}
 		if openOpenAI(p) {
 			if ok, why := api.allow(r); !ok {
-				writeErrorCode(w, http.StatusUnauthorized, "invalid_api_key", why)
-				return
+				if official.Classify(r.Header) == official.CredNone {
+					writeErrorCode(w, http.StatusUnauthorized, "invalid_api_key", why)
+					return
+				}
+				// The vendor's own login, without the client's key: the
+				// vendor's models only (official.KeyMissing).
+				r = r.WithContext(official.WithoutKey(r.Context()))
 			}
 			h.ServeHTTP(w, r)
 			return
@@ -99,13 +118,28 @@ func requireLocalKey(key string, open func(method, cleanPath string) bool, api *
 // of this one (apikey.go); the Origin check keeps web pages out of it.
 func openOpenAI(p string) bool { return p == "/v1" || strings.HasPrefix(p, "/v1/") }
 
+// pathKey splits a path that carries the API key, /k/<key>/rest.
+func pathKey(p string) (rest, key string, ok bool) {
+	after, found := strings.CutPrefix(p, "/k/")
+	if !found {
+		return "", "", false
+	}
+	key, rest, _ = strings.Cut(after, "/")
+	return "/" + rest, key, key != ""
+}
+
+// openVendor: what the tools' vendor logins reach without the key (the
+// requests carry their own credentials): the ChatGPT backend passthrough
+// (official.ServeBackend) and Claude Code's probe.
+func openVendor(p string) bool { return official.IsBackendPath(p) || p == "/api/hello" }
+
 // agentOpen is what `sharetoken up` serves without the key.
-func agentOpen(_, p string) bool { return openOpenAI(p) }
+func agentOpen(_, p string) bool { return openOpenAI(p) || openVendor(p) }
 
 // daemonOpen is what the daemon serves without the key: also the app's page
 // and its files, which hold nothing of the user's, and the hello.
 func daemonOpen(method, p string) bool {
-	if openOpenAI(p) {
+	if openOpenAI(p) || openVendor(p) {
 		return true
 	}
 	if method != http.MethodGet && method != http.MethodHead {

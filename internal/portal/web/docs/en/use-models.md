@@ -157,14 +157,14 @@ If a tool on a web page calls the endpoint with a non-local `Origin`, the endpoi
 
 ## Use with Claude Code {#claude-code}
 
-Claude Code talks to the endpoint in the Anthropic Messages API. Point it at the client and pick a model from `{{exe}} models`:
+Claude Code talks to the endpoint in the Anthropic Messages API. `{{exe}} connect claude` sets it up (see [Keep your subscription](#subscription)); by hand, point it at the client and pick a model from `{{exe}} models`. The endpoint lists the network's models with `st-` before their IDs, so that they cannot be mistaken for a vendor's own; a request may name a model with or without it.
 
 ::: macos linux
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:{{port}}
 export ANTHROPIC_AUTH_TOKEN=$({{exe}} apikey -q)
-export ANTHROPIC_MODEL=claude-sonnet-4-6          # a model ID from `{{exe}} models`
-export ANTHROPIC_SMALL_FAST_MODEL=claude-sonnet-4-6  # for Claude Code's background tasks
+export ANTHROPIC_MODEL=st-claude-sonnet-4-6          # st- and a model ID from `{{exe}} models`
+export ANTHROPIC_SMALL_FAST_MODEL=st-claude-sonnet-4-6  # for Claude Code's background tasks
 claude
 ```
 :::
@@ -173,8 +173,8 @@ claude
 ```powershell
 $env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:{{port}}'
 $env:ANTHROPIC_AUTH_TOKEN = ({{exe}} apikey -q)
-$env:ANTHROPIC_MODEL = 'claude-sonnet-4-6'
-$env:ANTHROPIC_SMALL_FAST_MODEL = 'claude-sonnet-4-6'
+$env:ANTHROPIC_MODEL = 'st-claude-sonnet-4-6'
+$env:ANTHROPIC_SMALL_FAST_MODEL = 'st-claude-sonnet-4-6'
 claude
 ```
 :::
@@ -189,7 +189,7 @@ Tool use, thinking and prompt caching work as with Anthropic. Any model on the n
 Codex talks to the endpoint in the OpenAI Responses API. Add a provider to `~/.codex/config.toml`:
 
 ```toml
-model = "gpt-5.5"              # a model ID from `{{exe}} models`
+model = "st-gpt-5.5"           # st- and a model ID from `{{exe}} models`
 model_provider = "sharetoken"
 
 [model_providers.sharetoken]
@@ -229,6 +229,28 @@ codex
 :::
 
 Tool calls (`apply_patch` included), reasoning and context compaction work with any model on the network. Over a WebSocket, Codex sends only what is new in each request; the client keeps the conversation of the connection and sends it whole, since a node keeps nothing between requests. Over HTTP the client also answers `previous_response_id` (for tools such as the OpenAI Agents SDK): it keeps the last responses of each API key in memory for an hour and sends the conversation they make up; an id it does not have is refused with `previous_response_not_found`, and nothing is kept for a request with `store: false`. Codex's `/v1/responses/compact` is supported: a node with a ChatGPT login compacts natively, any other one has its model write a summary. As with Claude Code, raise `buy.budget_micros` if requests fail with `budget`.
+
+## Keep your Claude or ChatGPT subscription {#subscription}
+
+`{{exe}} connect` sets Claude Code or Codex up for you, in their own config files. A copy of each file is kept in the client's `backups` folder before it is changed, and `-off` puts the file back as it was. When the tool is signed in to its vendor (claude.ai, or ChatGPT for Codex), it keeps that login: its model menu lists the official models and, after them, the network's (their IDs start with `st-`). Each request goes where its model is: an official model runs on your own plan, an `st-` model on the network. You can switch between them within one conversation.
+
+```bash
+{{exe}} connect claude          # Claude Code: ~/.claude/settings.json
+{{exe}} connect codex           # Codex: ~/.codex/config.toml
+{{exe}} connect                 # what is connected
+{{exe}} connect claude -off     # put the file back
+```
+
+Restart the tool afterwards. Without a vendor login, or with `-subscription off`, the tool uses the network only, with the API key. The desktop app has the same switches under "Settings > Tools".
+
+The tools reach even their official models through the client, so it has to be running: `{{exe}} autostart on` starts it when you log in. Your vendor login is passed to the vendor's own servers as it is; the client does not keep it, log it or send it to the network.
+
+When a plan runs out:
+
+- **Claude Code**: when Anthropic turns a request away because the plan is used up, the client answers that same request from the network, on the closest model (the same Claude model if it is offered), until the window resets. `{{exe}} official fallback off` turns this off; `{{exe}} official fallback-model <model>` picks the model.
+- **Codex**: Codex Desktop locks its input once the ChatGPT plan is spent, even for network models. The client holds the official models when a window reaches 95% (`{{exe}} official guard <percent>`) and tells you to switch to an `st-` model. On macOS and Windows, `{{exe}} codex-unlock on` keeps the input open instead: the system asks you to trust a certificate valid for localhost only, and Codex Desktop then needs the client running.
+
+`{{exe}} official` shows the usage of the plans the client has seen and what happens when they run out.
 
 To have Claude Code or Codex check the client, call models and manage sharing for you, see [Use with coding agents](/docs/agents).
 
