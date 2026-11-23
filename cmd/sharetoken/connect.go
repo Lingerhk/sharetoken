@@ -89,7 +89,7 @@ func (c *cmdCtx) connect(args []string) error {
 		if err := client.ApplyConnect(c.home, "http://"+addr, nil, req); err != nil {
 			return err
 		}
-		if !*off {
+		if !*off && tool == "claude" {
 			fmt.Println("note: the client is not running; its models are added to Claude Code's menu once it runs")
 		}
 	}
