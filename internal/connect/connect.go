@@ -52,8 +52,11 @@ type Options struct {
 
 // Applied is one tool's connection.
 type Applied struct {
-	Path    string    `json:"path"`
-	Backup  string    `json:"backup,omitempty"`
+	Path   string `json:"path"`
+	Backup string `json:"backup,omitempty"`
+	// Created: there was no file before the first change; -off removes
+	// what is left of it when that is nothing.
+	Created bool      `json:"created,omitempty"`
 	Options Options   `json:"options"`
 	At      time.Time `json:"at"`
 	// Original holds what the managed settings were before the first
@@ -143,6 +146,16 @@ func pruneBackups(dir, name, newest string) {
 			_ = os.Remove(p)
 		}
 	}
+}
+
+// removeIfEmpty removes a file the client created once nothing of the
+// user's is in it; true when it did.
+func removeIfEmpty(path string, data []byte) bool {
+	s := strings.TrimSpace(string(data))
+	if s != "" && s != "{}" {
+		return false
+	}
+	return os.Remove(path) == nil
 }
 
 // writeAtomic replaces path with data, keeping its mode when it exists.

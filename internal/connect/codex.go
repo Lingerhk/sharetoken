@@ -51,7 +51,7 @@ func Codex(home string, o Options) (*Applied, error) {
 	}
 	a := st.Codex
 	if a == nil || a.Path != path {
-		a = &Applied{Path: path}
+		a = &Applied{Path: path, Created: data == nil}
 	}
 	if a.Lines == nil {
 		a.Lines = map[string]string{}
@@ -95,7 +95,12 @@ func CodexOff(home string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if text := codexRestore(string(data), a); text != string(data) {
+	text := codexRestore(string(data), a)
+	if a.Created && removeIfEmpty(a.Path, []byte(text)) {
+		st.Codex = nil
+		return saveState(home, st)
+	}
+	if text != string(data) {
 		if _, err := backup(home, a.Path, "codex-config.toml"); err != nil {
 			return err
 		}

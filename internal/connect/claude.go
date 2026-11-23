@@ -53,7 +53,7 @@ func Claude(home string, o Options) (*Applied, error) {
 	}
 	a := st.Claude
 	if a == nil || a.Path != path {
-		a = &Applied{Path: path}
+		a = &Applied{Path: path, Created: data == nil}
 	}
 	if a.Original == nil {
 		a.Original = map[string]*json.RawMessage{}
@@ -167,6 +167,10 @@ func ClaudeOff(home string) error {
 	out := root.indented()
 	if orig, err := os.ReadFile(a.Backup); a.Backup != "" && err == nil && sameJSON(orig, out) {
 		out = orig // as the user wrote it, to the byte
+	}
+	if a.Created && removeIfEmpty(a.Path, out) {
+		st.Claude = nil
+		return saveState(home, st)
 	}
 	if !bytes.Equal(out, data) && len(data) > 0 {
 		if _, err := backup(home, a.Path, "claude-settings.json"); err != nil {

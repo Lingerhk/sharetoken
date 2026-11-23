@@ -136,9 +136,8 @@ func TestClaudeNoFile(t *testing.T) {
 	if err := ClaudeOff(home); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := os.ReadFile(filepath.Join(dir, "settings.json"))
-	if strings.TrimSpace(string(data)) != "{}" {
-		t.Errorf("left %s", data)
+	if _, err := os.Stat(filepath.Join(dir, "settings.json")); !os.IsNotExist(err) {
+		t.Errorf("the file it made is left: %v", err)
 	}
 }
 
@@ -208,5 +207,11 @@ func TestCodexKeyMode(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(dir, "config.toml"))
 	if !strings.Contains(string(data), `experimental_bearer_token = "sk-st-k"`) || strings.Contains(string(data), "requires_openai_auth") {
 		t.Errorf("key mode:\n%s", data)
+	}
+	if err := CodexOff(home); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.toml")); !os.IsNotExist(err) {
+		t.Errorf("the file it made is left: %v", err)
 	}
 }
