@@ -561,5 +561,9 @@
   "证书未被信任": "Certificate not trusted",
   "未在监听": "Not listening",
   "登录系统时自动启动客户端（连接的工具需要它一直运行）": "Start the client when you log in (the connected tools need it running)",
-  "工具接入": "Tools"
+  "工具接入": "Tools",
+  "登录系统时自动启动 ShareToken（窗口不打开，在托盘后台运行）": "Start ShareToken when you log in (in the tray, without opening the window)",
+  "已开启：登录系统后 ShareToken 在后台运行，占用少量内存和网络；开启了共享时，也会在后台接单卖出算力。从托盘退出 ShareToken 后，已连接的工具同样无法使用，直到再次打开。": "On: ShareToken runs in the background from login, using a little memory and network; with sharing on, it also sells in the background. If you quit ShareToken from the tray, the connected tools stop working until it is opened again.",
+  "未开启：电脑重启、注销，或从托盘退出 ShareToken 后，已连接的 Claude Code 和 Codex 会连不上本机接口，连它们自己的官方模型也用不了（请求报连接失败），直到再次打开 ShareToken。不想自动启动的话，不用 ShareToken 时请先断开工具（会恢复原配置）。": "Off: after a restart, a logout, or quitting ShareToken from the tray, the connected Claude Code and Codex cannot reach this endpoint, not even for their own official models (requests fail to connect), until ShareToken is opened again. If you keep this off, disconnect the tools (their settings are put back) before you stop using ShareToken.",
+  "未开启：连接 Claude Code 或 Codex 后，它们所有的请求（包括官方模型）都经过 ShareToken；ShareToken 没有运行时这些工具无法使用。": "Off: once Claude Code or Codex is connected, all their requests, official models included, go through ShareToken; while ShareToken is not running, those tools do not work."
 }

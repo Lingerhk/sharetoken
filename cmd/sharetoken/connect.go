@@ -98,6 +98,12 @@ func (c *cmdCtx) connect(args []string) error {
 		return nil
 	}
 	v, _ := client.ConnectStatus(c.home)
+	if on, _ := client.AutostartStatus(); !on && !client.AppAutostartOn() {
+		fmt.Println("warning: the client does not start at login. After a restart, a logout, or quitting the client")
+		fmt.Println("(or the desktop app), the connected tool cannot reach this endpoint, not even for its own official")
+		fmt.Println("models, until the client runs again. `sharetoken autostart on` (or the desktop app's setting under")
+		fmt.Println("Settings > Tools) starts it at login; otherwise run `sharetoken connect " + tool + " -off` before you stop it.")
+	}
 	if tool == "claude" {
 		fmt.Printf("Claude Code connected: %s (backup in %s)\n", v.ClaudePath, c.home+string(os.PathSeparator)+"backups")
 		if a := v.State.Claude; a != nil && a.Options.Subscription {

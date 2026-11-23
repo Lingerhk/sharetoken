@@ -243,7 +243,7 @@ Tool calls (`apply_patch` included), reasoning and context compaction work with 
 
 Restart the tool afterwards. Without a vendor login, or with `-subscription off`, the tool uses the network only, with the API key. The desktop app has the same switches under "Settings > Tools".
 
-The tools reach even their official models through the client, so it has to be running: `{{exe}} autostart on` starts it when you log in. Your vendor login is passed to the vendor's own servers as it is; the client does not keep it, log it or send it to the network.
+The tools reach even their official models through the client, so it has to be running: `{{exe}} autostart on` starts it when you log in, and the desktop app's "Start ShareToken when you log in" (Settings > Tools) starts the app in the tray. Without either, after a restart, a logout, or quitting the client or the app, the connected tools fail to connect, for official models too, until it runs again; if you keep autostart off, run `{{exe}} connect claude -off` (or `codex`) before you stop using it. Your vendor login is passed to the vendor's own servers as it is; the client does not keep it, log it or send it to the network.
 
 When a plan runs out:
 

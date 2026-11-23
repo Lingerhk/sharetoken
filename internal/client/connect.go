@@ -211,7 +211,8 @@ func (d *Daemon) connectRoutes(mux *http.ServeMux) {
 	}))
 	mux.HandleFunc("GET /api/v1/autostart", func(w http.ResponseWriter, r *http.Request) {
 		on, where := AutostartStatus()
-		writeJSON(w, http.StatusOK, map[string]any{"on": on, "where": where})
+		app := AppAutostartOn()
+		writeJSON(w, http.StatusOK, map[string]any{"on": on || app, "where": where, "app_on": app})
 	})
 	mux.HandleFunc("PUT /api/v1/autostart", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
 		On bool `json:"on"`

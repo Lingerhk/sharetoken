@@ -146,6 +146,10 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	if r.URL.Path == autostartPath {
+		serveAutostart(w, r)
+		return
+	}
 	if r.URL.Path == shellUpdatePath {
 		if p.update == nil {
 			http.NotFound(w, r)

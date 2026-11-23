@@ -34,6 +34,35 @@ func autostartLabel() string {
 	return "app.sharetoken.client." + Env
 }
 
+// AppAutostartOn reports whether the desktop app starts at login (its own
+// entry, gui/autostart*.go), which runs the client as well.
+func AppAutostartOn() bool {
+	h, _ := os.UserHomeDir()
+	suffix := ""
+	if Env != EnvProd {
+		suffix = "-" + Env
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		label := "app.sharetoken.desktop"
+		if Env != EnvProd {
+			label += "." + Env
+		}
+		_, err := os.Stat(filepath.Join(h, "Library", "LaunchAgents", label+".plist"))
+		return err == nil
+	case "linux":
+		dir := os.Getenv("XDG_CONFIG_HOME")
+		if dir == "" {
+			dir = filepath.Join(h, ".config")
+		}
+		_, err := os.Stat(filepath.Join(dir, "autostart", "sharetoken"+suffix+".desktop"))
+		return err == nil
+	case "windows":
+		return exec.Command("reg", "query", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "ShareToken"+suffix).Run() == nil
+	}
+	return false
+}
+
 // AutostartStatus says whether autostart is set up, and where.
 func AutostartStatus() (on bool, where string) {
 	h, _ := os.UserHomeDir()

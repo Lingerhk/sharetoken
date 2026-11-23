@@ -1543,12 +1543,19 @@ I18N.ready.then(() => {
     }
     function render() {
       if (!cv) return;
-      const autoBox = auto ? h('label', { class: 'check', id: 'tools-autostart-row' }, h('input', { type: 'checkbox', id: 'tools-autostart', checked: auto.on || null, onchange: async e => {
-        e.target.disabled = true;
-        try { auto = await api('PUT', '/api/v1/autostart', { on: e.target.checked }); err.say(''); }
-        catch (x) { err.say(message(x)); }
-        render();
-      } }), h('span', null, tr('登录系统时自动启动客户端（连接的工具需要它一直运行）'))) : null;
+      const anyConnected = !!(cv.state.claude || cv.state.codex);
+      const autoBox = auto ? h('div', { class: 'tools-autostart', id: 'tools-autostart-row' },
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'tools-autostart', checked: auto.on || null, onchange: async e => {
+          e.target.disabled = true;
+          try { auto = await api('PUT', '/api/v1/autostart', { on: e.target.checked }); err.say(''); }
+          catch (x) { err.say(message(x)); }
+          render();
+        } }), h('span', null, auto.app ? tr('登录系统时自动启动 ShareToken（窗口不打开，在托盘后台运行）') : tr('登录系统时自动启动客户端（连接的工具需要它一直运行）'))),
+        h('div', { class: 'small ' + (!auto.on && anyConnected ? 'warn-text' : 'muted'), id: 'tools-autostart-note' }, auto.on
+          ? tr('已开启：登录系统后 ShareToken 在后台运行，占用少量内存和网络；开启了共享时，也会在后台接单卖出算力。从托盘退出 ShareToken 后，已连接的工具同样无法使用，直到再次打开。')
+          : anyConnected
+            ? tr('未开启：电脑重启、注销，或从托盘退出 ShareToken 后，已连接的 Claude Code 和 Codex 会连不上本机接口，连它们自己的官方模型也用不了（请求报连接失败），直到再次打开 ShareToken。不想自动启动的话，不用 ShareToken 时请先断开工具（会恢复原配置）。')
+            : tr('未开启：连接 Claude Code 或 Codex 后，它们所有的请求（包括官方模型）都经过 ShareToken；ShareToken 没有运行时这些工具无法使用。'))) : null;
       panel.set(JSON.stringify([cv, ov, auto]), err.el, toolRow('claude'), toolRow('codex'), autoBox, officialBox());
     }
     async function reload() {

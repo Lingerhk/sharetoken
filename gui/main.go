@@ -122,7 +122,7 @@ func main() {
 	// (invite.go; the release checks open such a link with the app this way).
 	inviteCheck := mode == "invite"
 	selftest := mode != "" && !trayCheck && !updateCheck && !inviteCheck
-	useTray := !selftest && !updateCheck && !inviteCheck && trayAvailable()
+	useTray := !selftest && !updateCheck && !inviteCheck && trayAvailableSoon(startHidden())
 	var inviteCheckErr atomic.Pointer[error]
 	var trayCheckErr atomic.Pointer[error]
 
@@ -279,8 +279,9 @@ func main() {
 		MinWidth:  minWindowWidth,
 		MinHeight: minWindowHeight,
 		URL:       "/",
-		Hidden:    selftest || updateCheck || inviteCheck,
-		Mac:       application.MacWindow{TitleBar: application.MacTitleBarHiddenInset},
+		// Started at login (autostart.go): in the tray, when there is one.
+		Hidden: selftest || updateCheck || inviteCheck || (useTray && startHidden()),
+		Mac:    application.MacWindow{TitleBar: application.MacTitleBarHiddenInset},
 	})
 	if useTray {
 		window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {

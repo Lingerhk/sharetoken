@@ -277,4 +277,4 @@ html.i18n-pending body { visibility: hidden; }
 .tools-official h3 { margin: 12px 0 2px; font-size: 14px; }
 .tools-official .field { width: 100%; max-width: 560px; }
 .tools-official .endpoint input { width: 220px; }
-#tools-autostart-row { margin-top: 10px; }
+.tools-autostart { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; max-width: 760px; }
