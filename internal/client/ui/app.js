@@ -1677,15 +1677,7 @@ I18N.ready.then(() => {
     const logsOpen = h('button', { type: 'button', id: 'logs-open', onclick: async () => {
       try { await api('POST', '/api/v1/logs/open'); } catch (x) { diagNote.className = 'hint small warn-text'; diagNote.textContent = message(x); }
     } }, tr('打开日志目录'));
-    // Told once after sign-in, without stopping anything: reports are on.
-    const diagNoticeBox = h('div', { id: 'diag-notice-box' });
-    const noticed = async () => { diagNoticeBox.replaceChildren(); try { await api('PUT', '/api/v1/diagnostics', { noticed: true }); } catch (x) { /* shown again next time */ } };
     function showDiag(d) {
-      diagNoticeBox.replaceChildren(d.upload && !d.noticed ? h('div', { class: 'notice strip', id: 'diag-notice' },
-        h('span', { class: 'strip-text', title: tr('崩溃时会把脱敏后的错误信息随账户发给 ShareToken，不含对话内容和密钥。可以在设置中关闭。') },
-          tr('已开启异常诊断上报：崩溃时会把脱敏后的错误信息随账户发给 ShareToken，不含对话内容和密钥。可以在设置中关闭。')),
-        h('button', { type: 'button', class: 'mini', id: 'diag-notice-settings', onclick: () => { noticed(); showView('settings', 'general'); } }, tr('设置')),
-        h('button', { type: 'button', class: 'link small', id: 'diag-notice-ok', onclick: noticed }, tr('知道了'))) : '');
       diagBox.checked = !!d.upload;
       diagNote.className = 'hint small muted';
       const parts = [tr('程序崩溃或出错时，把脱敏后的错误信息（错误类型、调用栈、崩溃前的程序日志）随你的账户发给 ShareToken，帮助我们修复问题。不含对话内容、密钥、邮箱和 IP 地址。')];
@@ -1881,7 +1873,7 @@ I18N.ready.then(() => {
         h('div', { class: 'side-foot' },
           h('button', { type: 'button', id: 'nav-feedback', onclick: () => feedbackDialog() }, icon('feedback'), h('span', null, tr('反馈'))),
           navButtons.settings)),
-      h('main', { class: 'main' }, head, h('div', { class: 'notices' }, updateBox, diagNoticeBox, banner), Object.values(views)),
+      h('main', { class: 'main' }, head, h('div', { class: 'notices' }, updateBox, banner), Object.values(views)),
       h('footer', { class: 'statusbar' }, pill, relayStat, tunnelStat, h('span', { class: 'spacer' }), who, versionLabel)));
     let savedView = '';
     try { savedView = localStorage.getItem('st_view') || ''; } catch (e) { /* the overview */ }

@@ -265,13 +265,8 @@ await shot('09b-apikey');
 console.log('crash reports and the log');
 // The stack's daemon runs with SHARETOKEN_REGION=CN: reports start on.
 const configFile = () => JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8'));
-ok(await has('#diag-notice'), 'after sign-in, a strip says once that crash reports are on');
-await click('#diag-notice-ok');
-await waitFor(`!${el('#diag-notice')}`);
-for (let i = 0; i < 50 && !(configFile().diagnostics || {}).noticed; i++) await sleep(100); // the page saves it after hiding the strip
-ok(configFile().diagnostics.noticed === true && !('upload' in configFile().diagnostics), 'dismissed, it stays away; the switch keeps its default');
 await waitFor(`${el('#log-dir')}?.textContent === ${q(env.DESKTOP_HOME + '/logs')}`);
-ok(await ev(`${el('#diag-upload')}.checked`) && !('upload' in configFile().diagnostics), 'crash reports are on by default, and the page names the log directory');
+ok(await ev(`${el('#diag-upload')}.checked`) && !('upload' in (configFile().diagnostics || {})), 'crash reports are on by default, and the page names the log directory');
 ok(readFileSync(env.DESKTOP_HOME + '/logs/client.log', 'utf8').includes('msg=starting'), 'the daemon writes its own log in the log directory');
 await click('#diag-upload');
 await waitFor(`!${el('#diag-upload')}.checked && !${el('#diag-upload')}.disabled`);

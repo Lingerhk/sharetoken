@@ -576,8 +576,5 @@
   "现在没有待发送的报告。": "No reports are waiting.",
   "诊断": "Diagnostics",
   "发送异常诊断报告": "Send crash reports",
-  "崩溃时会把脱敏后的错误信息随账户发给 ShareToken，不含对话内容和密钥。可以在设置中关闭。": "When the app crashes, a redacted error report goes to ShareToken with your account; it never contains your conversations or keys. You can turn this off in Settings.",
-  "已开启异常诊断上报：崩溃时会把脱敏后的错误信息随账户发给 ShareToken，不含对话内容和密钥。可以在设置中关闭。": "Crash reports are on: when the app crashes, a redacted error report goes to ShareToken with your account, never your conversations or keys. You can turn this off in Settings.",
-  "知道了": "Got it",
   "日志": "Logs"
 }

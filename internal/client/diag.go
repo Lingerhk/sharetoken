@@ -187,7 +187,6 @@ func envDuration(k string) time.Duration {
 type DiagStatus struct {
 	Upload        bool        `json:"upload"`
 	Chosen        bool        `json:"chosen"`         // the user set Upload; else it is the default
-	Noticed       bool        `json:"noticed"`        // the app told the user once that reports are on
 	DefaultUpload bool        `json:"default_upload"` // off in the European Economic Area
 	Region        diag.Region `json:"region"`
 	Pending       int         `json:"pending"`
@@ -216,7 +215,7 @@ func (d *Daemon) diagStatus() (DiagStatus, error) {
 	}
 	reps, _ := d.reportQueue().List()
 	dir := d.logDir()
-	st := DiagStatus{Upload: c.UploadReports(), Chosen: c.Diagnostics.Upload != nil, Noticed: c.Diagnostics.Noticed, DefaultUpload: diag.DefaultUpload(), Region: diag.SystemRegion(),
+	st := DiagStatus{Upload: c.UploadReports(), Chosen: c.Diagnostics.Upload != nil, DefaultUpload: diag.DefaultUpload(), Region: diag.SystemRegion(),
 		Pending: len(reps), LogDir: dir, LogFile: filepath.Join(dir, diag.ClientLog)}
 	if d.reports != nil {
 		st.LastSent, st.LastError = d.reports.Status()
@@ -232,7 +231,7 @@ func SetReportUpload(home string, on bool, q diag.Queue) error {
 	if err != nil {
 		return err
 	}
-	c.Diagnostics.Upload, c.Diagnostics.Noticed = &on, true
+	c.Diagnostics.Upload = &on
 	if err := SaveConfig(home, c); err != nil {
 		return err
 	}
@@ -245,15 +244,6 @@ func SetReportUpload(home string, on bool, q diag.Queue) error {
 // testCrashRoutes, set in builds with the diagtest tag (diag_testcrash.go),
 // adds endpoints that crash the daemon on purpose.
 var testCrashRoutes func(*http.ServeMux)
-
-func markReportsNoticed(home string) error {
-	c, err := LoadConfig(home)
-	if err != nil || c.Diagnostics.Noticed {
-		return err
-	}
-	c.Diagnostics.Noticed = true
-	return SaveConfig(home, c)
-}
 
 func (d *Daemon) diagRoutes(mux *http.ServeMux) {
 	if testCrashRoutes != nil {
@@ -268,28 +258,19 @@ func (d *Daemon) diagRoutes(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, st)
 	})
 	mux.HandleFunc("PUT /api/v1/diagnostics", jsonBody(func(w http.ResponseWriter, r *http.Request, req struct {
-		Upload  *bool `json:"upload"`
-		Noticed bool  `json:"noticed"` // the user saw the notice that reports are on
+		Upload *bool `json:"upload"`
 	}) {
-		if req.Upload == nil && !req.Noticed {
+		if req.Upload == nil {
 			writeErrorCode(w, http.StatusBadRequest, "bad_request", "upload must be true or false")
 			return
 		}
-		if req.Noticed {
-			if err := markReportsNoticed(d.home); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
+		if err := SetReportUpload(d.home, *req.Upload, d.reportQueue()); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
-		if req.Upload != nil {
-			if err := SetReportUpload(d.home, *req.Upload, d.reportQueue()); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			d.log.Info("crash reports", "state", map[bool]string{true: "on", false: "off"}[*req.Upload])
-			if *req.Upload && d.reports != nil {
-				d.reports.Kick()
-			}
+		d.log.Info("crash reports", "state", map[bool]string{true: "on", false: "off"}[*req.Upload])
+		if *req.Upload && d.reports != nil {
+			d.reports.Kick()
 		}
 		st, err := d.diagStatus()
 		if err != nil {
