@@ -145,6 +145,7 @@
 | `mail.from` | — | 空 | 门户所发邮件的发件人，例如 `ShareToken <team@example.com>`。所有人都用从这里发出的验证码登录，没有它（以及运行中的 `mailserver`）谁都登录不了。为空：不发邮件 |
 | `mail.support` | — | 空 | 用户反馈的地址；管理员的回复也从这里发出 |
 | `downloads.dir` | — | 空 | 客户端安装包所在的目录，在 `/downloads/` 提供下载。为空：不提供下载 |
+| `blog.dir` | — | 空 | `/blog/` 文章所在的目录：每篇文章一个子目录，里面是 `en.md`、`zh-CN.md`（开头的 front matter：`title`、`date`、`summary`、`cover`、`tags`、`author`、`draft`）和配图。门户只在内存里缓存文章列表，最多每 30 秒检查一次目录。为空：没有博客，首页也不显示文章 |
 | `relay_metrics.*` | — | 关闭 | 经 SSH 读取每个中继的 `/metrics`，供管理控制台的仪表盘使用：`key_file`、`known_hosts_file`、`interval`（1m）、`timeout`（20s），以及 `targets[]`，每项有 `relay`（中继登记里的名称）、`ssh`（`user@host[:port]`）和 `command` |
 | `admin.allow_from` | — | 空 | 允许访问管理页面（`/admin/`）、管理 API（`/api/v1/admin/…`）以及管理员登录的来源：IP 地址、CIDR 网段和域名（域名代表它解析出的全部 A 和 AAAA 地址）。来源是对端地址；对端是回环或 `http.trusted_proxies` 里的代理时，取它传来的 `X-Real-IP`。其他来源访问管理端一律 404，管理员输对邮件验证码后也会被拒绝登录（403）；普通用户和客户端不受影响。不会自动放行回环地址。为空：不限制 |
 | `admin.resolve_interval` | — | 5m | 多久重新解析一次 `admin.allow_from` 里的域名（至少 10s）。解析失败时沿用该域名上一次的地址；从未解析成功的域名不放行任何来源 |

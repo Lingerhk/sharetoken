@@ -503,6 +503,46 @@ I18N.ready.then(() => {
     }).catch(() => {});
   })();
 
+  // ---- best practices: the newest articles of /blog/, shown only when there are any ----
+  (function practice() {
+    const SHOW = 3;
+    const lang = I18N.lang === 'zh-CN' || I18N.lang === 'zh-TW' ? 'zh-CN' : 'en';
+    const el = (tag, cls, text) => {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text !== undefined) e.textContent = text;
+      return e;
+    };
+    fetch('/api/v1/blog?limit=' + SHOW + '&lang=' + lang, { headers: { Accept: 'application/json' } }).then(r => r.ok ? r.json() : null).then(d => {
+      if (!d || !d.posts.length) return;
+      const row = $('practice-row');
+      for (const p of d.posts) {
+        const card = el('a', 'post-card reveal in');
+        card.href = '/blog/' + p.slug;
+        const cover = el('div', 'post-cover');
+        if (p.cover) { const img = el('img'); img.src = p.cover; img.alt = ''; img.loading = 'lazy'; cover.append(img); }
+        const body = el('div', 'post-text');
+        if (p.tags && p.tags.length) body.append(el('span', 'post-tag', p.tags[0]));
+        body.append(el('h3', '', p.title));
+        if (p.summary) body.append(el('p', 'post-summary', p.summary));
+        const t = new Date(p.date + 'T00:00:00');
+        body.append(el('span', 'post-meta', (isNaN(t) ? p.date : t.toLocaleDateString(I18N.lang, { year: 'numeric', month: 'short', day: 'numeric' })) + ' · ' + tr('{n} 分钟阅读', { n: p.minutes })));
+        card.append(cover, body);
+        row.append(card);
+      }
+      // More than one article: the right end of the row leads to all of them.
+      if (d.total > 1) {
+        const more = el('a', 'post-more');
+        more.href = '/blog/';
+        more.append(el('b', '', tr('查看更多')), el('span', '', tr('全部 {n} 篇文章', { n: d.total })), el('i', '', '→'));
+        row.append(more);
+      }
+      $('practice').hidden = false;
+      $('nav-blog').hidden = false;
+      $('foot-blog').hidden = false;
+    }).catch(() => {});
+  })();
+
   // The call-to-action follows the portal's own setting: no sign-up button while registration is closed.
   fetch('/api/v1/info', { headers: { Accept: 'application/json' } }).then(r => r.ok ? r.json() : null).then(info => {
     if (!info || !info.registration_open) return;

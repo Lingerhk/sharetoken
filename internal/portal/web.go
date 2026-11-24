@@ -164,6 +164,7 @@ func (s *Server) servePages(mux *http.ServeMux) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write(data)
 	})
+	s.serveBlogPages(mux, sub)
 	mux.HandleFunc("GET /static/docs/{lang}/{file}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFileFS(w, r, sub, "docs/"+r.PathValue("lang")+"/"+r.PathValue("file"))
