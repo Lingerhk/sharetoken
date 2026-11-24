@@ -14,7 +14,7 @@ import (
 
 func queuedReport(t *testing.T, q diag.Queue, fp string) {
 	t.Helper()
-	ok, err := q.Add(diag.Report{ID: diag.NewID(), Kind: diag.KindCrash, Process: diag.ProcDaemon, Fingerprint: fp, Version: "1.0.6", OS: "darwin", Arch: "arm64",
+	ok, err := q.Add(diag.Report{ID: diag.NewID(), Kind: diag.KindCrash, Process: diag.ProcDaemon, Fingerprint: fp, Version: "1.0.5", OS: "darwin", Arch: "arm64",
 		OccurredAt: time.Now().Unix(), Message: "panic: test", Stack: "goroutine 1 [running]:\nmain.main()\n\tmain.go:1 +0x1\n"})
 	if err != nil || !ok {
 		t.Fatalf("queue: %v %v", ok, err)

@@ -26,13 +26,13 @@ func testReport(id, fp, version string) diag.Report {
 func TestClientReports(t *testing.T) {
 	clock := time.Now()
 	s, a := newPortal(t, Config{OpenRegistration: true, Now: func() time.Time { return clock }})
-	a.hdr = map[string]string{ClientVersionHeader: "1.0.6", ClientPlatformHeader: "darwin/arm64"}
+	a.hdr = map[string]string{ClientVersionHeader: "1.0.5", ClientPlatformHeader: "darwin/arm64"}
 	_, alice := testUser(t, s, "alice@example.com")
 	_, bob := testUser(t, s, "bob@example.com")
 	const fp = "0123456789abcdef"
 
 	// It takes a login, and the report is checked.
-	a.call("POST", "/api/v1/client-reports", "", testReport("aaaaaaaaaaaa", fp, "1.0.6"), 401, nil)
+	a.call("POST", "/api/v1/client-reports", "", testReport("aaaaaaaaaaaa", fp, "1.0.5"), 401, nil)
 	for _, bad := range []func(r *diag.Report){
 		func(r *diag.Report) { r.ID = "x" },
 		func(r *diag.Report) { r.Kind = "error" },
@@ -43,21 +43,21 @@ func TestClientReports(t *testing.T) {
 		func(r *diag.Report) { r.OccurredAt = 0 },
 		func(r *diag.Report) { r.Features = map[string]string{"Bad Key": "on"} },
 	} {
-		r := testReport("bbbbbbbbbbbb", fp, "1.0.6")
+		r := testReport("bbbbbbbbbbbb", fp, "1.0.5")
 		bad(&r)
 		a.call("POST", "/api/v1/client-reports", alice, r, 400, nil)
 	}
 
 	// The portal redacts what the client left: an e-mail address, a token.
-	leaky := testReport("cccccccccccc", fp, "1.0.6")
+	leaky := testReport("cccccccccccc", fp, "1.0.5")
 	leaky.Message = "panic: sign-in for carol@example.org failed: Bearer st_00112233445566778899aabbccddeeff"
 	leaky.Context = append(leaky.Context, "an untidy line from 203.0.113.9 with sk-abcdefghijklmnopqrstu")
 	a.call("POST", "/api/v1/client-reports", alice, leaky, 201, nil)
 	// The same report again (its answer was lost) does not count twice.
 	a.call("POST", "/api/v1/client-reports", alice, leaky, 201, nil)
-	a.call("POST", "/api/v1/client-reports", alice, testReport("dddddddddddd", fp, "1.0.6"), 201, nil)
-	a.call("POST", "/api/v1/client-reports", bob, testReport("eeeeeeeeeeee", fp, "1.0.5"), 201, nil)
-	other := testReport("ffffffffffff", "fedcba9876543210", "1.0.6")
+	a.call("POST", "/api/v1/client-reports", alice, testReport("dddddddddddd", fp, "1.0.5"), 201, nil)
+	a.call("POST", "/api/v1/client-reports", bob, testReport("eeeeeeeeeeee", fp, "1.0.4"), 201, nil)
+	other := testReport("ffffffffffff", "fedcba9876543210", "1.0.5")
 	other.Kind, other.Process = diag.KindPanic, diag.ProcGUI
 	a.call("POST", "/api/v1/client-reports", bob, other, 201, nil)
 
@@ -80,7 +80,7 @@ func TestClientReports(t *testing.T) {
 	if p.Fingerprint != fp {
 		p = list.Problems[1]
 	}
-	if p.Fingerprint != fp || p.Count != 3 || p.Users != 2 || strings.Join(p.Versions, ",") != "1.0.5,1.0.6" || p.Kind != "crash" || p.Status != "new" {
+	if p.Fingerprint != fp || p.Count != 3 || p.Users != 2 || strings.Join(p.Versions, ",") != "1.0.4,1.0.5" || p.Kind != "crash" || p.Status != "new" {
 		t.Fatalf("problem: %+v", p)
 	}
 
@@ -102,7 +102,7 @@ func TestClientReports(t *testing.T) {
 	a.call("GET", "/api/v1/admin/client-reports/nope", admin, nil, 400, nil)
 
 	// Searching, and the states.
-	a.call("GET", "/api/v1/admin/client-reports?status=&q=1.0.5", admin, nil, 200, &list)
+	a.call("GET", "/api/v1/admin/client-reports?status=&q=1.0.4", admin, nil, 200, &list)
 	if list.Total != 1 || list.Problems[0].Fingerprint != fp {
 		t.Fatalf("search by version: %+v", list)
 	}
@@ -114,7 +114,7 @@ func TestClientReports(t *testing.T) {
 		t.Fatalf("fixed: %+v", list)
 	}
 	// A fixed problem that comes back is open again.
-	a.call("POST", "/api/v1/client-reports", bob, testReport("abababababab", fp, "1.0.5"), 201, nil)
+	a.call("POST", "/api/v1/client-reports", bob, testReport("abababababab", fp, "1.0.4"), 201, nil)
 	a.call("GET", "/api/v1/admin/client-reports?status=new", admin, nil, 200, &list)
 	if list.Total != 2 {
 		t.Fatalf("reopened: %+v", list)
@@ -142,17 +142,17 @@ func TestClientReports(t *testing.T) {
 func TestClientReportLimits(t *testing.T) {
 	clock := time.Now()
 	s, a := newPortal(t, Config{OpenRegistration: true, Now: func() time.Time { return clock }})
-	a.hdr = map[string]string{ClientVersionHeader: "1.0.6"}
+	a.hdr = map[string]string{ClientVersionHeader: "1.0.5"}
 	_, alice := testUser(t, s, "alice@example.com")
 	for i := range ClientReportsPerUserHour {
-		a.call("POST", "/api/v1/client-reports", alice, testReport(fmt.Sprintf("%012x", i+1), "0123456789abcdef", "1.0.6"), 201, nil)
+		a.call("POST", "/api/v1/client-reports", alice, testReport(fmt.Sprintf("%012x", i+1), "0123456789abcdef", "1.0.5"), 201, nil)
 	}
-	a.call("POST", "/api/v1/client-reports", alice, testReport("ffffffffffff", "0123456789abcdef", "1.0.6"), 429, nil)
+	a.call("POST", "/api/v1/client-reports", alice, testReport("ffffffffffff", "0123456789abcdef", "1.0.5"), 429, nil)
 	clock = clock.Add(time.Hour + time.Second)
-	a.call("POST", "/api/v1/client-reports", alice, testReport("fffffffffffe", "0123456789abcdef", "1.0.6"), 201, nil)
+	a.call("POST", "/api/v1/client-reports", alice, testReport("fffffffffffe", "0123456789abcdef", "1.0.5"), 201, nil)
 
 	// A report at the size limit fits in a request.
-	big := testReport("fffffffffffd", "0123456789abcdef", "1.0.6")
+	big := testReport("fffffffffffd", "0123456789abcdef", "1.0.5")
 	big.Stack = strings.Repeat("x", diag.MaxStack)
 	big.Message = strings.Repeat("m", diag.MaxMessage)
 	for range diag.MaxContext {

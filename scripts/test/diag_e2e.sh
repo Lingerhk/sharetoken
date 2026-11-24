@@ -26,7 +26,7 @@ sql() { "$ROOT/scripts/test/local-mysql.sh" sql "$DB" "$1"; }
 
 ARCH=$(go env GOARCH); [ "$WHERE" = local ] || ARCH=amd64
 EXE=sharetoken-diagtest; [ "$OS" = windows ] && EXE=$EXE.exe
-(cd "$ROOT" && GOOS=$OS GOARCH=$ARCH go build -tags diagtest -ldflags "-X sharetoken/internal/version.Version=1.0.6-dev.diagtest" -o "$OUT/$EXE" ./cmd/sharetoken)
+(cd "$ROOT" && GOOS=$OS GOARCH=$ARCH go build -tags diagtest -ldflags "-X sharetoken/internal/version.Version=1.0.5-dev.diagtest" -o "$OUT/$EXE" ./cmd/sharetoken)
 
 # rsh runs a shell command where the client runs; $H is its state directory.
 if [ "$WHERE" = local ]; then

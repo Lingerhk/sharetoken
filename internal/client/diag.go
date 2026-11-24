@@ -95,7 +95,7 @@ func (d *Diag) Close() {
 	_ = d.File.Close()
 }
 
-// moveOldLogs moves the logs of releases before 1.0.6, which the desktop app
+// moveOldLogs moves the logs of releases before 1.0.5, which the desktop app
 // (daemon.log) and the macOS login item (~/Library/Logs) wrote and never
 // rotated, into the log directory once.
 func moveOldLogs(home, dir string) {

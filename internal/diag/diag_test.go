@@ -38,7 +38,7 @@ func crashNow(how, dir string) {
 		panic(err)
 	}
 	defer f.Close()
-	r := &Reporter{Process: ProcDaemon, Version: "1.0.6", Env: "prod", Queue: Queue{Dir: filepath.Join(dir, ReportsDir)}}
+	r := &Reporter{Process: ProcDaemon, Version: "1.0.5", Env: "prod", Queue: Queue{Dir: filepath.Join(dir, ReportsDir)}}
 	Install(r, f.Path())
 	if _, err := StartCrashCapture(dir, ProcDaemon); err != nil {
 		panic(err)
@@ -80,7 +80,7 @@ func runCrash(t *testing.T, how, dir string) {
 }
 
 func collector(dir string, on bool) Collector {
-	return Collector{Dir: dir, Reporter: &Reporter{Process: ProcDaemon, Version: "1.0.6", Env: "prod", Queue: Queue{Dir: filepath.Join(dir, ReportsDir)},
+	return Collector{Dir: dir, Reporter: &Reporter{Process: ProcDaemon, Version: "1.0.5", Env: "prod", Queue: Queue{Dir: filepath.Join(dir, ReportsDir)},
 		Enabled: func() bool { return on }}}
 }
 
@@ -110,7 +110,7 @@ func TestCrashBecomesAReport(t *testing.T) {
 	if !strings.Contains(all, "joined the network") || strings.Contains(all, "erin@example.com") || strings.Contains(all, "203.0.113.5") {
 		t.Fatalf("context:\n%s", all)
 	}
-	if r.Fingerprint != Fingerprint(r.Message, r.Stack) || r.Version != "1.0.6" || r.OS == "" {
+	if r.Fingerprint != Fingerprint(r.Message, r.Stack) || r.Version != "1.0.5" || r.OS == "" {
 		t.Fatalf("report: %+v", r)
 	}
 	// The file moved to crash/old, and is not collected again.
@@ -209,7 +209,7 @@ func TestCrashCaptureCleanExit(t *testing.T) {
 
 func TestHTTPHandlerPanic(t *testing.T) {
 	dir := t.TempDir()
-	r := &Reporter{Process: ProcDaemon, Version: "1.0.6", Queue: Queue{Dir: dir}}
+	r := &Reporter{Process: ProcDaemon, Version: "1.0.5", Queue: Queue{Dir: dir}}
 	Install(r, "")
 	defer Install(nil, "")
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { explode(5) }))
@@ -251,7 +251,7 @@ func TestFingerprint(t *testing.T) {
 
 func TestQueue(t *testing.T) {
 	q := Queue{Dir: t.TempDir()}
-	base := Report{Kind: KindCrash, Process: ProcGUI, Version: "1.0.6", OS: "linux", Arch: "amd64", Message: "panic: x", OccurredAt: 1_000_000}
+	base := Report{Kind: KindCrash, Process: ProcGUI, Version: "1.0.5", OS: "linux", Arch: "amd64", Message: "panic: x", OccurredAt: 1_000_000}
 	add := func(fp string, at int64) bool {
 		r := base
 		r.ID, r.Fingerprint, r.OccurredAt = NewID(), fp, at
@@ -300,7 +300,7 @@ func TestQueue(t *testing.T) {
 
 func TestCheckCuts(t *testing.T) {
 	r := Report{ID: NewID(), Kind: KindPanic, Process: ProcCLI, Fingerprint: "00000000000000aa", OccurredAt: 1, Message: strings.Repeat("m", 5000),
-		Stack: strings.Repeat("s", MaxStack+100), Version: "1.0.6"}
+		Stack: strings.Repeat("s", MaxStack+100), Version: "1.0.5"}
 	for range MaxContext + 20 {
 		r.Context = append(r.Context, strings.Repeat("c", MaxContextLine+10))
 	}

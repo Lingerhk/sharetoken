@@ -508,7 +508,7 @@ try {
   {
     const at = Date.now() * 1e6;
     sql(`DELETE FROM client_reports WHERE fingerprint = 'c0ffee00c0ffee00'; INSERT INTO client_reports (user_id, fingerprint, version, process, kind, os, arch, os_version, message, stack, context, features, count, last_report_id, occurred_at, first_seen, last_seen)
-      SELECT id, 'c0ffee00c0ffee00', '1.0.6', 'daemon', 'crash', 'darwin', 'arm64', 'macOS 15.3', '<img src=x onerror=window.__cr=1> panic: boom', 'goroutine 7 [running]:\nsharetoken/internal/client.(*Agent).maintain()\n\tagent.go:812 +0x1c4', '["time=x level=INFO msg=joined the network"]', '{"share":"on"}', 3, 'aaaaaaaaaaaa', 1, ${at}, ${at} FROM users WHERE username = '${ALICE}'`);
+      SELECT id, 'c0ffee00c0ffee00', '1.0.5', 'daemon', 'crash', 'darwin', 'arm64', 'macOS 15.3', '<img src=x onerror=window.__cr=1> panic: boom', 'goroutine 7 [running]:\nsharetoken/internal/client.(*Agent).maintain()\n\tagent.go:812 +0x1c4', '["time=x level=INFO msg=joined the network"]', '{"share":"on"}', 3, 'aaaaaaaaaaaa', 1, ${at}, ${at} FROM users WHERE username = '${ALICE}'`);
     await goto(base + '/admin/#/crashes');
     await waitFor(`document.querySelector('main .list-body .feedback-text')`);
     check((await text()).includes('<img src=x onerror=window.__cr=1> panic: boom') && !(await evaluate(`!!document.querySelector('main .list-body img') || !!window.__cr`)), 'the admin sees crash reports as text');
@@ -527,7 +527,7 @@ try {
     await assertText('panic: boom', 'and is under fixed');
     await goto(base + '/admin/#/dashboard');
     await waitFor(`document.querySelector('#dash-crashes')`);
-    check((await evaluate(`document.querySelector('#dash-crashes').textContent`)).includes('1.0.6'), 'the dashboard counts crash reports by version');
+    check((await evaluate(`document.querySelector('#dash-crashes').textContent`)).includes('1.0.5'), 'the dashboard counts crash reports by version');
   }
 
   // pairings: full names, the private seller marked, search

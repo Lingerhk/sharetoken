@@ -47,8 +47,8 @@ func TestString(t *testing.T) {
 		{"github.com/libp2p/go-libp2p/p2p/net/swarm.(*Swarm).dialWorkerLoop(0x14000123456)", "github.com/libp2p/go-libp2p/p2p/net/swarm.(*Swarm).dialWorkerLoop(0x14000123456)"},
 		{"\tsharetoken/internal/client/agent.go:812 +0x1c4", "\tsharetoken/internal/client/agent.go:812 +0x1c4"},
 		{"panic: runtime error: index out of range [3] with length 3", "panic: runtime error: index out of range [3] with length 3"},
-		{"version 1.0.6 build", "version 1.0.6 build"},
-		{"four numbers look like an address: 1.0.6.2", "four numbers look like an address: <ip>"},
+		{"version 1.0.5 build", "version 1.0.5 build"},
+		{"four numbers look like an address: 1.0.5.2", "four numbers look like an address: <ip>"},
 	} {
 		got := r.String(c.in)
 		if strings.HasSuffix(c.want, "peer#") {
