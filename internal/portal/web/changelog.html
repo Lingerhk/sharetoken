@@ -39,10 +39,38 @@
   <p class="lead">ShareToken 每个版本带来的功能。</p>
 
   <!-- 新版本加在最上面：复制一个 article，文案翻译进 i18n/site/ 的每个字典 -->
+  <article class="release" id="v1.0.5">
+    <header class="release-head">
+      <h2>1.0.5</h2>
+      <span class="release-tag">最新版本</span>
+      <time datetime="2026-11-25">2026-11-25</time>
+    </header>
+
+    <h3>新功能</h3>
+    <ul>
+      <li>和官方订阅并存：Claude Code 和 Codex 可以一键接入 ShareToken（桌面应用“设置 → 工具接入”里点“连接”，或运行 sharetoken connect claude / sharetoken connect codex），工具原来的 Claude、ChatGPT 登录照常保留。模型菜单里先列官方模型，后面是 ShareToken 网络的模型（以 st- 开头），同一个对话里可以随时切换。修改前会备份工具自己的配置文件，断开后按原样恢复。</li>
+      <li>Claude 订阅额度用完时自动续用：请求交给网络上最接近的模型继续，直到额度重置。默认开启，可以关闭或指定接手的模型。</li>
+      <li>Codex 额度保护：ChatGPT 订阅的额度窗口用到 95% 时暂停官方模型，并提示换成 st- 模型，以免 Codex Desktop 锁住输入框。可选的 Codex Desktop 无锁模式（macOS、Windows）让额度用完后输入框也不锁。</li>
+      <li>登录系统时自动启动：桌面应用可以在登录时启动到托盘，命令行版用 sharetoken autostart on。“工具接入”里还能看到 Claude 和 ChatGPT 订阅的用量。</li>
+      <li>客户端日志：日志写在数据目录的 logs 文件夹里并自动轮转，用 sharetoken logs 查看，桌面应用的“设置 → 通用”可以直接打开日志目录。</li>
+      <li>崩溃报告：客户端崩溃时可以把报告发给平台，帮助我们修复问题。报告在保存前会去掉邮箱、key、地址和设备名等信息，待发的内容可以在设置里查看；随时可以关闭，欧洲经济区默认关闭。</li>
+      <li>Orca 插件（开发中）：在 Orca 的侧栏和状态栏里查看网络状态、额度、在售模型和请求记录，在 Orca 里启动的 Claude Code、Codex 可以按次走 ShareToken 网络，不改它们自己的配置。插件之后会放在单独的仓库发布，使用介绍会发在博客上。</li>
+      <li>网站新增博客：分享 ShareToken 的最佳实践，比如和朋友共享 ChatGPT 订阅、自建中转站、和官方订阅并存，首页有入口。</li>
+    </ul>
+
+    <h3>其他变化</h3>
+    <ul>
+      <li>一条共享伙伴邀请链接最多可以邀请 100 人，共享伙伴最多 100 人。</li>
+      <li>本机接口列出的网络模型 ID 前面都加了 st-，以免和官方模型混淆；请求里带不带 st- 都可以。</li>
+      <li>编程助手的 skill 增加了接入 Claude Code、Codex 并保留官方订阅的说明。</li>
+      <li>使用文档按当前版本逐页校对更新。</li>
+      <li>修复英文界面“工具接入”里的连接按钮显示为“Connections”，以及部分设置出错时只显示 HTTP 状态码的问题。</li>
+    </ul>
+  </article>
+
   <article class="release" id="v1.0.4">
     <header class="release-head">
       <h2>1.0.4</h2>
-      <span class="release-tag">最新版本</span>
       <time datetime="2026-11-20">2026-11-20</time>
     </header>
 
