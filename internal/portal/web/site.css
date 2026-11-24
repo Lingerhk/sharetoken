@@ -176,11 +176,6 @@ em.yes { color: var(--amber); background: rgba(var(--amber-rgb), .12); }
 .grid-6 > div, .grid-4 > div { background: var(--bg); padding: 22px; }
 .grid-6 p, .grid-4 p { color: var(--muted); font-size: 14px; line-height: 1.65; }
 
-.honest { margin-top: 28px; padding: 26px 28px; border-radius: 14px; border: 1px solid rgba(var(--amber-rgb), .3); background: rgba(var(--amber-rgb), .05); }
-.honest h3 { font-size: 18px; color: var(--amber); margin-bottom: 10px; }
-.honest ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; color: var(--muted); font-size: 14.5px; }
-.honest b { color: var(--text); font-weight: 600; }
-
 /* how to use */
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .term { min-width: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px; }
@@ -260,7 +255,6 @@ em.yes { color: var(--amber); background: rgba(var(--amber-rgb), .12); }
   .feature { grid-template-columns: 1fr; gap: 26px; }
   .feature.flip .feature-copy { order: 0; }
   .grid-4 { grid-template-columns: 1fr 1fr; }
-  .grid-6 { grid-template-columns: 1fr 1fr; }
   .two { grid-template-columns: 1fr; }
   .vendors { grid-template-columns: repeat(4, 1fr); }
   .block { padding-top: 84px; }
@@ -319,7 +313,6 @@ html.i18n-pending body { visibility: hidden; }
 [data-theme=light] :is(.scene, .term, .rows, .platform, .vendor, .grid-6, .grid-4, .dl-tabs) { box-shadow: var(--lift); }
 [data-theme=light] :is(.grid-6, .grid-4) > div { background: var(--panel); transition: background-color .2s; }
 [data-theme=light] :is(.grid-6, .grid-4) > div:hover { background: #fbfdf4; }
-[data-theme=light] .honest { background: linear-gradient(135deg, rgba(var(--amber-rgb), .09), rgba(var(--amber-rgb), .03)); }
 [data-theme=light] .release-head h2 { color: var(--text); }
 
 /* best practices: newest articles of /blog/ (site.js practice()) */
