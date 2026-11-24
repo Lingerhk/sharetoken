@@ -55,7 +55,7 @@ Check that the client can see the model:
 | `-in` | Price per million input tokens, in micro-credit | `100000` (0.1 credit) |
 | `-out` | Price per million output tokens, in micro-credit | `200000` (0.2 credit) |
 | `-cache-read` | Price per million input tokens the model server reads from its prompt cache | A tenth of `-in` |
-| `-cache-write` | Price per million input tokens the model server writes to its prompt cache | 1.25 × `-in` for Anthropic models, else `-in` |
+| `-cache-write` | Price per million input tokens the model server writes to its prompt cache | 1.25 × `-in` where the model server speaks the Anthropic Messages API (Anthropic, and DeepSeek with a key), else `-in` |
 
 > [!TIP]
 > If other nodes already share the same model, use the same ID so buyers can select you together with them. Run `{{exe}} models` first to see the existing IDs and prices. The coordinator picks nodes by price, reputation, latency and success rate, and price has the highest weight.
@@ -85,8 +85,8 @@ If you see `sharing 1 model(s): ...`, you are online. If there is an `offer not 
 {{exe}} jobs -role sell -n 20
 ```
 
-- **Settlement:** A job is settled after the buyer confirms it (Ack). A job the buyer does not confirm settles automatically after the 24-hour dispute window. So earnings may show up in `pending` first.
-- **Fee:** The platform takes 5% of each job.
+- **Settlement:** A job is final as soon as the buyer confirms it (Ack). A job the buyer does not confirm becomes final after the 24-hour dispute window. The earnings in `balance` count final jobs only; the number of jobs not final yet is shown as `pending`.
+- **Fee:** The platform takes 5% of each job; the earnings shown are after the fee. Jobs between [partners](#partners) cost nothing and earn nothing.
 - The portal's [jobs](/app/#/jobs) and [ledger](/app/#/ledger) pages have the details.
 
 ## Manage sharing {#manage}
@@ -112,22 +112,25 @@ Any local service with an OpenAI-compatible interface works, such as LM Studio, 
 
 If the local model server needs an API key, put the key in an environment variable and write the variable's name in `share.upstream_key_env` in the [configuration file](/docs/config#share).
 
+- **Chat completions only:** the client uses only `/v1/models` and `/v1/chat/completions` of the local model server. Requests buyers send from Claude Code (Anthropic Messages) or Codex (OpenAI Responses) are converted on your machine.
+- **A model server on another machine:** use an `https://` address unless it is this machine or a local network IP. Otherwise prompts travel in plain text, and `{{exe}} status` warns about it.
+
 ## Share a hosted API {#providers}
 
-Besides models that run on your machine, you can share a service you have an account for at a model provider: the client forwards buyers' requests to the provider and the answers back. Buyers always use the OpenAI format; the client converts between it and each provider's own. Each such source is called a provider. You can set up several and turn each on or off.
+Besides models that run on your machine, you can share a service you have an account for at a model provider: the client forwards buyers' requests to the provider and the answers back, converting between the providers' formats (see "Three APIs" below). Each such source is called a provider. You can set up several and turn each on or off. Local models and providers' models can be shared at the same time.
 
 > [!WARNING]
 > Requests go to the provider in plain text, and the usage counts against your account there. Check that the provider's terms allow this use, and set your prices above your cost.
 
 | Kind | API key | Login (OAuth) |
 |---|---|---|
-| `anthropic` | Yes | — |
-| `openai` | Yes | Yes (ChatGPT account) |
+| `anthropic` | Yes | Yes (Claude subscription) |
+| `openai` | Yes | Yes (ChatGPT account, Codex) |
 | `gemini` | Yes | Yes (Google account) |
 | `antigravity` | — | Yes (Google account) |
 | `grok` | Yes | Yes |
 | `deepseek` | Yes | — |
-| `custom` | Yes: any OpenAI-compatible API, with its address in `-url` | — |
+| `custom` | Yes: any OpenAI-compatible API, with its address in `-url`; leave the key empty if the API needs none | — |
 
 ### Add one with an API key {#provider-key}
 
@@ -161,12 +164,12 @@ For any other OpenAI-compatible API, use `custom`. To set up several accounts of
 - **In scripts:** without a terminal, the client reads one line from standard input. You can also put the key in the environment variable `SHARETOKEN_PROVIDER_KEY`. There is no command-line argument for it, so that the key does not stay in your shell history.
 - **An Anthropic key that is not tied to a workspace:** add `-header anthropic-workspace-id=WORKSPACE_ID`.
 - **A model's output limit:** when the provider refuses a request because of the output limit, the client sends it again within the limit the provider named, and keeps to it afterwards. To set a limit in advance, use `-max-output` in `share add`.
-- **Hidden reasoning is billed within the output limit:** some models do not return all of their reasoning (encrypted, summarized or omitted), but the provider counts it as usage. When the answer shows that the model reasoned, buyers pay the reported output tokens up to the job's output limit; past it, and for output nobody can see in an answer without reasoning, they do not. `{{exe}} provider test` shows a report it could not bill (`reported`).
+- **Hidden reasoning is billed within the output limit:** some models do not return all of their reasoning (encrypted, summarized or omitted), but the provider counts it as usage. When the answer shows that the model reasoned, buyers pay the reported output tokens up to the job's output limit; past it, and for output nobody can see in an answer without reasoning, they do not. `{{exe}} provider test` shows the output tokens the provider counted and how many of them buyers would pay for at most.
 - **Three APIs:** buyers call in chat completions, Anthropic Messages (Claude Code) or OpenAI Responses (Codex). A request your provider speaks natively goes to it unchanged; any other one is converted on your machine. Native requests are matched to you first: an Anthropic provider gets Claude Code's requests, a ChatGPT login Codex's, an OpenAI or DeepSeek key both chat and their own API.
 
 ### Cache prices {#cache-prices}
 
-Model servers charge less for input they read from their prompt cache, and Anthropic charges more for input it writes to the cache. A buyer pays your cache prices for those tokens, as the provider reported them: set them with `-cache-read` and `-cache-write` in `share add`, or `price_cache_read` / `price_cache_write` in the configuration file. The defaults (a tenth of the input price for reads; 1.25 times it for writes on Anthropic models, the input price on others) follow the providers' own ratios.
+Model servers charge less for input they read from their prompt cache, and Anthropic charges more for input it writes to the cache. A buyer pays your cache prices for those tokens, as the provider reported them: set them with `-cache-read` and `-cache-write` in `share add`, or `price_cache_read` / `price_cache_write` in the configuration file. The defaults (a tenth of the input price for reads; 1.25 times it for writes where the model server speaks the Anthropic Messages API, the input price elsewhere) follow the providers' own ratios.
 
 ### Add one with a login {#provider-login}
 
@@ -176,7 +179,10 @@ Model servers charge less for input they read from their prompt cache, and Anthr
 
 The client shows a sign-in address. Open it in a browser on any computer and sign in. Then, as the client tells you, paste back the authorization code, or the whole address of the page the browser ends on (that page does not load). The login is renewed automatically. Claude and ChatGPT logins can have their 5-hour windows warmed up at set times each day; see [Warm-up](/docs/cli#warmup).
 
-If a Google account has no project of its own, `gemini` and `antigravity` need a Google Cloud project ID in `-project`.
+- **Claude subscription:** `{{exe}} provider login anthropic`. Add `-mode inference` to ask only for permission to call models; such a login may not be able to list models, so name one with `-model` in `provider test`. You can also add `-session-key` and paste the `sessionKey` cookie of claude.ai from your browser (it is not shown as you type, and it is used only to authorize, never saved).
+- **ChatGPT:** `provider login openai` signs in with a ChatGPT account and calls models the way Codex does.
+- **Google:** if a Google account has no project of its own, `gemini` and `antigravity` need a Google Cloud project ID in `-project`.
+- **How long a sign-in address lasts:** finish within 30 minutes of starting, or run `provider login` again.
 
 ### Manage providers {#provider-manage}
 
@@ -187,10 +193,13 @@ If a Google account has no project of its own, `gemini` and `antigravity` need a
 | Send one test request | `{{exe}} provider test deepseek -model deepseek-flash` |
 | Pause or resume a provider | `{{exe}} provider off deepseek`, `{{exe}} provider on deepseek` |
 | Change the key (add it again under the same name; the models stay) | `{{exe}} provider add deepseek` |
+| Warm up a Claude or ChatGPT login at set times each day | `{{exe}} provider warmup openai -times 06:00,11:05` |
+| Reach the provider through a proxy (`-proxy-mode direct` for none) | `{{exe}} provider configure openai -proxy http://127.0.0.1:8080` |
 | Delete a provider and its credentials | `{{exe}} provider rm deepseek` |
 
 - **Where credentials are kept:** keys and logins are in `providers.json` in the state directory, apart from `config.json`. Only your account can read the file. Neither the commands nor the local API show a whole key.
-- **Refused credentials or an empty account:** jobs fail, and `{{exe}} status` shows `warning: deepseek refused its credentials ...` or `... is out of balance ...`. Failed jobs count against your node, so fix it soon.
+- **Refused credentials or an empty account:** jobs fail, and `{{exe}} status` shows `warning: deepseek refused its credentials ...` or `... is out of balance ...`. Failed jobs count against your node, so fix it soon. When the provider answers HTTP 401, the provider rests for 10 minutes, and its models are left out of your offer meanwhile.
+- **Rate limits (HTTP 429):** the provider stops taking jobs until the reset time the provider gives (one minute when it gives none); its models are left out of your offer until then and come back by themselves. `status` shows `... is temporarily rate limited (HTTP 429)`. A 429 about one request only (the request alone is larger than the allowance per minute, or past the model's context) fails that job and rests nothing. The rest is kept only while the client runs; a restart clears it.
 
 ## Share with partners for free {#partners}
 
@@ -214,6 +223,7 @@ From then on, when you ask for a model, the coordinator first looks among your p
 | Withdraw an open invite | `{{exe}} partner revoke 7` |
 | Stop sharing with a partner | `{{exe}} partner rm 42` |
 | Approve, or reject, someone waiting for your approval | `{{exe}} partner approve 5`, `{{exe}} partner reject 5` |
+| Withdraw your own request that waits for the other's approval | `{{exe}} partner withdraw 5` |
 
 - **The limits cover what you give:** the daily limit counts the last 24 hours, all partners together. A job counts once it ends, so jobs still running when the limit is reached can take it a little past. The share is counted per node and is at least one job: at 4 concurrent jobs and 50%, partners take at most 2 at a time.
 - **Past the limits:** your partners buy on the network instead, where they may be matched to your nodes again, paying your price.
@@ -249,6 +259,7 @@ The command prints the code, for example `ABC-DEF`, and its [invite link](#invit
 | Serve only your paired buyers (private mode), or anyone again | `{{exe}} pair private on`, `{{exe}} pair private off` |
 | As a buyer, end the pairing with a seller | `{{exe}} pair leave 42` |
 | Approve, or reject, a buyer waiting for your approval | `{{exe}} pair approve 5`, `{{exe}} pair reject 5` |
+| As a buyer, withdraw a request that waits for the seller's approval | `{{exe}} pair withdraw 5` |
 
 - **What a paired buyer sees:** only the models of the sellers it is paired with. When none of them offers a model, or all of them are offline, the request fails. It is not sent to another seller.
 - **What does not change:** prices, billing, receipts and audits work as for any other job. Pairing alone does not close you to others: buyers that are not paired with anyone can still be matched to you.
@@ -288,4 +299,8 @@ The number of requests handled at the same time is 2 by default, set by `share.c
 
 ## How cheating is prevented {#audit}
 
-The coordinator places a few random jobs under a new identity and has a reference copy of the model check the answers token by token. If two checks in a row do not match, the node is paused from taking jobs for 24 hours. Make sure the model you share matches its ID, and do not overstate usage: buyers recompute the hash themselves and can get a refund with the evidence.
+The platform checks nodes at random. A check is carried by another user's client, or sent from a fresh identity through one of the network's relays, and looks like any buyer's request. A reference copy of the model checks the answers token by token, and the usage is checked too; for models whose reference cannot score tokens (Claude and Gemini, for example) only the usage is checked. A clear mismatch costs reputation, and after two in a row the node is not matched for 24 hours.
+
+Make sure the model you share matches its ID, and do not overstate usage: buyers recompute the hash and check the usage themselves, and can get a refund with the evidence.
+
+**Reputation:** each node's reputation runs from 0 to 1000 and starts at 500. A settled job adds 1, a failed job takes 5, a lost dispute 50; a passed check adds 5, a failed one takes 100. When matching, price weighs 45%, reputation 25%, latency and success rate 15% each.

@@ -55,7 +55,7 @@ ollama pull gemma4:e4b
 | `-in` | 每百万输入 token 的价格，单位 micro-credit | `100000`（0.1 credit） |
 | `-out` | 每百万输出 token 的价格，单位 micro-credit | `200000`（0.2 credit） |
 | `-cache-read` | 模型服务器从 prompt 缓存读出的输入 token，每百万的价格 | `-in` 的 1/10 |
-| `-cache-write` | 模型服务器写入 prompt 缓存的输入 token，每百万的价格 | Anthropic 模型为 `-in` 的 1.25 倍，其他等于 `-in` |
+| `-cache-write` | 模型服务器写入 prompt 缓存的输入 token，每百万的价格 | 模型服务支持 Anthropic Messages 接口时（Anthropic，以及用 key 接入的 DeepSeek）为 `-in` 的 1.25 倍，其他等于 `-in` |
 
 > [!TIP]
 > 其他节点已经在共享同一个模型时，请使用相同的 ID，买家才能一起选到。先用 `{{exe}} models` 看看现有的 ID 和价格。协调器综合价格、信誉、延迟和成功率选择节点，价格的权重最高。
@@ -85,8 +85,8 @@ ollama pull gemma4:e4b
 {{exe}} jobs -role sell -n 20
 ```
 
-- **结算：** 买家确认（Ack）后结算；买家没有确认的单子，过了 24 小时争议窗口自动成交。所以收益可能先计入 `pending`。
-- **手续费：** 平台从每单收取 5%。
+- **结算：** 买家确认（Ack）后立即成交；买家没有确认的单子，过了 24 小时争议窗口自动成交。`balance` 里的收益只算已成交的单子，还没成交的单数显示在 `pending` 里。
+- **手续费：** 平台从每单收取 5%，显示的收益已经扣除。和[伙伴](#partners)之间的作业不收费，也没有收益。
 - 门户的[作业](/app/#/jobs)和[账单](/app/#/ledger)页面有明细。
 
 ## 管理共享 {#manage}
@@ -112,22 +112,25 @@ ollama pull gemma4:e4b
 
 本机的模型服务需要 API key 时，把 key 放在一个环境变量里，再在[配置文件](/docs/config#share)的 `share.upstream_key_env` 里写上变量名。
 
+- **只用 chat completions：** 客户端只用 `/v1/models` 和 `/v1/chat/completions` 访问本机的模型服务。买家从 Claude Code（Anthropic Messages）或 Codex（OpenAI Responses）发来的请求在你的机器上转换。
+- **模型服务在另一台机器上：** 地址不是本机或局域网 IP 时请用 `https://`，否则 prompt 以明文传输，`{{exe}} status` 会给出警告。
+
 ## 共享托管 API {#providers}
 
-除了本机运行的模型，也可以共享你在模型厂商开通的服务：客户端把买家的请求转给厂商，再把回答转回去。买家始终用 OpenAI 格式，各家格式的差别由客户端转换。每个这样的来源叫一个 provider，可以配置多个，各自开关。
+除了本机运行的模型，也可以共享你在模型厂商开通的服务：客户端把买家的请求转给厂商，再把回答转回去，各家格式的差别由客户端转换（见下面的「三种接口」）。每个这样的来源叫一个 provider，可以配置多个，各自开关。本机模型和 provider 的模型可以同时共享。
 
 > [!WARNING]
 > 请求以明文发给厂商，用量记在你在厂商的账户上。请先确认厂商的服务条款允许这样使用，并把价格定在成本之上。
 
 | 类型 | API key | 登录（OAuth） |
 |---|---|---|
-| `anthropic` | 支持 | — |
-| `openai` | 支持 | 支持（ChatGPT 账号） |
+| `anthropic` | 支持 | 支持（Claude 订阅） |
+| `openai` | 支持 | 支持（ChatGPT 账号，Codex） |
 | `gemini` | 支持 | 支持（Google 账号） |
 | `antigravity` | — | 支持（Google 账号） |
 | `grok` | 支持 | 支持 |
 | `deepseek` | 支持 | — |
-| `custom` | 支持：任何 OpenAI 兼容的 API，用 `-url` 给出地址 | — |
+| `custom` | 支持：任何 OpenAI 兼容的 API，用 `-url` 给出地址；不需要 key 的可以留空 | — |
 
 ### 用 API key 添加 {#provider-key}
 
@@ -161,12 +164,12 @@ saved provider deepseek (DeepSeek, apikey) sk-…9b35
 - **脚本里使用：** 没有终端时从标准输入读一行，也可以放在环境变量 `SHARETOKEN_PROVIDER_KEY` 里。不提供命令行参数，是为了不让 key 留在命令历史里。
 - **Anthropic 的 key 没有绑定工作区时：** 加上 `-header anthropic-workspace-id=工作区ID`。
 - **模型的输出上限：** 厂商因为输出上限拒绝请求时，客户端会按厂商给出的上限自动重发，之后一直沿用。想预先指定，在 `share add` 时用 `-max-output`。
-- **看不见的推理在输出上限内计费：** 有些模型的推理不完整返回（加密、只给摘要或不显示），但厂商照样计入用量。回答显示模型做了推理时，买家按上报的输出 token 付费，上限是这次作业的输出上限；超出上限的部分，以及没有推理迹象的回答里看不见的输出，不计费。`{{exe}} provider test` 会显示无法计费的上报数（`reported`）。
+- **看不见的推理在输出上限内计费：** 有些模型的推理不完整返回（加密、只给摘要或不显示），但厂商照样计入用量。回答显示模型做了推理时，买家按上报的输出 token 付费，上限是这次作业的输出上限；超出上限的部分，以及没有推理迹象的回答里看不见的输出，不计费。`{{exe}} provider test` 会显示厂商上报的输出 token 数，以及买家最多为其中多少付费。
 - **三种接口：** 买家用 chat completions、Anthropic Messages（Claude Code）或 OpenAI Responses（Codex）调用。厂商原生支持的请求原样转发，其他的在你的机器上转换。原生请求优先匹配给你：Anthropic 拿到 Claude Code 的请求，ChatGPT 登录拿到 Codex 的，OpenAI 和 DeepSeek 的 key 拿到 chat 和各自的接口。
 
 ### 缓存价格 {#cache-prices}
 
-模型服务器对从 prompt 缓存读出的输入收费更低，Anthropic 对写入缓存的输入收费更高。买家按厂商上报的缓存用量、以你的缓存价格付这部分 token：用 `share add` 的 `-cache-read`、`-cache-write` 设置，或在配置文件里写 `price_cache_read`、`price_cache_write`。默认值（读为输入价格的 1/10；写在 Anthropic 模型上为输入价格的 1.25 倍，其他模型等于输入价格）和厂商自己的比例一致。
+模型服务器对从 prompt 缓存读出的输入收费更低，Anthropic 对写入缓存的输入收费更高。买家按厂商上报的缓存用量、以你的缓存价格付这部分 token：用 `share add` 的 `-cache-read`、`-cache-write` 设置，或在配置文件里写 `price_cache_read`、`price_cache_write`。默认值（读为输入价格的 1/10；写在支持 Anthropic Messages 接口的模型服务上为输入价格的 1.25 倍，其他等于输入价格）和厂商自己的比例一致。
 
 ### 用账号登录添加 {#provider-login}
 
@@ -176,7 +179,10 @@ saved provider deepseek (DeepSeek, apikey) sk-…9b35
 
 客户端显示一个登录地址。在任意一台电脑的浏览器里打开并登录，然后按提示把授权码、或者浏览器最后跳转到的那个打不开的页面的完整地址粘贴回来。登录凭据会自动续期。Claude 和 ChatGPT 的登录可以每天定时预热 5 小时窗口，见[预热](/docs/cli#warmup)。
 
-Google 账号没有自带项目时，`gemini` 和 `antigravity` 需要用 `-project` 指定一个 Google Cloud 项目 ID。
+- **Claude 订阅：** `{{exe}} provider login anthropic`。加 `-mode inference` 只申请调用模型的权限；这样的登录可能列不出模型，用 `provider test` 的 `-model` 指定一个模型试。也可以加 `-session-key`，粘贴浏览器里 claude.ai 的 `sessionKey` cookie 登录（输入时不显示，cookie 只用来授权，不保存）。
+- **ChatGPT：** `provider login openai` 用 ChatGPT 账号登录，按 Codex 的方式调用。
+- **Google：** Google 账号没有自带项目时，`gemini` 和 `antigravity` 需要用 `-project` 指定一个 Google Cloud 项目 ID。
+- **登录地址的有效期：** 打开登录地址后 30 分钟内要完成，否则重新运行 `provider login`。
 
 ### 管理 provider {#provider-manage}
 
@@ -187,10 +193,13 @@ Google 账号没有自带项目时，`gemini` 和 `antigravity` 需要用 `-proj
 | 发一条测试请求 | `{{exe}} provider test deepseek -model deepseek-flash` |
 | 暂停、恢复一个 provider | `{{exe}} provider off deepseek`、`{{exe}} provider on deepseek` |
 | 换 key（重新添加同名的，模型保留） | `{{exe}} provider add deepseek` |
+| 每天定时预热 Claude 或 ChatGPT 登录 | `{{exe}} provider warmup openai -times 06:00,11:05` |
+| 经代理访问厂商（`-proxy-mode direct` 不用代理） | `{{exe}} provider configure openai -proxy http://127.0.0.1:8080` |
 | 删除 provider 及其凭据 | `{{exe}} provider rm deepseek` |
 
 - **凭据的保存：** key 和登录凭据写在状态目录的 `providers.json` 里，和 `config.json` 分开，文件只有你的账户能读。命令和本机 API 都不显示完整的 key。
-- **凭据失效或余额用完：** 作业会失败，`{{exe}} status` 里出现 `warning: deepseek refused its credentials ...` 或 `... is out of balance ...`。失败的作业记在你的节点上，请尽快处理。
+- **凭据失效或余额用完：** 作业会失败，`{{exe}} status` 里出现 `warning: deepseek refused its credentials ...` 或 `... is out of balance ...`。失败的作业记在你的节点上，请尽快处理。厂商回 HTTP 401 时，这个 provider 暂停 10 分钟，期间它的模型不出现在你的报价里。
+- **厂商限流（HTTP 429）：** 这个 provider 暂停接单，直到厂商给出的重置时间（没有给出就是 1 分钟），它的模型暂时从你的报价里撤下，到时自动恢复；`status` 里显示 `... is temporarily rate limited (HTTP 429)`。只针对单个请求的 429（请求本身超出每分钟的额度，或超出模型的上下文）只让那一单失败，不会暂停。暂停状态只在客户端运行期间保存，重启后清除。
 
 ## 和伙伴互相共享（免费） {#partners}
 
@@ -214,6 +223,7 @@ Google 账号没有自带项目时，`gemini` 和 `antigravity` 需要用 `-proj
 | 撤销一个未使用的邀请码 | `{{exe}} partner revoke 7` |
 | 和某个伙伴解除共享 | `{{exe}} partner rm 42` |
 | 确认或拒绝一个等待你确认的人 | `{{exe}} partner approve 5`、`{{exe}} partner reject 5` |
+| 撤回你提交的、还在等对方确认的申请 | `{{exe}} partner withdraw 5` |
 
 - **限制只管你给出去的：** 每日上限按最近 24 小时滚动计算，所有伙伴合计。它在一次作业结束后才计入，所以到达上限时正在进行的作业可能让实际用量略超出。并发比例按每个节点的并发数算，至少 1 个，例如并发 4、比例 50% 时，伙伴最多同时占 2 个。
 - **超出限制之后：** 伙伴会去网络上付费购买，网络上也可能再次撮合到你的节点，那时按你的标价正常付费。
@@ -249,6 +259,7 @@ Google 账号没有自带项目时，`gemini` 和 `antigravity` 需要用 `-proj
 | 只为配对的买家服务（私有模式），或恢复为向所有人出售 | `{{exe}} pair private on`、`{{exe}} pair private off` |
 | 作为买家，解除和某个卖家的配对 | `{{exe}} pair leave 42` |
 | 确认或拒绝一个等待你确认的买家 | `{{exe}} pair approve 5`、`{{exe}} pair reject 5` |
+| 作为买家，撤回还在等卖家确认的申请 | `{{exe}} pair withdraw 5` |
 
 - **已配对的买家能看到什么：** 只有已配对卖家的模型。这些卖家都不提供某个模型，或者都不在线时，请求会失败，不会转给别的卖家。
 - **什么不变：** 价格、计费、收据和抽检与其他作业完全一样。只是配对并不会把其他人挡在外面：没有和任何人配对的买家仍然可能被撮合到你这里。
@@ -288,4 +299,8 @@ Google 账号没有自带项目时，`gemini` 和 `antigravity` 需要用 `-proj
 
 ## 防止作弊的机制 {#audit}
 
-协调器会以新身份随机下几单，由参考模型逐 token 核对回答。连续两次不符，节点暂停接单 24 小时。请确保你共享的模型和它的 ID 相符，也不要虚报用量：买家会自己重算哈希，并能凭证据退款。
+平台会随机抽检节点：抽检请求由别的用户的客户端转交，或者用全新的身份经网络的中继发出，看起来和普通买家的请求一样。回答由参考模型逐 token 核对，用量也一并核对；参考模型给不出逐 token 结果的模型（例如 Claude、Gemini）只核对用量。明显不符会扣信誉，连续两次不符，节点 24 小时内不会被撮合。
+
+请确保你共享的模型和它的 ID 相符，也不要虚报用量：买家会自己重算哈希、核对用量，并能凭证据退款。
+
+**信誉：** 每个节点的信誉在 0 到 1000 之间，从 500 开始。成交一单加 1，失败一单减 5，输掉争议减 50，抽检通过加 5，抽检不符减 100。撮合时价格占 45%，信誉占 25%，延迟和成功率各占 15%。

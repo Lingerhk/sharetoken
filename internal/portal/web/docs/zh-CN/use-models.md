@@ -33,7 +33,7 @@ $env:OPENAI_API_KEY = ({{exe}} apikey -q)
 | `{{exe}} apikey off` | 不带 key 也能调用。只适合没有别人使用的机器 |
 | `{{exe}} apikey on` | 重新要求 key |
 
-桌面应用在**设置**里有同样的开关和**重新生成**。正在运行的客户端会立即生效。不带 key 时端点返回 401 `invalid_api_key`；key 也可以放在 `x-api-key` 请求头里。
+桌面应用在**设置**里有同样的开关和**重新生成**。正在运行的客户端会立即生效。不带 key 或 key 不对时端点返回 401 `invalid_api_key`。key 除了放在 `Authorization: Bearer` 里，也可以放在 `x-api-key` 或 `X-Sharetoken-Key` 请求头里；不能设置请求头的工具可以把它写进地址：`http://127.0.0.1:{{port}}/k/<key>/v1`。
 
 ## 看有哪些模型 {#models}
 
@@ -228,7 +228,7 @@ codex
 ```
 :::
 
-工具调用（包括 `apply_patch`）、推理和上下文压缩，对网络上的任何模型都能用。走 WebSocket 时，Codex 每次只发新增的内容；节点在请求之间不保存任何东西，所以由客户端记住这条连接上的对话，再整段发出。走 HTTP 时客户端同样支持 `previous_response_id`（供 OpenAI Agents SDK 等工具使用）：它在内存里按 API key 保存最近的回答一小时，再把它们组成的对话整段发出；不认识的 id 返回 `previous_response_not_found`，`store: false` 的请求不保存。Codex 的 `/v1/responses/compact` 也支持：ChatGPT 登录的节点原生压缩，其他节点让模型写一段摘要。和 Claude Code 一样，请求返回 `budget` 错误时请调高 `buy.budget_micros`。
+工具调用（包括 `apply_patch`）、推理和上下文压缩，对网络上的任何模型都能用。走 WebSocket 时，Codex 每次只发新增的内容；节点在请求之间不保存任何东西，所以由客户端记住这条连接上的对话，再整段发出。走 HTTP 时客户端同样支持 `previous_response_id`（供 OpenAI Agents SDK 等工具使用）：它在内存里按 API key 保存最近的回答一小时，再把它们组成的对话整段发出；不认识的 id 返回 `previous_response_not_found`，`store: false` 的请求不保存。Codex 的 `/v1/responses/compact` 也支持：ChatGPT 登录的节点原生压缩，其他节点让模型写一段摘要。网络上的模型不生成图片。和 Claude Code 一样，请求返回 `budget` 错误时请调高 `buy.budget_micros`。
 
 ## 同时使用 Claude 或 ChatGPT 订阅 {#subscription}
 
@@ -243,12 +243,16 @@ codex
 
 改完后重启工具。没有登录官方账号，或加了 `-subscription off` 时，工具只用网络，用 API key 访问。桌面应用的“设置 > 工具接入”里有同样的开关。
 
-工具连官方模型也要经过客户端，所以客户端需要一直运行：`{{exe}} autostart on` 让它在登录系统时自动启动；桌面应用里打开“设置 > 工具接入”的“登录系统时自动启动 ShareToken”，应用会在托盘后台启动。两者都没开时，电脑重启、注销，或退出客户端或桌面应用之后，已连接的工具连官方模型也会连接失败，直到客户端再次运行；不开自动启动的话，不用之前请先运行 `{{exe}} connect claude -off`（或 `codex`）。你的官方登录凭据原样转发给厂商自己的服务器，客户端不保存、不记录，也不发到网络。
+- **已经指向别的网关时：** 文件里的 base URL 已经指向别的网关（不是本机）时，`connect` 不会覆盖它；加 `-force` 才替换，`-off` 会把原来的值放回去。
+- **Codex 之前的对话：** `{{exe}} connect codex -openai-provider` 改用 Codex 内置的 OpenAI provider，这样之前的对话仍然留在 Codex 的列表里。
+- **保持同步：** 客户端在后台运行（桌面应用或 `autostart`）时，每分钟把这些文件和端点核对一次：端口、API key 和网络上的模型变了，文件跟着更新，不用重新 `connect`。
+
+工具连官方模型也要经过客户端，所以客户端需要一直运行：`{{exe}} autostart on` 让它在登录系统时自动启动；桌面应用里打开“设置 > 工具接入”的“登录系统时自动启动 ShareToken”，应用会在托盘后台启动。两者都没开时，电脑重启、注销，或退出客户端或桌面应用之后，已连接的工具连官方模型也会连接失败，直到客户端再次运行；不开自动启动的话，不用之前请先运行 `{{exe}} connect claude -off`（或 `codex`）。客户端在运行、只是还没连上网络时，官方模型照常可用，只有 `st-` 模型会失败。你的官方登录凭据原样转发给厂商自己的服务器，客户端不保存、不记录，也不发到网络。
 
 订阅额度用完时：
 
-- **Claude Code**：Anthropic 因为额度用完拒绝请求时，客户端会把同一个请求交给网络上最接近的模型（网络上有同一个 Claude 模型就用它）继续，直到额度窗口重置。`{{exe}} official fallback off` 关闭这个功能；`{{exe}} official fallback-model <model>` 指定接手的模型。
-- **Codex**：ChatGPT 额度用完后，Codex Desktop 会锁住输入框，连网络上的模型也发不出去。客户端会在额度窗口用到 95% 时暂停官方模型（`{{exe}} official guard <percent>` 可调），并提示你换成 `st-` 模型。在 macOS 和 Windows 上，也可以用 `{{exe}} codex-unlock on` 让输入框不被锁：系统会请你信任一张只对 localhost 有效的证书，之后 Codex Desktop 需要客户端一直运行。
+- **Claude Code**：Anthropic 因为额度用完拒绝请求时，客户端会把同一个请求交给网络上最接近的模型（网络上有同一个 Claude 模型就用它）继续，直到额度窗口重置。`{{exe}} official fallback off` 关闭这个功能；`{{exe}} official fallback-model <model>` 指定接手的模型（`auto` 恢复自动选择）。接手的请求走网络，花的是 credit。
+- **Codex**：ChatGPT 额度用完后，Codex Desktop 会锁住输入框，连网络上的模型也发不出去。客户端会在额度窗口用到 95% 时暂停官方模型（`{{exe}} official guard <percent>` 可调，`100` 表示不暂停），并提示你换成 `st-` 模型。在 macOS 和 Windows 上，也可以用 `{{exe}} codex-unlock on` 让输入框不被锁：系统会请你信任一张只对 localhost 有效的证书，之后 Codex Desktop 需要客户端一直运行。
 
 `{{exe}} official` 显示客户端看到的订阅用量，以及额度用完时会怎样处理。
 
@@ -276,14 +280,16 @@ codex
 ## 如何计费 {#billing}
 
 - **按实际 token 结算：** 价格由节点报出，你按收据上的 token 数付费。
-- **prompt 缓存：** 模型服务器从 prompt 缓存读出的输入 token 按节点的缓存读价格计费（默认是输入价格的 1/10），写入缓存的按缓存写价格计费（Anthropic 模型默认是输入价格的 1.25 倍，其他模型等于输入价格）。收据分别记下这两部分，门户的作业列表用 `*` 标出这类作业。
+- **prompt 缓存：** 模型服务器从 prompt 缓存读出的输入 token 按节点的缓存读价格计费（默认是输入价格的 1/10），写入缓存的按缓存写价格计费（模型服务器支持 Anthropic Messages 接口时默认是输入价格的 1.25 倍，其他等于输入价格）。收据分别记下这两部分，门户的作业列表用 `*` 标出这类作业。
 - **看不到的推理：** 有些模型的推理不完整展示（加密、只给摘要或不显示）。回答显示模型做了推理时，按模型服务器报告的输出 token 计费，上限是请求的输出上限（`max_tokens`、`max_output_tokens`）或冻结额能覆盖的量；否则输出按你收到的文本核对。
 - **冻结：** 发请求时先冻结一笔钱，结束后退回没用完的部分。请求带了 `max_tokens` 时只按最坏情况冻结，不带时冻结整个预算（默认 2 credit）；余额不足预算时，只要够付 prompt 和一段简短回答，就冻结现有余额。
 - **建议总是设置 `max_tokens`**，尤其是批量或高并发调用，否则容易因为冻结额过大而返回 `insufficient_funds`。
 - **中途停止：** 你的程序中途断开流式请求（比如点了停止），节点会立即停止生成，只按已送达的部分计费。
-- **网络中断：** 中继重启、切换网络等原因导致连接中断时，客户端会在 60 秒内自动接上，回答从断开的地方继续，不需要重发请求。
+- **网络中断：** 中继重启、切换网络等原因导致连接中断时，客户端会在 45 秒内自动接上，回答从断开的地方继续，不需要重发请求。
+- **模型陷入循环：** 推理或正文原地打转的回答会被当作到了输出上限而截断，后面的部分不再付费；最后 8 轮都是同一个工具调用、得到同样结果的请求在本机作答，不发出去。
+- **共享伙伴：** 有[共享伙伴](/docs/share#partners)时，请求优先交给伙伴的节点，不花 credit；伙伴的节点都接不了时才向网络购买（设置了只用伙伴时，请求直接失败）。
 
-预算和价格上限在[配置文件](/docs/config#buy)里调整。
+预算、价格上限和循环保护（`loop_guard`）在[配置文件](/docs/config#buy)里调整。
 
 ## 响应如何验证 {#verify}
 
@@ -295,9 +301,10 @@ codex
 | `X-Sharetoken-Job` | 作业 ID，查账和反馈时使用 |
 | `X-Sharetoken-Node` | 服务这次请求的节点 |
 | `X-Sharetoken-Cost-Micros` | 这次的费用，单位 micro-credit |
-| `X-Sharetoken-Timing` | 耗时和流量：`ticket_ms`（撮合）、`dial_ms`（连接节点）、`first_byte_ms`（首字节）、`relayed`（是否经中继）、`preferred`（是否回到了上次的节点）、`frames`、`up_bytes`、`down_bytes` |
+| `X-Sharetoken-TEE` | 只在节点通过 TEE 验证时出现：你的信任清单里这个节点镜像的名字（见[只用 TEE 节点](#tee)） |
+| `X-Sharetoken-Timing` | 耗时和流量：`ticket_ms`（撮合）、`dial_ms`（连接节点）、`upload_ms`（发送请求）、`first_byte_ms`（首字节）、`total_ms`（总耗时）、`relayed`（是否经中继）、`preferred`（是否回到了上次的节点）、`frames`、`up_bytes`、`down_bytes`；走[直连隧道](/docs/running#tailnet)时还有 `tailnet`（`direct` 或经过的 DERP 中继） |
 
-流式响应没有这些响应头，同样的信息在结尾的注释行 `: sharetoken job=… node=… verified=true …` 里，另外还有 `resumes`（中途接上了几次）。
+流式响应没有这些响应头，同样的信息在结尾的注释行 `: sharetoken job=… node=… verified=true cost_micros=… …` 里，另外还有 `resumes`（中途接上了几次）。流式响应的收据没通过验证时，结尾是一个错误事件，而不是这一行。
 
 节点虚报用量时，客户端拒签，并交出这一单的密钥作为证据，裁决后自动退款。这个行为由配置项 `buy.evidence` 控制，默认开启。
 
@@ -305,18 +312,25 @@ codex
 
 - **回到同一个节点：** 同一段对话的后续请求，会优先交给上次服务它的节点。连接已经建好，模型服务器的 prompt 缓存也更容易命中，首字更快、费用可能更低。客户端按会话识别对话：chat 请求的 `session_id`、Claude Code 的会话、Codex 的 `prompt_cache_key`；都没有时，按模型和开头两条消息识别。那个节点满载或下线时，照常换别的节点。
 - **请求大小：** 一个请求最大 32 MB（和多数云平台的 Claude 接口一致），可以带截图等图片。请求先压缩再发送，长对话历史通常压缩到原来的 1/3 到 1/5。
+- **回答长度：** 一个回答最多 32768 个输出 token（chat completions）或 128000 个（Messages、Responses），也不超过请求的输出上限和冻结额能覆盖的量。
 
 ## 只用 TEE 节点 {#tee}
 
-普通节点的运营者理论上能读到 prompt。敏感内容请只发给 TEE 节点，它们运行在机密虚拟机里，运营者读不到内存。在[配置文件](/docs/config#buy)里设置后重启客户端：
+普通节点的运营者理论上能读到 prompt。敏感内容请只发给 TEE 节点，它们运行在机密虚拟机里，运营者读不到内存。客户端只认你信任的节点镜像：把它们的启动度量值写进一个 JSON 文件，在[配置文件](/docs/config#buy)里用 `tee_policy` 指向它，然后重启客户端：
 
 ```json
 {
-  "buy": { "require_tee": true }
+  "buy": { "require_tee": true, "tee_policy": "/path/to/tee-policy.json" }
 }
 ```
 
-没有符合条件的节点时，请求会失败，而不是退回普通节点。`models` 的 `TEE` 列显示现有的 TEE 节点数。
+```json
+{
+  "measurements": { "<launch measurement in hex>": "sharetoken-node v1 / qwen2.5-7b" }
+}
+```
+
+只设 `require_tee` 不设 `tee_policy` 时，客户端不会启动。没有符合条件的节点时，请求会失败，而不是退回普通节点。`models` 的 `TEE` 列显示协调器验证过的 TEE 节点数。
 
 ## 只向认识的卖家购买 {#pairing}
 
@@ -338,7 +352,7 @@ codex
 - **恢复为向整个网络购买：** 解除所有卖家之后，请求又可以发给任意节点。
 - **什么不变：** 价格、计费和收据校验都不变。已配对的卖家只要不是 TEE 节点，仍然能读到 prompt。
 
-桌面应用的**概览 → 配对的卖家**和门户的[配对页面](/app/#/pairing)可以做同样的事。卖家一侧的说明见[和买家配对](/docs/share#pairing)。
+桌面应用的**配对 → 我的卖家**和门户的[配对页面](/app/#/pairing)可以做同样的事。卖家一侧的说明见[和买家配对](/docs/share#pairing)。
 
 ## 错误和重试 {#errors}
 
@@ -347,11 +361,14 @@ codex
 | 错误码 | HTTP | 含义和处理 |
 |---|---|---|
 | `no_offers` | 503 | 没有节点提供这个模型。检查模型 ID，或换一个模型。如果你已经[配对](#pairing)，只有已配对的卖家算数 |
-| `capacity` | 503 | 所有节点都满载，等待 30 秒后仍无空位。按 `Retry-After` 重试 |
+| `capacity` | 503 | 所有节点都满载，等待 30 秒（`buy.queue_seconds`）后仍无空位。按 `Retry-After` 重试 |
 | `insufficient_funds` | 402 | 余额不够冻结。设置更小的 `max_tokens`，或者赚一些 credit |
-| `budget` | 400 | 这次请求的费用可能超出 `buy.budget_micros`。调小 `max_tokens` 或调大预算 |
+| `budget` | 400 | 每个请求的冻结额（`buy.budget_micros`）按节点的价格连 prompt 都付不起。调大预算 |
+| `context_length_exceeded` | 400 | prompt 超出了模型的上下文窗口。Claude Code 和 Codex 收到后会自动压缩对话 |
 | `bad_request` | 400 | 请求无效，消息里有原因。请求超过 32 MB 时返回 413 |
 | `upstream_error`、`receipt_rejected` | 502 | 节点出错，或者收据没有通过验证。可以重试 |
+| `invalid_api_key` | 401 | 没带客户端的 API key，或 key 不对。见[本地端点](#endpoint) |
+| `not_logged_in` | 401 | 客户端还没登录。运行 `login`，或在桌面应用里登录 |
 | `unauthorized`、`forbidden` | 403 | 登录失效或账户被禁用。重新 `login` |
 | `upgrade_required` | 426 | 客户端版本过低，见[升级](/docs/update#upgrade) |
 | `not_connected` | 503 | 客户端还没连上网络，稍等或查看 `status` |

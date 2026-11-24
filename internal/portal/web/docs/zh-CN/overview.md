@@ -1,13 +1,14 @@
 # 概览
 
-ShareToken 是开源权重模型的 P2P 共享网络。这份指南说明如何在 macOS、Linux 和 Windows 上安装和使用客户端。
+ShareToken 是点对点的大模型推理共享网络：你可以把自己运行的模型、厂商 API key，或 Claude、ChatGPT、Gemini 订阅的闲置额度共享出去，同一个账户也能调用别人共享的模型。这份指南说明如何在 macOS、Linux 和 Windows 上安装和使用客户端。
 
 ## 客户端能做什么 {#what}
 
 同一个客户端、同一个账户，既能买也能卖：
 
-- **调用模型：** 客户端在本机开一个同时支持 OpenAI 和 Anthropic 接口的端点，OpenAI 工具、Claude Code 和 Codex 改一下 base URL 就能用。
-- **共享模型：** 把本机 Ollama 等模型服务上的模型共享到网络，闲时赚 credit。不需要公网 IP，也不需要开端口。
+- **调用模型：** 客户端在本机开一个端点，支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 接口。OpenAI SDK、Claude Code 和 Codex 改一下 base URL、填上本机的 API key 就能用。
+- **和自己的订阅一起用：** Claude Code 和 Codex 可以保留自己的 Claude 或 ChatGPT 登录，模型菜单里同时列出网络上的模型；Claude Code 的额度用完时，请求会转到网络上继续。见[同时使用 Claude 或 ChatGPT 订阅](/docs/use-models#subscription)。
+- **共享模型：** 把本机 Ollama 等模型服务上的模型、厂商 API key，或 Claude、ChatGPT、Gemini 等账号登录共享到网络，闲时赚 credit。不需要公网 IP，也不需要开端口。
 
 ## 选择版本 {#editions}
 
@@ -24,8 +25,8 @@ ShareToken 是开源权重模型的 P2P 共享网络。这份指南说明如何�
 [桌面应用](/docs/desktop) 下载安装包，在图形界面里用邮箱登录。
 [快速开始](/docs/quickstart) 从下载到第一次调用模型，每个系统都有完整步骤。
 [安装命令行版](/docs/install) 选择架构、校验安装包、配置 PATH。
-[调用模型](/docs/use-models) curl、PowerShell、Python 和 Node.js 示例。
-[共享模型](/docs/share) 接入 Ollama，定价，查看收益。
+[调用模型](/docs/use-models) curl、PowerShell、Python、Node.js 示例，接入 Claude Code 和 Codex。
+[共享模型](/docs/share) 接入 Ollama、厂商 API key 或账号登录，定价，查看收益。
 [运行客户端](/docs/running) 查看状态，开机后在后台运行。
 [在编程助手中使用](/docs/agents) 给 Claude Code 和 Codex 装上 skill。
 [故障排查](/docs/troubleshooting) 常见报错的原因和解决办法。
@@ -38,18 +39,20 @@ ShareToken 是开源权重模型的 P2P 共享网络。这份指南说明如何�
 | 名称 | 含义 |
 |---|---|
 | credit | 网络内的记账单位。1 credit = 1,000,000 micro-credit。价格的单位是 micro-credit / 百万 token |
-| 门户 | [这个网站](/app/)。登录、账单、设备、配对和 API token 都在这里 |
+| 门户 | [这个网站](/app/)。登录、账单、设备、配对、共享伙伴和 API token 都在这里 |
 | 设备 | 一台机器上的一把设备密钥，绑定到你的账户。它花你的 credit，收入也记到你名下 |
-| 中继 | 转发加密流量的公共节点。它读不到内容，也不记账 |
+| 中继 | 转发加密流量的节点。它读不到内容，也不记账。双方能直连或走直连隧道时不经过中继；卖家也可以用自己的私有中继 |
 | 协调器 | 负责撮合、结算和争议，账本由它记录 |
 | 作业 | 一次模型调用。节点签收据，买家核对后结算 |
-| 配对 | 买家和卖家之间的绑定，用卖家的配对码建立。已配对的买家只向他的卖家购买。见[只向认识的卖家购买](/docs/use-models#pairing) |
-| 共享伙伴 | 用邀请码配对的伙伴，双方优先、免费使用对方的节点。这是买卖之外的第二种共享方式。见[和伙伴互相共享（免费）](/docs/share#partners) |
+| 配对 | 买家和卖家之间的绑定，用卖家给的配对码或配对链接建立。已配对的买家只向配对的卖家购买，最多配对 3 个卖家。见[只向认识的卖家购买](/docs/use-models#pairing) |
+| 共享伙伴 | 用邀请码或邀请链接结成的伙伴，双方优先、免费使用对方的节点。这是买卖之外的第二种共享方式。见[和伙伴互相共享（免费）](/docs/share#partners) |
 
 ## 隐私边界 {#privacy}
 
 > [!WARNING]
 > **普通节点能读到你的 prompt。** 运行模型必须解密，所以节点的运营者理论上能看到内容。中继、协调器和网络窃听者看不到。敏感内容请只用 TEE 节点，见[只用 TEE 节点](/docs/use-models#tee)。
+
+共享厂商 API key 或账号登录的节点，会把 prompt 原样转给对应的厂商。
 
 崩溃报告：客户端崩溃时，会把脱敏后的报告随你的登录发给门户，包括错误信息、出错的代码位置和出错前客户端自己的日志，不含邮箱、密钥、IP 地址和路径。prompt 和回答从不写入日志，所以也不会出现在报告里。默认开启，欧洲经济区默认关闭；可以在设置 → 通用里关闭，或运行 `{{exe}} diagnostics off`。见[崩溃报告](/docs/config#crash-reports)。
 

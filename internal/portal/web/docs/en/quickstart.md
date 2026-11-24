@@ -1,6 +1,6 @@
 # Quick start
 
-From download to your first model call takes about 5 minutes. First choose your system at the top of the page.
+This page takes you step by step from the download to your first model call. First choose your system at the top of the page.
 
 > [!TIP]
 > This page uses the command-line edition. For a graphical interface, install the [desktop app](/docs/desktop).
@@ -66,7 +66,7 @@ If you see the version, the portal address and the local API address, it worked.
 {{exe}} login -email you@example.com
 ```
 
-There is no password: enter the six-digit code sent to your email. The first sign-in with an address creates the account. When it finishes, this machine is bound to your account.
+There is no password: enter the six-digit code sent to your email. The first sign-in with an address creates the account. When it finishes, this machine is bound to your account. For two-factor authentication, invite codes and the like, see [Account and devices](/docs/account#login).
 
 ## 3. Start the client {#up}
 
@@ -88,11 +88,26 @@ Open **another** terminal window and list the models on the network:
 {{exe}} models
 ```
 
-Replace `MODEL` below with a model ID from that list:
+The local endpoint wants an API key by default. The key starts with `sk-st-` and stays on your machine; `{{exe}} apikey -q` prints it. First put it in an environment variable:
+
+::: macos linux
+```bash
+export OPENAI_API_KEY=$({{exe}} apikey -q)
+```
+:::
+
+::: windows
+```powershell
+$env:OPENAI_API_KEY = ({{exe}} apikey -q)
+```
+:::
+
+Then replace `MODEL` below with a model ID that `models` listed:
 
 ::: macos linux
 ```bash
 curl http://127.0.0.1:{{port}}/v1/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"MODEL","messages":[{"role":"user","content":"Hello"}],"max_tokens":200}'
 ```
@@ -101,7 +116,7 @@ curl http://127.0.0.1:{{port}}/v1/chat/completions \
 ::: windows
 ```powershell
 $body = @{ model = 'MODEL'; max_tokens = 200; messages = @(@{ role = 'user'; content = 'Hello' }) } | ConvertTo-Json -Depth 5
-Invoke-RestMethod http://127.0.0.1:{{port}}/v1/chat/completions -Method Post -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 8
+Invoke-RestMethod http://127.0.0.1:{{port}}/v1/chat/completions -Method Post -Headers @{ Authorization = "Bearer $env:OPENAI_API_KEY" } -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 8
 ```
 :::
 
@@ -117,8 +132,9 @@ Finally, see how much it cost:
 ## Next steps {#next}
 
 ::: cards
-[Call models](/docs/use-models) Connect Python, Node.js and OpenAI-compatible tools.
-[Share a model](/docs/share) Share a local model and earn credit.
+[Call models](/docs/use-models) Connect Python, Node.js, Claude Code, Codex and OpenAI-compatible tools.
+[Keep your Claude or ChatGPT subscription](/docs/use-models#subscription) Claude Code and Codex keep their own login and add the network's models.
+[Share a model](/docs/share) Share a local model, a vendor API key or a login and earn credit.
 [Run the client](/docs/running) Keep the client running in the background.
 [Use with coding agents](/docs/agents) Let Claude Code or Codex run the client for you.
 :::

@@ -7,6 +7,8 @@ Run these two commands first. They explain most problems:
 {{exe}} status
 ```
 
+The client's log usually has a more specific reason: `{{exe}} logs -n 50`, see [Logs](/docs/config#logs).
+
 ## Install {#install}
 
 ### Command not found {#not-found}
@@ -72,17 +74,19 @@ If your home directory is mounted `noexec`, install to `/usr/local/bin` instead.
 
 ### The verification code does not arrive {#no-code}
 
-Check your spam folder first. The code can take a few minutes, and it is valid for 10 minutes. Do not resend again and again: an address gets at most 5 codes an hour, and a code allows 5 wrong tries before you need a new one. If it never arrives, write to this portal's support ({{support}}) from that address: once they have checked it is you, an administrator can give you a one-time sign-in code (valid for 10 minutes) to enter on the sign-in page as usual.
+Check your spam folder first. The code can take a few minutes, and it is valid for 10 minutes. Do not resend again and again: wait at least a minute between two, an address gets at most 5 codes an hour, and a code allows 5 wrong tries before you need a new one. If it never arrives, write to this portal's support ({{support}}) from that address: once they have checked it is you, an administrator can give you a one-time sign-in code (valid for 10 minutes) to enter on the sign-in page as usual.
 
 ### The message is `not logged in` {#not-logged-in}
 
 This machine is not signed in yet, or the state directory is wrong. Run `{{exe}} version` to check the `home` line, then run `{{exe}} login`.
 
+When the sign-in expires (after 60 days by default) or is revoked in the portal, a running client stops using it: `up` exits with `you are logged out or this login was revoked`, and the background service becomes signed out. Run `{{exe}} login` again, then restart the client.
+
 ### The message is `throttled` or HTTP 429 {#throttled}
 
 Too many failures in a row, so you are rate limited. Wait a few minutes and try again.
 
-### The message is `logged in, but binding this device failed` {#bind-failed}
+### The message is `signed in, but binding this device failed` {#bind-failed}
 
 There are two common causes:
 
@@ -118,7 +122,7 @@ The client version is too old. [Update](/docs/update#upgrade) and try again.
 
 ### The message is `the client is not running` {#not-running}
 
-`status`, `models` and `relays` need the client to be running. Run `{{exe}} up` in another window, or start the [background service](/docs/running#background).
+`status`, `models`, `relays` and similar commands need the client to be running. Run `{{exe}} up` in another window, or start the [background service](/docs/running#background).
 
 ### The message is `cannot reach the portal` {#no-portal}
 
@@ -140,7 +144,7 @@ It should print `{"ok":true}`.
 
 ### The port is in use {#port-in-use}
 
-Another program is already using port `{{port}}`, usually another running client.
+The message is `local API on 127.0.0.1:{{port}}: ... address already in use`. Another program is already using port `{{port}}`, usually another running client: another `up`, the background service, or the desktop app.
 
 ::: macos
 ```bash
@@ -172,7 +176,9 @@ The client is still connecting, or cannot reach a relay. Run `{{exe}} relays -me
 
 No node offers this model right now. Run `{{exe}} models` to check the model ID, and mind the capitalization.
 
-If your account is paired with sellers, only they count: the message then ends with `of the sellers you are paired with`. Run `{{exe}} pair` to see them. Wait for one of them to come online, or leave them to buy from the whole network again. See [Buy only from sellers you know](/docs/use-models#pairing).
+With `max_price_in` or `max_price_out` set in the configuration, the price limits may also have ruled out the nodes there are; when the message has `natively`, `require_native` is on, see [Configuration](/docs/config#buy). When only your own node offers the model, the message starts with `no other user's node`: you cannot buy from yourself.
+
+If your account is paired with sellers, only they count: the message then has `of the sellers you are paired with`. Run `{{exe}} pair` to see them. Wait for one of them to come online, or leave them to buy from the whole network again. See [Buy only from sellers you know](/docs/use-models#pairing).
 
 A seller in private mode is hidden from every buyer that is not paired with it, so a model you saw earlier can disappear from `models`.
 
@@ -182,7 +188,17 @@ All nodes are full. Retry later, or raise `queue_seconds` in the configuration.
 
 ### `insufficient_funds` or `budget` {#funds}
 
-The balance is not enough to hold for this request. Add a smaller `max_tokens` to the request, or check your balance with `{{exe}} balance`. See [How billing works](/docs/use-models#billing).
+`insufficient_funds` (HTTP 402): the balance is not enough to hold for this request. A request without `max_tokens` holds the whole budget; add a smaller `max_tokens` to the request, or check your balance with `{{exe}} balance`. See [How billing works](/docs/use-models#billing).
+
+`budget` (HTTP 400): the per-request budget does not even pay for the prompt, and the message is `reservation does not cover the prompt; raise the budget`. Raise `budget_micros` in the configuration, or the budget under "Settings > Requests" in the desktop app, see [Configuration](/docs/config#buy).
+
+### The message is `invalid_api_key` (HTTP 401) {#api-key}
+
+The local endpoint wants an API key by default, and the request had none or a wrong one. `{{exe}} apikey` shows the key; enter it in the tool as its OpenAI or Anthropic API key (`Authorization: Bearer <key>` or `x-api-key`). After `{{exe}} apikey rotate` the old key stops working at once.
+
+### The message is `request body too large` (HTTP 413) {#too-large}
+
+A request can be at most 32 MiB. Usually the conversation carries a large file or many images: shrink or remove them, or start a new conversation.
 
 ### The `content` of the response is empty {#empty-content}
 
@@ -190,7 +206,7 @@ The reasoning of a thinking model also counts toward `max_tokens`, and the limit
 
 ### The request fails after a long time {#stalled}
 
-The node stopped sending anything (not even the progress frames it sends while the model is thinking), or its model produced nothing for 5 minutes, and was judged stuck. If the node or its network is merely slow, raise `first_byte_seconds` and `idle_seconds` in the configuration. See [Configuration](/docs/config#buy).
+The node stopped sending anything (not even the progress frames it sends while the model is thinking), or its model produced nothing for 5 minutes, and was judged stuck. When nothing has come back yet, the client retries on another node; when the connection breaks midway, it first tries to resume with the same node. If the node or its network is merely slow, raise `first_byte_seconds` and `idle_seconds` in the configuration. See [Configuration](/docs/config#buy).
 
 ### Large requests are slow with direct tunnels on {#tunnel-slow}
 
@@ -241,3 +257,4 @@ Tell us on the portal's [feedback page](/app/#/feedback), and include the inform
 - The output of `{{exe}} version`
 - The output of `{{exe}} status`
 - The exact error text, and the job ID (response header `X-Sharetoken-Job`)
+- The log around the error: `{{exe}} logs -n 100`. It has no prompts or answers, but it may have your e-mail address and IP addresses: read it before you send it

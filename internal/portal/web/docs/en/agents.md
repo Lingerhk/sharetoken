@@ -1,6 +1,6 @@
 # Use with coding agents
 
-Claude Code and Codex can run the client for you. Install the client's skill once, then ask in plain words: "is ShareToken running?", "how many credits do I have left?", "call qwen2.5:7b through ShareToken and summarize this file", "share my local Ollama models".
+Claude Code and Codex can run the client for you. Install the client's skill once, then ask in plain words: "is ShareToken running?", "how many credits do I have left?", "call qwen2.5:7b through ShareToken and summarize this file", "share my local Ollama models", "connect Codex to ShareToken and keep my ChatGPT login".
 
 The skill is a `SKILL.md` file that tells the agent which commands exist, where the local endpoint is, and what it must not do on its own.
 
@@ -44,17 +44,18 @@ Restart an agent session that is already open; skills are read when a session st
 
 This lists both agents, whether they were found, and whether the skill is installed and up to date. `{{exe}} skill show` prints the skill itself.
 
-The copy written for you names this client's command, state directory `{{home}}` and endpoint `http://127.0.0.1:{{port}}/v1`. When `{{exe}}` is not on PATH, it names the program's full path instead.
+The copy written for you names this client's command, portal, state directory `{{home}}` and endpoint `http://127.0.0.1:{{port}}/v1`. When `{{exe}}` is not on PATH, it names the program's full path instead.
 
 ## What the agent may do {#rules}
 
-The skill lets the agent read freely: `status`, `balance`, `jobs`, `models`, `relays`, `share`, `pair`, `config`. It asks the agent to:
+The skill lets the agent read freely: `status`, `balance`, `jobs`, `models`, `relays`, `tailnet`, `share`, `provider`, `pair`, `partner`, `warmup`, `config`, `logs`, and `connect`, `official`, `autostart` and `diagnostics` without arguments. It asks the agent to:
 
-- Ask you before it changes anything: signing out, sharing on or off, adding or removing models and providers, pairing.
+- Ask you before it changes anything: signing out, sharing on or off, adding or removing models and providers, pairing and share partners, connecting or disconnecting Claude Code and Codex (`connect`), what happens when a plan runs out (`official`, `codex-unlock`), autostart, the API key, relays and direct tunnels, warm-ups, crash reports.
 - Treat credits as money: set `max_tokens` on requests, and ask before large batches or long generations.
-- Never put an API key on a command line, and never print your token.
+- Never put a provider's API key on a command line, and never print the client's API key or your sign-in token.
 - Ask you for your email address and for the sign-in code from the email. It cannot sign in without you.
 - Start the client in the background, or ask you to start it, when it is not running.
+- When it runs inside a connected Claude Code or Codex itself, say so and leave it to you to stop the client, `connect … -off`, change the API key or sign out: any of these can cut off its own session.
 
 An agent follows these rules, but it is not forced to. Keep your agent's own permission prompts on for commands it runs.
 
@@ -70,4 +71,4 @@ Run `{{exe}} skill install` again after [updating the client](/docs/update). It 
 
 This removes the skill from both agents. `-agent claude` or `-agent codex` removes it from one.
 
-A `SKILL.md` in the same place that the client did not write, for example one you wrote yourself, is never replaced or removed. `{{exe}} skill install -force` replaces it.
+A `SKILL.md` in the same place that the client did not write, for example one you wrote yourself, is never replaced or removed. `{{exe}} skill install -force` replaces it, and `{{exe}} skill uninstall -force` removes it.

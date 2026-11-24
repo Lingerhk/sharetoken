@@ -38,9 +38,15 @@
 |---|---|
 | `config.json` | 设置和登录 token。只有你自己能读 |
 | `device.key` | 设备私钥。只有你自己能读，换一台机器就是一台新设备 |
-| `network.json` | 中继列表的缓存，删除后会自动重新获取 |
-| `run.json` | 运行中客户端的 API 地址和管理接口的 key |
-| `apikey.json` | OpenAI 端点的 API key 以及是否需要它（`{{exe}} apikey`） |
+| `network.json` | 门户上次给出的网络信息（中继列表等），门户连不上时使用，删除后会自动重新获取 |
+| `run.json` | 运行中客户端的本地 API 地址、进程号和管理接口的 key。key 每次启动都会变，客户端退出时删除这个文件 |
+| `apikey.json` | 本地模型端点的 API key（以 `sk-st-` 开头）以及是否需要它，用 `{{exe}} apikey` 管理，修改后不用重启 |
+| `providers.json` | 共享的托管 API 和它们的凭据，见[共享设置](#share) |
+| `warmup.json`、`warmup-state.json` | [预热](/docs/cli#warmup)的设置，以及已经做过什么 |
+| `official.json` | Claude Code 和 Codex 用完自己的订阅额度时怎么办（`{{exe}} official`） |
+| `connect.json`、`backups/` | `{{exe}} connect` 改过哪些工具的配置文件，以及改之前的备份 |
+| `update.json`、`update/` | 跳过了哪个版本，以及一键升级下载的安装包 |
+| `derpmap.json` | 直连隧道 DERP 表的缓存 |
 | `logs/` | 客户端日志（`client.log`）、桌面应用日志（`gui.log`）、崩溃记录和待发送的崩溃报告，见[日志和崩溃报告](#logs) |
 
 > [!WARNING]
@@ -52,7 +58,7 @@
 {{exe}} config
 ```
 
-这个命令显示文件路径和内容。修改时用文本编辑器打开 `config.json`，然后**重启客户端**才会生效。共享设置例外，见[共享设置](#share)。
+这个命令显示文件路径和生效的设置（包括没写在文件里的默认值），token 只显示开头。修改时用文本编辑器打开 `config.json`，然后**重启客户端**才会生效。例外：共享设置和私有中继（见[共享设置](#share)），直连隧道（`tailnet on` / `tailnet off`），以及在桌面应用“设置 > 调用”里改的预算和 `require_native`，这些对运行中的客户端立即生效。
 
 文件是严格的 JSON，不能有注释。下面的示例只列出要改的字段。
 
@@ -78,13 +84,15 @@
 
 | 字段 | 含义 | 默认值 |
 |---|---|---|
-| `budget_micros` | 每个请求最多冻结多少，单位 micro-credit，用剩的退回 | `2000000`（2 credit） |
+| `budget_micros` | 每个请求最多冻结多少，单位 micro-credit，用剩的退回。请求带 `max_tokens` 时只冻结按价格算出的需要的金额。预算连 prompt 都不够付时，请求以 `budget` 失败。桌面应用里可以改，范围 0.01 到 1000 credit | `2000000`（2 credit） |
 | `max_price_in` | 每百万输入 token 最多愿意付多少，`0` 表示不限 | `0` |
 | `max_price_out` | 每百万输出 token 最多愿意付多少，`0` 表示不限 | `0` |
 | `evidence` | 节点虚报用量时，交出这一单的密钥以自动退款 | `true` |
-| `require_tee` | 只把请求发给 TEE 节点 | `false` |
-| `require_native` | 只把请求发给模型服务器原生支持请求所用接口的节点，不做转换（见[原生和转换](/docs/use-models#native)）。单个请求也可以用请求头 `X-Sharetoken-Require-Native: true` 要求 | `false` |
-| `loop_guard` | 模型陷入循环时不再付费。推理或正文反复重复同几句话的回答会被截断，就像到了输出上限一样，卖家随即停止模型；最后 8 轮都是同一个工具调用、得到同样结果的请求，在本机用一段提示作答，不发出去。设为 `false` 关闭 | `true` |
+| `require_tee` | 只把请求发给 TEE 节点，必须同时设 `tee_policy`，否则客户端不会启动（见[只用 TEE 节点](/docs/use-models#tee)） | `false` |
+| `tee_policy` | 信任的节点镜像清单（JSON 文件路径）。设了它，客户端会验证节点的 TEE 证明 | 空 |
+| `tee_online` | 验证 TEE 证明时联网检查证书吊销（TDX 还会联网获取验证材料） | `false` |
+| `require_native` | 只把请求发给模型服务器原生支持请求所用接口的节点，不做转换（见[原生和转换](/docs/use-models#native)）。关闭时也优先选原生的节点。单个请求也可以用请求头 `X-Sharetoken-Require-Native: true` 要求 | `false` |
+| `loop_guard` | 模型陷入循环时不再付费。推理或正文反复重复同几句话的回答会被截断，就像到了输出上限一样，卖家随即停止模型；最后 8 轮都是同一个工具调用、得到同样结果的请求，在本机用一段提示作答，不发出去。这样处理过的响应带有响应头 `X-Sharetoken-Loop-Guard`。设为 `false` 关闭 | `true` |
 | `spot_checks` | 协助平台抽检卖家。平台会不定期抽查卖家是否真的在用它标称的模型；开启后，客户端偶尔替平台把一个很短的抽检请求转交给卖家，就像发你自己的请求一样，卖家因此分不清哪次是抽检。请求和回答都是加密的（本机看不到内容），也不花 credit。卖家会像对待你发的任何请求一样看到本设备的地址。默认开启，只能在这个文件里关闭，桌面端没有这个开关 | `true` |
 | `queue_seconds` | 节点全部满载时最多等多久，负数表示立即失败 | `30` |
 | `first_byte_seconds` | 等节点第一帧的时限，超时换节点。模型思考期间节点每 10 秒发一个进度帧，所以慢模型也不需要调大 | `30` |
@@ -116,12 +124,12 @@
 | `concurrency` | 同时处理的请求数 | `2` |
 | `relays` | 在网络的几个中继上预约 | `2` |
 | `keep_official` | 使用[私有中继](/docs/relay)时：它正常时也保留网络中继上的预约 | `false` |
-| `models` | 共享的模型。一般用 `share add` 管理。每个模型还可以设置 `price_cache_read` 和 `price_cache_write`，即从 prompt 缓存读出和写入缓存的输入 token 的价格，见[缓存价格](/docs/share#cache-prices) | 空 |
+| `models` | 共享的模型。一般用 `share add` 管理。每个模型还可以设置 `price_cache_read` 和 `price_cache_write`，即从 prompt 缓存读出和写入缓存的输入 token 的价格，见[缓存价格](/docs/share#cache-prices)；以及 `max_output`，这个模型每单的输出上限（`share add -max-output`） | 空 |
 | `tee` | 机密虚拟机类型：`off`、`auto`、`sev-snp`、`tdx` | `off` |
 
 共享的托管 API（provider）不在这个文件里：它们连同 API key 和登录凭据保存在同一目录的 `providers.json`，用 [`provider` 命令](/docs/share#providers)管理，不建议手动编辑。
 
-用 `share` 子命令修改时，运行中的客户端立即生效。手动编辑文件后，再运行一次 `{{exe}} share on` 让它重新加载。
+用 `share` 子命令修改时，运行中的客户端立即生效。手动编辑文件后（包括 `private_relays`），再运行一次 `{{exe}} share on`（或 `share off`）让它重新加载。
 
 ## 网络设置 {#network}
 
@@ -132,7 +140,7 @@
 | `nat` | UPnP、NAT-PMP 和打洞 | `true` |
 | `relays` | 非空时覆盖门户提供的中继列表 | 空 |
 | `private_relays` | 你自己的中继，共享经由它们，见[自建中继](/docs/relay)。用 `relays add` 管理 | 空 |
-| `tailnet.enabled` | 直连隧道，见[直连隧道](/docs/running#tailnet)。用 `tailnet on` / `tailnet off` 管理 | `false` |
+| `tailnet.enabled` | 直连隧道，见[直连隧道](/docs/running#tailnet)。用 `tailnet on` / `tailnet off` 管理，它们对运行中的客户端立即生效 | `false` |
 | `tailnet.wait_ms` | 对新节点的请求最多等多久隧道，之后走中继（0 到 10000 毫秒） | `0` |
 | `tailnet.transport` | 本机连卖家时隧道里跑什么：`quic` 或 `tcp`。卖家两种都接受 | `quic` |
 | `tailnet.derp_map` | 隧道起步用的 DERP 表：URL 或文件；空为 tailcat 的公共 DERP | 空 |
@@ -148,7 +156,7 @@
 
 | 字段 | 含义 | 默认值 |
 |---|---|---|
-| `log.dir` | 日志目录。`-log-dir` 和环境变量 `SHARETOKEN_LOG_DIR` 优先。客户端启动时读取，修改后需要重启 | 数据目录下的 `logs` |
+| `log.dir` | 日志目录。环境变量 `SHARETOKEN_LOG_DIR` 最优先，其次是 `-log-dir`，再次是这里。客户端启动时读取，修改后需要重启 | 数据目录下的 `logs` |
 | `log.level` | `debug`、`info`、`warn` 或 `error` | `info` |
 | `log.max_size_mb` | 日志文件达到这个大小后改名（`client.log.1`……），重新开始写 | `10` |
 | `log.max_files` | 保留几个改名后的旧文件 | `5` |
@@ -160,7 +168,7 @@
 |---|---|
 | `client.log` | `up` 和桌面应用后台服务（`daemon`）的日志，不论以什么方式启动 |
 | `gui.log` | 桌面应用窗口自己的日志 |
-| `daemon.stderr` | 后台服务在日志打开前输出的内容，以及 Go 运行时自己的输出；每次启动重写 |
+| `daemon.stderr` | 由桌面应用或 `autostart` 启动的后台服务在日志打开前输出的内容，以及 Go 运行时自己的输出 |
 | `crash/` | 崩溃记录：程序崩溃时写入，下次启动时转成报告，之后移到 `crash/old`（保留最近 5 个） |
 | `reports/` | 待发送的崩溃报告，已经脱敏，就是将要发送的全部内容 |
 

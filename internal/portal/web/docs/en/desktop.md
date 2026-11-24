@@ -1,6 +1,6 @@
 # Desktop app
 
-The desktop app gives you a graphical interface to sign in, check your account and network status, and set up the models you share.
+The desktop app gives you a graphical interface to sign in, check your account and network status, set up the models you share, and connect Claude Code and Codex. Its package also contains the [command-line edition](#with-cli).
 
 ## Install {#install}
 
@@ -8,29 +8,31 @@ The desktop app gives you a graphical interface to sign in, check your account a
 :::
 
 ::: macos
-1. Open the downloaded `.dmg` and drag ShareToken to the "Applications" folder. Apple Silicon and Intel have different packages. To check yours, open the Apple menu at the top left and click "About This Mac".
+1. It needs macOS 13 or later. Open the downloaded `.dmg`, drag ShareToken to the "Applications" folder, and open it from there from now on ([one-click updates](/docs/update#one-click) need that). Apple Silicon and Intel have different packages. To check yours, open the Apple menu at the top left and click "About This Mac".
 2. If the first launch says the developer cannot be verified, open "System Settings > Privacy & Security" and click "Open Anyway" at the bottom of the page. The app is not yet notarized by Apple.
 :::
 
 ::: linux
-The package works on Ubuntu 24.04 or later and Debian 13 or later. Install it with `apt`, which also installs the GTK and WebKitGTK it needs:
+The package works on Ubuntu 24.04 or later and Debian 13 or later (it needs GTK 4.10 or later and WebKitGTK 6.0), with one for x86-64 and one for ARM64. Install it with `apt`, which also installs the GTK and WebKitGTK it needs:
 
 ```bash
 sudo apt install ./sharetoken-{{version}}-linux-<arch>.deb
 ```
 
-Replace `<arch>` with the `amd64` or `arm64` you downloaded. You can then open ShareToken from the application menu. On other distributions, use the [command-line edition](/docs/install) with the [graphical interface without the app](#browser-ui) below.
+Replace `<arch>` with the `amd64` or `arm64` you downloaded. You can then open ShareToken from the application menu. The package also brings an AppArmor profile (`/etc/apparmor.d/sharetoken-gui`): Ubuntu needs it to let the window's web pages run in a sandbox. On other distributions, use the [command-line edition](/docs/install) with the [graphical interface without the app](#browser-ui) below.
 :::
 
 ::: windows
-1. Run the downloaded installer. If SmartScreen blocks it, click "More info" and then "Run anyway". The app is not yet code-signed.
+1. Run the downloaded installer (Windows 10 or 11; x64 and ARM64 have different installers). If SmartScreen blocks it, click "More info" and then "Run anyway". The app is not yet code-signed.
 2. Follow the prompts. It installs for the current user only, needs no administrator rights, and adds shortcuts to the Start menu and the desktop.
 3. WebView2 Runtime is required. Windows 11 includes it. If Windows 10 does not have it, install it from the Microsoft website.
 :::
 
 ## Upgrade and uninstall {#upgrade}
 
-When a new version exists, a line appears at the top of the window with one sentence about it. "Details" shows the full release notes and where to download it, and "Check for updates" in Settings asks at any time. To upgrade, download the new version and install it as you did the first time. It replaces the old version. Uninstalling does not delete the state directory `{{home}}`, so your account and device key stay. To remove everything, delete that directory as well.
+When a new version exists, a line appears at the top of the window with one sentence about it; the tray menu gets an item for it too, and a system notification appears once. "Update now" makes the app download the new version, check its release signature, install it and restart; see [One-click update](/docs/update#one-click). "Details" shows the full release notes and where to download it, and "Skip this version" stops offering a version you do not want (a required upgrade cannot be skipped). "Check for updates" on the "General" tab of Settings asks at any time. When the line has no "Update now", download the new version and install it as you did the first time. It replaces the old version.
+
+Before you uninstall, if you connected Claude Code or Codex under "Settings > Tools", click "Disconnect" to put back their own settings, and turn off "Codex Desktop unlock" and "Start ShareToken when you log in". Uninstalling does not undo these, and the tools would keep trying to reach a client that is gone. Uninstalling does not delete the state directory `{{home}}` either, so your account, device key, configuration and logs stay. To remove everything, delete that directory as well.
 
 ::: macos
 To uninstall, quit the app and move ShareToken from the "Applications" folder to the Trash.
@@ -40,12 +42,14 @@ To uninstall, quit the app and move ShareToken from the "Applications" folder to
 To uninstall:
 
 ```bash
-sudo apt remove sharetoken
+sudo apt purge sharetoken
 ```
+
+`purge` removes the AppArmor profile as well; `remove` leaves it.
 :::
 
 ::: windows
-To uninstall, open "Settings > Apps > Installed apps", find ShareToken and click "Uninstall".
+To uninstall, open "Settings > Apps > Installed apps", find ShareToken and click "Uninstall". It removes the shortcuts, its PATH entry and the registration for `sharetoken://` links.
 :::
 
 ## Window and background service {#behaviour}
@@ -71,24 +75,36 @@ The app has two parts: the window, and the background service that does the real
 
 Starting the program again only brings back the existing window.
 
-The window has its navigation on the left: Overview, Sharing, Pairing and Activity, with Feedback and Settings at the bottom. The status bar at the bottom of the window shows the connection, the relay in use and its latency, and what the direct tunnels are doing; a latency is green, amber or red by how fast it is. The "?" beside a panel's title explains what the panel is for.
+With "Start ShareToken when you log in (in the tray, without opening the window)" ticked under "Settings > Tools", the app starts in the tray each time you log in, without opening its window, and sharing and the local API work as usual. On a Linux desktop without a tray, the window opens. Without it, the background service stops after a restart, a logout or Quit from the tray, and connected Claude Code and Codex cannot use even their own official models until ShareToken is opened again; see [Keep your Claude or ChatGPT subscription](/docs/use-models#subscription).
+
+The window has its navigation on the left: Overview, Sharing, Pairing and Activity, with Feedback and Settings at the bottom. The Overview shows your credit, the address of the local model endpoint (with its API key to copy when one is required), the network and the available models; Activity has two tabs, "All" and "Sold". The status bar at the bottom of the window shows the connection, the relay in use and its latency, and what the direct tunnels are doing, with your account and the version on the right; a latency is green, amber or red by how fast it is. The "?" beside a panel's title explains what the panel is for.
+
+Settings has these tabs:
+
+- **General**: your account and "Log out", whether the local model endpoint requires an API key (and copying the key or making a new one), the language, the version and "Check for updates", feedback, and diagnostics and logs: the "Send crash reports" switch, "View pending reports", the log folder and "Open log folder". See [Logs and crash reports](/docs/config#logs).
+- **Requests**: how models are bought; see the end of [Share models](#share) below.
+- **Network**: [direct tunnels](#tunnels).
+- **My devices**: the devices bound to this account.
+- **Warm-up**: see [Warm-up](#warmup).
+- **Tools**: connect Claude Code and Codex to the local endpoint, keeping their own official login if you like, and start the app when you log in. See [Keep your Claude or ChatGPT subscription](/docs/use-models#subscription).
 
 ## Share models {#share}
 
 Once you are signed in and connected to the network, click "Sharing" on the left. It has three tabs:
 
-- **Provider APIs**: click "Add provider", choose the provider, and enter an API key or sign in with an account. After saving, choose the models to sell and set each one's model ID on the network and its prices. Each provider can be turned off, given new credentials or deleted, and each model can be tested, repriced or removed.
-- **Local model server**: enter the model server's address under "Settings", then click "Add model"; the app lists the models that server offers.
-- **Status**: once there is at least one model, click "Start sharing" to take jobs. Sharing turns itself off when there is no model left to sell.
-- **Pairing** ("Pairing" on the left, the "My buyers" tab): click "Create pairing code", choose how long it lasts (1 or 7 days), how many buyers it admits and whether each needs your approval, and give the code or its link to your buyers ("Copy link", "Copy invitation message"). The panel lists your codes and your buyers, with anyone waiting for your approval ("Approve", "Reject"), and lets you revoke a code or remove a buyer. Tick "Private mode" to serve only the buyers paired with you.
+- **Status**: once there is at least one model, click "Start sharing" to take jobs. Sharing turns itself off when there is no model left to sell. While you share, it shows the models on sale, the jobs and earnings, and the relays buyers reach you through.
+- **Provider APIs**: click "Add provider", choose the provider, and enter an API key or sign in with an account. After saving, choose the models to sell and set each one's model ID on the network and its prices. Each provider can be disabled, given new credentials, changed in "Connection settings" (upstream proxy and TLS) or deleted, and each model can be tested, edited or removed. A Claude or ChatGPT account added by signing in also shows its plan's usage and its warm-up.
+- **Local models**: click "Settings" on this panel and enter the model server's address (Ollama's default is `http://127.0.0.1:11434/v1`) and how many requests it handles at once, then click "Add model"; the app lists the models that server offers.
 
-Prices are in credit per million tokens. API keys and login tokens are stored only on this computer, and the page shows keys masked. For notes on each provider, see [Share a hosted API](/docs/share#providers).
+Prices are in credit per million tokens. API keys and login tokens are stored only on this computer, and the page shows keys masked. For notes on each provider, see [Share a hosted API](/docs/share#providers). The jobs you sold are under the "Sold" tab of Activity.
+
+To serve only buyers you know, use the "My buyers" tab of "Pairing" on the left: click "Create pairing code", choose how long it lasts (1 or 7 days), how many buyers it admits and whether each needs your approval, and give the code or its link to your buyers ("Copy link", "Copy invitation message"). The tab lists your codes and your buyers, with anyone waiting for your approval ("Approve", "Reject"), and lets you revoke a code or remove a buyer. Tick "Private mode" to serve only the buyers paired with you.
 
 Under "Settings", the "Requests" tab lets you tick "Only sellers that speak the request's API natively" (Claude Code's requests then go only to sellers whose model server speaks Anthropic Messages, Codex's only to those that speak OpenAI Responses, with no conversion; see [Native and converted](/docs/use-models#native)) and set the budget held for each request (2 credits by default; you pay what a request uses). Both take effect at once.
 
 To buy only from sellers you know, use "My sellers" under "Pairing": click "Enter pairing code" and type the code, or paste the link, a seller gave you. See [Buy only from sellers you know](/docs/use-models#pairing).
 
-To share with partners for free, use "Share partners", the first tab under "Pairing". Click "Invite partner", choose how long the code lasts (1, 3 or 7 days) and whether you approve whoever uses it, and send the code or its link to your partner; they click "Enter invite code" and type the code or paste the link. The list shows your partners and the tokens you gave and used in the last 24 hours, and "Unpair" ends a partnership. Under "Sharing settings" you can use partners' nodes only, set a daily limit (tokens per 24 hours, all partners together) and the share of each node's concurrent jobs partners may take (0 pauses sharing). Available models marks the models your partners offer, and Activity shows "Partner (free)" for jobs between partners. See [Share with partners for free](/docs/share#partners).
+To share with partners for free, use "Share partners", the first tab under "Pairing". Click "Invite partner", choose how long the code lasts (1, 3 or 7 days) and whether you approve whoever uses it, and send the code or its link to your partner; it can be used once. They click "Enter invite code" and type the code or paste the link. The list shows your partners and the tokens you gave and used in the last 24 hours, and "Unpair" ends a partnership. Under "Sharing settings" you can use partners' nodes only, set a daily limit (tokens per 24 hours, all partners together) and the share of each node's concurrent jobs partners may take (0 pauses sharing). Available models marks the models your partners offer, and Activity shows "Partner (free)" for jobs between partners. See [Share with partners for free](/docs/share#partners).
 
 An [invite link](/docs/share#invite-links) clicked in the browser can open the app ("Open in ShareToken" on the link's page; the installers register the app for `sharetoken://` links). The app comes to the front, shows who invites you and asks before it accepts; when you are signed out it asks after you sign in.
 
@@ -102,7 +118,7 @@ Under "Settings", the "Network" tab has the switch for [direct tunnels](/docs/ru
 | Wait for a tunnel | How many milliseconds the first request to a seller may wait for its tunnel (0 to 10000). 0, the default, does not wait: that request goes through the relay, and the tunnel takes over the next ones |
 | DERP relays | The relays a tunnel starts through and stays on when no direct path is found. Empty uses the public ones; a network that runs its own gives the URL or the file of its DERP map. Buyer and seller need the same |
 
-"This device" says whether buyers can reach this computer through a tunnel. The "Tunnels" panel lists each tunnel: its direction (to a seller, from a buyer), the peer, the path ("Direct", or "Relayed" with the DERP region), the transport, the latency, and the traffic.
+"This device" says whether buyers can reach this computer through a tunnel. The "Tunnels" panel lists each tunnel: its direction (to a seller, from a buyer), the peer, the path ("Direct", or "Relayed" with the DERP region), the transport, the latency, the number of connections, and the traffic.
 
 The status bar shows the tunnels in short: "Off"; "On, no tunnel yet"; or the transport, the path, the number of tunnels and their latency, for example "QUIC Direct × 2". A click on it opens these settings. The Overview's network panel says the same.
 
@@ -150,4 +166,3 @@ The package has already placed `{{exe}}` in `/usr/bin`, so you can use it direct
 ::: windows
 The installer has already added `{{exe}}` to the current user's PATH. Open a new terminal to use it.
 :::
-
