@@ -68,6 +68,8 @@ type Config struct {
 	// DownloadsDir holds the client packages offered at /downloads/ (downloads.go).
 	// Empty: none.
 	DownloadsDir string
+	// BlogDir holds the articles of /blog/ (blog.go). Empty: no blog.
+	BlogDir string
 	// RelayMetrics reads the relays' metrics over SSH for the admin dashboard
 	// (relaymetrics.go). No targets: the dashboard shows the registry only.
 	RelayMetrics RelayMetricsConfig
@@ -115,6 +117,8 @@ type Server struct {
 
 	relayMetrics *relayMetrics // nil: not configured
 	adminAllow   *adminAllow   // nil: admin access from anywhere
+
+	blog blogCache // the index of /blog/ (blog.go)
 }
 
 // New prepares the portal on cfg.DB, creating any missing tables.

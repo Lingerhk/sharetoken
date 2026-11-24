@@ -92,6 +92,10 @@ type File struct {
 	Downloads struct {
 		Dir string `yaml:"dir"`
 	} `yaml:"downloads"`
+	// Blog: the articles of /blog/, one folder per article (internal/portal/blog.go). Empty: no blog.
+	Blog struct {
+		Dir string `yaml:"dir"`
+	} `yaml:"blog"`
 	// RelayMetrics: read each relay's /metrics over SSH for the admin dashboard
 	// (on the relay, restrict the key to that one command in authorized_keys).
 	RelayMetrics struct {
@@ -344,7 +348,7 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 	p, err := portal.New(portal.Config{DB: db, OpenRegistration: f.Accounts.OpenRegistration, SignupCreditMicros: f.Accounts.SignupCreditMicros,
 		LoginTTL: f.Sessions.LoginTTL.T(), PassKey: passKey, PassTTL: f.Sessions.PassTTL.T(), WebSessionTTL: f.Sessions.WebSessionTTL.T(),
 		SecureCookies: mode == "proxy", TrustedProxies: trustedProxies(f.HTTP.TrustedProxies), MFAKey: mfaKey, Log: lg,
-		Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir,
+		Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir, BlogDir: f.Blog.Dir,
 		MFAIssuer: f.Accounts.MFAIssuer, RelayMetrics: relayMetricsConfig(f), PushoverFile: f.Alerts.PushoverFile,
 		AdminAllow: portal.AdminAllowConfig{From: f.Admin.AllowFrom, Refresh: f.Admin.ResolveInterval.T()}})
 	if err != nil {

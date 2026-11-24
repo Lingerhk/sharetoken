@@ -18,7 +18,7 @@ var i18nBundles = map[string]struct {
 	// langs are the bundle's languages besides the source one; nil: all of them.
 	langs []string
 }{
-	"site": {"web", []string{"web/index.html", "web/site.js", "web/docs.html", "web/docs.js", "web/changelog.html", "web/changelog.js"}, nil},
+	"site": {"web", []string{"web/index.html", "web/site.js", "web/docs.html", "web/docs.js", "web/changelog.html", "web/changelog.js", "web/blog.html", "web/blog.js"}, nil},
 	"app":  {"web", []string{"web/app.html", "web/common.js", "web/user.js", "web/invite.html", "web/invite.js"}, nil},
 	// The desktop client is in English and Simplified Chinese only (index.html: data-langs).
 	"client": {"../client/ui", []string{"../client/ui/index.html", "../client/ui/app.js"}, []string{"en"}},
