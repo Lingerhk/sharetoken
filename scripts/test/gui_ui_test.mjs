@@ -261,6 +261,25 @@ await click('#apikey-required');
 await waitFor(`${el('#apikey-required')}.checked && !${el('#apikey-required')}.disabled`);
 ok(apiKeyFile().required && await v1Status('') === 401, 'turned on again');
 await shot('09b-apikey');
+
+console.log('crash reports and the log');
+// The stack's daemon runs with SHARETOKEN_REGION=CN: reports start on.
+const configFile = () => JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8'));
+await waitFor(`${el('#diag-note')}?.textContent.includes(${q(env.DESKTOP_HOME + '/logs')})`);
+ok(await ev(`${el('#diag-upload')}.checked`) && !(configFile().diagnostics || {}).upload, 'crash reports are on by default, and the page names the log directory');
+ok(readFileSync(env.DESKTOP_HOME + '/logs/client.log', 'utf8').includes('msg=starting'), 'the daemon writes its own log in the log directory');
+await click('#diag-upload');
+await waitFor(`!${el('#diag-upload')}.checked && !${el('#diag-upload')}.disabled`);
+ok(configFile().diagnostics.upload === false, 'turned off, config.json keeps the choice');
+await click('#diag-upload');
+await waitFor(`${el('#diag-upload')}.checked && !${el('#diag-upload')}.disabled`);
+ok(configFile().diagnostics.upload === true, 'and on again');
+ok(await has('#logs-open'), 'the settings offer to open the log directory');
+ok(await fits() && await viewFits('settings'), 'the settings still fit the window');
+await click('#diag-show'); await waitFor(el('#dlg-reports'));
+ok((await text('#dlg-reports')).includes('现在没有待发送的报告'), 'the waiting reports are shown (none)');
+await shot('09c-diagnostics');
+await click('#dlg-reports-close'); await waitFor(`!${el('#dlg-reports')}`);
 await click('#apikey-rotate'); await waitFor(el('#dlg-confirm'));
 await click('#confirm-ok'); await waitFor(`!${el('#dlg-confirm')}`);
 const key2 = apiKeyFile().key;

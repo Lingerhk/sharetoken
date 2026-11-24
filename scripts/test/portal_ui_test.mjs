@@ -504,6 +504,32 @@ try {
   await evaluate(`(() => { const s = document.querySelector('#feedback-status'); s.value = 'done'; s.dispatchEvent(new Event('change')); return true; })()`); await sleep(500);
   await assertText(HOSTILE, 'and is under handled');
 
+  // client crash reports: listed by problem as text, the detail with its stack, marked fixed
+  {
+    const at = Date.now() * 1e6;
+    sql(`DELETE FROM client_reports WHERE fingerprint = 'c0ffee00c0ffee00'; INSERT INTO client_reports (user_id, fingerprint, version, process, kind, os, arch, os_version, message, stack, context, features, count, last_report_id, occurred_at, first_seen, last_seen)
+      SELECT id, 'c0ffee00c0ffee00', '1.0.6', 'daemon', 'crash', 'darwin', 'arm64', 'macOS 15.3', '<img src=x onerror=window.__cr=1> panic: boom', 'goroutine 7 [running]:\nsharetoken/internal/client.(*Agent).maintain()\n\tagent.go:812 +0x1c4', '["time=x level=INFO msg=joined the network"]', '{"share":"on"}', 3, 'aaaaaaaaaaaa', 1, ${at}, ${at} FROM users WHERE username = '${ALICE}'`);
+    await goto(base + '/admin/#/crashes');
+    await waitFor(`document.querySelector('main .list-body .feedback-text')`);
+    check((await text()).includes('<img src=x onerror=window.__cr=1> panic: boom') && !(await evaluate(`!!document.querySelector('main .list-body img') || !!window.__cr`)), 'the admin sees crash reports as text');
+    check(await evaluate(`Number(document.querySelector('#crashes-new').textContent) >= 1`), 'the nav counts open crash problems');
+    await shot('10a2-admin-crashes');
+    await noNull('admin crashes');
+    await clickText('main button', '详情');
+    await waitFor(`document.querySelector('#crash-stack')`);
+    check((await evaluate(`document.querySelector('#crash-stack').textContent`)).includes('(*Agent).maintain') && (await evaluate(`document.querySelector('#crash-context').textContent`)).includes('joined the network'), 'the detail shows the stack and the log before it');
+    check((await evaluate(`document.querySelector('.crash-modal').textContent`)).includes(ALICE), 'and who reported it');
+    await shot('10a3-admin-crash-detail');
+    await evaluate(`document.querySelector('#crash-note').value = 'fixed in 1.0.7'; document.querySelector('#crash-fixed').click()`); await sleep(800);
+    check(!(await text()).includes('panic: boom'), 'a fixed problem leaves the open list');
+    check(sql(`SELECT CONCAT(status, '|', note) FROM client_reports WHERE fingerprint = 'c0ffee00c0ffee00'`) === 'fixed|fixed in 1.0.7', 'and is stored as fixed, with the note');
+    await evaluate(`(() => { const s = document.querySelector('#crashes-status'); s.value = 'fixed'; s.dispatchEvent(new Event('change')); return true; })()`); await sleep(500);
+    await assertText('panic: boom', 'and is under fixed');
+    await goto(base + '/admin/#/dashboard');
+    await waitFor(`document.querySelector('#dash-crashes')`);
+    check((await evaluate(`document.querySelector('#dash-crashes').textContent`)).includes('1.0.6'), 'the dashboard counts crash reports by version');
+  }
+
   // pairings: full names, the private seller marked, search
   await goto(base + '/admin/#/pairings');
   await waitFor(`document.querySelector('main .list-body table')`);
