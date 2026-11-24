@@ -1664,6 +1664,37 @@ I18N.ready.then(() => {
       el.disabled = false;
     }
 
+    // Crash reports and the log (GET/PUT /api/v1/diagnostics; internal/client/diag.go).
+    const diagBox = h('input', { type: 'checkbox', id: 'diag-upload', onchange: async e => {
+      e.target.disabled = true;
+      try { showDiag(await api('PUT', '/api/v1/diagnostics', { upload: e.target.checked })); }
+      catch (x) { diagNote.className = 'hint small warn-text'; diagNote.textContent = message(x); }
+      e.target.disabled = false;
+    } });
+    const diagNote = h('span', { class: 'hint small muted', id: 'diag-note' });
+    const diagShow = h('button', { type: 'button', id: 'diag-show', onclick: showReports }, tr('查看待发送内容'));
+    const logsOpen = h('button', { type: 'button', id: 'logs-open', onclick: async () => {
+      try { await api('POST', '/api/v1/logs/open'); } catch (x) { diagNote.className = 'hint small warn-text'; diagNote.textContent = message(x); }
+    } }, tr('打开日志目录'));
+    function showDiag(d) {
+      diagBox.checked = !!d.upload;
+      diagNote.className = 'hint small muted';
+      const parts = [tr('程序崩溃或出错时，把脱敏后的错误信息（错误类型、调用栈、崩溃前的程序日志）随你的账户发给 ShareToken，帮助我们修复问题。不含对话内容、密钥、邮箱和 IP 地址。')];
+      if (!d.chosen && !d.default_upload) parts.push(tr('你所在的地区（欧洲经济区）默认关闭。'));
+      if (d.pending) parts.push(tr('待发送 {n} 份。', { n: d.pending }));
+      parts.push(tr('日志目录：{dir}', { dir: d.log_dir }));
+      diagNote.textContent = parts.join(' ');
+    }
+    async function loadDiag() { try { showDiag(await api('GET', '/api/v1/diagnostics')); } catch (x) { /* an older daemon: the row stays empty */ } }
+    async function showReports() {
+      let reps = [];
+      try { reps = (await api('GET', '/api/v1/diagnostics/reports')).reports || []; } catch (x) { diagNote.textContent = message(x); return; }
+      modal('dlg-reports', tr('待发送的诊断报告'),
+        h('p', { class: 'small muted' }, reps.length ? tr('下面就是会发送的全部内容，已经脱敏。关闭上报会清空它们。') : tr('现在没有待发送的报告。')),
+        reps.map(r => h('details', { class: 'report' }, h('summary', null, new Date(r.occurred_at * 1000).toLocaleString() + ' · ' + r.kind + ' · ' + r.message.split('\n')[0]),
+          h('pre', { class: 'report-json' }, JSON.stringify(r, null, 2)))));
+    }
+
     const settings = h('section', { class: 'panel', id: 'settings' }, h('div', { class: 'rows' },
       h('span', { class: 'k' }, tr('账户')), accountName, logoutBtn,
       h('span', { class: 'k' }, tr('API key')), h('label', { class: 'v check' }, apiKeyBox, h('span', null, tr('调用本地模型接口需要 API key'))), apiKeyCopy,
@@ -1671,7 +1702,10 @@ I18N.ready.then(() => {
       h('span', { class: 'k' }, tr('语言')), h('span', { class: 'v' }), I18N.picker() || h('span'),
       h('span', { class: 'k' }, tr('版本')), h('span', { class: 'v' }, versionText, ' ', checkResult), checkBtn,
       h('span', { class: 'k' }, tr('反馈')), h('span', { class: 'v muted' }, tr('告诉我们你遇到的问题或建议。')),
-      h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈'))));
+      h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈')),
+      h('span', { class: 'k' }, tr('诊断')), h('label', { class: 'v check' }, diagBox, h('span', null, tr('发送异常诊断报告'))), diagShow,
+      h('span', { class: 'k' }), diagNote, logsOpen));
+    loadDiag();
     // How requests are bought (PUT /api/v1/buy).
     const buyPanel = h('section', { class: 'panel', id: 'buy-settings' }, h('div', { class: 'rows' },
       h('span', { class: 'k' }, tr('原生卖家')), h('label', { class: 'v check' }, nativeBox, h('span', null, tr('只用原生支持请求接口的卖家'))), h('span'),

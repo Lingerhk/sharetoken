@@ -23,7 +23,7 @@ The examples below write `sharetoken`; use the command above if `sharetoken` is 
 ## Ground rules
 
 - **Credits are money.** Requests through the endpoint spend the user's credits. Do not send large batches, loops or long generations without the user's go-ahead, and set `max_tokens` on requests.
-- **Ask before changing state:** `connect` (it edits Claude Code's or Codex's own settings; backups are kept), `codex-unlock on/off`, `official fallback/fallback-model/guard`, `autostart on/off`, `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private/approve/reject/withdraw`, `partner invite/join/rm/revoke/set/approve/reject/withdraw`, `accept`, `apikey on/off/rotate`, `relays add/remove`, `tailnet on/off`, `warmup set/run/pause/resume`, `provider warmup`. Reading (`connect` with no arguments, `official` with no arguments, `autostart` with no arguments, `status`, `balance`, `jobs`, `models`, `relays`, `tailnet`, `share`, `provider`, `pair`, `partner`, `warmup`, `config`) is always fine.
+- **Ask before changing state:** `connect` (it edits Claude Code's or Codex's own settings; backups are kept), `codex-unlock on/off`, `official fallback/fallback-model/guard`, `autostart on/off`, `logout`, `share on/off/add/rm`, `provider add/login/on/off/rm`, `pair join/leave/rm/revoke/private/approve/reject/withdraw`, `partner invite/join/rm/revoke/set/approve/reject/withdraw`, `accept`, `apikey on/off/rotate`, `relays add/remove`, `tailnet on/off`, `warmup set/run/pause/resume`, `provider warmup`, `diagnostics on/off`. Reading (`connect` with no arguments, `official` with no arguments, `autostart` with no arguments, `status`, `balance`, `jobs`, `models`, `relays`, `tailnet`, `share`, `provider`, `pair`, `partner`, `warmup`, `config`, `logs`, `diagnostics` with no arguments or `show`) is always fine.
 - **Never put secrets on a command line.** A provider API key goes in through standard input or `$SHARETOKEN_PROVIDER_KEY`, never as an argument. Never print the `token` from `config.json` or `providers.json`; `sharetoken config` masks it.
 - **Sign-in needs the user.** `login` mails a six-digit code to the user's address. Ask the user for the address and then for the code; do not guess them.
 - **`up` runs until stopped.** Start it in the background (or ask the user to run it in a terminal); never wait on it in the foreground.
@@ -190,6 +190,16 @@ sharetoken accept LINK_OR_CODE                    # an invite link (https://<por
 sharetoken partner rm USER_ID | partner revoke INVITE_ID
 sharetoken partner set [-only on|off] [-limit TOKENS_PER_24H] [-share PERCENT]
 ```
+
+## Logs and crash reports
+
+```bash
+sharetoken logs [-n 200] [-f] [-gui]    # the client's log (the desktop app's with -gui); logs path: the directory
+sharetoken diagnostics [on|off|show]    # crash reports to the portal: state, switch, what waits to be sent
+```
+
+- When something fails, read `sharetoken logs -n 100` before guessing. The log has the user's account and addresses in it: summarize what matters, do not paste it into other places.
+- Crash reports are redacted and sent with the user's login; on by default, off by default in the European Economic Area. Change the switch only when the user asks.
 
 ## Local management API
 

@@ -49,6 +49,7 @@ var auditActions = map[string]string{
 	"POST /api/v1/admin/mail/send":                     "mail.send",
 	"POST /api/v1/admin/mail/test":                     "mail.test",
 	"POST /api/v1/admin/feedback/{id}/status":          "feedback.status",
+	"POST /api/v1/admin/client-reports/{fp}/status":    "client_report.status",
 	"PUT /api/v1/admin/settings":                       "settings.update",
 	"POST /api/v1/admin/settings/apply-blocklist":      "settings.apply_blocklist",
 	"POST /api/v1/admin/invites":                       "invite.create",

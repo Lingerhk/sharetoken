@@ -97,6 +97,7 @@ func errText(e *error) string {
 }
 
 func main() {
+	gd := startGUILog(logDir(homeDir()))
 	sup := newSupervisor()
 	// The daemon is started once Wails holds the single-instance lock (taken in
 	// application.New), so a second start of the app leaves without touching
@@ -163,6 +164,7 @@ func main() {
 		sup.stop()
 	})
 	finish := sync.OnceFunc(func() {
+		gd.finish()
 		if selftest {
 			// $SHARETOKEN_GUI_SELFTEST_REPORT: also into a file, for a copy started
 			// by an update, whose output goes nowhere.
@@ -354,6 +356,7 @@ func main() {
 	err := app.Run()
 	if err != nil {
 		stopDaemon()
+		gd.finish()
 		log.Fatalf("sharetoken-gui: %v", err)
 	}
 	finish()

@@ -3,10 +3,10 @@
 所有命令的格式：
 
 ```bash
-{{exe}} [-home DIR] <command> [flags]
+{{exe}} [-home DIR] [-log-dir DIR] <command> [flags]
 ```
 
-`-home` 要写在命令**前面**，用来指定另一个数据目录。不带参数运行可以看到简短的帮助。
+`-home` 要写在命令**前面**，用来指定另一个数据目录。`-log-dir` 也写在命令前面，指定 `up` 和 `daemon` 把日志写到哪里（见[日志和崩溃报告](#logs)）。不带参数运行可以看到简短的帮助。
 
 ## 账户 {#account}
 
@@ -216,6 +216,28 @@ Claude 和 ChatGPT（Codex）订阅的 5 小时窗口从重置后的第一次请
 
 到点时只有 5 小时窗口没在运行才会发请求；错过 1 小时以上（比如电脑在睡眠）就不补发。`-on-reset week` 表示周窗口一重置就启动，`all` 表示 5 小时窗口也一样。窗口已用完或正在使用超额额度时不发送。客户端运行时才会预热（桌面应用，或 `up`）；时间按本机时区。桌面应用的“设置 → 预热”里有同样的设置。
 
+## 日志和崩溃报告 {#logs}
+
+### logs {#logs-cmd}
+
+```bash
+{{exe}} logs
+{{exe}} logs -n 50 -f
+{{exe}} logs path
+```
+
+输出客户端日志的最后几行（默认 200 行，`-n` 指定行数），加 `-f` 会持续输出新的日志。`-gui` 改为输出桌面应用自己的日志。`logs path` 输出日志目录。无论客户端是怎么启动的（终端、桌面应用、开机自启），它都自己把日志写到该目录下的 `client.log`；文件超过 10 MB 时改名为 `client.log.1`，依次类推，保留 5 个旧文件。目录和相关设置见[日志和崩溃报告](/docs/config#logs)。
+
+### diagnostics {#diagnostics}
+
+```bash
+{{exe}} diagnostics
+{{exe}} diagnostics off
+{{exe}} diagnostics show
+```
+
+显示是否发送崩溃报告、有几份待发送，以及日志目录。`on`、`off` 用来开关；`off` 同时删除待发送的报告。`show` 原样输出将要发送的内容。客户端崩溃或从 panic 中恢复时，会把脱敏后的报告随你的登录发给门户：错误信息、出错的代码位置，以及出错前的最后几行日志。默认开启，欧洲经济区默认关闭。报告包含哪些内容见[崩溃报告](/docs/config#crash-reports)。
+
 ## 其他 {#other}
 
 | 命令 | 作用 |
@@ -229,3 +251,5 @@ Claude 和 ChatGPT（Codex）订阅的 5 小时窗口从重置后的第一次请
 | 变量 | 作用 |
 |---|---|
 | `SHARETOKEN_HOME` | 数据目录，和 `-home` 相同 |
+| `SHARETOKEN_LOG_DIR` | 日志目录，优先于 `-log-dir` 和配置里的 `log.dir` |
+| `SHARETOKEN_REGION` | 用两个字母表示你所在的国家（如 `DE`），在系统的地区设置不能反映你所在地时使用。它决定崩溃报告默认开还是关 |

@@ -42,6 +42,7 @@ import (
 	"sharetoken/internal/buyer"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/client"
+	"sharetoken/internal/diag"
 	"sharetoken/internal/node"
 	"sharetoken/internal/p2p"
 	"sharetoken/internal/protocol"
@@ -49,7 +50,7 @@ import (
 	"sharetoken/internal/version"
 )
 
-const usage = `usage: sharetoken [-home DIR] <command> [flags]
+const usage = `usage: sharetoken [-home DIR] [-log-dir DIR] <command> [flags]
 
 Getting started:
   login [-email ADDR] [-code CODE] [-invite CODE] [-totp CODE] [-device NAME] [-portal-pin FP]
@@ -175,6 +176,14 @@ Warm-up (start a Claude or ChatGPT 5-hour window early, so it resets while you w
                                         warm up now (default: every one that is set)
   warmup pause | resume                 stop every automatic warm-up, or go on
 
+Logs and crash reports:
+  logs [-n N] [-f] [-gui]               the client's log (-gui: the desktop app's); logs path: where it is.
+                                        It is in <home>/logs unless -log-dir, $SHARETOKEN_LOG_DIR or the
+                                        configuration's log.dir say otherwise (read at start)
+  diagnostics [on|off|show]             whether a crash or panic is reported to the portal, redacted, with
+                                        your login (default on; off in the European Economic Area);
+                                        show prints exactly what waits to be sent
+
   config                                show the configuration file
   version [--check]                     show what this client was built for; --check asks the portal for a newer release
   upgrade [-y]                          install the newest release: fetches its package, checks the release signature,
@@ -182,6 +191,7 @@ Warm-up (start a Claude or ChatGPT 5-hour window early, so it resets while you w
 
 func main() {
 	home := flag.String("home", client.Home(), "client state directory")
+	logDir := flag.String("log-dir", "", "where up and daemon write their log (default: the configuration's log.dir, else <home>/logs; $SHARETOKEN_LOG_DIR overrides)")
 	flag.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
 	flag.Parse()
 	if flag.NArg() == 0 {
@@ -204,7 +214,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	c := &cmdCtx{home: *home, cfg: cfg}
+	c := &cmdCtx{home: *home, cfg: cfg, logDir: *logDir}
 	var run func([]string) error
 	switch cmd {
 	case "login":
@@ -255,6 +265,10 @@ func main() {
 		run = c.officialCmd
 	case "autostart":
 		run = c.autostart
+	case "logs":
+		run = c.logs
+	case "diagnostics":
+		run = c.diagnostics
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		flag.Usage()
@@ -267,8 +281,9 @@ func main() {
 }
 
 type cmdCtx struct {
-	home string
-	cfg  client.Config
+	home   string
+	cfg    client.Config
+	logDir string // -log-dir
 }
 
 func (c *cmdCtx) save() error { return client.SaveConfig(c.home, c.cfg) }
@@ -967,8 +982,15 @@ func (c *cmdCtx) up(args []string) error {
 	if c.cfg.Token == "" {
 		return errors.New("not logged in: run `sharetoken login` first")
 	}
+	dg, err := client.StartDiag(c.home, diag.ProcCLI, c.logDir, c.cfg, term.IsTerminal(int(os.Stderr.Fd())))
+	if err != nil {
+		return err
+	}
+	defer dg.Close()
 	sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	pc := client.NewPortalClient(c.cfg.Portal, c.cfg.Token, c.cfg.PortalPin)
+	go client.NewReportUploader(c.home, dg.Queue, func() *client.PortalClient { return pc }).Run(sctx)
 	a := client.NewAgent(c.home, c.cfg)
 	updates := client.NewUpdateWatcher(c.home, "cli", func() (string, string) { return c.cfg.Portal, c.cfg.PortalPin })
 	a.Updates = updates
@@ -1029,8 +1051,13 @@ func (c *cmdCtx) runDaemon(args []string) error {
 			stop()
 		}()
 	}
+	dg, err := client.StartDiag(c.home, diag.ProcDaemon, c.logDir, c.cfg, term.IsTerminal(int(os.Stderr.Fd())))
+	if err != nil {
+		return err
+	}
+	defer dg.Close()
 	d := client.NewDaemon(c.home)
-	d.HTTP, d.Listen, d.NAT, d.AllowHTTP = *httpAddr, cli.List(*listen), nat, *allowHTTP
+	d.HTTP, d.Listen, d.NAT, d.AllowHTTP, d.Diag = *httpAddr, cli.List(*listen), nat, *allowHTTP, dg
 	if err := d.Start(); err != nil {
 		return err
 	}

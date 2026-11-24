@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS relay_samples (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 `},
 	{Version: 3, Name: "no passwords", SQL: `DROP TABLE IF EXISTS password_resets;`},
+	{Version: 4, Name: "client crash reports", SQL: clientReportsSchema},
 }
 
 // Settings is everything the settings page edits.

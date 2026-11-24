@@ -40,7 +40,7 @@ type supervisor struct {
 
 func newSupervisor() *supervisor {
 	home := homeDir()
-	s := &supervisor{home: home, addr: daemonAddr(home), logTo: filepath.Join(home, "daemon.log")}
+	s := &supervisor{home: home, addr: daemonAddr(home), logTo: filepath.Join(logDir(home), daemonStderr)}
 	if s.addr == current().defaultHTTP {
 		s.spare = spareAddrs()
 	}
@@ -276,7 +276,12 @@ func (s *supervisor) start(ctx context.Context) error {
 	if err := os.MkdirAll(s.home, 0o700); err != nil {
 		return err
 	}
-	logf, err := os.OpenFile(s.logTo, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err := os.MkdirAll(filepath.Dir(s.logTo), 0o700); err != nil {
+		return err
+	}
+	// The daemon writes its own log (client.log); this file gets only what it
+	// says before that is open, and the runtime's own output, of this start.
+	logf, err := os.OpenFile(s.logTo, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"sharetoken/internal/cli"
+	"sharetoken/internal/diag"
 	"sharetoken/internal/official"
 	"sharetoken/internal/p2p"
 	"sharetoken/internal/portal"
@@ -44,6 +45,9 @@ type Daemon struct {
 	RetryMin, RetryMax time.Duration
 	// OnAgent, if set, adjusts each agent before it starts (embedding, tests).
 	OnAgent func(*Agent)
+	// Diag is the process's log and crash reporting (StartDiag); nil: the
+	// daemon still sends what the log directory's queue holds.
+	Diag *Diag
 
 	home string
 	log  *slog.Logger
@@ -71,6 +75,7 @@ type Daemon struct {
 	warmup   *warmup.Service // runs logged in or out: it needs no portal
 	invites  pendingInvites  // the invite link the app was opened with (invites.go)
 	official *official.Gateway
+	reports  *diag.Uploader // sends the queued crash reports (diag.go)
 
 	stopUpdates context.CancelFunc
 }
@@ -159,7 +164,7 @@ func (d *Daemon) Start() error {
 		ln.Close()
 		return err
 	}
-	d.srv = &http.Server{Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	d.srv = &http.Server{Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: diag.HTTPErrorLog("daemon")}
 	go func() {
 		if err := d.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			d.log.Error("local API stopped", "err", err)
@@ -172,15 +177,22 @@ func (d *Daemon) Start() error {
 	d.mu.Unlock()
 	uctx, stopUpdates := context.WithCancel(context.Background())
 	d.stopUpdates = stopUpdates
-	d.bg.Go(func() { d.updates.Run(uctx) })
-	d.bg.Go(func() { d.warmup.Run(uctx) })
+	d.bg.Go(diag.Wrap("updates", func() { d.updates.Run(uctx) }))
+	d.bg.Go(diag.Wrap("warmup", func() { d.warmup.Run(uctx) }))
 	d.official.StartUnlock(uctx)
-	d.bg.Go(func() { d.connectLoop(uctx) })
+	d.bg.Go(diag.Wrap("connect", func() { d.connectLoop(uctx) }))
+	d.reports = NewReportUploader(d.home, d.reportQueue(), func() *PortalClient {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.portal
+	})
+	d.bg.Go(diag.Wrap("reports", func() { d.reports.Run(uctx) }))
 	if cfg.Portal != "" && cfg.Token != "" {
 		if keys, err := p2p.LoadOrCreateKeys(filepath.Join(d.home, KeyFile)); err == nil {
 			d.mu.Lock()
 			d.peer = keys.ID()
 			d.mu.Unlock()
+			setSelfPeer(keys.ID())
 		}
 		d.startRun(cfg)
 	}
@@ -243,7 +255,7 @@ func (d *Daemon) startRun(cfg Config) {
 	d.portal = NewPortalClient(cfg.Portal, cfg.Token, cfg.PortalPin)
 	d.cancel, d.done = cancel, done
 	d.mu.Unlock()
-	go d.joinNetwork(ctx, done, cfg)
+	go diag.Wrap("join", func() { d.joinNetwork(ctx, done, cfg) })()
 }
 
 // joinNetwork starts an agent, retrying until it runs: the portal, the relays
@@ -696,7 +708,11 @@ func (d *Daemon) finishSignIn(ctx context.Context, pc *PortalClient, base, pin s
 	d.peer = peer
 	d.mu.Unlock()
 	d.log.Info("signed in", "user", res.User.Username, "device", peer, "new_account", res.Created)
+	setSelfPeer(peer)
 	d.startRun(cfg)
+	if d.reports != nil {
+		d.reports.Kick() // crashes from before the sign-in waited for it
+	}
 	return nil
 }
 
@@ -975,6 +991,7 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/tailnet", tailnetSaved(true))
 	d.official.Routes(mux)
 	d.connectRoutes(mux)
+	d.diagRoutes(mux)
 	mux.HandleFunc("/backend-api/", d.official.ServeBackend)
 	mux.HandleFunc("/api/hello", helloOK)
 	mux.HandleFunc("/api/v1/", d.toAgent)

@@ -3,10 +3,10 @@
 The format of every command:
 
 ```bash
-{{exe}} [-home DIR] <command> [flags]
+{{exe}} [-home DIR] [-log-dir DIR] <command> [flags]
 ```
 
-`-home` goes **before** the command. It selects another state directory. Run with no arguments for short help.
+`-home` goes **before** the command. It selects another state directory. `-log-dir` also goes before the command: it chooses where `up` and `daemon` write their log ([Logs and crash reports](#logs)). Run with no arguments for short help.
 
 ## Account {#account}
 
@@ -216,6 +216,28 @@ A Claude or ChatGPT (Codex) subscription's 5-hour window starts at the first req
 
 At each time, a request is sent only if the 5-hour window isn't running; a time missed by more than an hour (the computer asleep) is skipped. `-on-reset week` starts the weekly window as soon as it resets, `all` the 5-hour one too. Nothing is sent while a window is used up or extra usage is in use. Warm-ups happen while the client runs (the desktop app, or `up`); times are this computer's local time. The desktop app has the same settings under Settings → Warm-up.
 
+## Logs and crash reports {#logs}
+
+### logs {#logs-cmd}
+
+```bash
+{{exe}} logs
+{{exe}} logs -n 50 -f
+{{exe}} logs path
+```
+
+Prints the last lines of the client's log (default 200; `-n` sets how many), and with `-f` keeps printing new lines. `-gui` prints the desktop app's own log instead. `logs path` prints the log directory. The client writes the log itself, whichever way it was started (in a terminal, by the desktop app, or at login), to `client.log` in that directory; a file over 10 MB is renamed `client.log.1` and so on, and five old files are kept. See [Logs and crash reports](/docs/config#logs) for the directory and its settings.
+
+### diagnostics {#diagnostics}
+
+```bash
+{{exe}} diagnostics
+{{exe}} diagnostics off
+{{exe}} diagnostics show
+```
+
+Shows whether crash reports are sent, how many wait to be sent, and the log directory. `on` and `off` change it; `off` also deletes the reports that were waiting. `show` prints exactly what would be sent. When the client crashes or recovers from a panic, it sends the portal a redacted report with your login: the error, where in the code it happened, and the last lines of the log before it. It is on unless you turn it off, except in the European Economic Area, where it starts off. See [Crash reports](/docs/config#crash-reports) for what a report contains.
+
 ## Other {#other}
 
 | Command | What it does |
@@ -229,3 +251,5 @@ At each time, a request is sent only if the 5-hour window isn't running; a time 
 | Variable | What it does |
 |---|---|
 | `SHARETOKEN_HOME` | State directory. Same as `-home` |
+| `SHARETOKEN_LOG_DIR` | Log directory. Takes precedence over `-log-dir` and the configuration's `log.dir` |
+| `SHARETOKEN_REGION` | Your country as two letters (such as `DE`), when the system's region settings do not say where you are. It decides whether crash reports start on or off |

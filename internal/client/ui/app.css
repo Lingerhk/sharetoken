@@ -278,3 +278,8 @@ html.i18n-pending body { visibility: hidden; }
 .tools-official .field { width: 100%; max-width: 560px; }
 .tools-official .endpoint input { width: 220px; }
 .tools-autostart { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; max-width: 760px; }
+/* Crash reports waiting to be sent (settings > general > diagnostics). */
+#dlg-reports { width: min(760px, calc(100vw - 32px)); }
+details.report { margin: 6px 0; }
+details.report summary { cursor: pointer; overflow-wrap: anywhere; font-size: 13px; }
+.report-json { max-height: 40vh; overflow: auto; font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; }

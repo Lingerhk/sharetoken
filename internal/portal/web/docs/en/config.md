@@ -41,7 +41,7 @@ You can also set the environment variable `SHARETOKEN_HOME`.
 | `network.json` | A cache of the relay list. If you delete it, it is fetched again automatically |
 | `run.json` | The API address of the running client and the key of its management API |
 | `apikey.json` | The OpenAI endpoint's API key and whether it is required (`{{exe}} apikey`) |
-| `daemon.log` | The log of the service started by the desktop app |
+| `logs/` | The client's log (`client.log`), the desktop app's (`gui.log`), crash records and the crash reports waiting to be sent. See [Logs and crash reports](#logs) |
 
 > [!WARNING]
 > `config.json` and `device.key` act as this device's sign-in credentials. Do not share them, commit them to a code repository, or put them in a backup others can read. Losing them does not lose any credit: just sign in again. Once the device key changes, it is a new device, and you can unbind the old device on the portal.
@@ -136,3 +136,42 @@ When you change settings with the `share` subcommands, the running client applie
 | `tailnet.wait_ms` | How long a request to a new node waits for the tunnel before it uses the relay (0 to 10000 ms) | `0` |
 | `tailnet.transport` | What this machine's connections to sellers run over inside the tunnel: `quic` or `tcp`. A seller accepts both | `quic` |
 | `tailnet.derp_map` | The DERP map tunnels start through: a URL or a file; empty for tailcat's public DERP relays | Empty |
+
+## Logs and crash reports {#logs}
+
+```json
+{
+  "log": { "dir": "", "level": "info", "max_size_mb": 10, "max_files": 5 },
+  "diagnostics": { "upload": true }
+}
+```
+
+| Field | Meaning | Default |
+|---|---|---|
+| `log.dir` | Where the log goes. `-log-dir` and the environment variable `SHARETOKEN_LOG_DIR` take precedence. Read when the client starts: restart it after a change | `logs` in the state directory |
+| `log.level` | `debug`, `info`, `warn` or `error` | `info` |
+| `log.max_size_mb` | Size at which a log file is renamed (`client.log.1`, …) and a new one started | `10` |
+| `log.max_files` | How many renamed files are kept | `5` |
+| `diagnostics.upload` | Send crash reports. Leave it out to keep the default. Takes effect at once | `true`; `false` in the European Economic Area |
+
+The log directory holds:
+
+| File | Contents |
+|---|---|
+| `client.log` | The log of `up` and of the service behind the desktop app (`daemon`), whichever way it was started |
+| `gui.log` | The desktop app window's own log |
+| `daemon.stderr` | What the service printed before its log was open, and Go's own output; rewritten at each start |
+| `crash/` | The record of a crash: written as the program dies, turned into a report at the next start, then kept in `crash/old` (the last five) |
+| `reports/` | Crash reports waiting to be sent, already redacted: exactly what will be sent |
+
+### Crash reports {#crash-reports}
+
+When the client crashes (an unrecovered panic or a fatal error in Go) or recovers from a panic, the next start, or the moment itself, writes a report to `reports/`, and the client sends it to the portal with your login within about 10 minutes. Nothing is sent while you are signed out; reports wait until you sign in. A report contains:
+
+- the error message and the stack trace of the code that failed;
+- the last 100 lines of the client's log before it, redacted;
+- the version, the system and its release, and which settings were on (sharing, tailnet, private relay), as on/off.
+
+Before a report is written, e-mail addresses, tokens and API keys, IP addresses, host names, URLs (all but a few public services such as api.openai.com), your home directory and user name, pairing codes, and other devices' IDs are removed; in log lines only known fields keep their values. Prompts and answers are never logged, so they are never in a report. The portal applies the same rules again to what it receives, and keeps a report for 90 days after its last occurrence.
+
+Turn reports off in the desktop app (Settings → General → Diagnostics) or with `{{exe}} diagnostics off`; the reports waiting are deleted. Whether they start on depends on the system's region and time zone: in the European Economic Area they start off. `{{exe}} diagnostics show`, or "View pending reports" in the app, shows what waits to be sent.

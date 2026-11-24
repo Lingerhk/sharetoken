@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"sharetoken/internal/diag"
 )
 
 // Autostart runs the client's daemon at login, restarted when it fails:
@@ -107,7 +109,13 @@ func SetAutostart(home string, on bool) error {
 		if !on {
 			return removeIfThere(p)
 		}
-		logp := filepath.Join(h, "Library", "Logs", autostartName()+".log")
+		// The client writes its own log (diag.go); this file only gets what
+		// it writes before that is open, and the runtime's own output.
+		cfg, _ := LoadConfig(home)
+		logp := filepath.Join(LogDir(home, "", cfg), diag.StderrLog)
+		if err := os.MkdirAll(filepath.Dir(logp), 0o700); err != nil {
+			return err
+		}
 		plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

@@ -96,6 +96,8 @@ type Server struct {
 	codesPaused, linksPaused time.Time
 	pushoverURL              string // tests point alerts elsewhere (default pushoverAPI)
 
+	reportsByUser, reportsByIP hourWindow // crash reports accepted in the last hour (clientreports.go)
+
 	feedbackMu sync.Mutex
 	feedbackIP map[string][]time.Time // accepted feedback per client IP, last hour
 
@@ -195,8 +197,9 @@ func New(cfg Config) (*Server, error) {
 }
 
 // Run does the portal's background work (relay metrics, resolving
-// admin.allow_from) until ctx ends.
+// admin.allow_from, pruning old crash reports) until ctx ends.
 func (s *Server) Run(ctx context.Context) {
+	go s.runReportPrune(ctx)
 	if s.adminAllow != nil {
 		go s.runAdminAllow(ctx)
 	}
@@ -483,6 +486,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/admin/oplog", s.admin(s.handleAuditLog))
 	s.mailRoutes(mux)
 	s.feedbackRoutes(mux)
+	s.clientReportRoutes(mux)
 	s.pairingRoutes(mux)
 	s.sharingRoutes(mux)
 	s.inviteRoutes(mux)
@@ -502,8 +506,11 @@ const (
 func withLimits(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limit := int64(maxBody)
-		if r.URL.Path == "/api/v1/admin/settings" {
+		switch r.URL.Path {
+		case "/api/v1/admin/settings":
 			limit = maxSettingsBody // the email blocklist; only admins get past the handler
+		case "/api/v1/client-reports":
+			limit = maxClientReportBody // a crash's traceback and log lines (diag.MaxReport, as JSON)
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		w.Header().Set("Cache-Control", "no-store")

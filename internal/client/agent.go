@@ -29,6 +29,7 @@ import (
 	"sharetoken/internal/attest/hw"
 	"sharetoken/internal/buyer"
 	"sharetoken/internal/cli"
+	"sharetoken/internal/diag"
 	"sharetoken/internal/node"
 	"sharetoken/internal/official"
 	"sharetoken/internal/p2p"
@@ -183,7 +184,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	}
 	a.tailnetHooks()
 	if a.tailnet != nil {
-		go a.tailnet.Run(a.ctx, h)
+		diag.Go("tailnet", func() { a.tailnet.Run(a.ctx, h) })
 	}
 	a.selectRelay(a.ctx, false)
 	a.mu.Lock()
@@ -205,14 +206,14 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.addr = ln.Addr().String()
 		a.key = newLocalKey()
 		a.warm = warmup.New(a.home)
-		go a.warm.Run(a.ctx)
+		diag.Go("warmup", func() { a.warm.Run(a.ctx) })
 		gate, err := newAPIKeyGate(a.home)
 		if err != nil {
 			ln.Close()
 			a.Close()
 			return err
 		}
-		a.srv = &http.Server{Handler: requireLocalKey(a.key, agentOpen, gate, a.Handler()), ReadHeaderTimeout: 10 * time.Second}
+		a.srv = &http.Server{Handler: requireLocalKey(a.key, agentOpen, gate, a.Handler()), ReadHeaderTimeout: 10 * time.Second, ErrorLog: diag.HTTPErrorLog("client")}
 		a.gateway().StartUnlock(a.ctx)
 		go func() {
 			if err := a.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -234,7 +235,7 @@ func (a *Agent) Start(ctx context.Context) error {
 			a.Kick()
 		}
 	}})
-	go a.maintain()
+	diag.Go("maintain", a.maintain)
 	go a.buyer.RunErrands(a.ctx, a.ErrandFirst, func() bool {
 		a.mu.Lock()
 		defer a.mu.Unlock()
@@ -369,6 +370,9 @@ func (a *Agent) loadKeys() error {
 		}
 		k, err := p2p.LoadOrCreateKeys(filepath.Join(a.home, KeyFile))
 		a.keys = k
+		if err == nil {
+			setSelfPeer(k.ID())
+		}
 		return err
 	}
 	// In a confidential VM the keys exist only in guest memory (a key file
