@@ -1,6 +1,6 @@
 ---
 name: sharetoken
-description: Use the ShareToken client (the `sharetoken` command) on this machine - buy model inference from the ShareToken network through its local endpoint (OpenAI chat completions and Responses, Anthropic Messages), check the client's status, balance, jobs, models and relays, share a local model or a hosted API to earn credits, and manage pairing. Use when the user mentions ShareToken, sharetoken, its credits, or wants to call or sell models through it.
+description: Use the ShareToken client (the `sharetoken` command) on this machine - buy model inference from the ShareToken network through its local endpoint (OpenAI chat completions and Responses, Anthropic Messages), connect Claude Code and Codex to it next to their own Claude or ChatGPT plan (st- models, fallback when the plan runs out), check the client's status, balance, jobs, models and relays, share a local model or a hosted API to earn credits, and manage pairing. Use when the user mentions ShareToken, sharetoken, its credits, or wants to call or sell models through it.
 ---
 
 <!-- Installed by `sharetoken skill install`; `sharetoken skill uninstall` removes it. -->
@@ -58,7 +58,7 @@ Any OpenAI-compatible tool works with base URL `http://@HTTP@/v1` and the client
 
 ```bash
 curl -s http://@HTTP@/v1/chat/completions -H "Authorization: Bearer $(@CMD@ apikey -q)" -H 'Content-Type: application/json' \
-  -d '{"model":"MODEL_ID","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"st-MODEL","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ```python
@@ -66,12 +66,12 @@ from openai import OpenAI
 import subprocess
 key = subprocess.run(["@CMD@", "apikey", "-q"], capture_output=True, text=True, check=True).stdout.strip()
 client = OpenAI(base_url="http://@HTTP@/v1", api_key=key)
-r = client.chat.completions.create(model="MODEL_ID", max_tokens=256,
+r = client.chat.completions.create(model="st-MODEL", max_tokens=256,
                                    messages=[{"role": "user", "content": "Hello"}])
 ```
 
 - Model IDs: `/v1/models` lists the network's models with `st-` before the ID (`st-deepseek-flash`); a request may name a model with or without it.
-- Claude Code and Codex: `sharetoken connect claude|codex` points them here in their own config files (backups in `@HOME@/backups`, `-off` restores). When the tool is signed in to claude.ai or ChatGPT it keeps that login: official models run on the user's plan, `st-` models on the network, and requests carry the API key in `X-Sharetoken-Key`. `sharetoken official` shows the plans' usage; when a Claude plan is used up the same request goes on on the network (`official fallback off` stops that); Codex official models are held at 95% of a window (`official guard`), `codex-unlock on` keeps Codex Desktop's input open instead. The tools need the client running (`sharetoken autostart on`).
+- Claude Code and Codex: use `sharetoken connect` (next section) rather than editing their config files by hand.
 - Endpoints: `POST /v1/chat/completions` (OpenAI), `POST /v1/messages` and `/v1/messages/count_tokens` (Anthropic: Claude Code with `ANTHROPIC_BASE_URL=http://@HTTP@` and `ANTHROPIC_AUTH_TOKEN` set to the key), `POST /v1/responses` (OpenAI Responses: Codex with a provider whose `base_url` is `http://@HTTP@/v1` and `wire_api = "responses"`; Codex reads a custom provider's models only from a catalog file: `sharetoken models -codex FILE` writes one, named by `model_catalog_json` at the top of its config.toml), `GET /v1/models` (`apis` lists the APIs each model is served in natively). Streaming works; there is no embeddings endpoint.
 - Any model works in any of the three APIs: a node whose model server speaks another one converts the request. `X-Sharetoken-Require-Native: true` (or `buy.require_native`) takes only nodes that need no conversion.
 - Set `max_tokens`: only its worst-case cost is held. Without it the whole per-request budget (`buy.budget_micros`) is held. Reasoning models spend part of `max_tokens` on reasoning; a small value can leave `content` empty.
@@ -80,6 +80,31 @@ r = client.chat.completions.create(model="MODEL_ID", max_tokens=256,
 - Requests with a non-local `Origin` header are refused: call from a program, not from a web page.
 
 Amounts: 1 credit = 1,000,000 micro-credits. Prices are micro-credits per million tokens (input / output).
+
+## Claude Code and Codex
+
+`connect` points Claude Code or Codex at this client in their own config files (Claude Code's `settings.json`, Codex's `config.toml`). Each file is backed up to `@HOME@/backups` before the first change, and `-off` puts it back byte for byte. The client keeps the file in step every minute (port, key, models) while it runs.
+
+```bash
+sharetoken connect                                  # which tools are connected, and whether each is signed in to its own plan
+sharetoken connect claude [-subscription auto|on|off] [-force]
+sharetoken connect codex  [-subscription auto|on|off] [-openai-provider] [-force]
+sharetoken connect claude|codex -off                # put the tool's file back as it was
+sharetoken official                                 # the plans' usage the client has seen, and the settings below
+sharetoken official fallback on|off                 # Claude: a used-up plan goes on on the network (default on)
+sharetoken official fallback-model st-MODEL|auto    # which network model takes over (auto: the closest one)
+sharetoken official guard 95                        # Codex: hold official models at this % of a window (100: off)
+sharetoken codex-unlock on|off                      # Codex Desktop (macOS, Windows): a spent plan does not lock the input
+sharetoken autostart on|off                         # start the command-line client at login (no argument: show)
+```
+
+- **With the tool's own login** (`-subscription auto`, the default, when the tool is signed in to claude.ai or ChatGPT): the login stays. The model menu (`/model`) lists the official models first, then the network's as `st-…`. Official models run on the user's plan, passed to Anthropic or OpenAI as they are (the client does not keep, log or send it on); `st-` models run on the network and spend credits. The user can switch within one conversation. Requests carry the client's API key in `X-Sharetoken-Key`.
+- **Without a login** (`-subscription off`, or a tool not signed in): every model goes to the network with the client's API key.
+- When a Claude plan is used up (429), the same request goes on on the closest network model until the window resets, and so spends credits: tell the user, and `official fallback off` if they do not want it. Codex: at the guard share the client answers official models with a note to switch to an `st-` model, so Codex Desktop does not lock its input.
+- `codex-unlock on` makes the system ask the user to trust a certificate valid for localhost only and uses port 443 on loopback; the user must click that through and restart Codex Desktop. Only when the user asks.
+- `-force` replaces a base URL that already points at another gateway: ask first. `-openai-provider` (Codex) uses Codex's built-in OpenAI provider so earlier conversations stay listed.
+- **The tools need the client running**, even for their official models. Without `autostart on` (or the desktop app's "start at login" under Settings > Tools) a connected tool fails after a restart or once the client is stopped, until it runs again. Restart Claude Code / Codex after `connect` or `-off`.
+- **If you are running inside a connected Claude Code or Codex**, your own requests go through this client: stopping it, `connect … -off`, `apikey rotate` or `logout` can cut off this session. Say so and let the user do it.
 
 ## Account
 
