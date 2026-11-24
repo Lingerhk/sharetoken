@@ -122,18 +122,21 @@ const daemonEnv = { ...process.env, SHARETOKEN_PORTAL: env.PORTAL };
 const startDaemon = async () => {
   const c = spawn(bin, ['-home', home, 'daemon', '-http', '127.0.0.1:19795', '-listen', '/ip4/127.0.0.1/tcp/0', '-nat=false'], { env: daemonEnv, stdio: 'ignore' });
   children.push(c);
-  for (let i = 0; i < 50; i++) { try { if ((await fetch(api + '/api/v1/session')).ok) break; } catch { /* starting */ } await sleep(200); }
+  for (let i = 0; i < 50; i++) { try { if ((await daemonGet('/api/v1/session')).ok) break; } catch { /* starting */ } await sleep(200); }
   return c;
 };
+// The management API takes the key the daemon writes to run.json at each start.
+const runKey = () => { try { return JSON.parse(readFileSync(home + '/run.json', 'utf8')).key || ''; } catch { return ''; } };
+const daemonGet = path => fetch(api + path, { headers: { Authorization: 'Bearer ' + runKey() } });
 let d = await startDaemon();
-const daemonPost = (path, body) => fetch(api + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const daemonPost = (path, body) => fetch(api + path, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + runKey() }, body: JSON.stringify(body) });
 ok((await daemonPost('/api/v1/auth/code', { pin: env.PIN, email: 'version@example.com' })).ok, 'a code through the daemon');
 const login = await daemonPost('/api/v1/auth/verify', { pin: env.PIN, email: 'version@example.com', code: mailedCode('version@example.com'), device: 'version-box' });
 ok(login.status === 200, 'signed up through the daemon');
 d.kill(); await sleep(800);
 d = await startDaemon();
-for (let i = 0; i < 40; i++) { const s = await (await fetch(api + '/api/v1/session')).json(); if (s.update.available) break; await sleep(250); }
-await go(api + '/?lang=zh-CN');
+for (let i = 0; i < 40; i++) { const s = await (await daemonGet('/api/v1/session')).json(); if (s.update.available) break; await sleep(250); }
+await go(api + '/?lang=zh-CN#key=' + runKey());
 await waitFor(el('#update-notice'));
 ok((await text('#update-text')).includes('9.9.9'), 'the client offers the new release');
 await click('#update-open'); await waitFor(el('#dlg-update'));
@@ -142,7 +145,7 @@ await click('#update-close');
 ok((await text('#app-version')).startsWith('版本 '), 'the client shows its version');
 ok(!(await ev(`${el('#update-notice')}.classList.contains('bad')`)), 'an optional upgrade is a warning');
 await shot('client-update');
-await go(api + '/?lang=en');
+await go(api + '/?lang=en#key=' + runKey());
 await waitFor(el('#update-text'));
 ok(!/[\u4e00-\u9fa5]版本/.test(await text('#update-text')) && (await text('#update-text')).includes('9.9.9'), 'the notice is translated');
 if (problems.length) throw new Error('page problems:\n' + problems.join('\n'));

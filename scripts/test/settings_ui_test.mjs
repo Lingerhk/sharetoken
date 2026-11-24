@@ -339,7 +339,7 @@ async function run() {
     r = await apiCall('GET', '/api/v1/admin/oplog?action=' + encodeURIComponent('auth.admin_login') + '&actor=' + encodeURIComponent(admin));
     check(r.body.total >= 1, 'admin sign-ins are on record');
     await route('versions'); await sleep(300);
-    await assertText('/ portal 3', 'the version page lists the new schema');
+    await assertText('/ portal 4', 'the version page lists the new schema');
 
     console.log('== phone width, dark theme');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 2, mobile: true });
