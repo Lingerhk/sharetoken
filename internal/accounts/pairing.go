@@ -59,11 +59,11 @@ CREATE TABLE IF NOT EXISTS pairing_private (
 
 // Limits on pairing.
 const (
-	MaxPairingCodes    = 20                  // live codes one seller may hold
-	MaxPairedSellers   = 3                   // sellers one buyer may be paired with
-	MaxPairedBuyers    = 1000                // buyers one seller may have
-	DefaultPairingTTL  = 24 * time.Hour      // lifetime of a code when none is asked for
-	MaxPairingTTL      = 7 * 24 * time.Hour  // longest lifetime of a code
+	MaxPairingCodes    = 20                 // live codes one seller may hold
+	MaxPairedSellers   = 3                  // sellers one buyer may be paired with
+	MaxPairedBuyers    = 1000               // buyers one seller may have
+	DefaultPairingTTL  = 24 * time.Hour     // lifetime of a code when none is asked for
+	MaxPairingTTL      = 7 * 24 * time.Hour // longest lifetime of a code
 	minPairingTTL      = time.Minute
 	pairingCodeLen     = 6 // base32 characters: 30 bits, so the portal limits wrong ones hard (portal/invites.go)
 	maxPairingLabelLen = 64

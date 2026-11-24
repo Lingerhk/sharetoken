@@ -1807,7 +1807,7 @@ I18N.ready.then(() => {
         { title: tr('路径'), get: x => h('span', { class: 'badge' + (x.path === 'direct' ? ' accent' : ''), title: x.endpoint || null }, tunnelPath(x.path)) },
         { title: tr('协议'), get: x => x.proto ? x.proto.toUpperCase() : '—' },
         { title: tr('延迟'), num: true, get: x => rtt(x.ms) },
-        { title: tr('连接'), num: true, get: x => num(x.conns) },
+        { title: tr('连接数'), num: true, get: x => num(x.conns) },
         { title: tr('流量'), num: true, get: x => '↓ ' + bytes(x.rx_bytes) + '  ↑ ' + bytes(x.tx_bytes) },
       ], list));
       drawTunnelStat();

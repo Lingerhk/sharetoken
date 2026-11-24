@@ -81,19 +81,25 @@ func (g *Gateway) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/official", func(w http.ResponseWriter, r *http.Request) {
 		var s Settings
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&s); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "malformed JSON"})
+			writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON")
 			return
 		}
 		if s.CodexGuardPercent < 0 || s.CodexGuardPercent > 100 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "codex_guard_percent is 0 to 100"})
+			writeError(w, http.StatusBadRequest, "bad_request", "codex_guard_percent is 0 to 100")
 			return
 		}
 		if err := g.SetSettings(s); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeError(w, http.StatusInternalServerError, "official", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, g.Status())
 	})
+}
+
+// writeError answers in the management API's error shape,
+// {"error": {"code", "message"}}.
+func writeError(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": msg}})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -86,7 +86,7 @@ Account (portal):
 Sharing a model:
   share                                 show the sharing settings
   share detect                          list the models of the local model server
-  share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-max-output N]
+  share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-cache-read P] [-cache-write P] [-max-output N]
                                         share a model of the local model server, or of a provider
                                         (prices: micro-credits per million tokens)
   share rm <id>
@@ -105,7 +105,8 @@ Hosted APIs to share (kept in providers.json, apart from the configuration):
                            [-profile standard|claude-code] [-sampling strict|default]
                            [-tls-profile native|chrome] [-token-tls-profile native|chrome]
   provider login anthropic [-mode full|inference] [-session-key] [-profile standard|claude-code]
-  provider test <name> [-model M]       send one small request through it
+  provider test <name> [-model M] [-prompt TEXT]
+                                        send one small request through it
   provider on | off <name>              sell its models, or stop
   provider warmup <name> [-times 06:00,11:05] [-on-reset off|week|all] [-model M] [-off]
                                         a Claude or ChatGPT login: start its usage windows at times of day,
@@ -127,8 +128,10 @@ Pairing (a buyer that pairs with a seller buys only from the sellers it is paire
 
 Share partners (two users use each other's nodes for free, before the market):
   partner                               your partners, open invites, settings and the tokens shared in the last 24 hours
-  partner invite [-ttl 24h] [-approve]  make an invite and its link for one person (at most 168h);
-                                        -approve: joining waits for you to approve it
+  partner invite [-ttl 24h] [-uses 1] [-approve]
+                                        make an invite and its link (at most 168h); -uses: how many
+                                        people may join with it (at most 100); -approve: joining
+                                        waits for you to approve it
   partner join <code|link>              become the partner of whoever made the invite
   partner approve | reject <request id> approve or reject someone waiting for your approval
   partner withdraw <request id>         withdraw your own request
@@ -1539,7 +1542,7 @@ func (c *cmdCtx) share(args []string) error {
 		from := fs.String("provider", "", "the provider whose model this is (default: the local model server)")
 		maxOut := fs.Uint64("max-output", 0, "the model's own limit of output tokens per request, if it refuses the usual one")
 		cacheRead := fs.Int64("cache-read", -1, "price per million prompt tokens read from the prompt cache (default: a tenth of -in)")
-		cacheWrite := fs.Int64("cache-write", -1, "price per million prompt tokens written to the prompt cache (default: 1.25 x -in for Anthropic models, else -in)")
+		cacheWrite := fs.Int64("cache-write", -1, "price per million prompt tokens written to the prompt cache (default: 1.25 x -in when the model server speaks Anthropic Messages, else -in)")
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			return errors.New("usage: sharetoken share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-cache-read P] [-cache-write P] [-max-output N]")
 		}

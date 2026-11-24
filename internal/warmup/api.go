@@ -100,11 +100,11 @@ func readJSON(r *http.Request, v any) error {
 
 func answer(w http.ResponseWriter, v any, err error) {
 	if err != nil {
-		status := http.StatusBadRequest
+		status, code := http.StatusBadRequest, "bad_request"
 		if errors.Is(err, provider.ErrNotFound) {
-			status = http.StatusNotFound
+			status, code = http.StatusNotFound, "not_found"
 		}
-		writeJSON(w, status, map[string]any{"error": map[string]string{"message": err.Error()}})
+		writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})
 		return
 	}
 	writeJSON(w, http.StatusOK, v)
