@@ -97,6 +97,9 @@ sign_in() {
 }
 ST="$BIN/sharetoken -home $DIR/seller"
 sign_in "$DIR/seller" seller@example.test seller-box
+# Its own local address: the share commands below look for a running client
+# there, and the build type's default port may belong to someone's own client.
+python3 -c 'import json,sys; p=sys.argv[1]; c=json.load(open(p)); c["http"]=sys.argv[2]; json.dump(c,open(p,"w"),indent=2)' "$DIR/seller/config.json" "127.0.0.1:$SELLER_API"
 $ST share upstream http://127.0.0.1:$MOCK_PORT/v1 > /dev/null
 $ST share add mock-fast -id mock-fast -in 100000 -out 200000 > /dev/null
 $ST share on > /dev/null

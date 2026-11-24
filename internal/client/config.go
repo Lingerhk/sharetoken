@@ -71,6 +71,8 @@ type DiagConfig struct {
 	// Upload: send crash reports. Unset, they are on, except in the European
 	// Economic Area (diag.DefaultUpload).
 	Upload *bool `json:"upload,omitempty"`
+	// Noticed: the app has told the user that reports are on (once).
+	Noticed bool `json:"noticed,omitempty"`
 }
 
 // BuyConfig tunes buying.

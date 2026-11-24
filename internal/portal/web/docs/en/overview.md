@@ -51,4 +51,6 @@ Use the system switch at the top of the page and the commands change to match. P
 > [!WARNING]
 > **Ordinary nodes can read your prompt.** Running a model requires decrypting the prompt, so a node's operator can in principle see the content. Relays, the coordinator and network eavesdroppers cannot. For sensitive content, use only TEE nodes. See [Use only TEE nodes](/docs/use-models#tee).
 
+Crash reports: when the client crashes, it sends the portal a redacted report with your login: the error, where in the code it happened, and the client's own log lines before it, without e-mail addresses, keys, IP addresses or paths. Prompts and answers are never logged, so they are never in a report. Reports are on by default and off by default in the European Economic Area; turn them off in Settings → General or with `{{exe}} diagnostics off`. See [Crash reports](/docs/config#crash-reports).
+
 The coordinator is still the trusted party for the ledger: it cannot forge receipts, but it is the one that records the ledger. Audits are probabilistic. They make cheating unprofitable over time, but they do not guarantee that every job is checked.

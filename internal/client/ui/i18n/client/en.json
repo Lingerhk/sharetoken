@@ -571,10 +571,13 @@
   "程序崩溃或出错时，把脱敏后的错误信息（错误类型、调用栈、崩溃前的程序日志）随你的账户发给 ShareToken，帮助我们修复问题。不含对话内容、密钥、邮箱和 IP 地址。": "When the app crashes, it sends ShareToken a redacted report (the error, the stack trace and the app's log just before it) with your account, to help us fix it. It never contains your conversations, keys, email or IP addresses.",
   "你所在的地区（欧洲经济区）默认关闭。": "Off by default in your region (European Economic Area).",
   "待发送 {n} 份。": "{n} waiting to be sent.",
-  "日志目录：{dir}": "Log folder: {dir}",
   "待发送的诊断报告": "Crash reports waiting to be sent",
   "下面就是会发送的全部内容，已经脱敏。关闭上报会清空它们。": "This is everything that will be sent, already redacted. Turning reports off deletes them.",
   "现在没有待发送的报告。": "No reports are waiting.",
   "诊断": "Diagnostics",
-  "发送异常诊断报告": "Send crash reports"
+  "发送异常诊断报告": "Send crash reports",
+  "崩溃时会把脱敏后的错误信息随账户发给 ShareToken，不含对话内容和密钥。可以在设置中关闭。": "When the app crashes, a redacted error report goes to ShareToken with your account; it never contains your conversations or keys. You can turn this off in Settings.",
+  "已开启异常诊断上报：崩溃时会把脱敏后的错误信息随账户发给 ShareToken，不含对话内容和密钥。可以在设置中关闭。": "Crash reports are on: when the app crashes, a redacted error report goes to ShareToken with your account, never your conversations or keys. You can turn this off in Settings.",
+  "知道了": "Got it",
+  "日志": "Logs"
 }

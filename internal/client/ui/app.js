@@ -1672,18 +1672,28 @@ I18N.ready.then(() => {
       e.target.disabled = false;
     } });
     const diagNote = h('span', { class: 'hint small muted', id: 'diag-note' });
+    const logDirText = h('span', { class: 'v small muted mono log-dir', id: 'log-dir' });
     const diagShow = h('button', { type: 'button', id: 'diag-show', onclick: showReports }, tr('查看待发送内容'));
     const logsOpen = h('button', { type: 'button', id: 'logs-open', onclick: async () => {
       try { await api('POST', '/api/v1/logs/open'); } catch (x) { diagNote.className = 'hint small warn-text'; diagNote.textContent = message(x); }
     } }, tr('打开日志目录'));
+    // Told once after sign-in, without stopping anything: reports are on.
+    const diagNoticeBox = h('div', { id: 'diag-notice-box' });
+    const noticed = async () => { diagNoticeBox.replaceChildren(); try { await api('PUT', '/api/v1/diagnostics', { noticed: true }); } catch (x) { /* shown again next time */ } };
     function showDiag(d) {
+      diagNoticeBox.replaceChildren(d.upload && !d.noticed ? h('div', { class: 'notice strip', id: 'diag-notice' },
+        h('span', { class: 'strip-text', title: tr('崩溃时会把脱敏后的错误信息随账户发给 ShareToken，不含对话内容和密钥。可以在设置中关闭。') },
+          tr('已开启异常诊断上报：崩溃时会把脱敏后的错误信息随账户发给 ShareToken，不含对话内容和密钥。可以在设置中关闭。')),
+        h('button', { type: 'button', class: 'mini', id: 'diag-notice-settings', onclick: () => { noticed(); showView('settings', 'general'); } }, tr('设置')),
+        h('button', { type: 'button', class: 'link small', id: 'diag-notice-ok', onclick: noticed }, tr('知道了'))) : '');
       diagBox.checked = !!d.upload;
       diagNote.className = 'hint small muted';
       const parts = [tr('程序崩溃或出错时，把脱敏后的错误信息（错误类型、调用栈、崩溃前的程序日志）随你的账户发给 ShareToken，帮助我们修复问题。不含对话内容、密钥、邮箱和 IP 地址。')];
       if (!d.chosen && !d.default_upload) parts.push(tr('你所在的地区（欧洲经济区）默认关闭。'));
       if (d.pending) parts.push(tr('待发送 {n} 份。', { n: d.pending }));
-      parts.push(tr('日志目录：{dir}', { dir: d.log_dir }));
       diagNote.textContent = parts.join(' ');
+      logDirText.textContent = d.log_dir;
+      logDirText.title = d.log_dir;
     }
     async function loadDiag() { try { showDiag(await api('GET', '/api/v1/diagnostics')); } catch (x) { /* an older daemon: the row stays empty */ } }
     async function showReports() {
@@ -1704,7 +1714,8 @@ I18N.ready.then(() => {
       h('span', { class: 'k' }, tr('反馈')), h('span', { class: 'v muted' }, tr('告诉我们你遇到的问题或建议。')),
       h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈')),
       h('span', { class: 'k' }, tr('诊断')), h('label', { class: 'v check' }, diagBox, h('span', null, tr('发送异常诊断报告'))), diagShow,
-      h('span', { class: 'k' }), diagNote, logsOpen));
+      h('span', { class: 'k' }), diagNote,
+      h('span', { class: 'k' }, tr('日志')), logDirText, logsOpen));
     loadDiag();
     // How requests are bought (PUT /api/v1/buy).
     const buyPanel = h('section', { class: 'panel', id: 'buy-settings' }, h('div', { class: 'rows' },
@@ -1870,7 +1881,7 @@ I18N.ready.then(() => {
         h('div', { class: 'side-foot' },
           h('button', { type: 'button', id: 'nav-feedback', onclick: () => feedbackDialog() }, icon('feedback'), h('span', null, tr('反馈'))),
           navButtons.settings)),
-      h('main', { class: 'main' }, head, h('div', { class: 'notices' }, updateBox, banner), Object.values(views)),
+      h('main', { class: 'main' }, head, h('div', { class: 'notices' }, updateBox, diagNoticeBox, banner), Object.values(views)),
       h('footer', { class: 'statusbar' }, pill, relayStat, tunnelStat, h('span', { class: 'spacer' }), who, versionLabel)));
     let savedView = '';
     try { savedView = localStorage.getItem('st_view') || ''; } catch (e) { /* the overview */ }

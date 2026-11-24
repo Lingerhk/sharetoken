@@ -83,6 +83,14 @@ func TestDaemonDiagnostics(t *testing.T) {
 		t.Fatalf("after sending: %+v", st)
 	}
 
+	// The notice that reports are on is shown once.
+	if st.Noticed {
+		t.Fatal("noticed before the notice")
+	}
+	if err := json.Unmarshal(d.want(200, "", "PUT", "/api/v1/diagnostics", map[string]bool{"noticed": true}), &st); err != nil || !st.Noticed || st.Chosen || !st.Upload {
+		t.Fatalf("noticed: %+v %v", st, err)
+	}
+
 	// Off: saved, the queue emptied, nothing more sent.
 	d.want(400, "bad_request", "PUT", "/api/v1/diagnostics", map[string]any{})
 	if err := json.Unmarshal(d.want(200, "", "PUT", "/api/v1/diagnostics", map[string]bool{"upload": false}), &st); err != nil || st.Upload || !st.Chosen {

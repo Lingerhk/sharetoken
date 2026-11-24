@@ -283,3 +283,4 @@ html.i18n-pending body { visibility: hidden; }
 details.report { margin: 6px 0; }
 details.report summary { cursor: pointer; overflow-wrap: anywhere; font-size: 13px; }
 .report-json { max-height: 40vh; overflow: auto; font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: ltr; }
