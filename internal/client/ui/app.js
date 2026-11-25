@@ -1664,7 +1664,7 @@ I18N.ready.then(() => {
       el.disabled = false;
     }
 
-    // Crash reports and the log (GET/PUT /api/v1/diagnostics; internal/client/diag.go).
+    // Crash reports (GET/PUT /api/v1/diagnostics; internal/client/diag.go).
     const diagBox = h('input', { type: 'checkbox', id: 'diag-upload', onchange: async e => {
       e.target.disabled = true;
       try { showDiag(await api('PUT', '/api/v1/diagnostics', { upload: e.target.checked })); }
@@ -1672,11 +1672,7 @@ I18N.ready.then(() => {
       e.target.disabled = false;
     } });
     const diagNote = h('span', { class: 'hint small muted', id: 'diag-note' });
-    const logDirText = h('span', { class: 'v small muted mono log-dir', id: 'log-dir' });
     const diagShow = h('button', { type: 'button', id: 'diag-show', onclick: showReports }, tr('查看待发送内容'));
-    const logsOpen = h('button', { type: 'button', id: 'logs-open', onclick: async () => {
-      try { await api('POST', '/api/v1/logs/open'); } catch (x) { diagNote.className = 'hint small warn-text'; diagNote.textContent = message(x); }
-    } }, tr('打开日志目录'));
     function showDiag(d) {
       diagBox.checked = !!d.upload;
       diagNote.className = 'hint small muted';
@@ -1684,8 +1680,6 @@ I18N.ready.then(() => {
       if (!d.chosen && !d.default_upload) parts.push(tr('你所在的地区（欧洲经济区）默认关闭。'));
       if (d.pending) parts.push(tr('待发送 {n} 份。', { n: d.pending }));
       diagNote.textContent = parts.join(' ');
-      logDirText.textContent = d.log_dir;
-      logDirText.title = d.log_dir;
     }
     async function loadDiag() { try { showDiag(await api('GET', '/api/v1/diagnostics')); } catch (x) { /* an older daemon: the row stays empty */ } }
     async function showReports() {
@@ -1706,8 +1700,7 @@ I18N.ready.then(() => {
       h('span', { class: 'k' }, tr('反馈')), h('span', { class: 'v muted' }, tr('告诉我们你遇到的问题或建议。')),
       h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈')),
       h('span', { class: 'k' }, tr('诊断')), h('label', { class: 'v check' }, diagBox, h('span', null, tr('发送异常诊断报告'))), diagShow,
-      h('span', { class: 'k' }), diagNote,
-      h('span', { class: 'k' }, tr('日志')), logDirText, logsOpen));
+      h('span', { class: 'k' }), diagNote));
     loadDiag();
     // How requests are bought (PUT /api/v1/buy).
     const buyPanel = h('section', { class: 'panel', id: 'buy-settings' }, h('div', { class: 'rows' },

@@ -81,7 +81,7 @@ The window has its navigation on the left: Overview, Sharing, Pairing and Activi
 
 Settings has these tabs:
 
-- **General**: your account and "Log out", whether the local model endpoint requires an API key (and copying the key or making a new one), the language, the version and "Check for updates", feedback, and diagnostics and logs: the "Send crash reports" switch, "View pending reports", the log folder and "Open log folder". See [Logs and crash reports](/docs/config#logs).
+- **General**: your account and "Log out", whether the local model endpoint requires an API key (and copying the key or making a new one), the language, the version and "Check for updates", feedback, and diagnostics: the "Send crash reports" switch and "View pending reports". See [Logs and crash reports](/docs/config#logs).
 - **Requests**: how models are bought; see the end of [Share models](#share) below.
 - **Network**: [direct tunnels](#tunnels).
 - **My devices**: the devices bound to this account.
