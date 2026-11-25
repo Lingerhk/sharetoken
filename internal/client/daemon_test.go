@@ -882,6 +882,28 @@ func TestDaemonBindFailureRevokesToken(t *testing.T) {
 	d.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"portal": front.URL, "email": "a@example.com", "code": e.code("a@example.com")})
 }
 
+// A device signature the portal refuses at sign-in (a wrong clock) says to
+// check the clock, and leaves nobody logged in.
+func TestDaemonBindClockSkew(t *testing.T) {
+	e := newDaemonEnv(t, openPortal(), false)
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/devices" && r.Method == "POST" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"bad_signature","message":"accounts: device signature is too old or from the future"}}`))
+			return
+		}
+		e.portal.Handler().ServeHTTP(w, r)
+	}))
+	defer front.Close()
+	d := e.daemon()
+	d.want(200, "", "POST", "/api/v1/auth/code", map[string]string{"portal": front.URL, "email": "c@example.com"})
+	d.want(400, "clock_skew", "POST", "/api/v1/auth/verify", map[string]string{"portal": front.URL, "email": "c@example.com", "code": e.code("c@example.com")})
+	if s := d.session(); s.LoggedIn {
+		t.Fatalf("session: %+v", s)
+	}
+}
+
 // Web pages get nothing from this API; the desktop shell and CLI tools do.
 func TestDaemonRequestGuards(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)

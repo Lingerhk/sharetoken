@@ -93,6 +93,7 @@ type Agent struct {
 	tailnet  *tailnet.Transport // the direct path over tunnels (tailnet.go); installed even while off
 	tokens   *provider.Tokens   // OAuth logins of the providers
 	warnings map[string]string
+	bindFail time.Time // when binding the device last failed; zero once it is confirmed
 
 	// The user's own relays (private_relays.go), measured for the status.
 	// Kept apart from relays: nothing that chooses the path to the
@@ -453,16 +454,37 @@ func (a *Agent) bind(ctx context.Context) error {
 	_, err := a.portal.BindDevice(ctx, a.keys, a.cfg.User, name)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.bindFail = time.Now()
 	switch {
 	case err == nil:
+		a.bindFail = time.Time{}
 		a.warn("device", "")
 	case IsUnauthorized(err):
 		return ErrLoginRejected
+	case IsClockRejected(err):
+		a.warn("device", ClockWarning)
 	default:
 		a.warn("device", "could not confirm the device binding: "+err.Error())
 	}
 	return nil
 }
+
+// ClockWarning is the warning while the portal refuses this device's
+// signature; the page shows it in its own language.
+const ClockWarning = "the portal rejected this device's signature: check that this computer's date, time and time zone are right (set them automatically); the warning clears within a minute once they are"
+
+// IsClockRejected reports whether the portal refused a device signature. The
+// device signs with its own key, so in practice this is a clock more than
+// accounts.BindWindow off the portal's: the portal answers both a stale and a
+// bad signature with bad_signature.
+func IsClockRejected(err error) bool {
+	var pe *PortalError
+	return errors.As(err, &pe) && pe.Code == "bad_signature"
+}
+
+// bindRetryEvery is how often a binding that failed is tried again, sooner
+// than the network refresh: a clock put right should not take minutes to show.
+const bindRetryEvery = 30 * time.Second
 
 func (a *Agent) setupBuyer() error {
 	b := buyer.New(a.h, a.keys, peer.AddrInfo{ID: a.coord})
@@ -799,6 +821,17 @@ func (a *Agent) maintain() {
 				a.mu.Lock()
 				a.warn("login", err.Error())
 				a.mu.Unlock()
+			}
+		} else {
+			a.mu.Lock()
+			retry := !a.bindFail.IsZero() && time.Since(a.bindFail) >= bindRetryEvery
+			a.mu.Unlock()
+			if retry {
+				if err := a.bind(a.ctx); err != nil {
+					a.mu.Lock()
+					a.warn("login", err.Error())
+					a.mu.Unlock()
+				}
 			}
 		}
 		a.mu.Lock()

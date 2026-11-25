@@ -88,7 +88,15 @@ I18N.ready.then(() => {
     mfa_setup_required: tr('管理员账号需要先在门户网页上完成两步验证设置'),
     already_logged_in: tr('已经登录，请先退出'),
     daemon_down: tr('后台服务没有响应，请重新打开应用'),
+    clock_skew: tr('已登录，但门户拒绝了本机的设备签名：请确认系统的日期、时间和时区是否正确，然后重新登录'),
   };
+  // The daemon's warnings are English; the ones this page knows it says in its
+  // own language (internal/client.ClockWarning).
+  const WARNINGS = {
+    "the portal rejected this device's signature: check that this computer's date, time and time zone are right (set them automatically); the warning clears within a minute once they are":
+      tr('门户拒绝了本机的设备签名：请确认系统的日期、时间和时区是否正确（建议设为自动），改好后一分钟内提示会自动消失'),
+  };
+  const warningText = w => WARNINGS[w] || w;
   const message = e => MESSAGES[e.code] || (e.code === 'bad_request' ? badRequest(e.message) : e.message || String(e));
   function badRequest(m) {
     if (/email/.test(m)) return tr('请填写正确的邮箱地址');
@@ -606,7 +614,7 @@ I18N.ready.then(() => {
           tile('share-tile-earned', tr('本次运行收益'), credit(stats.earned_micros), stats.last_announce ? tr('最近报价：{time}', { time: clock(stats.last_announce) }) : null),
           acct ? tile('share-tile-total', tr('卖出收益'), credit(acct.usage.sold.micros), tr('{n} 次，{tokens} tokens', { n: num(acct.usage.sold.jobs), tokens: num(acct.usage.sold.prompt_tokens + acct.usage.sold.completion_tokens) })) : null) : null,
         stats.announce_error ? h('div', { class: 'notice warn small' }, tr('向协调器报价失败：{error}', { error: stats.announce_error })) : null,
-        (st.warnings || []).map(w => h('div', { class: 'notice warn small share-warning' }, w)));
+        (st.warnings || []).map(w => h('div', { class: 'notice warn small share-warning' }, warningText(w))));
 
       provs.set([ps, [...serving], ui.flash, marketKey()],
         ui.flash ? h('div', { class: 'notice ' + ui.flash.cls, id: 'provider-flash' }, ui.flash.text) : null,
@@ -1934,7 +1942,7 @@ I18N.ready.then(() => {
           link ? h('span', { class: 'small', id: 'link-line' }, I18N.parts('链路质量：平均 {avg} ms · 抖动 {jitter} ms · 丢包 {loss}%', {
             avg: h('strong', { class: link[0] ? rttClass(link[0]) + ' rtt-text' : null }, String(link[0])), jitter: String(link[1]),
             loss: h('strong', { class: link[2] >= 5 ? 'bad rtt-text' : link[2] > 0 ? 'warn rtt-text' : null }, String(link[2])) })) : null),
-        (st.warnings || []).map(w => h('div', { class: 'notice warn small' }, w)),
+        (st.warnings || []).map(w => h('div', { class: 'notice warn small' }, warningText(w))),
         !st.relays || st.relays.length === 0 ? h('div', { class: 'empty' }, tr('门户还没有登记中继')) : table([
           { title: tr('中继'), get: r => r.name || shortPeer(r.addr) },
           { title: tr('地区'), get: r => r.region || '—' },

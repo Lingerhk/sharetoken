@@ -696,6 +696,9 @@ func (d *Daemon) finishSignIn(ctx context.Context, pc *PortalClient, base, pin s
 		_ = pc.Logout(lctx)
 		var pe *PortalError
 		if errors.As(err, &pe) {
+			if IsClockRejected(err) {
+				return &apiError{pe.Status, "clock_skew", "signed in, but the portal rejected this device's signature: check that this computer's date, time and time zone are right, then sign in again"}
+			}
 			return &apiError{pe.Status, "bind_failed", "signed in, but binding this device failed: " + pe.Message}
 		}
 		return &apiError{http.StatusBadGateway, "bind_failed", "signed in, but binding this device failed: " + err.Error()}

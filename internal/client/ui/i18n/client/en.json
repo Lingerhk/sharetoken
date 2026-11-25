@@ -575,5 +575,7 @@
   "下面就是会发送的全部内容，已经脱敏。关闭上报会清空它们。": "This is everything that will be sent, already redacted. Turning reports off deletes them.",
   "现在没有待发送的报告。": "No reports are waiting.",
   "诊断": "Diagnostics",
-  "发送异常诊断报告": "Send crash reports"
+  "发送异常诊断报告": "Send crash reports",
+  "已登录，但门户拒绝了本机的设备签名：请确认系统的日期、时间和时区是否正确，然后重新登录": "Signed in, but the portal rejected this device's signature. Check that this computer's date, time and time zone are right, then sign in again",
+  "门户拒绝了本机的设备签名：请确认系统的日期、时间和时区是否正确（建议设为自动），改好后一分钟内提示会自动消失": "The portal rejected this device's signature. Check that this computer's date, time and time zone are right (set them automatically); this notice clears within a minute once they are"
 }
