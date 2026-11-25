@@ -65,8 +65,8 @@ type offer struct {
 // updateStatus is what GET /__shell/update answers.
 type updateStatus struct {
 	State   string `json:"state"` // idle, downloading, installing, restarting, failed
-	Written int64  `json:"written,omitempty"`
-	Total   int64  `json:"total,omitempty"`
+	Written int64  `json:"written"`
+	Total   int64  `json:"total"`
 	Error   string `json:"error,omitempty"`
 }
 

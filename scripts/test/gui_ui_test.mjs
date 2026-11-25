@@ -948,10 +948,20 @@ ok(!(await has('#update-notice')), 'no update notice before a release');
   await ev(`document.documentElement.dataset.shellUpdate = '1'`);
   await click('#nav-settings'); await click('#update-check'); await waitFor(el('#update-now'));
   await shot('13d-update-now');
+  await waitFor(`!${el('#update-now')}.disabled`); // on once the shell says no update is under way
   await click('#update-now');
   await waitFor(`${el('#update-progress')}?.textContent.includes('更新失败')`, 10000);
   ok(!(await ev(`${el('#update-now')}.disabled`)), 'without a shell the update fails, says so, and can be tried again');
-  await click('#update-close'); await click('#nav-overview');
+  await click('#update-close');
+  // An update started from an earlier dialog is followed when the dialog opens
+  // again: the button stays off, and a download that has not begun shows 0%
+  // (the shell leaves written out while it is 0).
+  await ev(`(() => { const f = window.fetch; window.__fetch = f; window.fetch = (p, o) => String(p).endsWith('/__shell/update')
+    ? Promise.resolve(new Response('{"state":"downloading","total":1000}', { headers: { 'Content-Type': 'application/json' } })) : f(p, o); })()`);
+  await click('#update-check'); await waitFor(`${el('#update-progress')}?.textContent.includes('正在下载 0%')`);
+  ok(await ev(`${el('#update-now')}.disabled`) && !(await ev(`${el('#update-progress')}.textContent.includes('NaN')`)), 'an update under way is followed, from 0%, and the button stays off');
+  await click('#update-close'); await ev(`window.fetch = window.__fetch`);
+  await click('#nav-overview');
 }
 
 console.log('local API key');

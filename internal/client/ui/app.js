@@ -2100,7 +2100,34 @@ I18N.ready.then(() => {
           h('span', { class: 'spacer' }),
           h('button', { type: 'button', id: 'update-close', onclick: () => closeModal() }, tr('关闭')),
           installBtn));
-      if (start && installBtn) installUpdate(u, installBtn, progress);
+      if (!installBtn) return;
+      // An update the shell is already installing (started from an earlier
+      // dialog) is followed, not started again: the button stays off.
+      installBtn.disabled = true;
+      api('GET', '/__shell/update').catch(() => null).then(st => {
+        if (!installBtn.isConnected) return;
+        if (st && BUSY.has(st.state)) { showUpdate(st, progress); followUpdate(installBtn, progress); }
+        else if (start) installUpdate(u, installBtn, progress);
+        else installBtn.disabled = false;
+      });
+    }
+
+    // The shell's states while it fetches and installs; the app restarts after.
+    const BUSY = new Set(['downloading', 'installing', 'restarting']);
+
+    function showUpdate(st, progress) {
+      progress.className = 'small';
+      if (st.state === 'downloading') {
+        const total = Number(st.total) || 0, written = Number(st.written) || 0; // 0 is left out of the answer
+        progress.textContent = total > 0 ? tr('正在下载 {pct}%', { pct: Math.min(100, Math.floor(written * 100 / total)) }) : tr('正在下载…');
+      } else if (st.state === 'installing') {
+        progress.textContent = tr('已校验签名，正在安装…');
+      } else if (st.state === 'restarting') {
+        progress.textContent = tr('正在重启…');
+      } else if (st.state === 'failed') {
+        progress.className = 'small bad';
+        progress.textContent = tr('更新失败：{error}', { error: st.error || '' });
+      }
     }
 
     // installUpdate asks the window's shell to fetch, check and install the
@@ -2112,24 +2139,27 @@ I18N.ready.then(() => {
       try {
         await api('POST', '/__shell/update', { key: u.key });
       } catch (e) {
+        // Refused because one is already under way: follow that one.
+        const st = await api('GET', '/__shell/update').catch(() => null);
+        if (st && BUSY.has(st.state)) { showUpdate(st, progress); return followUpdate(btn, progress); }
         progress.className = 'small bad';
         progress.textContent = tr('更新失败：{error}', { error: message(e) });
         btn.disabled = false;
         return;
       }
+      return followUpdate(btn, progress);
+    }
+
+    // followUpdate shows the shell's progress in the dialog until the app
+    // restarts, the update fails, or the dialog is closed.
+    async function followUpdate(btn, progress) {
       for (;;) {
         await new Promise(r => setTimeout(r, 400));
+        if (!progress.isConnected) return; // closed; a new dialog follows it again
         let st;
         try { st = await api('GET', '/__shell/update'); } catch (e) { continue; } // the service stops before the restart
-        if (st.state === 'downloading') {
-          progress.textContent = st.total > 0 ? tr('正在下载 {pct}%', { pct: Math.floor(st.written * 100 / st.total) }) : tr('正在下载…');
-        } else if (st.state === 'installing') {
-          progress.textContent = tr('已校验签名，正在安装…');
-        } else if (st.state === 'restarting') {
-          progress.textContent = tr('正在重启…');
-        } else if (st.state === 'failed') {
-          progress.className = 'small bad';
-          progress.textContent = tr('更新失败：{error}', { error: st.error || '' });
+        showUpdate(st, progress);
+        if (st.state === 'failed' || st.state === 'idle') {
           btn.disabled = false;
           return;
         }
