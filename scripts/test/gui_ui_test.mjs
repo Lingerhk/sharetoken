@@ -174,9 +174,9 @@ ok((await text('#tile-available .value')) === '5', 'the sign-up credit arrived: 
 await waitFor(`${el('#conn-state')}.textContent === '已连接'`, 30000);
 ok(true, 'it joined the real network through the relay');
 await waitFor(`${el('#network-body')}.textContent.includes('relay-local')`);
-ok((await text('#network-body')).includes('当前使用'), 'the relay in use is marked');
+ok((await text('#network-body')).includes('使用中'), 'the relay in use is marked');
 await waitFor(`${el('#coord-line')}?.textContent === '协调器已连接'`, 20000);
-ok(true, 'the coordinator is connected');
+ok(await ev(`!!document.querySelector('#network .panel-head #coord-line')`), 'the coordinator is connected, said next to the network title');
 await waitFor(`${el('#models-body')}.textContent.includes('mock-fast')`, 30000);
 ok(true, "the seller's model is listed");
 ok(await text('#endpoint-url') === env.DAEMON + '/v1', 'the local endpoint is shown');
@@ -249,6 +249,8 @@ const v1Status = async key => (await fetch(env.DAEMON + '/v1/models', { headers:
 const key1 = apiKeyFile().key;
 ok(apiKeyFile().required && await v1Status('') === 401 && await v1Status(key1) === 200, 'the endpoint wants the API key from the start');
 await waitFor(el('#copy-apikey'));
+ok(await ev(`(() => { const b = ${el('#copy-endpoint')}.getBoundingClientRect(), k = ${el('#copy-apikey')}.getBoundingClientRect(), c = ${el('#endpoint-url')}.getBoundingClientRect();
+  return b.left - c.right > 40 && k.left - b.right < 30; })()`), 'the endpoint\'s two copy buttons sit together on the right');
 ok(!(await ev('document.documentElement.outerHTML')).includes(key1), 'the overview offers to copy the key without showing it');
 await click('#nav-settings');
 await waitFor(`${el('#apikey-required')}?.checked && !${el('#apikey-required')}.disabled`);
@@ -707,7 +709,7 @@ try { cli('idle', 'partner', 'join', invite); } catch (e) { reused = true; }
 ok(reused, 'an invite admits one person');
 await click('#nav-overview');
 await waitFor(el('#models-body .model-shared'), 40000);
-ok(true, "the partner's model is marked free on the overview");
+ok(await text('#models-body .model-shared') === '免费' && (await ev(`${el('#models-body .model-shared')}.title`)) === '节点：伙伴 1', "the partner's model is marked free on the overview, its nodes on hover");
 const free = await buyPaid();
 ok(free.status === 200 && free.cost === 0, 'a request served by a partner costs nothing');
 await waitFor(el('#jobs-body .job-shared'), 40000);
@@ -740,7 +742,7 @@ await fill('#partner-pct', '0'); await click('#partner-save');
 await waitFor(el('#partner-paused'));
 const mine = (await sharing()).settings;
 ok(!mine.only_partners && mine.daily_limit_tokens === 5000 && mine.share_pct === 0, 'the limits are checked and saved');
-ok((await text('#share-settings-body')).includes('5,000') || (await text('#share-settings-body')).includes('5000'), 'the daily limit is shown with what was given');
+ok((await text('#share-settings-body')).includes('/ 5K tokens'), 'the daily limit is shown with what was given, in K');
 await fullShot('25c-partner-settings');
 await fill('#partner-limit', ''); await fill('#partner-pct', '100'); await click('#partner-save');
 await waitFor(`!${el('#partner-paused')}`);

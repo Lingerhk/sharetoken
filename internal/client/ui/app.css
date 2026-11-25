@@ -145,8 +145,8 @@ h2 { font-size: 13px; margin: 0; }
 .panel.row > .panel-head .spacer { display: none; }
 .panel.row > .panel-body { flex: 1; min-width: 0; }
 .panel.row > .hint-text { order: 3; flex-basis: 100%; margin: 0; }
-.panel.row .endpoint { justify-content: space-between; flex-wrap: nowrap; }
-.panel.row .endpoint code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel.row .endpoint { flex-wrap: nowrap; }
+.panel.row .endpoint code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: auto; } /* the copy buttons go right, together */
 /* Two panels side by side that share the room left in the view. */
 .cols { flex: 1 1 150px; min-height: 150px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
 .cols > .panel.fill { min-height: 0; }

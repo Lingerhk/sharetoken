@@ -108,6 +108,15 @@ I18N.ready.then(() => {
   // rounding them away would make a balance look unchanged.
   const credit = (m, digits = 6) => (Number(m || 0) / MICRO).toLocaleString(I18N.lang, { minimumFractionDigits: 0, maximumFractionDigits: digits });
   const num = n => Number(n || 0).toLocaleString(I18N.lang);
+  // A token count in K, M, B or T (thousands, millions, ...): 36, 12.3K, 4.5M.
+  const TOKEN_UNITS = ['', 'K', 'M', 'B', 'T'];
+  function tok(n) {
+    // One decimal under 100, none above; 999.95K rounds up to 1M, not 1,000K.
+    const shown = v => Math.abs(v) < 99.95 ? Math.round(v * 10) / 10 : Math.round(v);
+    let v = Number(n || 0), i = 0;
+    while (i < TOKEN_UNITS.length - 1 && Math.abs(shown(v)) >= 1000) { v /= 1000; i++; }
+    return i === 0 ? num(v) : shown(v).toLocaleString(I18N.lang) + TOKEN_UNITS[i];
+  }
   const time = nanos => nanos ? new Date(Number(nanos) / 1e6).toLocaleString(I18N.lang, { hour12: false }) : '—';
   const pricePerM = m => credit(m, 6) + ' / M';
   const shortPeer = p => p && p.length > 16 ? p.slice(0, 8) + '…' + p.slice(-6) : (p || '—');
@@ -380,7 +389,7 @@ I18N.ready.then(() => {
     const hintBtn = hint ? h('button', { type: 'button', class: 'hint-btn', id: id + '-hint-btn', title: opts.hint, 'aria-label': tr('说明'), 'aria-expanded': 'false',
       onclick: () => { hint.hidden = !hint.hidden; hintBtn.setAttribute('aria-expanded', String(!hint.hidden)); } }, '?') : null;
     const el = h('section', { class: 'panel' + (opts.fill ? ' fill' : '') + (opts.row ? ' row' : ''), id },
-      h('div', { class: 'panel-head' }, title ? h('h2', null, title) : null, hintBtn, h('span', { class: 'spacer' }), opts.actions ? h('span', { class: 'actions' }, opts.actions) : null),
+      h('div', { class: 'panel-head' }, title ? h('h2', null, title) : null, hintBtn, opts.badge || null, h('span', { class: 'spacer' }), opts.actions ? h('span', { class: 'actions' }, opts.actions) : null),
       hint, body);
     return { el, set(key, ...nodes) { const k = JSON.stringify(key); if (k !== last) { last = k; body.replaceChildren(...nodes.flat().filter(Boolean)); } } };
   }
@@ -612,7 +621,7 @@ I18N.ready.then(() => {
           tile('share-tile-jobs', tr('已完成作业'), num(stats.jobs_served), tr('失败：{n}', { n: num(stats.jobs_failed) })),
           tile('share-tile-active', tr('进行中'), num(stats.active_jobs) + ' / ' + num(s.concurrency)),
           tile('share-tile-earned', tr('本次运行收益'), credit(stats.earned_micros), stats.last_announce ? tr('最近报价：{time}', { time: clock(stats.last_announce) }) : null),
-          acct ? tile('share-tile-total', tr('卖出收益'), credit(acct.usage.sold.micros), tr('{n} 次，{tokens} tokens', { n: num(acct.usage.sold.jobs), tokens: num(acct.usage.sold.prompt_tokens + acct.usage.sold.completion_tokens) })) : null) : null,
+          acct ? tile('share-tile-total', tr('卖出收益'), credit(acct.usage.sold.micros), tr('{n} 次，{tokens} tokens', { n: num(acct.usage.sold.jobs), tokens: tok(acct.usage.sold.prompt_tokens + acct.usage.sold.completion_tokens) })) : null) : null,
         stats.announce_error ? h('div', { class: 'notice warn small' }, tr('向协调器报价失败：{error}', { error: stats.announce_error })) : null,
         (st.warnings || []).map(w => h('div', { class: 'notice warn small share-warning' }, warningText(w))));
 
@@ -669,7 +678,7 @@ I18N.ready.then(() => {
         { title: tr('时间'), get: j => time(j.created_at) },
         { title: tr('模型'), get: j => j.model },
         { title: tr('状态'), get: j => JOB_STATUS[j.status] || j.status },
-        { title: 'Tokens', num: true, get: j => num(j.prompt_tokens + j.completion_tokens) },
+        { title: 'Tokens', num: true, get: j => tok(j.prompt_tokens + j.completion_tokens) },
         { title: 'Credit', num: true, get: j => j.shared ? h('span', { class: 'pill ok job-shared' }, tr('伙伴共享')) : '+' + credit(j.earned_micros, 6) },
       ], sold));
     }
@@ -1294,8 +1303,8 @@ I18N.ready.then(() => {
         v.partners.length === 0 ? h('div', { class: 'empty', id: 'partners-empty' }, tr('还没有共享伙伴')) : table([
           { title: tr('伙伴'), get: u => who(u) },
           { title: tr('配对时间'), get: u => time(u.since) },
-          { title: tr('我给出'), num: true, get: u => num(u.given || 0) },
-          { title: tr('我使用'), num: true, get: u => num(u.taken || 0) },
+          { title: tr('我给出'), num: true, get: u => tok(u.given || 0) },
+          { title: tr('我使用'), num: true, get: u => tok(u.taken || 0) },
           { title: '', get: u => h('button', { type: 'button', class: 'mini danger partner-leave', 'data-id': String(u.id), onclick: () => leave(u) }, tr('解除')) },
         ], v.partners),
         v.invites.length === 0 ? null : [
@@ -1310,8 +1319,8 @@ I18N.ready.then(() => {
       saveBtn.disabled = !view;
       const st = v.settings;
       servedText.textContent = st.daily_limit_tokens > 0
-        ? tr('最近 {h} 小时已给出 {used} / {limit} tokens', { h: num(v.window_hours), used: num(v.served), limit: num(st.daily_limit_tokens) })
-        : tr('最近 {h} 小时已给出 {used} tokens', { h: num(v.window_hours), used: num(v.served) });
+        ? tr('最近 {h} 小时已给出 {used} / {limit} tokens', { h: num(v.window_hours), used: tok(v.served), limit: tok(st.daily_limit_tokens) })
+        : tr('最近 {h} 小时已给出 {used} tokens', { h: num(v.window_hours), used: tok(v.served) });
       settings.set([st, error, settingsFlash, !view],
         failed(),
         flashLine(settingsFlash, 'partner-settings-flash'),
@@ -1590,7 +1599,9 @@ I18N.ready.then(() => {
     const banner = h('div', { id: 'banner' });
     const tiles = h('div', { class: 'tiles', id: 'tiles' });
     const endpoint = section('endpoint', tr('本地模型接口'), { row: true, hint: tr('OpenAI 工具、Claude Code 和 Codex 都可以把 base URL 改成这个地址使用（Claude Code 用不带 /v1 的地址）。') });
-    const network = section('network', tr('网络'), { fill: true });
+    // Whether the coordinator answers, next to the network's title.
+    const coordPill = h('span', { class: 'pill', id: 'coord-line', hidden: true });
+    const network = section('network', tr('网络'), { fill: true, badge: coordPill });
     const models = section('models', tr('可用模型'), { fill: true });
     const devices = section('devices', tr('我的设备'), { fill: true });
     const jobs = section('jobs', tr('最近作业'), { fill: true });
@@ -1903,8 +1914,8 @@ I18N.ready.then(() => {
         tiles.replaceChildren(
           tile('tile-available', tr('可用 credit'), credit(b.available_micros)),
           tile('tile-held', tr('冻结中'), credit(b.held_micros), null, tr('请求结束后多余部分退回')),
-          tile('tile-bought', tr('买入'), credit(u.bought.micros), tr('{n} 次，{tokens} tokens', { n: num(u.bought.jobs), tokens: num(u.bought.prompt_tokens + u.bought.completion_tokens) })),
-          tile('tile-sold', tr('卖出收益'), credit(u.sold.micros), tr('{n} 次，{tokens} tokens', { n: num(u.sold.jobs), tokens: num(u.sold.prompt_tokens + u.sold.completion_tokens) })),
+          tile('tile-bought', tr('买入花费'), credit(u.bought.micros), tr('{n} 次，{tokens} tokens', { n: num(u.bought.jobs), tokens: tok(u.bought.prompt_tokens + u.bought.completion_tokens) })),
+          tile('tile-sold', tr('卖出收益'), credit(u.sold.micros), tr('{n} 次，{tokens} tokens', { n: num(u.sold.jobs), tokens: tok(u.sold.prompt_tokens + u.sold.completion_tokens) })),
           shareTile());
       }
       devices.set(me.devices, me.devices.length === 0 ? h('div', { class: 'empty' }, tr('暂无设备')) : table([
@@ -1935,25 +1946,28 @@ I18N.ready.then(() => {
       const cur = (st.relays || []).find(r => r.current);
       // The live pings of the relay in use say more than the last survey of all relays.
       setRelayStat(cur, link && link[0] ? link[0] : cur && !cur.error ? cur.rtt_ms : 0);
+      coordPill.hidden = false;
+      coordPill.className = 'pill ' + (c.connected ? 'ok' : 'bad');
+      coordPill.textContent = c.connected ? tr('协调器已连接') : tr('协调器未连接');
       network.set([st.relays, c.connected, c.via, st.warnings, link, tun.text, Math.round(tun.ms)],
-        h('div', { class: 'kv' },
-          h('span', { class: 'pill ' + (c.connected ? 'ok' : 'bad'), id: 'coord-line' }, c.connected ? tr('协调器已连接') : tr('协调器未连接')),
+        tun.on || link ? h('div', { class: 'kv' },
           tun.on ? h('span', { class: 'small', id: 'tunnel-line' }, tr('直连隧道：{state}', { state: tun.text }), tun.ms ? [' ', rtt(tun.ms)] : null) : null,
           link ? h('span', { class: 'small', id: 'link-line' }, I18N.parts('链路质量：平均 {avg} ms · 抖动 {jitter} ms · 丢包 {loss}%', {
             avg: h('strong', { class: link[0] ? rttClass(link[0]) + ' rtt-text' : null }, String(link[0])), jitter: String(link[1]),
-            loss: h('strong', { class: link[2] >= 5 ? 'bad rtt-text' : link[2] > 0 ? 'warn rtt-text' : null }, String(link[2])) })) : null),
+            loss: h('strong', { class: link[2] >= 5 ? 'bad rtt-text' : link[2] > 0 ? 'warn rtt-text' : null }, String(link[2])) })) : null) : null,
         (st.warnings || []).map(w => h('div', { class: 'notice warn small' }, warningText(w))),
         !st.relays || st.relays.length === 0 ? h('div', { class: 'empty' }, tr('门户还没有登记中继')) : table([
           { title: tr('中继'), get: r => r.name || shortPeer(r.addr) },
           { title: tr('地区'), get: r => r.region || '—' },
           { title: tr('延迟'), num: true, get: r => r.error ? h('span', { class: 'rtt bad', title: r.error }, tr('不可达')) : rtt(r.rtt_ms) },
-          { title: '', get: r => [r.current ? h('span', { class: 'badge accent' }, tr('当前使用')) : null, r.reserved ? h('span', { class: 'badge' }, tr('已预约')) : null].filter(Boolean) },
+          { title: '', get: r => [r.current ? h('span', { class: 'badge accent' }, tr('使用中')) : null, r.reserved ? h('span', { class: 'badge' }, tr('已预约')) : null].filter(Boolean) },
         ], st.relays));
     }
 
     function renderNetworkDown(s) {
       const t = s.state === 'retrying' ? (s.error || tr('连接失败，正在重试')) : tr('正在连接…');
       network.set(['down', t], h('div', { class: 'empty', id: 'network-down' }, t));
+      coordPill.hidden = true;
       models.set(['down'], h('div', { class: 'empty' }, tr('连接网络后显示')));
       share.update(null);
       setBrief(null);
@@ -1965,9 +1979,9 @@ I18N.ready.then(() => {
       market = ms || [];
       models.set(ms, !ms || ms.length === 0 ? h('div', { class: 'empty', id: 'models-empty' }, tr('网络上暂时没有在线的模型')) : table([
         { title: tr('模型'), get: m => m.model },
-        { title: tr('节点'), num: true, get: m => m.shared_nodes ? [num(m.nodes), ' ', h('span', { class: 'pill ok model-shared', title: tr('伙伴的节点：免费') }, tr('伙伴 {n}', { n: num(m.shared_nodes) }))] : num(m.nodes) },
-        { title: tr('最低输入价'), num: true, get: m => pricePerM(m.min_price_in) },
-        { title: tr('最低输出价'), num: true, get: m => pricePerM(m.min_price_out) },
+        { title: tr('节点'), num: true, get: m => m.shared_nodes ? [num(m.nodes), ' ', h('span', { class: 'pill ok model-shared', title: tr('节点：伙伴 {n}', { n: num(m.shared_nodes) }) }, tr('免费'))] : num(m.nodes) },
+        { title: tr('输入价'), num: true, get: m => pricePerM(m.min_price_in) },
+        { title: tr('输出价'), num: true, get: m => pricePerM(m.min_price_out) },
       ], ms));
     }
 
@@ -1977,7 +1991,7 @@ I18N.ready.then(() => {
         { title: tr('方向'), get: j => j.role === 'sell' ? tr('卖出') : tr('买入') },
         { title: tr('模型'), get: j => j.model },
         { title: tr('状态'), get: j => JOB_STATUS[j.status] || j.status },
-        { title: 'Tokens', num: true, get: j => num(j.prompt_tokens + j.completion_tokens) },
+        { title: 'Tokens', num: true, get: j => tok(j.prompt_tokens + j.completion_tokens) },
         { title: 'Credit', num: true, get: j => j.shared ? h('span', { class: 'pill ok job-shared' }, tr('伙伴共享')) : j.role === 'sell' ? '+' + credit(j.earned_micros, 6) : '-' + credit(j.cost_micros, 6) },
       ], js));
     }
