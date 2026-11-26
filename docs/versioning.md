@@ -25,7 +25,7 @@ To cut a release: change `VERSION`; add the release and its features at the top 
 | Data plane (buyer ↔ node) | libp2p protocol ID, plus an `infer_version` agreed per job | `/sharetoken/infer/1.0.2`, version 1 |
 | Relay pass | libp2p protocol ID, plus the signing domain | `/sharetoken/relay-pass/1.0.2`, `sharetoken/relay-pass/v1` (the signature covers the whole body, so a new field needs no new version) |
 | Signed messages | signing domain | `sharetoken/offer/v1`, `sharetoken/ticket/v1`, `sharetoken/receipt/v1`, `sharetoken/ack/v1` |
-| Database | `schema_migrations`, numbered per component | `core` 12, `mail` 2, `portal` 4 |
+| Database | `schema_migrations`, numbered per component | `core` 13, `mail` 2, `portal` 4 |
 | Server configuration | `version` in the YAML file | 1 |
 | Client configuration | `version` in `config.json` | 1 |
 

@@ -25,7 +25,7 @@
 | 数据面（买家 ↔ 节点） | libp2p 协议 ID，加上每单协商的 `infer_version` | `/sharetoken/infer/1.0.2`，版本 1 |
 | 中继凭证 | libp2p 协议 ID，加上签名域 | `/sharetoken/relay-pass/1.0.2`，`sharetoken/relay-pass/v1`（签名覆盖整段 body，所以新增字段不需要新版本） |
 | 签名消息 | 签名域 | `sharetoken/offer/v1`、`sharetoken/ticket/v1`、`sharetoken/receipt/v1`、`sharetoken/ack/v1` |
-| 数据库 | `schema_migrations`，按组件编号 | `core` 12，`mail` 2，`portal` 4 |
+| 数据库 | `schema_migrations`，按组件编号 | `core` 13，`mail` 2，`portal` 4 |
 | 服务端配置 | YAML 文件里的 `version` | 1 |
 | 客户端配置 | `config.json` 里的 `version` | 1 |
 
