@@ -97,6 +97,17 @@ type Config struct {
 	// gets no new tickets until they are released (default 5).
 	MaxStaleTickets int
 	StaleAfter      time.Duration // default 15s
+	// MaxIdleTickets is how many held tickets a buyer account may have that
+	// never started, whatever their age and whoever is connected (default
+	// 32). Past it a ticket request is answered with CodeCapacity, so a
+	// client waits and asks again: tickets normally start within seconds.
+	// MaxStaleTickets cannot be this bound: it leaves out fresh tickets and
+	// those of a device or a node that reconnected, which is an honest
+	// client's benefit of the doubt and a hoarder's way around it.
+	MaxIdleTickets int
+	// MaxIdlePerNode is how many of them may be for one node (default 8): the
+	// node counts as full for that buyer until one starts.
+	MaxIdlePerNode  int
 	SettleGrace     time.Duration // extra time for settlement to arrive before the hold is released
 	DisputeWindow   time.Duration // unacknowledged settlements become final after this
 	MaxOfferTTL     time.Duration // offers claiming a longer validity are rejected
@@ -159,6 +170,16 @@ func (c *Config) setDefaults() {
 	}
 	if c.MaxStaleTickets == 0 {
 		c.MaxStaleTickets = 5
+	}
+	if c.MaxIdleTickets == 0 {
+		// A burst of parallel requests holds one unstarted ticket each for
+		// the 0.3-2.5 s a start report takes, and a node that cannot be
+		// reached holds one per attempt until it expires (the 20 "failed"
+		// tickets MaxStaleTickets tolerates are among these).
+		c.MaxIdleTickets = 32
+	}
+	if c.MaxIdlePerNode == 0 {
+		c.MaxIdlePerNode = 8
 	}
 	if c.StaleAfter == 0 {
 		// Start reports normally arrive within 0.3-2.5 s; 15 s leaves room for
@@ -744,6 +765,22 @@ func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bo
 				return protocol.Errorf(protocol.CodeBusy, "%d earlier tickets were never used (%d more reported failed); they are released when they expire", stale, failed)
 			}
 		}
+		// The count above gives the benefit of the doubt to fresh tickets
+		// and to whoever reconnected, so alone it lets an account that
+		// reconnects (or asks fast enough) take every slot of every node.
+		// All unstarted tickets together are capped too, and those for one
+		// node. The answer is "at capacity": a client waits and asks again,
+		// which is all an honest burst needs.
+		var idle map[string]int
+		if !errand {
+			var total int
+			if total, idle, err = idleTickets(tx, buyerAcct); err != nil {
+				return err
+			}
+			if total >= e.cfg.MaxIdleTickets {
+				return protocol.Errorf(protocol.CodeCapacity, "%d tickets of this account have not started yet; new ones wait until they start or expire", total)
+			}
+		}
 		busy, sharedBusy, err := busyNodes(tx, now.Add(-e.cfg.StartGrace).UnixNano())
 		if err != nil {
 			return err
@@ -785,7 +822,7 @@ func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bo
 				if st.SuspendedUntil > now.UnixNano() {
 					continue
 				}
-				if o.MaxConcurrency > 0 && busy[node] >= o.MaxConcurrency {
+				if o.MaxConcurrency > 0 && busy[node] >= o.MaxConcurrency || idle[node] >= e.cfg.MaxIdlePerNode {
 					full++
 					continue
 				}
