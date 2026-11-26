@@ -505,6 +505,13 @@ func TestShellUpdateRoute(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	p.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, shellUpdatePath, strings.NewReader(`{}`)))
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("POST as a form would send it: %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	post := httptest.NewRequest(http.MethodPost, shellUpdatePath, strings.NewReader(`{}`))
+	post.Header.Set("Content-Type", "application/json")
+	p.ServeHTTP(rec, post)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST without key: %d", rec.Code)
 	}
