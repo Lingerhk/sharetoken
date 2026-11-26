@@ -167,6 +167,7 @@ func TestPrivateRelaysAreManagedThroughTheLocalAPI(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"addr": addr})
 		req, _ := http.NewRequest(method, "http://"+alice.Addr()+"/api/v1/relays/private", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+alice.Key())
+		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
