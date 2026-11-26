@@ -108,11 +108,11 @@ await ev(`[...document.querySelectorAll('main button')].find(b => b.textContent 
 await sleep(600);
 const policy = () => JSON.parse(portalCmd(['version-policy']));
 ok(policy().min_client !== 'bad', 'a bad version is refused');
-await ev(`(() => { const i = ${inputs}; i[0].value = ''; i[1].value = '9.9.9'; i[2].value = '9.9.9'; i[3].value = 'https://example.com/download'; i[4].checked = true; })()`);
+await ev(`(() => { const i = ${inputs}; i[0].value = ''; i[1].value = '9.9.9'; i[2].value = '9.9.9'; i[3].value = '/downloads/'; i[4].checked = true; })()`);
 await ev(`[...document.querySelectorAll('main button')].find(b => b.textContent === '保存').click()`);
 await sleep(800);
 const p = policy();
-ok(p.latest_client === '9.9.9' && p.download_url === 'https://example.com/download' && p.allow_dev, 'the policy is saved from the page');
+ok(p.latest_client === '9.9.9' && p.download_url === '/downloads/' && p.allow_dev, 'the policy is saved from the page');
 
 console.log('desktop client');
 // A build with a version number: one without has nothing to compare.
@@ -141,7 +141,7 @@ await go(api + '/?lang=zh-CN#key=' + runKey());
 await waitFor(el('#update-notice'));
 ok((await text('#update-text')).includes('9.9.9'), 'the client offers the new release');
 await click('#update-open'); await waitFor(el('#dlg-update'));
-ok((await text('#update-link')) === 'https://example.com/download', 'with where to get it');
+ok((await text('#update-link')) === env.PORTAL + '/downloads/', 'with where to get it, on the portal');
 await click('#update-close');
 ok((await text('#app-version')).startsWith('版本 '), 'the client shows its version');
 ok(!(await ev(`${el('#update-notice')}.classList.contains('bad')`)), 'an optional upgrade is a warning');

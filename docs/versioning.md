@@ -43,7 +43,7 @@ The client version policy is stored in the shared database under `meta.version_p
 ```bash
 portal -config portal.yaml version-policy                      # show it
 portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -latest 1.0.0 \
-  -download-url https://sharetoken.app/#download -allow-dev=false
+  -download-url '/#download' -allow-dev=false
 ```
 
 | Operation | Client below the minimum, a development build while `allow_dev` is off, or no version given |

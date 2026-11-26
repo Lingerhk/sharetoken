@@ -364,7 +364,7 @@
     const min = input({ type: 'text', value: r.policy.min_client || '', placeholder: '1.0.0', maxlength: 32 });
     const rec = input({ type: 'text', value: r.policy.recommended_client || '', placeholder: '1.0.0', maxlength: 32 });
     const latest = input({ type: 'text', value: r.policy.latest_client || '', placeholder: '1.0.0', maxlength: 32 });
-    const url = input({ type: 'text', value: r.policy.download_url || '', placeholder: 'https://sharetoken.app/#download', maxlength: 256 });
+    const url = input({ type: 'text', value: r.policy.download_url || '', placeholder: '/#download', maxlength: 256 });
     const dev = input({ type: 'checkbox' });
     dev.checked = !!r.policy.allow_dev;
     add(m, h('div', { class: 'card' }, section('cog', '客户端版本策略'),

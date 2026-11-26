@@ -201,7 +201,7 @@ func (s *Server) updateInfo(kind, channel, osName, arch string) UpdateInfo {
 	if err != nil {
 		s.log.Warn("reading the version policy", "err", err)
 	}
-	out := UpdateInfo{ClientVersions: ClientVersions{Min: p.MinClient, Recommended: p.RecommendedClient, Latest: p.LatestClient, DownloadURL: p.DownloadURL}}
+	out := UpdateInfo{ClientVersions: ClientVersions{Min: p.MinClient, Recommended: p.RecommendedClient, Latest: p.LatestClient, DownloadURL: p.Download()}}
 	if out.DownloadURL == "" {
 		out.DownloadURL = "/#download"
 	}

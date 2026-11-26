@@ -43,7 +43,7 @@
 ```bash
 portal -config portal.yaml version-policy                      # 查看
 portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -latest 1.0.0 \
-  -download-url https://sharetoken.app/#download -allow-dev=false
+  -download-url '/#download' -allow-dev=false
 ```
 
 | 操作 | 客户端低于最低版本、是开发构建而 `allow_dev` 关闭，或没有带版本时 |

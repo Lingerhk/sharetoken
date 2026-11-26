@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"sharetoken/internal/accounts"
 	"sharetoken/internal/ledger"
@@ -708,5 +709,102 @@ func TestCSVText(t *testing.T) {
 		if got := csvCredit(in); got != want {
 			t.Errorf("%d: %q", in, got)
 		}
+	}
+}
+
+// An entry with too much detail is cut field by field and stays a document;
+// cut as text it was half of one, and the page of the log holding it came
+// back empty.
+func TestAuditDetailStaysJSON(t *testing.T) {
+	f := newAdminFixture(t, Config{})
+	valid := func(raw string) map[string]any {
+		t.Helper()
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err != nil || utf8.RuneCountInString(raw) > maxAuditDetail {
+			t.Fatalf("%d runes, %v: %.80s", utf8.RuneCountInString(raw), err, raw)
+		}
+		return m
+	}
+	if m := valid(auditDetail(map[string]any{"a": 1, "b": "x"})); m["truncated"] != nil || m["b"] != "x" {
+		t.Fatalf("a short detail changed: %v", m)
+	}
+	m := valid(auditDetail(map[string]any{"path": "/p", "note": strings.Repeat("长", 20000), "list": make([]int, 9000), "n": 7}))
+	if m["truncated"] != true || m["path"] != "/p" || m["n"] != float64(7) || utf8.RuneCountInString(m["note"].(string)) != maxAuditField+1 {
+		t.Fatalf("a long detail: %.200v", m)
+	}
+	// Text that grows when encoded, and too many fields to keep even cut.
+	many := map[string]any{"method": "POST"}
+	for i := range 40 {
+		many[fmt.Sprintf("k%02d", i)] = strings.Repeat("\x01\"", 2000)
+	}
+	if m := valid(auditDetail(many)); m["truncated"] != true || m["method"] != "POST" {
+		t.Fatalf("many long fields: %d kept", len(m))
+	}
+
+	f.s.AuditCLI("test.long", "x", map[string]any{"note": strings.Repeat("\"", 30000)})
+	// An entry from before the fix: its text cut in the middle.
+	if _, err := f.s.db.Exec(`INSERT INTO admin_audit_log (at, actor_id, actor, action, target, detail, ip, user_agent, status) VALUES (?, 0, 'cli', 'test.old', '', ?, '', '', 200)`,
+		time.Now().UnixNano(), `{"note":"`+strings.Repeat("a", 100)); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"test.long", "test.old"} {
+		es := f.auditEntries("action=" + action)
+		if len(es) != 1 {
+			t.Fatalf("%s: %d entries, want 1", action, len(es))
+		}
+		if m := valid(string(es[0].Detail)); m["truncated"] != true {
+			t.Fatalf("%s: %.100s", action, es[0].Detail)
+		}
+	}
+	// The page holding both opens.
+	if es := f.auditEntries(""); len(es) < 2 {
+		t.Fatalf("%d entries on the page", len(es))
+	}
+}
+
+// The download page of the version policy is on the portal: every client's
+// "upgrade" notice links to it, so no administrator, and nobody who took an
+// administrator's account, points it somewhere else.
+func TestVersionPolicyDownloadStaysOnPortal(t *testing.T) {
+	for u, want := range map[string]bool{
+		"/#download": true, "/downloads/": true, "/d?x=1#y": true, "": false,
+		"https://evil.example/get": false, "//evil.example/get": false, "/\\evil.example": false, "javascript:alert(1)": false,
+		"downloads/": false, "/a b": false, "/a\nb": false, "/" + strings.Repeat("a", 300): false,
+	} {
+		if got := accounts.SitePath(u); got != want {
+			t.Errorf("SitePath(%q) = %v, want %v", u, got, want)
+		}
+	}
+	f := newAdminFixture(t, Config{})
+	host := strings.TrimPrefix(f.url, "http://")
+	set := func(u string) (int, accounts.VersionPolicy) {
+		t.Helper()
+		var p accounts.VersionPolicy
+		status, raw := f.call("PUT", "/api/v1/admin/version-policy", f.token, map[string]any{"latest_client": "1.2.0", "download_url": u, "allow_dev": true})
+		_ = json.Unmarshal(raw, &p)
+		return status, p
+	}
+	for _, bad := range []string{"https://evil.example/get", "//evil.example/get", "http://" + host + "@evil.example/", "ftp://" + host + "/x", "downloads"} {
+		if status, _ := set(bad); status != 400 {
+			t.Fatalf("%q as the download page: %d", bad, status)
+		}
+	}
+	if status, p := set("/downloads/"); status != 200 || p.DownloadURL != "/downloads/" {
+		t.Fatalf("a path: %d %+v", status, p)
+	}
+	// A full link to this portal is kept as its path.
+	if status, p := set("http://" + host + "/#download"); status != 200 || p.DownloadURL != "/#download" {
+		t.Fatalf("a link to the portal itself: %d %+v", status, p)
+	}
+	// A policy that names another site, from before this was refused, is not
+	// passed on to clients.
+	if _, err := f.s.db.Exec("UPDATE meta SET value = ? WHERE `key` = 'version_policy'", `{"latest_client":"1.2.0","download_url":"https://evil.example/get","allow_dev":true}`); err != nil {
+		t.Fatal(err)
+	}
+	if u := f.s.updateInfo("cli", "prod", "linux", "amd64"); u.DownloadURL != "/#download" {
+		t.Fatalf("clients are sent to %q", u.DownloadURL)
+	}
+	if v := f.s.versionInfo(); v.Client.DownloadURL != "" || v.Client.Latest != "1.2.0" {
+		t.Fatalf("the version endpoint says %+v", v.Client)
 	}
 }

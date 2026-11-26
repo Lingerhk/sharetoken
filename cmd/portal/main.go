@@ -441,7 +441,7 @@ func admin(p *portal.Server, cmd string, args []string) error {
 			fs.StringVar(&cur.MinClient, "min", cur.MinClient, "older clients are refused new business")
 			fs.StringVar(&cur.RecommendedClient, "recommended", cur.RecommendedClient, "older clients are told to upgrade")
 			fs.StringVar(&cur.LatestClient, "latest", cur.LatestClient, "the newest release")
-			fs.StringVar(&cur.DownloadURL, "download-url", cur.DownloadURL, "where to get it")
+			fs.StringVar(&cur.DownloadURL, "download-url", cur.DownloadURL, "where to get it: a path on this portal, like /#download")
 			fs.BoolVar(&cur.AllowDev, "allow-dev", cur.AllowDev, "serve builds that are not releases")
 			_ = fs.Parse(args[1:])
 			if err := accounts.SaveVersionPolicy(st.DB, cur); err != nil {

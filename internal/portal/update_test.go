@@ -185,11 +185,11 @@ func TestUpdateInfoPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := accounts.SaveVersionPolicy(db, accounts.VersionPolicy{MinClient: "0.9.0", RecommendedClient: "1.0.0", DownloadURL: "https://example.com/get"}); err != nil {
+	if err := accounts.SaveVersionPolicy(db, accounts.VersionPolicy{MinClient: "0.9.0", RecommendedClient: "1.0.0", DownloadURL: "/get"}); err != nil {
 		t.Fatal(err)
 	}
 	u := s.updateInfo("cli", "prod", "linux", "amd64")
-	if u.Min != "0.9.0" || u.Recommended != "1.0.0" || u.Latest != "1.0.0" || u.DownloadURL != "https://example.com/get" || u.Package == nil {
+	if u.Min != "0.9.0" || u.Recommended != "1.0.0" || u.Latest != "1.0.0" || u.DownloadURL != "/get" || u.Package == nil {
 		t.Fatalf("%+v %+v", u.ClientVersions, u.Package)
 	}
 	if err := accounts.SaveVersionPolicy(db, accounts.VersionPolicy{LatestClient: "1.1.0"}); err != nil {
