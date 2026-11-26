@@ -286,8 +286,8 @@ func ip6(m string) string {
 // sets itself.
 var keepKeys = map[string]bool{
 	"time": true, "level": true, "component": true, "kind": true, "status": true, "api": true, "proto": true, "outcome": true,
-	"region": true, "took": true, "rtt": true, "retry_in": true, "chunks": true, "frames": true, "turns": true, "calls": true,
-	"loop": true, "previous": true, "generate": true, "new_items": true, "items": true, "from": true, "resumes": true,
+	"region": true, "took": true, "rtt": true, "retry_in": true, "chunks": true, "frames": true, "turns": true,
+	"previous": true, "generate": true, "new_items": true, "items": true, "from": true, "resumes": true,
 	"progress_frames": true, "wire_bytes": true, "earned": true, "in": true, "out": true, "model": true, "job": true,
 	"new_account": true, "format": true, "version": true, "current": true, "latest": true, "backend": true, "debug": true,
 	"expires": true, "transport": true, "official": true, "source": true, "process": true, "state": true, "count": true,
@@ -297,8 +297,11 @@ var keepKeys = map[string]bool{
 	"response": true, "reports": true, "upstream": true, "other_portal": true, "measurement": true, "port": true, "pid": true, "signal": true, "exit": true,
 }
 
-// dropKeys never keep their value: who the user is, and where their files are.
+// dropKeys never keep their value: who the user is, where their files are,
+// and what a model wrote (the loop guard logs the tool calls and the text
+// that repeated: "calls", "loop").
 var dropKeys = map[string]bool{
+	"calls": true, "loop": true,
 	"user": true, "email": true, "username": true, "device": true, "home": true, "file": true, "path": true, "dir": true,
 	"download": true, "notes": true, "name": true, "code": true, "invite": true, "key": true, "token": true, "secret": true,
 	"password": true, "prompt": true, "message": true, "content": true, "body": true, "header": true, "headers": true,

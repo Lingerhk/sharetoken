@@ -89,6 +89,11 @@ func TestLine(t *testing.T) {
 			`time=2026-11-24T10:00:04.000+08:00 level=INFO msg=x addr=<lan-ip>:9787 home=… unknown_field=…`},
 		{`time=2026-11-24T10:00:05.000+08:00 level=WARN msg=x err="` + strings.Repeat("e ", 200) + `"`,
 			`time=2026-11-24T10:00:05.000+08:00 level=WARN msg=x err="` + strings.Repeat("e ", MaxErrLen/2) + `…"`},
+		// The loop guard's lines carry tool arguments and what the model wrote.
+		{`time=2026-11-24T10:00:06.000+08:00 level=WARN msg="loop guard answered a request stuck in a tool loop" component=buyer api=messages turns=4 calls="Read {\"path\":\"/src/secret plan.md\"}"`,
+			`time=2026-11-24T10:00:06.000+08:00 level=WARN msg="loop guard answered a request stuck in a tool loop" component=buyer api=messages turns=4 calls=…`},
+		{`time=2026-11-24T10:00:07.000+08:00 level=WARN msg="loop guard stopped an answer" component=buyer api=chat loop="the same sentence the model wrote"`,
+			`time=2026-11-24T10:00:07.000+08:00 level=WARN msg="loop guard stopped an answer" component=buyer api=chat loop=…`},
 		// Not slog's text: a panic line goes through String.
 		{"goroutine 7 [running]: alice@example.com", "goroutine 7 [running]: <email>"},
 	} {
