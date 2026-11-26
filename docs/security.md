@@ -99,9 +99,33 @@ that same key, the coordinator can check without trusting the buyer:
   (`internal/tokens`).
 
 Only that job is revealed: every job has its own key. The coordinator holds the
-plaintext in memory while it decides and records only the outcome. A claim about
-bytes the seller never signed cannot be decided this way and goes to an
-administrator.
+plaintext in memory while it decides and records only the outcome. Where it has
+a reference copy of the model, counting the tokens means sending that job's
+request and answer to the reference service, which may be another company's
+API. A claim about bytes the seller never signed cannot be decided this way and
+goes to an administrator.
+
+The seller alone cannot decide which receipt a job is paid by:
+
+- Once the client has checked a receipt it sends it to the coordinator itself,
+  with its acknowledgement. The job is settled at that receipt. If the seller
+  settles with another receipt it signed for the same job, the coordinator holds
+  two, refunds the buyer in full and counts a lost dispute against the seller.
+- A job can end without a receipt the client could check: the caller stopped
+  it, the stream broke after output had arrived, or the seller refused the
+  request. The client then tells the coordinator the most it accepts to pay for
+  what arrived (the prompt at the usual bound, the text it received, an
+  allowance for output still on its way, and nothing for a refusal). A receipt
+  the seller settles within that amount is paid after the dispute window as
+  before; one above it is not paid on the seller's word and waits for an
+  administrator.
+- The prompt estimate that bounds a bill reads the request by its exact field
+  names, the way the seller's node builds the model server's request, and is
+  never below a floor set by the request's size: a prompt cannot be hidden from
+  it in fields it does not know.
+
+A client from before the first two were added does neither: for its jobs a
+receipt without an acknowledgement is still paid after the dispute window.
 
 ### 2.4 The advertised model
 

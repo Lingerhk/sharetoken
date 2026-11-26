@@ -945,7 +945,7 @@ func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bo
 			Shared:          shared,
 		}
 		t.Sign(e.priv)
-		j := &job{ticket: t, buyerAcct: payer, nodeAcct: best.acct, status: StatusHeld,
+		j := &job{ticket: t, buyerAcct: payer, nodeAcct: best.acct, status: StatusHeld, accepts: -1,
 			createdAt: now.UnixNano(), releaseAt: now.Add(e.cfg.TicketTTL + e.cfg.SettleGrace).UnixNano()}
 		if err := insertJob(tx, j); err != nil {
 			return err
@@ -1093,7 +1093,7 @@ func (e *Engine) Settle(submitter string, req protocol.SettleRequest) (*protocol
 			return protocol.Errorf(protocol.CodeConflict, "ticket expired and its hold was released")
 		case StatusRefunded:
 			return protocol.Errorf(protocol.CodeConflict, "the buyer was refunded after a dispute")
-		case StatusFinal, StatusDisputed:
+		case StatusFinal:
 			resp = settled(j)
 			return nil
 		}
@@ -1109,10 +1109,25 @@ func (e *Engine) Settle(submitter string, req protocol.SettleRequest) (*protocol
 			ackOK = true
 		}
 
-		if j.status == StatusPending {
-			// Only an ack for the same receipt can move a pending job forward.
-			if ackOK && bytes.Equal(r.Digest(), j.receipt.Receipt.Digest()) {
+		if j.status == StatusPending || j.status == StatusDisputed {
+			switch same := j.receipt != nil && bytes.Equal(r.Digest(), j.receipt.Receipt.Digest()); {
+			case !ackOK || j.receipt == nil:
+			case same && j.status == StatusPending:
+				// Only an ack for the same receipt can move a pending job forward.
 				if err := e.finalize(tx, led, j, now); err != nil {
+					return err
+				}
+			case !same:
+				// The buyer acknowledged another receipt than the one the job was
+				// settled with, and the node signed both: it showed the buyer one
+				// bill and claimed another. Nothing is owed for such a job.
+				e.log.Warn("the node signed two different receipts for a job; refunding the buyer", "job", t.JobID, "node", t.Node,
+					"settled_cost", j.cost, "acknowledged_cost", protocol.TicketCost(t, protocol.ReceiptUsage(r)))
+				if j.disputeReason == "" {
+					j.disputeReason = "the buyer acknowledged another receipt"
+				}
+				j.disputeOutcome, j.disputeDetail = string(evidence.Upheld), twoReceipts
+				if err := e.refund(tx, led, j, now); err != nil {
 					return err
 				}
 			}
@@ -1131,6 +1146,10 @@ func (e *Engine) Settle(submitter string, req protocol.SettleRequest) (*protocol
 			}
 		case j.disputeReason != "":
 			j.status = StatusDisputed
+		case j.accepts >= 0 && j.cost > uint64(j.accepts):
+			// The buyer said what it received; the node bills more than that
+			// can have cost. The whole hold waits for arbitration.
+			j.status, j.disputeReason = StatusDisputed, overAccepted(j.cost, j.accepts)
 		default:
 			// No acknowledgement, typically a buyer that cancelled mid-stream.
 			// Only the billed cost waits out the dispute window: the rest of
@@ -1145,6 +1164,12 @@ func (e *Engine) Settle(submitter string, req protocol.SettleRequest) (*protocol
 		return saveJob(tx, j)
 	})
 	return resp, err
+}
+
+const twoReceipts = "the node signed two different receipts for this job"
+
+func overAccepted(cost uint64, accepts int64) string {
+	return fmt.Sprintf("the receipt bills %d micro-credits; the buyer accepts at most %d for what it received", cost, accepts)
 }
 
 // settleLate pays out a job that was released early as never started (its
@@ -1403,6 +1428,29 @@ func (e *Engine) Dispute(buyer string, req protocol.DisputeRequest) error {
 		if j.buyerAcct == AuditAccount {
 			return protocol.Errorf(protocol.CodeForbidden, "an errand is judged by the coordinator")
 		}
+		if req.Accept != nil {
+			// A statement of what the buyer received, not a dispute: it only
+			// becomes one if the node bills more.
+			accepts := int64(min(*req.Accept, 1<<62))
+			switch j.status {
+			case StatusHeld:
+				if j.accepts >= 0 {
+					return nil // the first statement stands
+				}
+				j.accepts = accepts
+			case StatusPending:
+				if j.accepts >= 0 || j.cost <= uint64(accepts) {
+					return nil
+				}
+				j.accepts = accepts
+				j.status, j.disputeReason = StatusDisputed, overAccepted(j.cost, accepts)
+			case StatusDisputed:
+				return nil
+			default:
+				return protocol.Errorf(protocol.CodeConflict, "job is %s and can no longer be disputed", j.status)
+			}
+			return saveJob(tx, j)
+		}
 		switch j.status {
 		case StatusHeld:
 			if j.disputeReason == "" {
@@ -1473,7 +1521,7 @@ func (e *Engine) ApplyVerdict(buyer, jobID, reason string, judged *receipt.Signe
 		}
 		if j.receipt != nil && !bytes.Equal(j.receipt.Receipt.Digest(), judged.Receipt.Digest()) {
 			// The node settled a different receipt while the evidence was judged.
-			v = evidence.Verdict{Outcome: evidence.Upheld, Detail: "the node signed two different receipts for this job"}
+			v = evidence.Verdict{Outcome: evidence.Upheld, Detail: twoReceipts}
 		}
 		if j.receipt == nil {
 			j.receipt = judged

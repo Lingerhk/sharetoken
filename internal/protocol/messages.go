@@ -492,9 +492,16 @@ type StartedRequest struct {
 }
 
 // DisputeRequest contests an unacknowledged settlement.
+//
+// With Accept it is a statement rather than a dispute: the buyer's job ended
+// without a receipt it could check (it stopped the job, or the stream broke
+// after output arrived), and Accept is the most it agrees to be charged for
+// what it received, in micro-credits. A receipt the node settles within it
+// takes the usual course; one that bills more is disputed.
 type DisputeRequest struct {
-	JobID  string `json:"job_id"`
-	Reason string `json:"reason"`
+	JobID  string  `json:"job_id"`
+	Reason string  `json:"reason"`
+	Accept *uint64 `json:"accept,omitempty"`
 }
 
 // Evidence opens a dispute that the coordinator can decide on the facts. It is

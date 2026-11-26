@@ -161,6 +161,10 @@ type Config struct {
 	// lowering it to what buyers accept: a node that inflates its bill. For
 	// tests of the buyer's and the judge's defences only.
 	Overbill bool
+	// TamperSettle, if set, may change a settlement before it is sent: a node
+	// that claims something else than it showed its buyer. For tests of the
+	// buyer's and the coordinator's defences only.
+	TamperSettle func(*protocol.SettleRequest)
 }
 
 func (c *Config) setDefaults() {
@@ -576,7 +580,7 @@ func (s *Service) runJob(st network.Stream, env *protocol.Envelope) {
 		// so the payout waits out the dispute window like any unacknowledged
 		// job. Not a node failure.
 		s.log.Info("buyer left mid-stream; billing the delivered part", "job", t.JobID, "why", err, "chunks", delivered, "frames", frames)
-		sr, serr := s.signReceipt(t, sealedReq, rw.Digest(), protocol.Usage{PromptTokens: prep.EstPrompt, CompletionTokens: protocol.EstimateTokens(text)})
+		sr, serr := s.signReceipt(t, sealedReq, rw.Digest(), billPartial(prep, rw.meter, text, billing))
 		if serr == nil {
 			go s.settle(*t, *sr, nil)
 		}
@@ -657,6 +661,24 @@ func bill(prep *Prepared, meter *protocol.UsageMeter, text string, b *Billing) p
 	return protocol.BillableUsage(u, prep.EstPrompt, visible, meter.Hidden(), prep.Limit)
 }
 
+// billPartial is the usage billed for a job its buyer left mid-stream. The
+// prompt is what the model server reported, if it did: it was processed in
+// full, cache writes included, whatever became of the answer. The output is
+// what was delivered, as far as the buyer can tell from the text it got
+// (protocol.AcceptableCost): a buyer that stops is not asked to pay for
+// reasoning it has no sign of, so that part remains the seller's loss.
+func billPartial(prep *Prepared, meter *protocol.UsageMeter, text string, b *Billing) protocol.Usage {
+	visible := protocol.EstimateTokens(text)
+	u := protocol.Usage{PromptTokens: prep.EstPrompt}
+	reported := false
+	if r := meter.Usage(); r != nil && r.PromptTokens > 0 {
+		u, reported = *r, true
+	}
+	u.CompletionTokens, u.ReasoningTokens = max(u.CompletionTokens, visible), 0
+	u = b.Prompt(u, reported)
+	return protocol.BillableUsage(u, prep.EstPrompt, visible, false, prep.Limit)
+}
+
 func (s *Service) signReceipt(t *protocol.Ticket, sealedReq, respHash []byte, u protocol.Usage) (*receipt.SignedReceipt, error) {
 	nonce := make([]byte, 16)
 	_, _ = rand.Read(nonce)
@@ -679,6 +701,9 @@ func (s *Service) signReceipt(t *protocol.Ticket, sealedReq, respHash []byte, u 
 // from the coordinator is final.
 func (s *Service) settle(t protocol.Ticket, sr receipt.SignedReceipt, ack []byte) {
 	req := protocol.SettleRequest{Ticket: t, Receipt: sr, Ack: ack}
+	if s.cfg.TamperSettle != nil {
+		s.cfg.TamperSettle(&req)
+	}
 	// The buyer's hold stays until the coordinator's settlement deadline (the
 	// ticket's lifetime plus a long grace), so a node whose path to the
 	// coordinator is down for a while (relay failover, coordinator restart)

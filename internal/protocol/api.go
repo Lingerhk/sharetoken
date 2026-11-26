@@ -280,24 +280,27 @@ func (m *UsageMeter) Hidden() bool { return m.hidden }
 
 // RequestedOutput is the output limit a request asks for (0: none).
 func RequestedOutput(api string, body []byte) uint64 {
-	var r struct {
-		MaxTokens           uint64 `json:"max_tokens"`
-		MaxCompletionTokens uint64 `json:"max_completion_tokens"`
-		MaxOutputTokens     uint64 `json:"max_output_tokens"`
-	}
-	if json.Unmarshal(body, &r) != nil {
+	// Exact field names, as the node reads them (see EstimatePromptTokens).
+	req, err := fields(body)
+	if err != nil {
 		return 0
+	}
+	num := func(k string) uint64 {
+		var n uint64
+		_ = json.Unmarshal(req[k], &n)
+		return n
 	}
 	switch NormalAPI(api) {
 	case APIResponses:
-		return r.MaxOutputTokens
+		return num("max_output_tokens")
 	case APIMessages:
-		return r.MaxTokens
+		return num("max_tokens")
 	}
-	if r.MaxCompletionTokens > 0 && (r.MaxTokens == 0 || r.MaxCompletionTokens < r.MaxTokens) {
-		return r.MaxCompletionTokens
+	maxTokens, maxCompletion := num("max_tokens"), num("max_completion_tokens")
+	if maxCompletion > 0 && (maxTokens == 0 || maxCompletion < maxTokens) {
+		return maxCompletion
 	}
-	return r.MaxTokens
+	return maxTokens
 }
 
 // Truncated reports whether a finish reason of api says the answer ran into
@@ -355,6 +358,25 @@ func UsagePlausible(u Usage, estPrompt, estVisible uint64, hidden bool, outputLi
 }
 
 func promptBound(est uint64) uint64 { return 3*est + 512 }
+
+const inFlightTokens = 1024
+
+// AcceptableCost is the most a job of ticket t can cost for what its buyer
+// saw of it when no receipt came to be checked: the usage UsagePlausible
+// would accept, at the ticket's prices. Reasoning the stream only hinted at
+// is left out: without the end of the stream nothing says how much there was.
+// inFlightTokens allow for output the node had sent that did not arrive
+// before the stream ended, which an honest node bills.
+func AcceptableCost(t *Ticket, estPrompt, estVisible uint64) uint64 {
+	if t.Shared {
+		return 0
+	}
+	c, err := CostMicros(promptBound(estPrompt), completionBound(estVisible, false, 0)+inFlightTokens, t.Prices().PromptCeiling(), t.PriceOutMicros)
+	if err != nil || c > t.ReservedMicros {
+		return t.ReservedMicros
+	}
+	return c
+}
 
 func completionBound(estVisible uint64, hidden bool, outputLimit uint64) uint64 {
 	b := 2*estVisible + 64

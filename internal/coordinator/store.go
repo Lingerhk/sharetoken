@@ -32,6 +32,9 @@ var Migrations = []mysqldb.Migration{
 	{Version: 9, Name: "invite links", SQL: accounts.InviteLinkSchema},
 	// A share invite may admit several people.
 	{Version: 10, Name: "share invite uses", SQL: accounts.ShareInviteUsesSchema},
+	// What a buyer said it accepts to pay for a job that ended without a
+	// receipt it could check (-1: it said nothing).
+	{Version: 11, Name: "buyer accepts", SQL: `ALTER TABLE jobs ADD COLUMN buyer_accepts BIGINT NOT NULL DEFAULT -1;`},
 }
 
 const tokenAuditSchema = `ALTER TABLE audits ADD COLUMN method VARCHAR(16) NOT NULL DEFAULT '',
@@ -153,6 +156,7 @@ type job struct {
 	cost           uint64
 	fee            int64
 	disputeReason  string // set while held: a pre-dispute applied at settlement
+	accepts        int64  // the most the buyer said it accepts to pay without arbitration; -1: it said nothing
 	disputeOutcome string // set once evidence was judged
 	disputeDetail  string
 	createdAt      int64
@@ -169,9 +173,9 @@ func loadJob(tx *sql.Tx, id string) (*job, error) {
 		status       string
 	)
 	err := tx.QueryRow(`SELECT status, ticket, receipt, cost, fee, dispute_reason, dispute_outcome, dispute_detail,
-		created_at, release_at, finalize_at, done_at, buyer_acct, node_acct, started_at FROM jobs WHERE job_id = ?`, id).Scan(
+		created_at, release_at, finalize_at, done_at, buyer_acct, node_acct, started_at, buyer_accepts FROM jobs WHERE job_id = ?`, id).Scan(
 		&status, &ticket, &rcpt, &cost, &j.fee, &j.disputeReason, &j.disputeOutcome, &j.disputeDetail,
-		&j.createdAt, &j.releaseAt, &j.finalizeAt, &j.doneAt, &j.buyerAcct, &j.nodeAcct, &j.startedAt)
+		&j.createdAt, &j.releaseAt, &j.finalizeAt, &j.doneAt, &j.buyerAcct, &j.nodeAcct, &j.startedAt, &j.accepts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -223,10 +227,10 @@ func saveJob(tx *sql.Tx, j *job) error {
 	}
 	_, err := tx.Exec(`UPDATE jobs SET status = ?, receipt = ?, cost = ?, fee = ?, dispute_reason = ?, dispute_outcome = ?,
 		dispute_detail = ?, finalize_at = ?, done_at = ?, prompt_tokens = ?, completion_tokens = ?, started_at = ?,
-		cache_read_tokens = ?, cache_write_tokens = ? WHERE job_id = ?`,
+		cache_read_tokens = ?, cache_write_tokens = ?, buyer_accepts = ? WHERE job_id = ?`,
 		string(j.status), rcpt, int64(j.cost), j.fee, j.disputeReason, j.disputeOutcome, j.disputeDetail,
 		j.finalizeAt, j.doneAt, int64(min(pt, 1<<62)), int64(min(ct, 1<<62)), j.startedAt,
-		int64(min(cr, 1<<62)), int64(min(cw, 1<<62)), j.ticket.JobID)
+		int64(min(cr, 1<<62)), int64(min(cw, 1<<62)), j.accepts, j.ticket.JobID)
 	return err
 }
 
