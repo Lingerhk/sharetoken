@@ -136,6 +136,7 @@ type Config struct {
 	Relays       []string       // relays to reserve on besides those registered in the database
 	RelaySync    time.Duration  // how often the relay list and status are synced (default 15s)
 	Latency      func(node string) time.Duration
+	RelayPeers   func(ids []string) // told the relays' peer IDs before any is dialed: the host limits them as trunks (p2p.HostConfig.Trunk)
 	// NodeOnline reports whether a node is currently connected to the
 	// coordinator. Nodes that are not are skipped when matching: a crashed
 	// node, or one whose relay just died, cannot be reached by buyers either,

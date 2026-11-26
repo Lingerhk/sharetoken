@@ -167,7 +167,7 @@ func TestHubTakesAnOfficeBehindOneAddress(t *testing.T) {
 		}
 		return scopes, nil
 	}
-	hub, err := newResourceManager(HubLimits(4096), true)
+	hub, err := newResourceManager(rcmgr.NewFixedLimiter(HubLimits(4096)), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,12 +190,56 @@ func TestHubTakesAnOfficeBehindOneAddress(t *testing.T) {
 		t.Fatalf("IPv6: %v", err)
 	}
 
-	user, err := newResourceManager(ClientLimits(), false)
+	user, err := newResourceManager(rcmgr.NewFixedLimiter(ClientLimits()), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer user.Close()
 	if got, _ := open(user, "203.0.113.7", 9); len(got) != 8 {
 		t.Fatalf("a user host took %d connections of one address, want libp2p's 8", len(got))
+	}
+}
+
+// A relay opens one stream to the coordinator for every user online, and the
+// coordinator receives them from one relay: libp2p's 64 relayed streams and
+// 128 stop streams per peer are lifted in that direction, and the trunk's own
+// limit is the hub's. What one peer may ask of a relay, and what any other
+// peer may hold, stay as libp2p has them.
+func TestHubLimitsLetATrunkCarryEveryUser(t *testing.T) {
+	const conns = 8192
+	l := HubLimits(conns)
+	pc := l.ToPartialLimitConfig()
+	sp := pc.ServicePeer[relayv2.ServiceName]
+	if sp.StreamsOutbound < conns || sp.Streams < conns {
+		t.Fatalf("relayed streams to one peer %+v, want %d", sp, conns)
+	}
+	if sp.StreamsInbound != 64 {
+		t.Fatalf("relayed streams from one peer: %d, want libp2p's 64", sp.StreamsInbound)
+	}
+	stop := pc.ProtocolPeer[circuitproto.ProtoIDv2Stop]
+	if stop.StreamsInbound < conns || stop.StreamsOutbound < conns {
+		t.Fatalf("stop streams of one peer %+v, want %d", stop, conns)
+	}
+	if hop := pc.ProtocolPeer[circuitproto.ProtoIDv2Hop]; hop.StreamsInbound != 128 {
+		t.Fatalf("hop streams from one peer: %d, want libp2p's 128", hop.StreamsInbound)
+	}
+	if pp := pc.ProtocolPeer[ping.ID]; pp.StreamsInbound != 8 {
+		t.Fatalf("ping streams of one peer: %+v", pp)
+	}
+
+	trunk, other := peer.ID("trunk"), peer.ID("other")
+	lim := trunkLimiter{Limiter: rcmgr.NewFixedLimiter(l), trunk: func(p peer.ID) bool { return p == trunk }, limit: trunkLimit(l)}
+	got, plain := lim.GetPeerLimits(trunk), lim.GetPeerLimits(other)
+	if got.GetStreamLimit(network.DirInbound) < conns || got.GetStreamLimit(network.DirOutbound) < conns || got.GetStreamTotalLimit() < 2*conns {
+		t.Fatalf("a trunk's streams: %+v", got)
+	}
+	if got.GetMemoryLimit() != int64(pc.System.Memory) {
+		t.Fatalf("a trunk's memory %d, want the hub's %d", got.GetMemoryLimit(), pc.System.Memory)
+	}
+	if got.GetConnTotalLimit() != plain.GetConnTotalLimit() {
+		t.Fatalf("a trunk's connections %d, want any peer's %d", got.GetConnTotalLimit(), plain.GetConnTotalLimit())
+	}
+	if plain.GetStreamTotalLimit() >= conns || plain.GetMemoryLimit() >= got.GetMemoryLimit() {
+		t.Fatalf("an ordinary peer's limit: streams %d, memory %d", plain.GetStreamTotalLimit(), plain.GetMemoryLimit())
 	}
 }

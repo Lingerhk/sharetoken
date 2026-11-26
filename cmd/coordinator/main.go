@@ -428,7 +428,12 @@ func main() {
 		cfg.Attestation = &coordinator.Attestation{Verifier: cli.TEEVerifier(f.TEE.OnlineCheck), Policy: p}
 	}
 
-	h, err := p2p.NewHost(keys, p2p.HostConfig{Program: "coordinator", Listen: f.Network.Listen, DialOnly: len(f.Network.Listen) == 0, MaxConns: f.Network.MaxConns})
+	// Every user online holds a stream that arrives through one of the
+	// relays, so a relay may hold far more of them than any other peer.
+	var relays p2p.PeerSet
+	cfg.RelayPeers = relays.Set
+	h, err := p2p.NewHost(keys, p2p.HostConfig{Program: "coordinator", Listen: f.Network.Listen, DialOnly: len(f.Network.Listen) == 0, MaxConns: f.Network.MaxConns,
+		Trunk: relays.Has})
 	if err != nil {
 		log.Fatal(err)
 	}

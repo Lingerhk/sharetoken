@@ -45,6 +45,8 @@ Example: [`configs/relay.example.yaml`](../configs/relay.example.yaml). The acce
 | `limits.max_reservations` | `-max-reservations` | 4096 | Reservations held at once, all networks together |
 | `limits.max_reservations_per_ip` | `-max-reservations-per-ip` | 64 | Reservations from one IP address |
 | `limits.max_circuits` | `-max-circuits` | 4096 | Open circuits to one destination peer (the coordinator receives one per online user) |
+| `limits.max_circuits_per_peer` | — | 32 | Circuits one peer may hold open at a time. A user holds one to the coordinator and one to each node it is buying from. libp2p allows a peer 64 streams of the relay service, so a higher value has no effect. `allow_peers` are not counted |
+| `limits.max_circuits_per_ip` | — | 128 | The same for all peers of one IPv4 address or one IPv6 /56 together, since peer IDs are free. The relay takes 32 connections from one address, so this is four circuits for each on average. `allow_peers` are not counted |
 | `limits.reservation_ttl` | — | 1h | Lifetime of a reservation; at least 1m |
 | `limits.circuit_buffer` | — | 16KiB | Buffer per circuit |
 | `limits.memory` | — | three quarters of the machine's (or the cgroup's) memory | What all peers may reserve with libp2p's resource manager. yamux reserves 256 KiB per stream and a circuit is two streams, although an idle circuit holds about 30 KiB, so on a small machine this, not the memory in use, caps TCP circuits (about 510 on 453 MB). The relay also sets a soft Go memory limit of 85% unless `GOMEMLIMIT` is set |

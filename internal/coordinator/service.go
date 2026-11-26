@@ -44,6 +44,7 @@ type Service struct {
 	relayMu sync.Mutex
 
 	relayDirty chan struct{}
+	relayPeers func(ids []string) // Config.RelayPeers
 }
 
 // NewService starts the coordinator on h, signing tickets with keys.
@@ -78,7 +79,7 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	s := &Service{Engine: eng, Errands: newErrands(), h: h, static: cfg.Relays, cancel: cancel, log: slog.Default().With("component", "coordinator")}
+	s := &Service{Engine: eng, Errands: newErrands(), h: h, static: cfg.Relays, relayPeers: cfg.RelayPeers, cancel: cancel, log: slog.Default().With("component", "coordinator")}
 	s.relayDirty = make(chan struct{}, 1)
 	s.relays = p2p.NewReserver(h, func() {
 		select { // record relay health promptly; the portal hands it to users
@@ -145,6 +146,15 @@ func (s *Service) syncRelays() error {
 		if !slices.Contains(addrs, r.Addr) {
 			addrs = append(addrs, r.Addr)
 		}
+	}
+	if s.relayPeers != nil {
+		ids := make([]string, 0, len(addrs))
+		for _, a := range addrs {
+			if ai, perr := p2p.ParseRelay(a); perr == nil {
+				ids = append(ids, ai.ID.String())
+			}
+		}
+		s.relayPeers(ids)
 	}
 	return errors.Join(err, s.relays.SetRelays(addrs))
 }

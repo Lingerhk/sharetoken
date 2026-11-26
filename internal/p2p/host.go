@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
@@ -46,7 +47,14 @@ type HostConfig struct {
 	MaxConns int
 	// Memory caps what all peers together may reserve with the resource
 	// manager, on a hub (MaxConns set). 0: a quarter of the machine's memory.
-	Memory  int64
+	Memory int64
+	// Trunk tells the peers of a hub that carry the streams of many others
+	// over one connection: for a relay its coordinators, each of which gets a
+	// stream for every user online; for the coordinator its relays. Such a
+	// peer may hold as many streams as the hub takes connections, where any
+	// other peer keeps libp2p's few hundred. It is asked when a peer first
+	// connects.
+	Trunk   func(peer.ID) bool
 	Options []libp2p.Option // extra libp2p options
 	Program string          // what this host runs, announced in libp2p's identify exchange: relay, coordinator, client
 }
@@ -80,7 +88,11 @@ func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 		opts = append(opts, libp2p.ConnectionManager(cm))
 		limits = hubLimits(cfg.MaxConns, cfg.Memory)
 	}
-	rm, err := newResourceManager(limits, cfg.MaxConns > 0)
+	var limiter rcmgr.Limiter = rcmgr.NewFixedLimiter(limits)
+	if cfg.MaxConns > 0 && cfg.Trunk != nil {
+		limiter = trunkLimiter{Limiter: limiter, trunk: cfg.Trunk, limit: trunkLimit(limits)}
+	}
+	rm, err := newResourceManager(limiter, cfg.MaxConns > 0)
 	if err != nil {
 		return nil, err
 	}
@@ -119,9 +131,9 @@ const HubAddrConns = 32
 // as that takes: libp2p's rate limit per address (sixteen at once, then one
 // in five seconds) would hold back an office reconnecting after the relay
 // restarted. A user host keeps libp2p's limits.
-func newResourceManager(limits rcmgr.ConcreteLimitConfig, hub bool) (network.ResourceManager, error) {
+func newResourceManager(limiter rcmgr.Limiter, hub bool) (network.ResourceManager, error) {
 	if !hub {
-		return rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(limits))
+		return rcmgr.NewResourceManager(limiter)
 	}
 	local := []rate.PrefixLimit{ // this machine itself is never held back
 		{Prefix: netip.MustParsePrefix("127.0.0.0/8")},
@@ -138,7 +150,7 @@ func newResourceManager(limits rcmgr.ConcreteLimitConfig, hub bool) (network.Res
 			GracePeriod: time.Minute,
 		},
 	}
-	return rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(limits),
+	return rcmgr.NewResourceManager(limiter,
 		rcmgr.WithLimitPerSubnet(
 			[]rcmgr.ConnLimitPerSubnet{{PrefixLength: 32, ConnCount: HubAddrConns}},
 			[]rcmgr.ConnLimitPerSubnet{{PrefixLength: 56, ConnCount: HubAddrConns}, {PrefixLength: 48, ConnCount: 8 * HubAddrConns}}),
@@ -195,6 +207,15 @@ func ClientLimits() rcmgr.ConcreteLimitConfig {
 // (ping, identify, autonat, hole punching). The system memory limit is a
 // quarter of RAM (or of a cgroup's memory.max when that is lower) (libp2p's default is an eighth): the aggregate cap on what
 // all peers can hold, legitimate buffers included.
+//
+// Between a relay and one peer libp2p allows 64 relayed streams, and 128 of
+// the stop protocol, whoever the peer is: user 65 of a relay could not reach
+// the coordinator. The streams a relay opens (to a destination) and those the
+// coordinator receives (from its relay) are therefore limited per peer like
+// the service as a whole, and what remains per peer is the peer's own limit:
+// libp2p's for anyone, a hub's for a trunk (HostConfig.Trunk). What one peer
+// may open towards a relay keeps libp2p's limit; the relay sets a lower one
+// itself (relay.Config.MaxCircuitsPerPeer).
 func HubLimits(maxConns int) rcmgr.ConcreteLimitConfig { return hubLimits(maxConns, 0) }
 
 // MachineMemory is the memory this process may use: the machine's, or a
@@ -229,7 +250,20 @@ func hubLimits(maxConns int, memory int64) rcmgr.ConcreteLimitConfig {
 	for _, id := range []lproto.ID{circuitproto.ProtoIDv2Hop, circuitproto.ProtoIDv2Stop, identify.ID, identify.IDPush, ping.ID, autonat.AutoNATProto, holepunch.Protocol} {
 		protocols[id] = perUsers
 	}
+	// Per peer: outgoing relayed streams (relay to destination) and incoming
+	// stop streams (relay to coordinator) as many as there are users.
+	scaledPeer := scaled.ToPartialLimitConfig()
+	relayPeer := scaledPeer.ServicePeer[relayv2.ServiceName]
+	relayPeer.StreamsOutbound = conns
+	relayPeer.Streams = conns + relayPeer.StreamsInbound
+	relayPeer.Memory = max(relayPeer.Memory, 16<<20) // a 4 KiB message per handshake under way
+	stopPeer := scaledPeer.ProtocolPeer[circuitproto.ProtoIDv2Stop]
+	stopPeer.StreamsInbound, stopPeer.StreamsOutbound, stopPeer.Streams = conns, conns, 2*conns
+	scaledPeer.ServicePeer[relayv2.ServiceName] = relayPeer
+	scaledPeer.ProtocolPeer[circuitproto.ProtoIDv2Stop] = stopPeer
 	partial := rcmgr.PartialLimitConfig{
+		ServicePeer:  scaledPeer.ServicePeer,
+		ProtocolPeer: scaledPeer.ProtocolPeer,
 		System: rcmgr.ResourceLimits{
 			Conns: conns, ConnsInbound: conns, ConnsOutbound: conns,
 			Streams: 2 * streams, StreamsInbound: streams, StreamsOutbound: streams,
@@ -244,6 +278,58 @@ func hubLimits(maxConns int, memory int64) rcmgr.ConcreteLimitConfig {
 		Protocol: protocols,
 	}
 	return partial.Build(scaled)
+}
+
+// PeerSet is a set of peers that changes while a host runs: the relays of a
+// coordinator, read from its database, as HostConfig.Trunk.
+type PeerSet struct {
+	mu  sync.RWMutex
+	ids map[string]struct{}
+}
+
+// Set replaces the set with the peers of ids (peer IDs as text).
+func (s *PeerSet) Set(ids []string) {
+	m := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		m[id] = struct{}{}
+	}
+	s.mu.Lock()
+	s.ids = m
+	s.mu.Unlock()
+}
+
+// Has reports whether p is in the set.
+func (s *PeerSet) Has(p peer.ID) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.ids[p.String()]
+	return ok
+}
+
+// trunkLimiter gives the trunks of a hub a limit of their own.
+type trunkLimiter struct {
+	rcmgr.Limiter
+	trunk func(peer.ID) bool
+	limit rcmgr.BaseLimit
+}
+
+func (l trunkLimiter) GetPeerLimits(p peer.ID) rcmgr.Limit {
+	if l.trunk(p) {
+		return &l.limit
+	}
+	return l.Limiter.GetPeerLimits(p)
+}
+
+// trunkLimit is what a trunk may hold: the streams and the memory of the
+// whole hub, since at worst every user comes through one trunk, and the
+// connections of any peer. With TCP every stream reserves 256 KiB here
+// (yamux), so memory is what a small machine runs out of first.
+func trunkLimit(hub rcmgr.ConcreteLimitConfig) rcmgr.BaseLimit {
+	pc := hub.ToPartialLimitConfig()
+	l := pc.PeerDefault.Build(rcmgr.BaseLimit{})
+	sys := pc.System.Build(rcmgr.BaseLimit{})
+	l.Streams, l.StreamsInbound, l.StreamsOutbound, l.Memory = sys.Streams, sys.StreamsInbound, sys.StreamsOutbound, sys.Memory
+	return l
 }
 
 // AddrStrings returns h's current addresses, for embedding in a signed offer.
