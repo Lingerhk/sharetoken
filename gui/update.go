@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"sync"
@@ -278,6 +279,12 @@ func (u *shellUpdater) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		_ = json.NewEncoder(w).Encode(u.status())
 	case http.MethodPost:
+		// The content type keeps out what a web form could post.
+		if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "application/json" {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			fmt.Fprintln(w, `{"error":{"code":"bad_request","message":"send application/json"}}`)
+			return
+		}
 		var req struct {
 			Key string `json:"key"`
 		}
