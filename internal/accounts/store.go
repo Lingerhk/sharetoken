@@ -325,6 +325,11 @@ func (s *Store) RevokeToken(userID, tokenID int64) error {
 	})
 }
 
+// MaxDevicesPerUser bounds the devices bound to one account. Every device is
+// a peer the coordinator answers and may hold an offer in its memory; a
+// person has a handful, and a device keeps its key across reinstalls.
+const MaxDevicesPerUser = 100
+
 // BindDevice binds peer to u after checking the device's signature over
 // (username, peer, unixNano). Re-binding a device to the same user renames it.
 func (s *Store) BindDevice(u *User, peer, name string, unixNano int64, sig []byte) (*Device, error) {
@@ -344,6 +349,13 @@ func (s *Store) BindDevice(u *User, peer, name string, unixNano int64, sig []byt
 		var owner int64
 		switch err := tx.QueryRow(`SELECT user_id FROM devices WHERE peer = ?`, peer).Scan(&owner); {
 		case errors.Is(err, sql.ErrNoRows):
+			var n int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM devices WHERE user_id = ?`, u.ID).Scan(&n); err != nil {
+				return err
+			}
+			if n >= MaxDevicesPerUser {
+				return fmt.Errorf("%w: this account has %d devices, the most it may have; remove one that is no longer used", ErrInvalid, n)
+			}
 			if _, err := tx.Exec(`INSERT INTO devices (peer, user_id, name, created_at) VALUES (?, ?, ?, ?)`, peer, u.ID, name, now); err != nil {
 				return err
 			}

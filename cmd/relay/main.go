@@ -66,6 +66,8 @@ type File struct {
 		MaxReservations      int             `yaml:"max_reservations"`
 		MaxReservationsPerIP int             `yaml:"max_reservations_per_ip"`
 		MaxCircuits          int             `yaml:"max_circuits"`
+		MaxCircuitsPerPeer   int             `yaml:"max_circuits_per_peer"`
+		MaxCircuitsPerIP     int             `yaml:"max_circuits_per_ip"`
 		ReservationTTL       config.Duration `yaml:"reservation_ttl"`
 		CircuitBuffer        config.Size     `yaml:"circuit_buffer"`
 		// Memory caps what peers may reserve with libp2p's resource manager
@@ -109,6 +111,7 @@ func defaults() File {
 	f.Network.Listen = []string{"/ip4/0.0.0.0/tcp/4001", "/ip4/0.0.0.0/udp/4001/quic-v1", "/ip6/::/tcp/4001", "/ip6/::/udp/4001/quic-v1"}
 	f.Network.MaxConns = 8192
 	f.Limits.MaxReservations, f.Limits.MaxReservationsPerIP, f.Limits.MaxCircuits = 4096, 64, 4096
+	f.Limits.MaxCircuitsPerPeer, f.Limits.MaxCircuitsPerIP = 32, 128
 	f.Limits.ReservationTTL, f.Limits.CircuitBuffer = config.D("1h"), 16<<10
 	f.Status.StatsInterval = config.D("5m")
 	f.Log = config.DefaultLog()
@@ -155,6 +158,7 @@ func relayConfig(f File) (relay.Config, error) {
 		Listen: f.Network.Listen, Announce: f.Network.Announce,
 		MaxReservations: f.Limits.MaxReservations, MaxReservationsPerIP: f.Limits.MaxReservationsPerIP,
 		MaxCircuits: f.Limits.MaxCircuits, MaxConns: f.Network.MaxConns,
+		MaxCircuitsPerPeer: f.Limits.MaxCircuitsPerPeer, MaxCircuitsPerIP: f.Limits.MaxCircuitsPerIP,
 		ReservationTTL: f.Limits.ReservationTTL.T(), BufferSize: int(f.Limits.CircuitBuffer),
 		Memory: int64(f.Limits.Memory),
 	}
@@ -200,6 +204,7 @@ func relayConfig(f File) (relay.Config, error) {
 	}
 	for name, v := range map[string]int{"limits.max_reservations": cfg.MaxReservations, "limits.max_reservations_per_ip": cfg.MaxReservationsPerIP,
 		"limits.max_circuits": cfg.MaxCircuits, "network.max_conns": cfg.MaxConns,
+		"limits.max_circuits_per_peer": cfg.MaxCircuitsPerPeer, "limits.max_circuits_per_ip": cfg.MaxCircuitsPerIP,
 		"limits.circuit_buffer": cfg.BufferSize} {
 		if v <= 0 {
 			errs = append(errs, fmt.Errorf("%s must be positive", name))

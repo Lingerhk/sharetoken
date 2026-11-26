@@ -187,7 +187,9 @@ Two mechanisms address that:
 - **A buyer that takes tickets and never connects** ties up a seller's slot for a
   bounded time: an unstarted job is released shortly after its ticket expires,
   with the hold returned and no penalty to the seller, and an account holding
-  several stale tickets gets no new ones.
+  several stale tickets gets no new ones. Whatever their age, an account
+  holds at most 32 tickets that have not started, and 8 for one node; further
+  requests wait for one to start or to be released.
 - **A seller that fails before delivering anything** abandons the job, which
   returns the buyer's hold at once.
 - **A user cannot trade with themselves** to farm reputation: matching excludes
@@ -339,6 +341,9 @@ tailcat) in place of a relay ([architecture.md](architecture.md) §2.17).
 | A web page calls the local client API to spend the user's credit | The local API binds to loopback and refuses any request whose Origin is not local. | `internal/client` |
 | Bypassing the relays to reach the coordinator | The coordinator listens on no address. | `cmd/coordinator` |
 | Strangers filling a relay's reservation slots | A reservation needs a short-lived pass signed by the portal and bound to the device's peer ID, with a limit on devices per user. Relays verify it offline. | `internal/relaypass`, `internal/relay` |
+| Filling the coordinator's memory, or buyers' dial queues, with offers | An offer lists at most 128 models and 64 addresses, and only addresses of TCP, QUIC, a relay circuit or a tunnel; a buyer dials no other kind. The frame that carries an offer is read up to 256 KiB. An account shares from at most 16 nodes at a time and binds at most 100 devices. Peers that are no user's device get no model list and cannot fill the coordinator's tables. | `internal/protocol/limits.go`, `internal/coordinator`, `internal/accounts` |
+| A seller pricing itself high to collect the platform's audit payments | An audit job pays at most three times the model's median price (the median over accounts of each one's cheapest offer); a node priced above that is not audited. All audit jobs of a day together reserve at most `audit.daily_budget_micros`. | `internal/coordinator/auditcap.go` |
+| One peer holding a relay's circuits | A peer holds at most 32 circuits at a time and all peers of one address 128, so that the slots towards the coordinator cannot be taken from one place. | `internal/relay/circuits.go` |
 | Exhausting memory with huge frames or floods of streams | Frames grow with the data that arrives, never from the declared length. Stream handlers reserve memory from libp2p's resource manager first, with limits per stream, per peer and in total. | `internal/protocol`, `internal/p2p` |
 | A relay goes down | Clients switch relays automatically. Sellers reserve on more than one, and the coordinator reserves on all of them. | `internal/client`, `internal/p2p` |
 | Tampering with the ledger | Double-entry: every movement is a balanced transfer, journaled, and the journal is replayed against the balances on startup. All writes of the portal and the coordinator are serialized by one database lock. | `internal/ledger`, `internal/mysqldb` |
@@ -386,7 +391,14 @@ them more than the list above.
   bugs are out of scope.
 - **Relayed connections are not admission-controlled.** Anyone can open a circuit
   to a reserved peer. The peer authenticates and rejects strangers, but the
-  relay's bandwidth is used. Only aggregate limits bound it.
+  relay's bandwidth is used. A relay limits how many circuits one peer and one
+  address hold at a time, not who they are; someone with many addresses is
+  bounded only by the aggregate limits. A circuit has no idle timeout: it
+  lasts until one end closes it.
+- **The audit price cap follows the market.** Where one seller is the only one
+  offering a model, or a majority of accounts collude, the median is theirs;
+  the daily budget is then the bound. A node that prices itself above the cap
+  is not audited at all, and buyers see its price.
 - **A seller's own relay sees its buyers' addresses.** A buyer that reaches a
   node through the seller's private relay shows that relay its network
   address, the times and the byte counts: what a direct connection shows the

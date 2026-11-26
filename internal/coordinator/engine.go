@@ -97,6 +97,27 @@ type Config struct {
 	// gets no new tickets until they are released (default 5).
 	MaxStaleTickets int
 	StaleAfter      time.Duration // default 15s
+	// MaxOffersPerAccount is how many nodes of one account may have a live
+	// offer (default 16); a further node's offer is refused.
+	MaxOffersPerAccount int
+	// AuditPriceMultiple caps what an audit job pays: this many times the
+	// median price of the model among current offers (default 3). Nodes that
+	// charge more are not audited.
+	AuditPriceMultiple uint64
+	// AuditDailyMicros is the most audit jobs may reserve per UTC day out of
+	// the platform's fees (default 20,000,000: 20 credits).
+	AuditDailyMicros uint64
+	// MaxIdleTickets is how many held tickets a buyer account may have that
+	// never started, whatever their age and whoever is connected (default
+	// 32). Past it a ticket request is answered with CodeCapacity, so a
+	// client waits and asks again: tickets normally start within seconds.
+	// MaxStaleTickets cannot be this bound: it leaves out fresh tickets and
+	// those of a device or a node that reconnected, which is an honest
+	// client's benefit of the doubt and a hoarder's way around it.
+	MaxIdleTickets int
+	// MaxIdlePerNode is how many of them may be for one node (default 8): the
+	// node counts as full for that buyer until one starts.
+	MaxIdlePerNode  int
 	SettleGrace     time.Duration // extra time for settlement to arrive before the hold is released
 	DisputeWindow   time.Duration // unacknowledged settlements become final after this
 	MaxOfferTTL     time.Duration // offers claiming a longer validity are rejected
@@ -115,6 +136,7 @@ type Config struct {
 	Relays       []string       // relays to reserve on besides those registered in the database
 	RelaySync    time.Duration  // how often the relay list and status are synced (default 15s)
 	Latency      func(node string) time.Duration
+	RelayPeers   func(ids []string) // told the relays' peer IDs before any is dialed: the host limits them as trunks (p2p.HostConfig.Trunk)
 	// NodeOnline reports whether a node is currently connected to the
 	// coordinator. Nodes that are not are skipped when matching: a crashed
 	// node, or one whose relay just died, cannot be reached by buyers either,
@@ -159,6 +181,29 @@ func (c *Config) setDefaults() {
 	}
 	if c.MaxStaleTickets == 0 {
 		c.MaxStaleTickets = 5
+	}
+	if c.MaxIdleTickets == 0 {
+		// A burst of parallel requests holds one unstarted ticket each for
+		// the 0.3-2.5 s a start report takes, and a node that cannot be
+		// reached holds one per attempt until it expires (the 20 "failed"
+		// tickets MaxStaleTickets tolerates are among these).
+		c.MaxIdleTickets = 32
+	}
+	if c.MaxIdlePerNode == 0 {
+		c.MaxIdlePerNode = 8
+	}
+	if c.MaxOffersPerAccount == 0 {
+		// A relay admits four devices of an account; nodes with an address
+		// of their own need no relay.
+		c.MaxOffersPerAccount = 16
+	}
+	if c.AuditPriceMultiple == 0 {
+		c.AuditPriceMultiple = 3
+	}
+	if c.AuditDailyMicros == 0 {
+		// Five questions every ten minutes at a hundred times the default
+		// price reserve under 8 credits a day.
+		c.AuditDailyMicros = 20_000_000
 	}
 	if c.StaleAfter == 0 {
 		// Start reports normally arrive within 0.3-2.5 s; 15 s leaves room for
@@ -340,7 +385,7 @@ func (e *Engine) updateLocked(fn func(tx *sql.Tx, led *ledger.Tx) error) error {
 // accountOf returns the ledger account that pays and earns for peer: its
 // user's account, an audit identity's own account, or (OpenAccounts) the
 // peer's own account. Unbound and disabled devices get CodeUnauthorized.
-func (e *Engine) accountOf(tx *sql.Tx, peer string) (string, error) {
+func (e *Engine) accountOf(tx accounts.Querier, peer string) (string, error) {
 	acct, _, err := accounts.DeviceAccount(tx, peer)
 	switch {
 	case err == nil:
@@ -387,6 +432,11 @@ func (e *Engine) UpsertOffer(o *protocol.Offer) error {
 		if at, ok := e.withdrawn[o.Node]; ok && o.IssuedAt <= at {
 			return nil
 		}
+		// Offers are kept in memory, and every one adds to each model list
+		// and each match: an account gets a bounded number of them.
+		if n := e.offersOf(acct, o.Node, now.UnixNano()); n >= e.cfg.MaxOffersPerAccount {
+			return protocol.Errorf(protocol.CodeBusy, "%d nodes of this account are sharing already, the most one account may have", n)
+		}
 		e.offers[o.Node] = &offerEntry{offer: saneOffer(o), acct: acct, tee: tee}
 		if err := accounts.SetDeviceVersionTx(tx, o.Node, o.ClientVersion); err != nil {
 			return err
@@ -412,7 +462,12 @@ func (e *Engine) WithdrawOffer(node string, issuedAt int64) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.offers, node)
-	e.withdrawn[node] = issuedAt
+	// Entries leave after MaxOfferTTL (Tick); the table is bounded all the
+	// same. A node not noted here is only one whose late announcement could
+	// bring its offer back for a moment.
+	if _, known := e.withdrawn[node]; known || len(e.withdrawn) < maxWithdrawn {
+		e.withdrawn[node] = issuedAt
+	}
 	return nil
 }
 
@@ -744,6 +799,30 @@ func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bo
 				return protocol.Errorf(protocol.CodeBusy, "%d earlier tickets were never used (%d more reported failed); they are released when they expire", stale, failed)
 			}
 		}
+		// The count above gives the benefit of the doubt to fresh tickets
+		// and to whoever reconnected, so alone it lets an account that
+		// reconnects (or asks fast enough) take every slot of every node.
+		// All unstarted tickets together are capped too, and those for one
+		// node. The answer is "at capacity": a client waits and asks again,
+		// which is all an honest burst needs.
+		var idle map[string]int
+		if !errand {
+			var total int
+			if total, idle, err = idleTickets(tx, buyerAcct); err != nil {
+				return err
+			}
+			if total >= e.cfg.MaxIdleTickets {
+				return protocol.Errorf(protocol.CodeCapacity, "%d tickets of this account have not started yet; new ones wait until they start or expire", total)
+			}
+		}
+		// The platform pays for an audit job, carried or asked by an audit
+		// identity, so no buyer's price limit applies: it has a cap of its
+		// own, and a budget per day.
+		audit := errand || scope.auditor
+		var auditCap *priceCap
+		if audit {
+			auditCap = e.auditPriceCap(req.Model, now.UnixNano())
+		}
 		busy, sharedBusy, err := busyNodes(tx, now.Add(-e.cfg.StartGrace).UnixNano())
 		if err != nil {
 			return err
@@ -775,7 +854,7 @@ func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bo
 				if !ok || (paid && ((req.MaxPriceIn > 0 && p.PriceInMicros > req.MaxPriceIn) || (req.MaxPriceOut > 0 && p.PriceOutMicros > req.MaxPriceOut))) {
 					continue
 				}
-				if req.RequireNative && !p.Native(req.API) {
+				if req.RequireNative && !p.Native(req.API) || !auditCap.allows(p) {
 					continue
 				}
 				st, err := loadStats(tx, node)
@@ -785,7 +864,7 @@ func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bo
 				if st.SuspendedUntil > now.UnixNano() {
 					continue
 				}
-				if o.MaxConcurrency > 0 && busy[node] >= o.MaxConcurrency {
+				if o.MaxConcurrency > 0 && busy[node] >= o.MaxConcurrency || idle[node] >= e.cfg.MaxIdlePerNode {
 					full++
 					continue
 				}
@@ -892,6 +971,11 @@ func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bo
 		hold := req.BudgetMicros
 		if req.MaxTokens > 0 && req.PromptTokens > 0 {
 			hold = min(hold, max(e.cfg.MinBudgetMicros, protocol.HoldFor(req.PromptTokens, req.MaxTokens, best.price.Prices().PromptCeiling(), best.price.PriceOutMicros)))
+		}
+		if audit {
+			if err := e.chargeAuditBudget(tx, hold, now); err != nil {
+				return err
+			}
 		}
 		// A shared job moves no credits; its reservation only caps the output.
 		if errand {

@@ -100,7 +100,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 - 节点接下任务时（买家已连上、Ticket 校验通过、拿到并发名额），**在后台**向协调器发 `started`，不增加首字节延迟。协调器记下 `jobs.started_at`。
 - Ticket 过期（有效期默认 1 分钟）后再过 30 秒仍未开始的单被释放：冻结额全数退回买家，**不扣节点信誉**，名额随之空出。节点最多被占 1.5 分钟。
 - 已开始的单照常运行，直到结算或到结算截止时间；到那时才算节点失败。
-- 防止囤票：一个买家账户里「签发超过 15 秒仍未开始」的 Ticket 达到 5 张时，不再给它新的 Ticket（`busy`）。正常的并发请求几秒内就会开始，不受影响。
+- 防止囤票：一个买家账户里「签发超过 15 秒仍未开始」的 Ticket 达到 5 张时，不再给它新的 Ticket（`busy`）。正常的并发请求几秒内就会开始，不受影响。不论签发了多久，一个账户未开始的 Ticket 最多 32 张，对同一个节点最多 8 张（`jobs.max_idle_tickets`、`jobs.max_idle_per_node`）；超出的请求得到 `capacity`，客户端会重试。
 - 迟到的 `started`（这一单已因未开始被释放）会收到 `conflict`，节点随即停止这一单。
 - 参数：`coordinator.Config` 的 `TicketTTL`、`StartGrace`、`MaxStaleTickets`、`StaleAfter`（配置文件里的 `jobs.*`）。
 
@@ -258,7 +258,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 | 猜登录验证码 | 没有密码。6 位验证码 10 分钟有效、每个可试 5 次，一个邮箱每小时 5 个；错误的验证码按 IP 和按邮箱限流（5 分钟 8 次，之后 429）。邮箱就是账户的钥匙，两步验证再加一道保护 | `internal/mailer/codes.go`、`portal.Server.throttled` |
 | 恶意网页调用本地端点 | Origin 检查 | `client.guardOrigin` |
 | 本机其他程序或用户调用本地管理 API，或冒充 daemon | `run.json`（0600）里的 key；桌面应用使用 daemon 前先核对它的 HMAC 证明 | `client.requireLocalKey`、`client.LocalProof`、`gui/supervisor.go` |
-| 拿了 Ticket 不来连，占满节点名额 | 未开始的单在 Ticket 过期 30 秒后释放；账户有 5 张闲置票时不再发新票 | `coordinator.Engine.MarkStarted`、`coordinator.Engine.Tick` |
+| 拿了 Ticket 不来连，占满节点名额 | 未开始的单在 Ticket 过期 30 秒后释放；账户有 5 张闲置票时不再发新票；不论签发多久，未开始的票最多 32 张，对同一节点 8 张 | `coordinator.Engine.MarkStarted`、`coordinator.Engine.Tick` |
 | 陌生人占用中继的预约名额 | 预约需要门户签发的短期凭证；按用户限制设备数 | `internal/relaypass`、`internal/relay/admission.go` |
 | 窃听或篡改门户通信（登录验证码、token） | 默认 HTTPS；客户端 pin 自签名证书的指纹；拒绝把机密明文发往远端 | `internal/portal/tls.go`、`client.NewPortalClient` |
 | 被禁用的用户继续交易 | 协调器每次请求都查用户状态；token 立即失效 | `accounts.DeviceAccount` |
@@ -269,7 +269,7 @@ sharetoken 是一个 LLM 推理的点对点交易市场。本文说明系统的�
 ## 5. 诚实的边界
 
 - **经中继的连接不设准入。** 任何人都能经中继连到持有预约的 peer。对方认证后会拒绝，但中继的带宽已经花掉了。中继的流量只受总量限额约束。
-- **拿票不来连仍有短暂的代价。** 每张这样的票最多让节点空等 1.5 分钟；每个账户的闲置票上限限制了总数。
+- **拿票不来连仍有短暂的代价。** 每张这样的票最多让节点空等 1.5 分钟；每个账户的闲置票和未开始票的上限限制了总数。
 - **自签名证书依赖首次确认。** 用户必须把指纹与运维公布的核对。有域名时更推荐 CA 证书。没有内置的 ACME 客户端：可以让 `-tls-cert` 指向 certbot 生成的证书，或者把门户放在 Caddy 或 nginx 后面。
 - **协调器是单实例。** 账本由它和门户记录。
 - **用量统计只覆盖保留期内的作业**（默认 30 天）。钱的历史在账本里永久保留。

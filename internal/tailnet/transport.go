@@ -91,11 +91,12 @@ type Transport struct {
 	reaching map[peer.ID]*reach
 }
 
-// New returns a transport and the libp2p option that installs it. The
-// option names libp2p's default transports too (naming any transport drops
-// them otherwise), and keeps the tailnet address out of the addresses the
-// host tells every peer it meets: only an offer carries it, to the buyers
-// the coordinator sends.
+// New returns a transport and the libp2p option that installs it, next to
+// the transports the host names itself (p2p.NewHost: TCP and QUIC; naming a
+// transport drops libp2p's defaults, WebSocket, WebTransport and WebRTC among
+// them, which nothing here uses). The option keeps the tailnet address out of
+// the addresses the host tells every peer it meets: only an offer carries
+// it, to the buyers the coordinator sends.
 func New(cfg Config) (*Transport, libp2p.Option, error) {
 	maps, err := newDERPMaps(cfg.DERPMap, cfg.Dir)
 	if err != nil {
@@ -122,7 +123,6 @@ func New(cfg Config) (*Transport, libp2p.Option, error) {
 	}
 	t.quicConf = t.quicConfig()
 	opt := libp2p.ChainOptions(
-		libp2p.DefaultTransports,
 		libp2p.Transport(func(k ic.PrivKey, u transport.Upgrader, rcmgr network.ResourceManager, gater connmgr.ConnectionGater) (*Transport, error) {
 			id, err := p2ptls.NewIdentity(k)
 			if err != nil {
