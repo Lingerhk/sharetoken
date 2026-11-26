@@ -286,7 +286,9 @@ func TestApplyBlocklist(t *testing.T) {
 		t.Fatal(err)
 	}
 	boss, _ := f.s.store.CreateUser("boss@example.com", true)
-	f.setSettings(map[string]any{"email_block": []string{"bad@example.com", "boss@example.com", "gone@example.com"}})
+	// Another spelling of a blocked mailbox is the same person.
+	alias, _ := f.s.store.CreateUser("bad+2@example.com", false)
+	f.setSettings(map[string]any{"email_block": []string{"bad@example.com", "boss@example.com", "gone@example.com", "bad+1@example.com"}})
 
 	var dry struct {
 		Matched  []string `json:"matched"`
@@ -294,7 +296,7 @@ func TestApplyBlocklist(t *testing.T) {
 		Disabled bool     `json:"disabled"`
 	}
 	f.ok("POST", "/api/v1/admin/settings/apply-blocklist", map[string]bool{"dry_run": true}, &dry)
-	if fmt.Sprint(dry.Matched) != "[bad@example.com]" || fmt.Sprint(dry.Admins) != "[boss@example.com]" || dry.Disabled {
+	if fmt.Sprint(dry.Matched) != "[bad@example.com bad+2@example.com]" || fmt.Sprint(dry.Admins) != "[boss@example.com]" || dry.Disabled {
 		t.Fatalf("dry run: %+v", dry)
 	}
 	if u, _ := f.s.store.User(bad.ID); u.Disabled {
@@ -303,6 +305,9 @@ func TestApplyBlocklist(t *testing.T) {
 	f.ok("POST", "/api/v1/admin/settings/apply-blocklist", map[string]bool{"dry_run": false}, &dry)
 	if u, _ := f.s.store.User(bad.ID); !u.Disabled {
 		t.Fatal("not disabled")
+	}
+	if u, _ := f.s.store.User(alias.ID); !u.Disabled {
+		t.Fatal("another spelling of a blocked mailbox was not disabled")
 	}
 	if u, _ := f.s.store.User(boss.ID); u.Disabled {
 		t.Fatal("an administrator was disabled")

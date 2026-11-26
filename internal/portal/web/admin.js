@@ -1116,7 +1116,7 @@
         fieldHint('新用户赠送 credit', f.signup_credit)),
         h('div', { class: 'settings-grid' },
           fieldHint('邮箱域名白名单', f.email_domain_allow, '一行一个，如 example.com、*.edu.cn（后者匹配所有子域名，不含 edu.cn 本身）。留空不限制。只管新注册。'),
-          h('div', { class: 'field' }, h('label', null, '邮箱黑名单（精确匹配）'), f.email_block, h('p', { class: 'hint' }, '一行一个。只阻止新注册；已注册的用户用下面的按钮处理。'),
+          h('div', { class: 'field' }, h('label', null, '邮箱黑名单'), f.email_block, h('p', { class: 'hint' }, '一行一个。同一个邮箱的其他写法（+后缀、Gmail 的点）也算命中。只阻止新注册；已注册的用户用下面的按钮处理。'),
             h('button', { type: 'button', class: 'small', id: 'set-block-apply', onclick: applyBlocklist }, '禁用已注册的命中用户'))),
         h('h3', null, '邀请码'), h('div', { class: 'row' }, h('button', { type: 'button', id: 'invite-new', onclick: newInvite }, '新建邀请码')), inviteList),
       section('mail', '邮件'), h('div', { class: 'card' }, h('div', { class: 'settings-grid' }, fieldHint('发件地址', f.mail_from, '验证码和通知从这里发出，域名要和 DKIM 一致。'), fieldHint('客服地址', f.mail_support, '用户看到的联系邮箱，回复邮件也从这里发出。')),

@@ -111,12 +111,19 @@ func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 // code mailed to their address (the portal), so the portal only creates
 // accounts named by an email address.
 func (s *Store) CreateUser(username string, admin bool) (*User, error) {
+	u, _, err := s.CreateUserOnce(username, admin)
+	return u, err
+}
+
+// CreateUserOnce is CreateUser that also says whether the account is the
+// first of its mailbox (MailboxKey): what is given once per person, like the
+// sign-up credit, goes to that one only.
+func (s *Store) CreateUserOnce(username string, admin bool) (u *User, first bool, err error) {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if err := CheckUsername(username); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	var u *User
-	err := s.tx(func(tx *sql.Tx) error {
+	err = s.tx(func(tx *sql.Tx) error {
 		var n int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM users WHERE username = ?`, username).Scan(&n); err != nil {
 			return err
@@ -124,8 +131,18 @@ func (s *Store) CreateUser(username string, admin bool) (*User, error) {
 		if n > 0 {
 			return fmt.Errorf("%w: username %q is taken", ErrExists, username)
 		}
-		res, err := tx.Exec(`INSERT INTO users (username, is_admin, created_at) VALUES (?, ?, ?)`,
-			username, boolInt(admin), s.now().UnixNano())
+		// Counted under the write lock, so two sign-ups of one mailbox at
+		// once cannot both be the first.
+		if _, err := tx.Exec(fillMailboxes); err != nil {
+			return err
+		}
+		key := MailboxKey(username)
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM users WHERE mailbox = ?`, key).Scan(&n); err != nil {
+			return err
+		}
+		first = n == 0
+		res, err := tx.Exec(`INSERT INTO users (username, mailbox, is_admin, created_at) VALUES (?, ?, ?, ?)`,
+			username, key, boolInt(admin), s.now().UnixNano())
 		if err != nil {
 			return err
 		}
@@ -136,7 +153,35 @@ func (s *Store) CreateUser(username string, admin bool) (*User, error) {
 		u, err = scanUser(tx.QueryRow(`SELECT `+userColumns+` FROM users WHERE id = ?`, id))
 		return err
 	})
-	return u, err
+	return u, first, err
+}
+
+// UsersByMailbox lists the accounts whose address delivers to the mailbox of
+// name: name itself, and its "+tag" and Gmail-dot forms.
+func (s *Store) UsersByMailbox(name string) ([]User, error) {
+	var unfilled int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE mailbox = ''`).Scan(&unfilled); err != nil {
+		return nil, err
+	}
+	if unfilled > 0 {
+		if err := s.tx(func(tx *sql.Tx) error { _, err := tx.Exec(fillMailboxes); return err }); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := s.DB.Query(`SELECT `+userColumns+` FROM users WHERE mailbox = ? ORDER BY id`, MailboxKey(name))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *u)
+	}
+	return out, rows.Err()
 }
 
 // RenameUser gives an account a new name, which must be an email address
@@ -155,7 +200,7 @@ func (s *Store) RenameUser(userID int64, name string) (*User, error) {
 		if n > 0 {
 			return fmt.Errorf("%w: username %q is taken", ErrExists, name)
 		}
-		if _, err := tx.Exec(`UPDATE users SET username = ? WHERE id = ?`, name, userID); err != nil {
+		if _, err := tx.Exec(`UPDATE users SET username = ?, mailbox = ? WHERE id = ?`, name, MailboxKey(name), userID); err != nil {
 			return err
 		}
 		var err error

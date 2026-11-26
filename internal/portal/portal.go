@@ -224,15 +224,21 @@ func (s *Server) Store() *accounts.Store { return s.store }
 // ---- operations shared by the HTTP API and the admin CLI ----
 
 // CreateUser registers the account of an email address (people sign in with a
-// code mailed there) and grants the sign-up credit.
+// code mailed there) and grants the sign-up credit, once per mailbox: a
+// "+tag" or Gmail-dot form of an address that has an account gets an account
+// of its own, and no second credit.
 func (s *Server) CreateUser(email string, admin bool) (*accounts.User, error) {
 	email = accounts.NormalizeEmail(email)
 	if err := accounts.CheckEmail(email); err != nil {
 		return nil, err
 	}
-	u, err := s.store.CreateUser(email, admin)
+	u, first, err := s.store.CreateUserOnce(email, admin)
 	if err != nil {
 		return nil, err
+	}
+	if !first {
+		s.log.Info("no sign-up credit: the mailbox already has an account", "user", u.Username, "mailbox", accounts.MailboxKey(email))
+		return u, nil
 	}
 	if credit := s.settings().SignupCreditMicros; credit > 0 {
 		if err := s.AdjustCredit(u.ID, int64(min(credit, math.MaxInt64)), "sign-up credit"); err != nil {

@@ -34,6 +34,8 @@ var Migrations = []mysqldb.Migration{
 	{Version: 10, Name: "share invite uses", SQL: accounts.ShareInviteUsesSchema},
 	// A wait before asking again after a withdrawn or rejected request.
 	{Version: 11, Name: "invite request cooldowns", SQL: accounts.InviteCooldownSchema},
+	// The mailbox behind each account name, for what is given once per person.
+	{Version: 12, Name: "account mailboxes", SQL: accounts.MailboxSchema},
 }
 
 const tokenAuditSchema = `ALTER TABLE audits ADD COLUMN method VARCHAR(16) NOT NULL DEFAULT '',

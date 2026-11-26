@@ -321,13 +321,20 @@ func domainAllowed(rules []string, domain string) bool {
 	return false
 }
 
+// mailboxBlocked reports whether email is on the blocklist, in any spelling
+// of its mailbox: a blocked address does not come back as a "+tag" of itself.
+func mailboxBlocked(block []string, email string) bool {
+	key := accounts.MailboxKey(email)
+	return slices.ContainsFunc(block, func(b string) bool { return accounts.MailboxKey(b) == key })
+}
+
 // checkSignupRules applies the registration rules to name and, writing the error
 // response itself, refuses a sign-up they exclude. The invite code is only
 // looked at here: it is used up when the account is created.
 func (s *Server) checkSignupRules(w http.ResponseWriter, ip, name, invite string, st Settings) bool {
 	email := accounts.NormalizeEmail(name)
 	if _, domain, ok := strings.Cut(email, "@"); ok {
-		if slices.Contains(st.EmailBlock, email) || !domainAllowed(st.EmailDomainAllow, domain) {
+		if mailboxBlocked(st.EmailBlock, email) || !domainAllowed(st.EmailDomainAllow, domain) {
 			writeErr(w, http.StatusForbidden, "email_not_allowed", "this email address may not sign up here")
 			return false
 		}
@@ -540,19 +547,24 @@ func (s *Server) handleApplyBlocklist(w http.ResponseWriter, r *http.Request, cu
 	matched := []string{}
 	admins := []string{}
 	var ids []int64
+	seen := map[int64]bool{}
 	for _, e := range s.settings().EmailBlock {
-		u, err := s.store.UserByName(e)
-		switch {
-		case errors.Is(err, accounts.ErrNotFound):
-			continue
-		case err != nil:
+		// Every account of the mailbox, however its address is spelled.
+		us, err := s.store.UsersByMailbox(e)
+		if err != nil {
 			s.internal(w, err)
 			return
-		case u.Admin:
-			admins = append(admins, u.Username)
-		case !u.Disabled:
-			matched = append(matched, u.Username)
-			ids = append(ids, u.ID)
+		}
+		for _, u := range us {
+			switch {
+			case seen[u.ID]:
+			case u.Admin:
+				admins = append(admins, u.Username)
+			case !u.Disabled:
+				matched = append(matched, u.Username)
+				ids = append(ids, u.ID)
+			}
+			seen[u.ID] = true
 		}
 	}
 	if !req.DryRun {

@@ -308,9 +308,60 @@ func TestSignInEmailRules(t *testing.T) {
 	c := &web{t: t, url: a.url, noWeb: true}
 	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "bad@example.com"}, 403, "email_not_allowed")
 	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "x@other.org"}, 403, "email_not_allowed")
+	// A blocked mailbox does not come back under another spelling.
+	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "bad+1@example.com"}, 403, "email_not_allowed")
+	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "Bad+again@Example.com"}, 403, "email_not_allowed")
+	st.EmailDomainAllow, st.EmailBlock = nil, []string{"b.a.d+x@gmail.com"}
+	if err := s.saveSettings(st, "test"); err != nil {
+		t.Fatal(err)
+	}
+	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "ba.d@googlemail.com"}, 403, "email_not_allowed")
+	c.call("POST", "/api/v1/auth/code", map[string]string{"email": "ba.d@example.com"}, 200, nil)
+	st.EmailDomainAllow, st.EmailBlock = []string{"example.com", "*.edu.cn"}, nil
+	if err := s.saveSettings(st, "test"); err != nil {
+		t.Fatal(err)
+	}
 	c.call("POST", "/api/v1/auth/code", map[string]string{"email": "x@cs.pku.edu.cn"}, 200, nil)
 	// An existing account outside the rules still signs in.
 	clientSignIn(t, s, a.url, "old@other.org")
+}
+
+// The sign-up credit goes to the first account of a mailbox: a "+tag" or a
+// Gmail-dot spelling of it signs up as an account of its own, without credit.
+func TestSignupCreditOncePerMailbox(t *testing.T) {
+	clock := time.Now()
+	s, a := newPortal(t, Config{OpenRegistration: true, SignupCreditMicros: 1000, Now: func() time.Time { return clock }})
+	credit := func(email string) int64 {
+		t.Helper()
+		res := clientSignIn(t, s, a.url, email)
+		if res.User.Username != accounts.NormalizeEmail(email) {
+			t.Fatalf("%s signed in as %s", email, res.User.Username)
+		}
+		bal, err := s.Balance(res.User.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock = clock.Add(2 * time.Minute)
+		return int64(bal.AvailableMicros)
+	}
+	for email, want := range map[string]int64{"ann@example.com": 1000, "bob@gmail.com": 1000} {
+		if got := credit(email); got != want {
+			t.Fatalf("%s got %d, want %d", email, got, want)
+		}
+	}
+	for _, alias := range []string{"ann+1@example.com", "ann+2@example.com", "b.ob@gmail.com", "bob+x@googlemail.com"} {
+		if got := credit(alias); got != 0 {
+			t.Fatalf("%s, a second account of its mailbox, got %d", alias, got)
+		}
+	}
+	// Dots are part of the name anywhere but Gmail.
+	if got := credit("a.nn@example.com"); got != 1000 {
+		t.Fatalf("a.nn@example.com got %d, want 1000", got)
+	}
+	// Signing in again changes nothing.
+	if got := credit("ann@example.com"); got != 1000 {
+		t.Fatalf("ann@example.com has %d after signing in again", got)
+	}
 }
 
 // A disabled account is answered like a working one when a code is asked for
