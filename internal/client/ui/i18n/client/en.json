@@ -576,5 +576,6 @@
   "诊断": "Diagnostics",
   "发送异常诊断报告": "Send crash reports",
   "已登录，但门户拒绝了本机的设备签名：请确认系统的日期、时间和时区是否正确，然后重新登录": "Signed in, but the portal rejected this device's signature. Check that this computer's date, time and time zone are right, then sign in again",
-  "门户拒绝了本机的设备签名：请确认系统的日期、时间和时区是否正确（建议设为自动），改好后一分钟内提示会自动消失": "The portal rejected this device's signature. Check that this computer's date, time and time zone are right (set them automatically); this notice clears within a minute once they are"
+  "门户拒绝了本机的设备签名：请确认系统的日期、时间和时区是否正确（建议设为自动），改好后一分钟内提示会自动消失": "The portal rejected this device's signature. Check that this computer's date, time and time zone are right (set them automatically); this notice clears within a minute once they are",
+  "你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请": "You withdrew a request for this invite just now, or it was rejected. Ask again later"
 }

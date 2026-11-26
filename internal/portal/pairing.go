@@ -118,6 +118,8 @@ func (s *Server) pairingErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, "own_code", "this is your own pairing code; give it to the buyers you want to pair with")
 	case errors.Is(err, accounts.ErrLimit):
 		writeErr(w, http.StatusConflict, "limit", err.Error())
+	case errors.Is(err, accounts.ErrCooldown):
+		writeErr(w, http.StatusTooManyRequests, "request_cooldown", err.Error())
 	default:
 		s.accountErr(w, err)
 	}

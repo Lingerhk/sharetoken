@@ -119,6 +119,17 @@ func TestInviteLinks(t *testing.T) {
 	}
 	a.call("DELETE", fmt.Sprintf("/api/v1/sharing/waiting/%d", sv.Waiting[0].ID), buyer, nil, 404, nil)
 	a.call("DELETE", fmt.Sprintf("/api/v1/sharing/waiting/%d", sv.Waiting[0].ID), other, nil, 200, nil)
+	// Asking again right away would mail the owner again: it waits.
+	waits := func(path string, body map[string]string) {
+		t.Helper()
+		var e ErrorBody
+		if a.call("POST", path, other, body, 429, &e); e.Error.Code != "request_cooldown" {
+			t.Fatalf("%s: %+v", path, e)
+		}
+	}
+	waits("/api/v1/sharing/join", map[string]string{"code": ask2.Code})
+	waits("/api/v1/invite/accept", map[string]string{"link": ask2.LinkToken})
+	clock = clock.Add(accounts.WithdrawCooldown)
 	a.call("POST", "/api/v1/sharing/join", other, map[string]string{"code": ask2.Code}, 202, nil)
 	a.call("GET", "/api/v1/sharing", buyer, nil, 200, &sv)
 	if len(sv.Requests) != 1 || sv.Requests[0].Username != "ot***@example.com" {
@@ -129,6 +140,8 @@ func TestInviteLinks(t *testing.T) {
 	if len(sv.Waiting) != 0 || len(sv.Partners) != 0 {
 		t.Fatalf("after rejection: %+v", sv)
 	}
+	clock = clock.Add(accounts.WithdrawCooldown) // a rejection waits longer
+	waits("/api/v1/sharing/join", map[string]string{"code": ask2.Code})
 
 	// A wrong link in the preview counts against the address.
 	clock = clock.Add(guessDay + time.Second)

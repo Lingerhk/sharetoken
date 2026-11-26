@@ -276,3 +276,45 @@ func TestAdminCannotReadCodes(t *testing.T) {
 		t.Fatalf("%d the message shows the code: %s", resp.StatusCode, raw)
 	}
 }
+
+// Notices one account causes another to get are capped per recipient and per
+// account that caused them; the requests themselves are still filed.
+func TestNoticeLimits(t *testing.T) {
+	s, a, _ := newMailPortal(t)
+	notices := func(to string) int64 {
+		t.Helper()
+		n, err := s.mail.CountOutbox(mailer.OutFilter{Kind: mailer.KindNotice, Q: to})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	_, owner := testUser(t, s, "owner@example.com")
+	var code accounts.PairingCode
+	a.call("POST", "/api/v1/pairing/codes", owner, map[string]any{"approval": true}, 201, &code)
+	for i := range noticesPerRecipientHour + 3 {
+		_, tok := testUser(t, s, "asker"+strconv.Itoa(i)+"@example.com")
+		a.call("POST", "/api/v1/pairing/redeem", tok, map[string]string{"code": code.Code}, 202, nil)
+	}
+	if n := notices("owner@example.com"); n != noticesPerRecipientHour {
+		t.Fatalf("%d notices to one owner in an hour, want %d", n, noticesPerRecipientHour)
+	}
+	var v PairingView
+	if a.call("GET", "/api/v1/pairing", owner, nil, 200, &v); len(v.Requests) != noticesPerRecipientHour+3 {
+		t.Fatalf("%d requests filed, want %d", len(v.Requests), noticesPerRecipientHour+3)
+	}
+	// One account, many recipients.
+	for i := range noticesPerSenderHour + 5 {
+		s.notifyFrom(9000, mailer.Message{Kind: mailer.KindNotice, To: "many" + strconv.Itoa(i) + "@example.org", Subject: "x", Text: "x"})
+	}
+	if n := notices("@example.org"); n != noticesPerSenderHour {
+		t.Fatalf("%d notices caused by one account in an hour, want %d", n, noticesPerSenderHour)
+	}
+	// A notice about one's own account is not one of these.
+	for range noticesPerRecipientHour + 2 {
+		s.notify(mailer.Message{Kind: mailer.KindNotice, To: "self@example.net", Subject: "x", Text: "x"})
+	}
+	if n := notices("self@example.net"); n != noticesPerRecipientHour+2 {
+		t.Fatalf("%d of %d notices about one's own account", n, noticesPerRecipientHour+2)
+	}
+}

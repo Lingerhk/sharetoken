@@ -322,7 +322,7 @@ func (s *Server) notifyRequest(cu ctxUser, acc *AcceptedInvite) {
 	if acc.Kind == accounts.KindShare {
 		what, where = "become your share partner", "Sharing"
 	}
-	s.notify(mailer.Message{Kind: mailer.KindNotice, To: owner.Username, Subject: "ShareToken: " + maskName(cu.user.Username) + " asks to " + what,
+	s.notifyFrom(cu.user.ID, mailer.Message{Kind: mailer.KindNotice, To: owner.Username, Subject: "ShareToken: " + maskName(cu.user.Username) + " asks to " + what,
 		Text: fmt.Sprintf("%s used a code or link of yours and asks to %s.\r\n\r\n"+
 			"Approve or reject the request on the %s page of the ShareToken app or the portal. It expires in %d days.\r\n"+
 			"If you do not know this account, reject it, and revoke the code if it reached someone it should not have.\r\n",
@@ -362,7 +362,7 @@ func (s *Server) handleApproveRequest(w http.ResponseWriter, r *http.Request, cu
 	if req.Kind == accounts.KindShare {
 		what = "you are now share partners and use each other's nodes for free"
 	}
-	s.notify(mailer.Message{Kind: mailer.KindNotice, To: req.Username, Subject: "ShareToken: " + maskName(cu.user.Username) + " approved your request",
+	s.notifyFrom(cu.user.ID, mailer.Message{Kind: mailer.KindNotice, To: req.Username, Subject: "ShareToken: " + maskName(cu.user.Username) + " approved your request",
 		Text: fmt.Sprintf("%s approved your request: %s.\r\n", maskName(cu.user.Username), what)})
 	req.Username = maskName(req.Username)
 	writeJSON(w, http.StatusOK, req)

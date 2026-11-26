@@ -50,6 +50,20 @@ CREATE TABLE IF NOT EXISTS invite_requests (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 `
 
+// InviteCooldownSchema adds the waits after a withdrawn or rejected request
+// (core migration 11). They are a table of their own, and not a state of
+// invite_requests, so that an older portal on the same database sees no
+// request where there is none.
+const InviteCooldownSchema = `CREATE TABLE IF NOT EXISTS invite_cooldowns (
+	kind    VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+	code_id BIGINT NOT NULL,
+	user_id BIGINT NOT NULL,
+	ends_at BIGINT NOT NULL,
+	PRIMARY KEY (kind, code_id, user_id),
+	KEY invite_cooldowns_by_end (ends_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+`
+
 // Kinds of invite, as they appear in links.
 const (
 	KindPair  = "p" // a pairing code
@@ -62,7 +76,16 @@ const (
 	oldLinkTokenLen    = 12                 // tokens made before, still valid until they expire
 	RequestTTL         = 7 * 24 * time.Hour // how long a request waits for approval
 	MaxWaitingRequests = 10                 // requests one user may have waiting
+	// How long the same user waits before asking again with the same code or
+	// invite. Each request mails its owner, so without the wait, asking and
+	// withdrawing in a loop is a way to flood someone's mailbox.
+	WithdrawCooldown = time.Hour      // after withdrawing a request
+	RejectCooldown   = 24 * time.Hour // after the owner rejected it
 )
+
+// ErrCooldown means the user withdrew a request for this code or invite, or
+// had one rejected, too recently to ask again.
+var ErrCooldown = errors.New("accounts: asked again too soon")
 
 const linkAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
@@ -209,6 +232,14 @@ func addRequest(tx *sql.Tx, kind string, codeID, ownerID, userID, now int64) (in
 	case !errors.Is(err, sql.ErrNoRows):
 		return 0, false, err
 	}
+	var ends int64
+	switch err := tx.QueryRow(`SELECT ends_at FROM invite_cooldowns WHERE kind = ? AND code_id = ? AND user_id = ?`, kind, codeID, userID).Scan(&ends); {
+	case err == nil && ends > now:
+		return 0, false, fmt.Errorf("%w: you withdrew a request for this code, or it was rejected; ask again in %s",
+			ErrCooldown, time.Duration(ends-now).Round(time.Minute))
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return 0, false, err
+	}
 	var waiting int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM invite_requests WHERE user_id = ? AND expires_at > ?`, userID, now).Scan(&waiting); err != nil {
 		return 0, false, err
@@ -334,17 +365,40 @@ func (s *Store) ApproveRequest(ownerID, id int64) (*InviteRequest, error) {
 	return out, nil
 }
 
-// RejectRequest drops request id waiting for ownerID; WithdrawRequest drops
-// one userID made.
+// RejectRequest drops request id waiting for ownerID; the one who asked may
+// ask again with the same code after RejectCooldown.
 func (s *Store) RejectRequest(ownerID, id int64) error {
-	return s.tx(func(tx *sql.Tx) error {
-		return mustAffect(tx.Exec(`DELETE FROM invite_requests WHERE id = ? AND owner_id = ?`, id, ownerID))
-	})
+	return s.closeRequest(`owner_id`, ownerID, id, RejectCooldown)
 }
 
-// WithdrawRequest drops request id that userID made.
+// WithdrawRequest drops request id that userID made; userID may ask again
+// with the same code after WithdrawCooldown.
 func (s *Store) WithdrawRequest(userID, id int64) error {
+	return s.closeRequest(`user_id`, userID, id, WithdrawCooldown)
+}
+
+// closeRequest drops request id, which column says is who's, and starts the
+// wait before the same user may ask again with the same code.
+func (s *Store) closeRequest(column string, who, id int64, wait time.Duration) error {
+	now := s.now().UnixNano()
 	return s.tx(func(tx *sql.Tx) error {
-		return mustAffect(tx.Exec(`DELETE FROM invite_requests WHERE id = ? AND user_id = ?`, id, userID))
+		var kind string
+		var codeID, userID int64
+		err := tx.QueryRow(`SELECT kind, code_id, user_id FROM invite_requests WHERE id = ? AND `+column+` = ? FOR UPDATE`, id, who).Scan(&kind, &codeID, &userID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM invite_requests WHERE id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM invite_cooldowns WHERE ends_at <= ?`, now); err != nil {
+			return err
+		}
+		_, err = tx.Exec(`INSERT INTO invite_cooldowns (kind, code_id, user_id, ends_at) VALUES (?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE ends_at = GREATEST(ends_at, VALUES(ends_at))`, kind, codeID, userID, now+int64(wait))
+		return err
 	})
 }

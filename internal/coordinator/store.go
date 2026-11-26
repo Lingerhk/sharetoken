@@ -32,6 +32,8 @@ var Migrations = []mysqldb.Migration{
 	{Version: 9, Name: "invite links", SQL: accounts.InviteLinkSchema},
 	// A share invite may admit several people.
 	{Version: 10, Name: "share invite uses", SQL: accounts.ShareInviteUsesSchema},
+	// A wait before asking again after a withdrawn or rejected request.
+	{Version: 11, Name: "invite request cooldowns", SQL: accounts.InviteCooldownSchema},
 }
 
 const tokenAuditSchema = `ALTER TABLE audits ADD COLUMN method VARCHAR(16) NOT NULL DEFAULT '',

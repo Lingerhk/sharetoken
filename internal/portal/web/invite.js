@@ -37,6 +37,7 @@
       throttled: tr('尝试次数过多，请几分钟后再试'),
       links_paused: tr('邀请链接暂时无法预览：全站输错的次数太多。请一小时后再试'),
       codes_paused: tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试'),
+      request_cooldown: tr('你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请'),
       rate_limited: tr('请求太频繁，请稍后再试'),
       wrong_kind: tr('这个链接的类型不对'),
     })[e.code] || e.message;

@@ -1093,6 +1093,7 @@ I18N.ready.then(() => {
       if (e.code === 'wrong_kind') return tr('这是共享伙伴的邀请链接，请到「共享伙伴」里输入');
       if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
       if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
+      if (e.code === 'request_cooldown') return tr('你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请');
       return message(e);
     }
 
@@ -1246,6 +1247,7 @@ I18N.ready.then(() => {
       if (e.code === 'wrong_kind') return tr('这是配对的邀请链接，请到「我的卖家」里输入');
       if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
       if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
+      if (e.code === 'request_cooldown') return tr('你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请');
       return message(e);
     }
 
@@ -2007,6 +2009,7 @@ I18N.ready.then(() => {
       if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
       if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
       if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
+      if (e.code === 'request_cooldown') return tr('你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请');
       return message(e);
     }
     async function openInvite(inv) {
