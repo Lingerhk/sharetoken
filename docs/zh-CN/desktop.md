@@ -119,8 +119,8 @@ macOS 在菜单栏、Windows 在通知区、Linux 以状态通知项（StatusNot
 |---|---|
 | `GET /api/v1/session` | `{env, state, logged_in, portal, user, device, peer, api, error, version, api_version, update}`。`state` 是 `logged_out`、`expired`（门户拒绝了 token，daemon 已退出登录）、`starting`、`retrying`（`error` 是原因）或 `running`。未登录时 `portal` 是内置地址（见下），`user` 是上次用的值，用于预填表单 |
 | `POST /api/v1/portal/probe` | `{}`（`portal` 可省略，默认是内置地址）→ `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, invite_required, signup_credit_micros, support_email}`。向门户发送任何内容之前调用 |
-| `POST /api/v1/auth/code` | `{pin, email, invite_code}`：门户发送登录验证码。回答里说明这个邮箱是不是新的；`invite_required` 表示要先填邀请码 |
-| `POST /api/v1/auth/verify` | `{pin, email, code, invite_code, device}` → 会话。开启了两步验证的账户得到 401 `mfa_required`：daemon 保存门户给的 challenge，页面接着询问动态码 |
+| `POST /api/v1/auth/code` | `{pin, email, invite_code}`：门户发送登录验证码。回答里说明这个邮箱是不是新的；`invite_required` 表示要先填邀请码。门户返回的 nonce 由 daemon 保存，页面看不到 |
+| `POST /api/v1/auth/verify` | `{pin, email, code, invite_code, device}` → 会话。daemon 补上它申请验证码时得到的 nonce，所以验证码必须经申请它的那个 daemon 使用（`portal login-code` 的 12 位验证码不需要）。开启了两步验证的账户得到 401 `mfa_required`：daemon 保存门户给的 challenge，页面接着询问动态码 |
 | `POST /api/v1/auth/mfa` | `{code}`：完成等待两步验证的登录 → 会话。5 分钟后或错 5 次得到 401 `challenge_expired`，要重新获取邮件验证码 |
 | `POST /api/v1/logout` | 停止 Agent、吊销 token（门户不可达时跳过），并从 `config.json` 删除 token；其他设置保留 |
 | `GET /api/v1/account`、`/api/v1/jobs`、`/api/v1/ledger` | 透传到门户，不依赖 Agent。门户返回 401 时会话转为 `expired` |

@@ -75,17 +75,19 @@ To verify a deployment from outside, send a test message to a mailbox you contro
 
 One flow for new and existing accounts:
 
-1. `POST /api/v1/auth/code {email, invite_code?}` mails a six-digit code and says whether the address is new (`new_account`). For a new address the registration rules are checked before any mail goes out (open registration, the allowed domains and the blocked addresses on the settings page, an invite code when one is required), so mail only reaches people who can finish. Refusals of a new address are limited to 8 per IP address in 5 minutes, so the answers are no fast directory of who has an account.
-2. `POST /api/v1/auth/verify {email, code}` (clients, a token for 60 days) or `POST /api/v1/web/auth/verify` (the portal's pages, a session for 15 days) redeems it. The first sign-in of a new address creates its account and grants the sign-up credit. An account with two-factor authentication then needs its authenticator code as well ([guide.md](guide.md), section 4.2).
+1. `POST /api/v1/auth/code {email, invite_code?}` mails a six-digit code, says whether the address is new (`new_account`) and returns a `nonce`. A disabled account is answered like any other; its mail says the account is disabled and carries no code. For a new address the registration rules are checked before any mail goes out (open registration, the allowed domains and the blocked addresses on the settings page, an invite code when one is required), so mail only reaches people who can finish. Refusals of a new address are limited to 8 per IP address in 5 minutes, so the answers are no fast directory of who has an account.
+2. `POST /api/v1/auth/verify {email, code, nonce}` (clients, a token for 60 days) or `POST /api/v1/web/auth/verify` (the portal's pages, a session for 15 days) redeems it. A code works only with the nonce of the request that asked for it, so it signs in the device that asked and nobody who only guesses the six digits; several codes of one address can be live at once, each with its own nonce and its own 5 tries. The first sign-in of a new address creates its account and grants the sign-up credit, once per mailbox: a `+tag` or Gmail-dot spelling of an address that has an account becomes an account of its own, without credit. An account with two-factor authentication then needs its authenticator code as well ([guide.md](guide.md), section 4.2).
 
 | Limit | Value |
 |---|---|
 | Lifetime | 10 minutes. An expired code's message is no longer delivered. |
 | Asking again | Once per 60 seconds for one address (`code_cooldown`). |
-| Per hour | 5 for one address, 20 for one IP address, 500 in total (`throttled`). |
-| Guessing | 5 attempts per code; wrong codes are also limited per IP address and per address (8 in 5 minutes). |
+| Per hour | 5 for one address, 20 for one IP address (an IPv6 /64 counts as one address). Over everyone: 500 to addresses that have an account and 300 to addresses that do not, counted apart, so a flood of made-up addresses cannot keep existing users out (`throttled`; the administrators get a Pushover alert when either is used up). The limits are checked and the code is recorded in one transaction: requests sent together cannot get past them. |
+| Guessing | 5 attempts per code, counted before the code is compared; wrong codes are also limited per IP address (8 in 5 minutes). Wrong guesses do not use up the tries of a code someone else asked for. |
 
-Only a salted hash of a code is stored. Once the message has been sent, its subject and body are erased from the database, and while it is queued administrators cannot read it in the console. The web pages, the desktop client (through its daemon's `POST /api/v1/auth/code`) and the command line (`sharetoken login -email`) all use this flow. The message's subject is `Your ShareToken verification code: 123456`.
+Only a salted hash of a code is stored. Once the message has been sent, its subject and body are erased from the database, and while it is queued administrators cannot read it in the console. The web pages, the desktop client (through its daemon's `POST /api/v1/auth/code`) and the command line (`sharetoken login -email`) all use this flow. The code is in the message's text, not in its subject (`Your ShareToken sign-in code`): subjects show on lock screens and in mail logs. A message cancelled in the console loses its text at once. Sign-in codes are delivered before notices, and one delivery slot is kept for them, so a queue of notices does not hold them up.
+
+`portal login-code <email>` prints a 12-digit code that needs no nonce; it is typed where the mailed code goes.
 
 ## Mail settings in the console
 

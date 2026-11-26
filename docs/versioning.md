@@ -25,7 +25,7 @@ To cut a release: change `VERSION`; add the release and its features at the top 
 | Data plane (buyer ↔ node) | libp2p protocol ID, plus an `infer_version` agreed per job | `/sharetoken/infer/1.0.2`, version 1 |
 | Relay pass | libp2p protocol ID, plus the signing domain | `/sharetoken/relay-pass/1.0.2`, `sharetoken/relay-pass/v1` (the signature covers the whole body, so a new field needs no new version) |
 | Signed messages | signing domain | `sharetoken/offer/v1`, `sharetoken/ticket/v1`, `sharetoken/receipt/v1`, `sharetoken/ack/v1` |
-| Database | `schema_migrations`, numbered per component | `core` 3, `mail` 1, `portal` 2 |
+| Database | `schema_migrations`, numbered per component | `core` 12, `mail` 2, `portal` 4 |
 | Server configuration | `version` in the YAML file | 1 |
 | Client configuration | `version` in `config.json` | 1 |
 
@@ -61,7 +61,7 @@ A development build `1.2.3-dev.x` is compared as `1.2.3`. A network for developm
 
 A client (the desktop app's daemon, and `sharetoken up`) asks the portal at start-up and every hour after: `GET /api/v1/update?kind=desktop|cli&channel=prod|dev&os=…&arch=…`. The portal returns:
 
-- The version policy (`min`, `recommended`, `latest`, `download_url`). When `latest` is empty, the release in the downloads directory is used; when `download_url` is empty, it is `/#download`.
+- The version policy (`min`, `recommended`, `latest`, `download_url`). When `latest` is empty, the release in the downloads directory is used; when `download_url` is empty, it is `/#download`. `download_url` is a path on the portal; a link to another site is refused, and one already stored is not passed on.
 - `release`: the `RELEASE-<version>.json` in the downloads directory (written by [`scripts/release/release-files.sh`](../scripts/release/release-files.sh) when a release is published: version, commit, build time), plus the changelog link `/changelog/#v<version>`.
 - `package`: the package of that release for the client's kind, build type, system and architecture, with its size and sha256. A dev client is offered `sharetoken-cli-dev-*`. Dev desktop installers are not published, so a dev desktop app gets none.
 

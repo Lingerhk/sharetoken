@@ -150,7 +150,7 @@ func TestSessionReportsVersionAndUpdate(t *testing.T) {
 	e := newDaemonEnv(t, openPortal(), false)
 	t.Setenv("SHARETOKEN_PORTAL", e.url)
 	db := e.portal.Store().DB
-	if err := accounts.SaveVersionPolicy(db, accounts.VersionPolicy{LatestClient: "99.0.0", DownloadURL: "https://example.com/d", AllowDev: true}); err != nil {
+	if err := accounts.SaveVersionPolicy(db, accounts.VersionPolicy{LatestClient: "99.0.0", DownloadURL: "/d", AllowDev: true}); err != nil {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
@@ -161,7 +161,7 @@ func TestSessionReportsVersionAndUpdate(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 	u := s.Update
-	if !u.Available || u.Required || u.Latest != "99.0.0" || u.DownloadURL != "https://example.com/d" || u.Key != "99.0.0" || u.Skipped || u.Notified || u.CheckedAt.IsZero() {
+	if !u.Available || u.Required || u.Latest != "99.0.0" || u.DownloadURL != e.url+"/d" || u.Key != "99.0.0" || u.Skipped || u.Notified || u.CheckedAt.IsZero() {
 		t.Fatalf("%+v", u)
 	}
 

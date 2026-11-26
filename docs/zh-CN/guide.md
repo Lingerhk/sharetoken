@@ -38,7 +38,7 @@ sharetoken up                               # 客户端已在运行时，share �
 
 任何 OpenAI 兼容的工具，把 base URL 设为 `http://127.0.0.1:9787/v1`，API key 填客户端的 key：`sharetoken apikey -q` 会打印它（`sharetoken apikey` 看详情；`apikey off` 不再要求 key，`apikey rotate` 生成新 key）。
 
-没有密码。`login` 发送 6 位验证码并提示输入；还没有账户的邮箱在同一步注册（门户开放注册时）。脚本里可以分两步：`login -send` 只发送验证码，`login -code 123456` 用它登录。开启了两步验证时，`login` 接着询问身份验证器里的动态码（或用 `-totp` 给出）。
+没有密码。`login` 发送 6 位验证码并提示输入；还没有账户的邮箱在同一步注册（门户开放注册时）。脚本里可以分两步：`login -send` 只发送验证码，`login -code 123456` 用它登录，必须在同一台机器、同一个数据目录下：验证码要配上 `-send` 存在那里的内容（`login-code.json`）才有效。开启了两步验证时，`login` 接着询问身份验证器里的动态码（或用 `-totp` 给出）。
 
 ### 1.2 客户端连接哪个门户
 
@@ -260,7 +260,7 @@ coordinator -db $DSN -fee-bps 500 \
 |---|---|
 | `portal useradd [-admin] <email>` | 创建账户。账户名是邮箱，用户用发到那里的验证码登录。没有密码。 |
 | `portal rename <user> <email>` | 给账户改名，新名字必须是没有被占用的邮箱：用于没有邮箱的老账户（比如 `root`），不改名就登录不了。余额、设备、token 和两步验证都保留。 |
-| `portal login-code <email>` | 给已有账户生成一个登录验证码并直接打印，不发邮件：用于收不到邮件的用户。它和邮件里的验证码一样用（网页和客户端都行，只能用一次，10 分钟有效），并作废这个地址之前的验证码；两步验证照常要求（`portal mfa-reset` 可清除）。审计日志记为 `user.login_code`。运行它的人能以该用户身份登录，相当于以前运维重置密码。 |
+| `portal login-code <email>` | 给已有账户生成一个登录验证码并直接打印，不发邮件：用于收不到邮件的用户。它有 12 位，填在邮件验证码的位置（网页和客户端都行，只能用一次，10 分钟有效），不需要 nonce，并作废这个命令之前生成的验证码；两步验证照常要求（`portal mfa-reset` 可清除）。审计日志记为 `user.login_code`。运行它的人能以该用户身份登录，相当于以前运维重置密码。 |
 | `portal grant <user> <micros> [memo]` | 发放 credit。负数为扣减；余额不能扣到负数。 |
 | `portal users`、`portal user <user>`、`portal disable\|enable <user>` | 列出和查看用户。禁用立即生效：token 失效，协调器拒绝该用户的设备。 |
 | `portal mfa-reset <user>` | 清除用户的两步验证密钥并吊销其 token（见[第 4.2 节](#42-浏览器会话与两步验证)）。 |
@@ -353,8 +353,8 @@ OpenAI 兼容端点 `/v1/` 用的是 `apikey.json` 里的 API key（除非用 `s
 | `GET /api/v1/info` | 无 | `{registration_open, signup_credit_micros, session_hours, passes_enabled, support_email, invite_required, default_page_size, code_sign_in}`：登录页需要的信息。`code_sign_in` 恒为 true：用邮件验证码登录。 |
 | `GET /api/v1/network` | 无 | `{coordinator, relays:[{addr,name,region,ok,rtt_ms}], pass_key}`。可用的中继在前，其中延迟低的排在最前。`rtt_ms` 是协调器到该中继的往返时间，测得之前省略。协调器从未启动过时返回 503 `not_ready`。 |
 | `GET /api/v1/version`、`GET /api/v1/update`、`GET /api/v1/downloads` | 无 | 服务端版本和客户端版本策略；针对 `kind`、`channel`、`os`、`arch` 是否有更新的客户端；提供下载的客户端安装包。见 [versioning.md](versioning.md)。 |
-| `POST /api/v1/auth/code` | 无 | `{email, invite_code?}`：发送登录验证码（[mail.md](mail.md)）→ `{ok, new_account, cooldown_seconds, expires_in_seconds}`。没有账户的邮箱先检查注册规则：403 `registration_closed`、`email_not_allowed`、`invite_required`（带上 `invite_code` 再请求）或 `bad_invite`；被禁用的账户 403 `account_disabled`。距上一个验证码不到一分钟 429 `code_cooldown`，超过限额 429 `throttled`。门户没有发件人时 503 `mail_unavailable`。 |
-| `POST /api/v1/auth/verify` | 无 | `{email, code, invite_code?, token_name?, totp?}` → `{user, token, created}`；邮箱新建了账户（并获得注册赠送额度）时 201，否则 200。token 有效期是 `sessions.login_ttl`（默认 60 天）。验证码错误或过期 401 `bad_code`；错误次数按 IP 和邮箱分别计数，之后 429 `throttled`。开启了两步验证的账户得到 401 `mfa_required` 并带 `challenge`（用 `/api/v1/mfa` 完成），除非 `totp` 里带了正确的动态码；尚未绑定的管理员得到 401 `mfa_setup_required`（绑定在网页上完成）。 |
+| `POST /api/v1/auth/code` | 无 | `{email, invite_code?}`：发送登录验证码（[mail.md](mail.md)）→ `{ok, nonce, new_account, cooldown_seconds, expires_in_seconds}`；验证码只有配上这个 `nonce` 才能用。没有账户的邮箱先检查注册规则：403 `registration_closed`、`email_not_allowed`、`invite_required`（带上 `invite_code` 再请求）或 `bad_invite`。被禁用的账户得到和其他账户一样的回答（它的邮件不带验证码）。距上一个验证码不到一分钟 429 `code_cooldown`，超过限额 429 `throttled`。门户没有发件人时 503 `mail_unavailable`。 |
+| `POST /api/v1/auth/verify` | 无 | `{email, code, nonce, invite_code?, token_name?, totp?}` → `{user, token, created}`；邮箱新建了账户（并获得注册赠送额度，每个邮箱一次）时 201，否则 200。`nonce` 是 `auth/code` 为这个验证码返回的那个。token 有效期是 `sessions.login_ttl`（默认 60 天）。验证码错误、过期或没带 nonce（1.0.5 及更早的客户端不带）时 401 `bad_code`；错误次数按 IP 计数，之后 429 `throttled`。被禁用的账户在验证码正确之后得到 403 `account_disabled`。开启了两步验证的账户得到 401 `mfa_required` 并带 `challenge`（用 `/api/v1/mfa` 完成），除非 `totp` 里带了正确的动态码；尚未绑定的管理员得到 401 `mfa_setup_required`（绑定在网页上完成）。 |
 | `POST /api/v1/mfa` | 无 | `{challenge, code, token_name}` → `{user, token}`。challenge 有效 5 分钟，错 5 次作废；错误的动态码计入登录失败。 |
 | `POST /api/v1/logout` | 是 | 吊销当前 token。 |
 | `GET /api/v1/me` | 是 | `{user, balance{account,available_micros,held_micros}, usage{bought,sold}, devices}`。 |
@@ -371,13 +371,13 @@ OpenAI 兼容端点 `/v1/` 用的是 `apikey.json` 里的 API key（除非用 `s
 | `POST /api/v1/feedback`、`GET /api/v1/feedback` | 是 | 提交反馈（每小时每个账户最多 10 条、每个客户端地址最多 30 条，超出返回 429 `throttled`）；列出自己的反馈。 |
 | `GET /api/v1/pairing` | 是 | 调用者的配对：`sellers[]` 和 `buyers[]`（`id`、打码的 `username`、`label`、`since`），有效的 `codes[]`（`id`、`code`、`label`、`max_uses`、`used`、`expires_at`），`restricted`（为 true 时只向 `sellers` 购买）、`private`（为 true 时只卖给 `buyers`）和 `max_sellers`。 |
 | `POST /api/v1/pairing/codes`、`DELETE /api/v1/pairing/codes/{id}` | 是 | 生成配对码（`label`、`ttl_hours` 最大 720、`max_uses`；0 表示一天、不限人数）和撤销配对码。用被撤销的码建立的配对保留。有效配对码达到 20 个时 409 `limit`。 |
-| `POST /api/v1/pairing/redeem` | 是 | `{code}`：调用者作为买家和配对码的卖家配对。404 `bad_code`（错误、过期、已撤销或已用完；和登录失败一样计数，之后 429 `throttled`），409 `own_code`，409 `limit`。 |
+| `POST /api/v1/pairing/redeem` | 是 | `{code}`：调用者作为买家和配对码的卖家配对。404 `bad_code`（错误、过期、已撤销或已用完；和登录失败一样计数，之后 429 `throttled`），409 `own_code`，409 `limit`，429 `request_cooldown`（一小时内撤回过用这个配对码的申请，或一天内被拒绝过）。 |
 | `DELETE /api/v1/pairing/sellers/{id}`、`DELETE /api/v1/pairing/buyers/{id}` | 是 | 以买家或卖家身份解除一个配对。 |
 | `PUT /api/v1/pairing/private` | 是 | `{enabled}`：开启或关闭调用者的私有模式。 |
 | `GET /api/v1/admin/pairings?user=` | 管理员 | 全部配对：买家、卖家（完整账户名）、配对码备注、时间、卖家是否私有。`user` 匹配任一方账户名的一部分。 |
 | `GET /api/v1/sharing` | 是 | 调用者的共享伙伴：`partners[]`（`id`、打码的 `username`、`group_id`、`since`，以及过去 `window_hours` 内双方之间的 `given`、`taken` token 数和 `jobs`），未用的 `invites[]`（`id`、`code`、`created_at`、`expires_at`），`settings`，`served`（窗口内它的节点为所有伙伴处理的 token 数，即每日额度所计的量），`window_hours`（24）和 `max_partners`（5）。 |
 | `POST /api/v1/sharing/invites`、`DELETE /api/v1/sharing/invites/{id}` | 是 | 生成邀请（`ttl_hours` 最大 168，0 表示一天；`max_uses` 1 到 100，0 表示一人）和撤回邀请。未用邀请达到 10 个或伙伴达到 100 个时 409 `limit`。 |
-| `POST /api/v1/sharing/join` | 是 | `{code}`：成为邀请生成者的共享伙伴。404 `bad_code`（错误、过期、已撤回或已使用；和登录失败一样计数，之后 429 `throttled`），409 `own_code`，409 `limit`。 |
+| `POST /api/v1/sharing/join` | 是 | `{code}`：成为邀请生成者的共享伙伴。404 `bad_code`（错误、过期、已撤回或已使用；和登录失败一样计数，之后 429 `throttled`），409 `own_code`，409 `limit`，429 `request_cooldown`（同配对）。 |
 | `DELETE /api/v1/sharing/partners/{id}` | 是 | 停止和一个伙伴共享。 |
 | `PUT /api/v1/sharing/settings` | 是 | `{only_partners, daily_limit_tokens, share_pct}`：只用伙伴；调用者的节点在滚动 24 小时内给所有伙伴的 token 数（0 表示不限）；每个节点的并发槽位中伙伴任务可占的百分比（0 表示暂停，否则至少一个槽位）。 |
 | `GET /api/v1/admin/share-groups?user=` | 管理员 | 全部共享组及其成员（完整账户名）和创建时间。`user` 匹配任一成员账户名的一部分。 |
@@ -411,7 +411,7 @@ OpenAI 兼容端点 `/v1/` 用的是 `apikey.json` 里的 API key（除非用 `s
 
 | 方法与路径 | 说明 |
 |---|---|
-| `POST /api/v1/web/auth/verify` | `{email, code, invite_code?}`，在 `POST /api/v1/auth/code` 之后调用，检查和 `auth/verify` 相同。成功后，把一个有效期为会话时长（`sessions.web_session_ttl`，默认 15 天）的 token 放进 `st_session` cookie（HttpOnly、SameSite=Strict，HTTPS 下带 Secure）；响应体是 `{user}`，没有 token。 |
+| `POST /api/v1/web/auth/verify` | `{email, code, nonce, invite_code?}`，在 `POST /api/v1/auth/code` 之后调用，检查和 `auth/verify` 相同。成功后，把一个有效期为会话时长（`sessions.web_session_ttl`，默认 15 天）的 token 放进 `st_session` cookie（HttpOnly、SameSite=Strict，HTTPS 下带 Secure）；响应体是 `{user}`，没有 token。 |
 | `POST /api/v1/web/mfa`、`POST /api/v1/web/mfa/setup`、`POST /api/v1/web/mfa/confirm` | 开启了两步验证时浏览器登录的第二步：校验动态码；尚未绑定的管理员开始绑定（返回 base32 密钥、`otpauth://` 链接和 data URI 形式的二维码），再用第一个动态码确认绑定并建立会话。 |
 | `POST /api/v1/web/logout` | 吊销会话并清除 cookie。 |
 
