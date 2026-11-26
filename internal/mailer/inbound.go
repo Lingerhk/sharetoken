@@ -275,8 +275,7 @@ func (s *session) Data(r io.Reader) error {
 	defer cancel()
 	spfRes := s.in.cfg.CheckSPF(ctx, net.ParseIP(s.ip), helo, s.from)
 	dkimRes := s.in.cfg.CheckDKIM(ctx, raw)
-	fromDomain := addressDomain(sum.From)
-	verified, dkimText := authVerdict(fromDomain, addressDomain(s.from), spfRes, dkimRes)
+	verified, dkimText := authVerdict(sum.FromDomain, addressDomain(s.from), spfRes, dkimRes)
 
 	for _, box := range s.rcpt {
 		id, err := s.in.cfg.Store.storeInbound(&InMail{

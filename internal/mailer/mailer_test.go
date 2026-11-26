@@ -362,6 +362,31 @@ func TestInboundStoresBadEncodings(t *testing.T) {
 	}
 }
 
+// The domain checked against SPF and DKIM is that of the address a reader
+// sees, whatever the display name says, and there has to be exactly one.
+func TestFromDomainIsTheAddressShown(t *testing.T) {
+	for _, c := range []struct{ name, headers, want string }{
+		{"plain", "From: alice@victim.example\r\n", "victim.example"},
+		{"named", "From: Alice <alice@Victim.Example>\r\n", "victim.example"},
+		{"a domain in the display name", "From: \"@evil.example>\" <admin@victim.example>\r\n", "victim.example"},
+		{"an address in the display name", "From: \"x@evil.example\" <admin@victim.example>\r\n", "victim.example"},
+		{"two mailboxes", "From: a@evil.example, admin@victim.example\r\n", ""},
+		{"two From fields", "From: a@evil.example\r\nFrom: admin@victim.example\r\n", ""},
+		{"none", "Subject: x\r\n", ""},
+		{"unreadable", "From: <<>>\r\n", ""},
+	} {
+		sum := summarize([]byte(c.headers + "Subject: s\r\n\r\nbody\r\n"))
+		if sum.FromDomain != c.want {
+			t.Errorf("%s: domain %q, want %q (shown as %q)", c.name, sum.FromDomain, c.want, sum.From)
+		}
+	}
+	// What the old code read from the shown text.
+	sum := summarize([]byte("From: \"@evil.example>\" <admin@victim.example>\r\n\r\nx\r\n"))
+	if v, _ := authVerdict(sum.FromDomain, "evil.example", "pass", []DKIMResult{{"evil.example", true}}); v {
+		t.Fatal("mail from evil.example was shown as verified mail of victim.example")
+	}
+}
+
 func TestAuthVerdict(t *testing.T) {
 	for _, c := range []struct {
 		name, from, env, spfRes string
@@ -594,5 +619,43 @@ func TestMFAChangedMail(t *testing.T) {
 	m = MFAChangedMail("<b>@example.test", false, when, "", "")
 	if strings.Contains(m.HTML, "<b>@") || strings.Contains(m.Text, "IP address") || !strings.Contains(m.Text, "turned off") {
 		t.Fatalf("%s\n%s", m.Text, m.HTML)
+	}
+}
+
+// A message built to be expensive to take apart is shown as it arrived.
+func TestMessagesOfTooManyPartsAreNotTakenApart(t *testing.T) {
+	var nested strings.Builder
+	nested.WriteString("From: a@b.example\r\nSubject: deep\r\nMIME-Version: 1.0\r\n")
+	const depth = 3000
+	for i := 0; i < depth; i++ {
+		fmt.Fprintf(&nested, "Content-Type: multipart/mixed; boundary=b%d\r\n\r\n--b%d\r\n", i, i)
+	}
+	nested.WriteString("Content-Type: text/plain\r\n\r\nhello\r\n")
+	start := time.Now()
+	p := Parse([]byte(nested.String()))
+	if !p.Malformed || len(p.Attachments) != 0 || !strings.Contains(p.Text, "multipart/mixed") {
+		t.Fatalf("a message nested %d deep was taken apart: malformed=%v text=%.60q", depth, p.Malformed, p.Text)
+	}
+	if _, _, err := ReadAttachment([]byte(nested.String()), 0); err == nil {
+		t.Fatal("an attachment was read from it")
+	}
+
+	var many strings.Builder
+	many.WriteString("From: a@b.example\r\nSubject: many\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n")
+	for i := 0; i < 5000; i++ {
+		many.WriteString("--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=a\r\n\r\nz\r\n")
+	}
+	many.WriteString("--x--\r\n")
+	p = Parse([]byte(many.String()))
+	if !p.Malformed || len(p.Attachments) > maxParts {
+		t.Fatalf("5000 parts: malformed=%v attachments=%d", p.Malformed, len(p.Attachments))
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("took %v", d)
+	}
+	// Ordinary mail is unaffected.
+	ok := "From: a@b.example\r\nSubject: s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nhello\r\n--x\r\nContent-Type: text/html\r\n\r\n<p>hello</p>\r\n--x--\r\n"
+	if p := Parse([]byte(ok)); p.Malformed || strings.TrimSpace(p.Text) != "hello" {
+		t.Fatalf("ordinary mail: %+v", p)
 	}
 }
