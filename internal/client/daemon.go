@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -116,7 +117,7 @@ func NewDaemon(home string) *Daemon {
 	d := &Daemon{home: home, log: slog.Default().With("component", "daemon"), state: StateLoggedOut}
 	d.updates = NewUpdateWatcher(home, "desktop", d.portalAddr)
 	d.warmup = warmup.New(home)
-	d.official = official.New(home, slog.Default())
+	d.official = newGateway(home, slog.Default())
 	return d
 }
 
@@ -1009,7 +1010,8 @@ func (d *Daemon) Handler() http.Handler {
 // endpoint, stay out.
 func guardAPIOrigin(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if o := r.Header.Get("Origin"); o != "" && strings.HasPrefix(r.URL.Path, "/api/v1/") && o != "http://"+r.Host {
+		// The path cleaned, as requireLocalKey and the mux judge it.
+		if o := r.Header.Get("Origin"); o != "" && strings.HasPrefix(path.Clean("/"+r.URL.Path), "/api/v1/") && o != "http://"+r.Host {
 			writeErrorCode(w, http.StatusForbidden, "bad_origin", "the management API is only for the sharetoken app")
 			return
 		}
@@ -1041,8 +1043,7 @@ func guardHost(h http.Handler) http.Handler {
 // out what a web form could post.
 func jsonBody[T any](h func(http.ResponseWriter, *http.Request, T)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if ct != "application/json" {
+		if !jsonContent(r) {
 			writeErrorCode(w, http.StatusUnsupportedMediaType, "bad_request", "send application/json")
 			return
 		}
@@ -1053,6 +1054,13 @@ func jsonBody[T any](h func(http.ResponseWriter, *http.Request, T)) http.Handler
 		}
 		h(w, r, req)
 	}
+}
+
+// jsonContent reports whether r says its body is JSON, which a web form
+// cannot (jsonBody; the routes that read their bodies themselves).
+func jsonContent(r *http.Request) bool {
+	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	return ct == "application/json"
 }
 
 func (d *Daemon) fromPortal(path string) http.HandlerFunc {

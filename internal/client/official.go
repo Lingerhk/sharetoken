@@ -1,6 +1,7 @@
 package client
 
 import (
+	"log/slog"
 	"net/http"
 
 	"sharetoken/internal/official"
@@ -12,9 +13,22 @@ func (a *Agent) gateway() *official.Gateway {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.Official == nil {
-		a.Official = official.New(a.home, a.log)
+		a.Official = newGateway(a.home, a.log)
 	}
 	return a.Official
+}
+
+// newGateway is the gateway for the vendor logins. Other builds than prod can
+// be pointed at test vendors with $SHARETOKEN_OFFICIAL_ANTHROPIC and
+// $SHARETOKEN_OFFICIAL_CHATGPT; a prod build ignores them, as it does
+// $SHARETOKEN_PORTAL, so that the environment cannot send the user's Claude
+// and ChatGPT logins and prompts elsewhere.
+func newGateway(home string, log *slog.Logger) *official.Gateway {
+	g := official.New(home, log)
+	if Env != EnvProd {
+		g.SetUpstreams(official.EnvUpstreams())
+	}
+	return g
 }
 
 // helloOK answers the probe Claude Code sends its base URL first

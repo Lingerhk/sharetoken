@@ -83,11 +83,30 @@ func requireLocalKey(key string, open func(method, cleanPath string) bool, api *
 		if rest, key, ok := pathKey(p); ok {
 			// The key in the path (/k/<key>/v1/…): for a tool whose
 			// headers cannot be set, Codex on its built-in OpenAI provider.
-			if !api.matches(key) {
-				writeErrorCode(w, http.StatusUnauthorized, "invalid_api_key", "the API key in the path is not this client's")
+			// The API key buys on /v1 and no more: behind it the
+			// management API would be open to whoever holds it, and with
+			// `apikey off`, when any path key matches, to everybody.
+			ctx := r.Context()
+			switch {
+			case openOpenAI(rest):
+				if !api.matches(key) {
+					writeErrorCode(w, http.StatusUnauthorized, "invalid_api_key", "the API key in the path is not this client's")
+					return
+				}
+			case official.IsBackendPath(rest):
+				// Codex Desktop's ChatGPT requests under the unlock
+				// (chatgpt_base_url). They are open without a key too
+				// (openVendor); the key itself, also when /v1 wants none,
+				// shows that the caller reads this user's files
+				// (official.HasKey).
+				if api.is(key) {
+					ctx = official.WithKey(ctx)
+				}
+			default:
+				writeErrorCode(w, http.StatusNotFound, "not_found", "the API key in the path is for /v1 only")
 				return
 			}
-			r2 := r.Clone(r.Context())
+			r2 := r.Clone(ctx)
 			r2.URL.Path, r2.URL.RawPath = rest, ""
 			h.ServeHTTP(w, r2)
 			return

@@ -145,6 +145,12 @@ func (g *apiKeyGate) matches(key string) bool {
 	return !s.Required || subtle.ConstantTimeCompare([]byte(key), []byte(s.Key)) == 1
 }
 
+// is reports whether key is the endpoint's key, required or not.
+func (g *apiKeyGate) is(key string) bool {
+	s, err := g.current()
+	return err == nil && subtle.ConstantTimeCompare([]byte(key), []byte(s.Key)) == 1
+}
+
 // allow reports whether r may use the endpoint, and if not, why.
 func (g *apiKeyGate) allow(r *http.Request) (bool, string) {
 	s, err := g.current()
