@@ -62,7 +62,7 @@ Requests with a body need `Content-Type: application/json`.
 | `DELETE /api/v1/pairing/waiting/{id}` | Withdraw a request of your own that waits for approval (`sharing` likewise) |
 | `POST /api/v1/invite/accept` | Accept an [invite link](/docs/share#invite-links) or a code of either kind: `{"link": "…"}` |
 | `GET /api/v1/connect`, `POST /api/v1/connect` | How Claude Code and Codex are connected; connect or disconnect one: `{"tool": "claude", "subscription": true, "openai_provider": false, "force": false, "off": false}` |
-| `GET /api/v1/official`, `PUT /api/v1/official` | The plans' usage and what happens when one runs out. `PUT` replaces all of it: `{"claude_fallback_off": false, "claude_fallback_model": "", "codex_guard_percent": 95, "codex_unlock": false}` |
+| `GET /api/v1/official`, `PUT /api/v1/official` | The plans' usage and what happens when one runs out. `PUT` replaces all of it: `{"claude_fallback_off": false, "claude_fallback_model": "", "codex_guard_percent": 95, "codex_unlock": false}`. `codex_unlock` can be turned on here only once the unlock's certificate is trusted, which the next route does |
 | `POST /api/v1/official/unlock` | Turn the Codex Desktop unlock on or off: `{"on": true}` |
 | `GET /api/v1/autostart`, `PUT /api/v1/autostart` | Start the client when you log in: `{"on": true}` |
 | `GET /api/v1/warmup`, `PUT /api/v1/warmup` | Warm-up status and settings: `paused`, `claude`, `codex`; what is left out stays |

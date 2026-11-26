@@ -251,7 +251,7 @@ codex
 
 订阅额度用完时：
 
-- **Claude Code**：Anthropic 因为额度用完拒绝请求时，客户端会把同一个请求交给网络上最接近的模型（网络上有同一个 Claude 模型就用它）继续，直到额度窗口重置。`{{exe}} official fallback off` 关闭这个功能；`{{exe}} official fallback-model <model>` 指定接手的模型（`auto` 恢复自动选择）。接手的请求走网络，花的是 credit。
+- **Claude Code**：Anthropic 因为额度用完拒绝请求时，客户端会把同一个请求交给网络上最接近的 Claude 模型（网络上有同一个模型就用它）继续，直到额度窗口重置。没有说明额度用完的 429 原样返回；网络上没有 Claude 模型、你也没有指定接手的模型时，额度用完的 429 同样原样返回。`{{exe}} official fallback off` 关闭这个功能；`{{exe}} official fallback-model <model>` 指定接手的模型（`auto` 恢复自动选择）。接手的请求走网络，花的是 credit。
 - **Codex**：ChatGPT 额度用完后，Codex Desktop 会锁住输入框，连网络上的模型也发不出去。客户端会在额度窗口用到 95% 时暂停官方模型（`{{exe}} official guard <percent>` 可调，`100` 表示不暂停），并提示你换成 `st-` 模型。在 macOS 和 Windows 上，也可以用 `{{exe}} codex-unlock on` 让输入框不被锁：系统会请你信任一张只对 localhost 有效的证书，之后 Codex Desktop 需要客户端一直运行。
 
 `{{exe}} official` 显示客户端看到的订阅用量，以及额度用完时会怎样处理。
