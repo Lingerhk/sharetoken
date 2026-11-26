@@ -334,3 +334,23 @@ func TestHoldForCoversMaxTokens(t *testing.T) {
 		t.Error("overflow must saturate")
 	}
 }
+
+func TestFairCachePrices(t *testing.T) {
+	for _, c := range []struct {
+		p    protocol.Prices
+		want bool
+	}{
+		{protocol.Prices{In: 1000, Out: 5000, CacheRead: 100, CacheWrite: 1250}, true},
+		{protocol.Prices{In: 1000, Out: 5000, CacheRead: 1000, CacheWrite: 2000}, true},
+		{protocol.Prices{In: 1000, Out: 5000}, true},
+		{protocol.Prices{}, true},
+		{protocol.Prices{In: 1000, Out: 5000, CacheRead: 1001}, false},
+		{protocol.Prices{In: 1000, Out: 5000, CacheWrite: 2001}, false},
+		{protocol.Prices{In: 0, Out: 5000, CacheRead: 1}, false},
+		{protocol.Prices{In: 1 << 63, CacheWrite: ^uint64(0)}, true},
+	} {
+		if got := c.p.Fair(); got != c.want {
+			t.Errorf("%+v: fair = %v, want %v", c.p, got, c.want)
+		}
+	}
+}

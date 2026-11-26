@@ -64,13 +64,17 @@ func TestOfferLimits(t *testing.T) {
 				o.Models = append(o.Models, protocol.ModelPrice{Model: fmt.Sprintf("m-%d", i)})
 			}
 		},
-		"long model id":       model(strings.Repeat("m", protocol.MaxModelIDBytes+1)),
-		"control character":   model("gpt\n5"),
-		"bidi override":       model("gpt‮5"),
-		"invalid UTF-8":       model("gpt\xff"),
-		"padded model id":     model(" gpt-5"),
-		"price out of range":  func(o *protocol.Offer) { o.Models[0].PriceOutMicros = protocol.MaxPriceMicros + 1 },
-		"cache price":         func(o *protocol.Offer) { o.Models[0].PriceCacheWrite = protocol.MaxPriceMicros + 1 },
+		"long model id":      model(strings.Repeat("m", protocol.MaxModelIDBytes+1)),
+		"control character":  model("gpt\n5"),
+		"bidi override":      model("gpt‮5"),
+		"invalid UTF-8":      model("gpt\xff"),
+		"padded model id":    model(" gpt-5"),
+		"price out of range": func(o *protocol.Offer) { o.Models[0].PriceOutMicros = protocol.MaxPriceMicros + 1 },
+		"cache price":        func(o *protocol.Offer) { o.Models[0].PriceCacheWrite = protocol.MaxPriceMicros + 1 },
+		"dear cache read":    func(o *protocol.Offer) { o.Models[0].PriceCacheRead = o.Models[0].PriceInMicros + 1 },
+		"dear cache write": func(o *protocol.Offer) {
+			o.Models[0].PriceCacheWrite = protocol.MaxCacheWriteFactor*o.Models[0].PriceInMicros + 1
+		},
 		"too many APIs":       func(o *protocol.Offer) { o.Models[0].APIs = slices.Repeat([]string{protocol.APIChat}, 9) },
 		"concurrency":         func(o *protocol.Offer) { o.MaxConcurrency = protocol.MaxOfferConcurrency + 1 },
 		"long client version": func(o *protocol.Offer) { o.ClientVersion = strings.Repeat("1", 65) },

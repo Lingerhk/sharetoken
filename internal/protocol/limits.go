@@ -59,6 +59,9 @@ func (o *Offer) checkLimits() error {
 		if max(m.PriceInMicros, m.PriceOutMicros, m.PriceCacheRead, m.PriceCacheWrite) > MaxPriceMicros {
 			return fmt.Errorf("offer: a price of model %q is above %d micros per million tokens", m.Model, uint64(MaxPriceMicros))
 		}
+		if !m.Prices().Fair() {
+			return fmt.Errorf("offer: the cache prices of model %q are out of proportion: a cache read may cost the input price at most, a cache write %d times it", m.Model, MaxCacheWriteFactor)
+		}
 		if len(m.APIs) > maxModelAPIs {
 			return errors.New("offer: too many APIs for a model")
 		}

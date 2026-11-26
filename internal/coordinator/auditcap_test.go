@@ -48,17 +48,25 @@ func TestAuditPriceIsCapped(t *testing.T) {
 	if _, err := f.eng.IssueTicket(auditor.ID(), errandReq(fair2.ID())); err != nil {
 		t.Fatalf("a direct audit of a fair node: %v", err)
 	}
-	// A cache price is a price too.
+	// A cache price is a price too: within what an offer may ask (twice the
+	// input price for a write) it counts towards the cap, and beyond that
+	// the offer is refused altogether.
 	sneaky := mustKeys(t)
 	f.bind(st, "sam", sneaky)
-	o := f.signedOffer(sneaky, "m", priceIn, priceOut, 4)
-	o.Models[0].PriceCacheWrite = 1000 * priceIn
+	o := f.signedOffer(sneaky, "m", 2*priceIn, priceOut, 4)
+	o.Models[0].PriceCacheWrite = 4 * priceIn
 	o.Sign(sneaky.Signer)
 	if err := f.eng.UpsertOffer(o); err != nil {
 		t.Fatal(err)
 	}
 	if f.eng.AuditPriceOK(sneaky.ID(), "m") {
-		t.Fatal("a node with a cache write price a thousand times the market's is audited")
+		t.Fatal("a node with a cache write price four times the market's input price is audited")
+	}
+	o = f.signedOffer(sneaky, "m", priceIn, priceOut, 4)
+	o.Models[0].PriceCacheWrite = 1000 * priceIn
+	o.Sign(sneaky.Signer)
+	if err := f.eng.UpsertOffer(o); err == nil {
+		t.Fatal("an offer with a cache write price a thousand times its input price was accepted")
 	}
 	// A buyer with credit and no price limit of its own may pay the price.
 	if err := f.eng.Deposit(carrier.ID(), 1_000_000_000); err != nil {

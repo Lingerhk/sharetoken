@@ -499,6 +499,8 @@ func (c *Client) verifyTicket(tr *protocol.TicketResponse, req ChatRequest) (str
 	case req.MaxPriceIn > 0 && t.PriceInMicros > req.MaxPriceIn,
 		req.MaxPriceOut > 0 && t.PriceOutMicros > req.MaxPriceOut:
 		return "", errors.New("ticket price exceeds the limit")
+	case !t.Prices().Fair():
+		return "", errors.New("the ticket's cache prices are out of proportion to its input price")
 	}
 	if err := o.VerifySignature(); err != nil {
 		return "", fmt.Errorf("node offer: %w", err)

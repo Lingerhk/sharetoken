@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/bits"
 	"slices"
 	"strings"
 )
@@ -41,6 +42,21 @@ type Prices struct {
 // the cache write price where that is higher. Output caps and holds assume it,
 // so a prompt that turns out to be written to the cache stays covered.
 func (p Prices) PromptCeiling() uint64 { return max(p.In, p.CacheWrite) }
+
+// MaxCacheWriteFactor is how many times the input price a cache write may
+// cost: the dearest any model server charges is twice (Anthropic's one-hour
+// cache).
+const MaxCacheWriteFactor = 2
+
+// Fair reports whether the cache prices stand in proportion to the input
+// price: a read costs no more than plain input, a write at most
+// MaxCacheWriteFactor times it. Matching and a buyer's price limits look at
+// the input and output prices only; without this a node could win on those
+// and bill its prompts as cache traffic at any price.
+func (p Prices) Fair() bool {
+	hi, lo := bits.Mul64(p.In, MaxCacheWriteFactor)
+	return p.CacheRead <= p.In && (hi != 0 || p.CacheWrite <= lo)
+}
 
 // Usage is the token accounting of one job. PromptTokens counts all input,
 // the cached part included; CacheReadTokens and CacheWriteTokens are the part
