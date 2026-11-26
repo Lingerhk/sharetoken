@@ -215,7 +215,8 @@ async function run() {
     await assertText('ui test ' + RUN, 'the new code is listed');
     const code = await evaluate('document.querySelector(".invite-code").textContent');
     check(/^[A-Z2-7]{16}$/.test(code), 'it looks like a code');
-    const email = `functest+ui${RUN}@example.com`, blocked = `functest+blocked${RUN}@example.com`;
+    // Another mailbox: the blocklist matches every spelling of one, "+tag" included.
+    const email = `functest+ui${RUN}@example.com`, blocked = `blocked-${RUN}@example.com`;
     let r = await apiCall('PUT', '/api/v1/admin/settings', { open_registration: true, invite_required: true, email_block: [blocked] });
     check(r.status === 200, 'invite required, one address blocked');
     await logout(); await goto(base + '/app/'); await sleep(600);
