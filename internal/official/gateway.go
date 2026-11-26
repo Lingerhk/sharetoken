@@ -79,8 +79,8 @@ func SaveSettings(home string, s Settings) error {
 }
 
 // Upstreams are the vendors' endpoints. Only tests change them (and
-// SHARETOKEN_OFFICIAL_* in a development build's environment): the users'
-// credentials go nowhere else.
+// SHARETOKEN_OFFICIAL_* in a development build's environment,
+// EnvUpstreams): the users' credentials go nowhere else.
 type Upstreams struct {
 	Anthropic      string // https://api.anthropic.com
 	ChatGPT        string // https://chatgpt.com/backend-api/codex
@@ -128,6 +128,15 @@ func New(home string, log *slog.Logger) *Gateway {
 	if err != nil {
 		log.Warn("official settings unreadable, using defaults", "component", "official", "err", err)
 	}
+	return &Gateway{home: home, up: DefaultUpstreams, hc: newUpstreamClient(), log: log.With("component", "official"),
+		settings: s, claude: claudeState{logins: map[string]*claudeLogin{}}, codex: map[string]*codexState{}, turns: newTurnModels(500)}
+}
+
+// EnvUpstreams are the vendors' endpoints with what SHARETOKEN_OFFICIAL_ANTHROPIC
+// and SHARETOKEN_OFFICIAL_CHATGPT name in their place. The caller decides
+// whether the environment may: a production build's may not (the client's
+// newGateway), or it could send the user's logins and prompts anywhere.
+func EnvUpstreams() Upstreams {
 	up := DefaultUpstreams
 	if v := os.Getenv("SHARETOKEN_OFFICIAL_ANTHROPIC"); v != "" {
 		up.Anthropic = v
@@ -136,12 +145,15 @@ func New(home string, log *slog.Logger) *Gateway {
 		up.ChatGPT = v
 		up.ChatGPTBackend = strings.TrimSuffix(strings.TrimRight(v, "/"), "/codex")
 	}
-	return &Gateway{home: home, up: up, hc: newUpstreamClient(), log: log.With("component", "official"),
-		settings: s, codex: map[string]*codexState{}, turns: newTurnModels(500)}
+	return up
 }
 
-// SetUpstreams points the gateway at other endpoints (tests).
+// SetUpstreams points the gateway at other endpoints (tests, and
+// EnvUpstreams in a development build).
 func (g *Gateway) SetUpstreams(u Upstreams) { g.up = u }
+
+// Upstreams are the endpoints the gateway sends to.
+func (g *Gateway) Upstreams() Upstreams { return g.up }
 
 // Settings returns the current settings.
 func (g *Gateway) Settings() Settings {

@@ -195,8 +195,10 @@ func TestPickFallback(t *testing.T) {
 			t.Errorf("pickFallback(%q, %q) = %q, want %q", c.asked, c.set, got, c.want)
 		}
 	}
-	if got := pickFallback("claude-opus-5-5", ms[:2], ""); got != "deepseek-v4" {
-		t.Errorf("no claude: %q", got)
+	// No Claude model on the network: none takes over, not even one that
+	// speaks Messages.
+	if got := pickFallback("claude-opus-5-5", ms[:2], ""); got != "" {
+		t.Errorf("no claude: %q, want none", got)
 	}
 	both := []protocol.ModelSummary{{Model: "claude-haiku-5-5"}, {Model: "claude-sonnet-5-5"}}
 	if got := pickFallback("claude-opus-5-5", both, ""); got != "claude-sonnet-5-5" {

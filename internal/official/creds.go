@@ -118,3 +118,18 @@ func KeyMissing(ctx context.Context) bool {
 	v, _ := ctx.Value(keyMissing{}).(bool)
 	return v
 }
+
+type keyShown struct{}
+
+// WithKey marks a /backend-api request that came with the client's API key
+// in its path (/k/<key>/backend-api/…): its sender reads this user's files,
+// so it may be lent Codex's own login (serveBackend).
+func WithKey(ctx context.Context) context.Context {
+	return context.WithValue(ctx, keyShown{}, true)
+}
+
+// HasKey reports whether ctx was marked by WithKey.
+func HasKey(ctx context.Context) bool {
+	v, _ := ctx.Value(keyShown{}).(bool)
+	return v
+}

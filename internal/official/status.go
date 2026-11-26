@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"mime"
 	"net/http"
 	"time"
 
@@ -47,12 +48,14 @@ type UnlockStatus struct {
 func (g *Gateway) Status() Status {
 	g.mu.Lock()
 	s := Status{Settings: g.settings, Codex: []CodexStatus{}}
-	if g.claude.haveUsage {
-		u := g.claude.usage
-		s.Claude.Usage = &u
-	}
-	if g.claude.heldUntil.After(now()) {
-		s.Claude.HeldUntil = g.claude.heldUntil
+	if l := g.claude.logins[g.claude.last]; l != nil {
+		if l.haveUsage {
+			u := l.usage
+			s.Claude.Usage = &u
+		}
+		if l.heldUntil.After(now()) {
+			s.Claude.HeldUntil = l.heldUntil
+		}
 	}
 	s.Claude.Fallbacks, s.Claude.LastFallback, s.Claude.LastModel = g.claude.fallbacks, g.claude.lastFall, g.claude.lastModel
 	for id, st := range g.codex {
@@ -74,11 +77,21 @@ func (g *Gateway) Status() Status {
 //
 //	GET /api/v1/official   Status
 //	PUT /api/v1/official   Settings
+//
+// The PUT turns the Codex Desktop unlock on only once its certificate is
+// trusted, which the user confirmed to the system: that is what
+// `sharetoken codex-unlock on` and the client's POST /api/v1/official/unlock
+// do first (the CLI then tells a running client with this PUT).
 func (g *Gateway) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/official", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, g.Status())
 	})
 	mux.HandleFunc("PUT /api/v1/official", func(w http.ResponseWriter, r *http.Request) {
+		// The content type keeps out what a web form could post.
+		if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "application/json" {
+			writeError(w, http.StatusUnsupportedMediaType, "bad_request", "send application/json")
+			return
+		}
 		var s Settings
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&s); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "malformed JSON")
@@ -86,6 +99,10 @@ func (g *Gateway) Routes(mux *http.ServeMux) {
 		}
 		if s.CodexGuardPercent < 0 || s.CodexGuardPercent > 100 {
 			writeError(w, http.StatusBadRequest, "bad_request", "codex_guard_percent is 0 to 100")
+			return
+		}
+		if s.CodexUnlock && !g.Settings().CodexUnlock && !UnlockCertTrusted(g.home) {
+			writeError(w, http.StatusBadRequest, "bad_request", "codex_unlock is turned on with `sharetoken codex-unlock on` or POST /api/v1/official/unlock, which have the system trust its certificate")
 			return
 		}
 		if err := g.SetSettings(s); err != nil {
