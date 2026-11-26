@@ -56,7 +56,7 @@ Claude 订阅和 ChatGPT（Codex）订阅的 5 小时窗口，从窗口重置后
 - 两者运行时都去掉 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_BASE_URL` 等变量，否则请求会走 API key 或别的端点（包括 sharetoken 自己的），而不是订阅。程序所在目录和常见安装目录会加进 `PATH`，因为桌面应用启动时 PATH 很短，而 npm 安装的程序是 node 脚本。2 分钟内没有结果的命令会连同整个进程树一起结束（Windows 上不弹控制台窗口）。
 - **provider**：一条流式 chat 请求，`max_tokens` 16，内容为 `hi`，走 `Entry.Upstream`：和订单相同的请求伪装、代理、TLS 和 token 续期。模型优先用设置里指定的，其次是该系列的小模型（Haiku；Codex 的 `mini`），再次是该 provider 在卖的模型；某个模型被拒（404，或与模型相关的 400）就换下一个。
 
-agent 程序的查找顺序：设置里的路径（`binary`）→ `PATH` → 常见安装目录（`~/.claude/local`、`~/.local/bin`、Homebrew、`%APPDATA%\npm` 等）。终端应用的包装脚本（`…shims/` 目录）只在找不到其他程序时才用。
+agent 程序的查找顺序：设置里的路径（`binary`，必须是绝对路径，指向名为 `claude` 或 `codex` 的可执行文件，Windows 上可带 `.exe`、`.cmd`、`.bat`）→ `PATH` → 常见安装目录（`~/.claude/local`、`~/.local/bin`、Homebrew、`%APPDATA%\npm` 等）。终端应用的包装脚本（`…shims/` 目录）只在找不到其他程序时才用。
 
 ## 5. 设置与状态
 
