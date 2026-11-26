@@ -84,11 +84,11 @@ const sql = query => execFileSync(new URL('./local-mysql.sh', import.meta.url).p
 let lastMail = 0;
 async function nextCode(email) {
   for (let i = 0; i < 100; i++) {
-    const [id, subject] = (sql(`SELECT id, subject FROM mail_outbox WHERE to_addr = '${email}' ORDER BY id DESC LIMIT 1`) || '0\t').split('\t');
+    const [id, code] = (sql(`SELECT id, REGEXP_SUBSTR(text_body, '[0-9]{6}') FROM mail_outbox WHERE to_addr = '${email}' AND kind = 'verify' ORDER BY id DESC LIMIT 1`) || '0\t').split('\t');
     if (Number(id) > lastMail) {
       lastMail = Number(id);
       sql('UPDATE mail_codes SET created_at = created_at - 7200');
-      return subject.slice(subject.lastIndexOf(' ') + 1);
+      return code;
     }
     await sleep(100);
   }
@@ -174,9 +174,9 @@ ok((await text('#tile-available .value')) === '5', 'the sign-up credit arrived: 
 await waitFor(`${el('#conn-state')}.textContent === '已连接'`, 30000);
 ok(true, 'it joined the real network through the relay');
 await waitFor(`${el('#network-body')}.textContent.includes('relay-local')`);
-ok((await text('#network-body')).includes('当前使用'), 'the relay in use is marked');
+ok((await text('#network-body')).includes('使用中'), 'the relay in use is marked');
 await waitFor(`${el('#coord-line')}?.textContent === '协调器已连接'`, 20000);
-ok(true, 'the coordinator is connected');
+ok(await ev(`!!document.querySelector('#network .panel-head #coord-line')`), 'the coordinator is connected, said next to the network title');
 await waitFor(`${el('#models-body')}.textContent.includes('mock-fast')`, 30000);
 ok(true, "the seller's model is listed");
 ok(await text('#endpoint-url') === env.DAEMON + '/v1', 'the local endpoint is shown');
@@ -249,6 +249,8 @@ const v1Status = async key => (await fetch(env.DAEMON + '/v1/models', { headers:
 const key1 = apiKeyFile().key;
 ok(apiKeyFile().required && await v1Status('') === 401 && await v1Status(key1) === 200, 'the endpoint wants the API key from the start');
 await waitFor(el('#copy-apikey'));
+ok(await ev(`(() => { const b = ${el('#copy-endpoint')}.getBoundingClientRect(), k = ${el('#copy-apikey')}.getBoundingClientRect(), c = ${el('#endpoint-url')}.getBoundingClientRect();
+  return b.left - c.right > 40 && k.left - b.right < 30; })()`), 'the endpoint\'s two copy buttons sit together on the right');
 ok(!(await ev('document.documentElement.outerHTML')).includes(key1), 'the overview offers to copy the key without showing it');
 await click('#nav-settings');
 await waitFor(`${el('#apikey-required')}?.checked && !${el('#apikey-required')}.disabled`);
@@ -261,6 +263,26 @@ await click('#apikey-required');
 await waitFor(`${el('#apikey-required')}.checked && !${el('#apikey-required')}.disabled`);
 ok(apiKeyFile().required && await v1Status('') === 401, 'turned on again');
 await shot('09b-apikey');
+
+console.log('crash reports and the log');
+// The stack's daemon runs with SHARETOKEN_REGION=CN: reports start on.
+const configFile = () => JSON.parse(readFileSync(env.DESKTOP_HOME + '/config.json', 'utf8'));
+await waitFor(`${el('#diag-note')}?.textContent.includes('脱敏')`);
+const diag = JSON.parse(await ev(`kfetch('/api/v1/diagnostics').then(r => r.text())`));
+ok(await ev(`${el('#diag-upload')}.checked`) && !('upload' in (configFile().diagnostics || {})) && diag.log_dir === env.DESKTOP_HOME + '/logs', 'crash reports are on by default, and the daemon names the log directory');
+ok(readFileSync(env.DESKTOP_HOME + '/logs/client.log', 'utf8').includes('msg=starting'), 'the daemon writes its own log in the log directory');
+await click('#diag-upload');
+await waitFor(`!${el('#diag-upload')}.checked && !${el('#diag-upload')}.disabled`);
+ok(configFile().diagnostics.upload === false, 'turned off, config.json keeps the choice');
+await click('#diag-upload');
+await waitFor(`${el('#diag-upload')}.checked && !${el('#diag-upload')}.disabled`);
+ok(configFile().diagnostics.upload === true, 'and on again');
+ok(!(await has('#logs-open')) && !(await has('#log-dir')), 'the settings show no log directory row');
+ok(await fits() && await viewFits('settings'), 'the settings still fit the window');
+await click('#diag-show'); await waitFor(el('#dlg-reports'));
+ok((await text('#dlg-reports')).includes('现在没有待发送的报告'), 'the waiting reports are shown (none)');
+await shot('09c-diagnostics');
+await click('#dlg-reports-close'); await waitFor(`!${el('#dlg-reports')}`);
 await click('#apikey-rotate'); await waitFor(el('#dlg-confirm'));
 await click('#confirm-ok'); await waitFor(`!${el('#dlg-confirm')}`);
 const key2 = apiKeyFile().key;
@@ -336,7 +358,9 @@ await click('#nav-overview');
 console.log('warm-up');
 {
   // A stand-in for Claude Code: the test sends nothing to a real account.
-  const fake = dir + '/fake-claude';
+  // The daemon runs only a file named claude, given by its full path.
+  mkdirSync(dir + '/fake-bin', { recursive: true });
+  const fake = dir + '/fake-bin/claude';
   writeFileSync(fake, '#!/bin/sh\ncase "$*" in\n  *--version*) echo "9.9.9 (Claude Code)";;\n  */usage*) echo "Current session: 0% used"; echo "Current week (all models): 5% used";;\n' +
     '  *) cat >/dev/null; echo \'{"type":"result","is_error":false,"result":"Hi"}\';;\nesac\n', { mode: 0o755 });
   const warmup = async () => (await fetch(env.DAEMON + '/api/v1/warmup', { headers: { Authorization: 'Bearer ' + env.DAEMON_KEY } })).json();
@@ -687,7 +711,7 @@ try { cli('idle', 'partner', 'join', invite); } catch (e) { reused = true; }
 ok(reused, 'an invite admits one person');
 await click('#nav-overview');
 await waitFor(el('#models-body .model-shared'), 40000);
-ok(true, "the partner's model is marked free on the overview");
+ok(await text('#models-body .model-shared') === '免费' && (await ev(`${el('#models-body .model-shared')}.title`)) === '节点：伙伴 1', "the partner's model is marked free on the overview, its nodes on hover");
 const free = await buyPaid();
 ok(free.status === 200 && free.cost === 0, 'a request served by a partner costs nothing');
 await waitFor(el('#jobs-body .job-shared'), 40000);
@@ -720,7 +744,7 @@ await fill('#partner-pct', '0'); await click('#partner-save');
 await waitFor(el('#partner-paused'));
 const mine = (await sharing()).settings;
 ok(!mine.only_partners && mine.daily_limit_tokens === 5000 && mine.share_pct === 0, 'the limits are checked and saved');
-ok((await text('#share-settings-body')).includes('5,000') || (await text('#share-settings-body')).includes('5000'), 'the daily limit is shown with what was given');
+ok((await text('#share-settings-body')).includes('/ 5K tokens'), 'the daily limit is shown with what was given, in K');
 await fullShot('25c-partner-settings');
 await fill('#partner-limit', ''); await fill('#partner-pct', '100'); await click('#partner-save');
 await waitFor(`!${el('#partner-paused')}`);
@@ -929,10 +953,20 @@ ok(!(await has('#update-notice')), 'no update notice before a release');
   await ev(`document.documentElement.dataset.shellUpdate = '1'`);
   await click('#nav-settings'); await click('#update-check'); await waitFor(el('#update-now'));
   await shot('13d-update-now');
+  await waitFor(`!${el('#update-now')}.disabled`); // on once the shell says no update is under way
   await click('#update-now');
   await waitFor(`${el('#update-progress')}?.textContent.includes('更新失败')`, 10000);
   ok(!(await ev(`${el('#update-now')}.disabled`)), 'without a shell the update fails, says so, and can be tried again');
-  await click('#update-close'); await click('#nav-overview');
+  await click('#update-close');
+  // An update started from an earlier dialog is followed when the dialog opens
+  // again: the button stays off, and a download that has not begun shows 0%
+  // (the shell leaves written out while it is 0).
+  await ev(`(() => { const f = window.fetch; window.__fetch = f; window.fetch = (p, o) => String(p).endsWith('/__shell/update')
+    ? Promise.resolve(new Response('{"state":"downloading","total":1000}', { headers: { 'Content-Type': 'application/json' } })) : f(p, o); })()`);
+  await click('#update-check'); await waitFor(`${el('#update-progress')}?.textContent.includes('正在下载 0%')`);
+  ok(await ev(`${el('#update-now')}.disabled`) && !(await ev(`${el('#update-progress')}.textContent.includes('NaN')`)), 'an update under way is followed, from 0%, and the button stays off');
+  await click('#update-close'); await ev(`window.fetch = window.__fetch`);
+  await click('#nav-overview');
 }
 
 console.log('local API key');

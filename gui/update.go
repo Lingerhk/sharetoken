@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"sync"
@@ -65,8 +66,8 @@ type offer struct {
 // updateStatus is what GET /__shell/update answers.
 type updateStatus struct {
 	State   string `json:"state"` // idle, downloading, installing, restarting, failed
-	Written int64  `json:"written,omitempty"`
-	Total   int64  `json:"total,omitempty"`
+	Written int64  `json:"written"`
+	Total   int64  `json:"total"`
 	Error   string `json:"error,omitempty"`
 }
 
@@ -278,6 +279,12 @@ func (u *shellUpdater) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		_ = json.NewEncoder(w).Encode(u.status())
 	case http.MethodPost:
+		// The content type keeps out what a web form could post.
+		if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "application/json" {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			fmt.Fprintln(w, `{"error":{"code":"bad_request","message":"send application/json"}}`)
+			return
+		}
 		var req struct {
 			Key string `json:"key"`
 		}

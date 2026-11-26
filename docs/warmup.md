@@ -100,7 +100,8 @@ warm-up. A provider's come for free with its traffic.
   Codex model), else what the provider sells; one refused as unknown (404, or a 400
   about the model) moves on to the next.
 
-The agents' programs are found as set (`binary`), else on the `PATH`, else in the
+The agents' programs are found as set (`binary`: an absolute path to an executable
+file named `claude` or `codex`, on Windows with `.exe`, `.cmd` or `.bat`), else on the `PATH`, else in the
 usual install directories (`~/.claude/local`, `~/.local/bin`, Homebrew,
 `%APPDATA%\npm` …). A wrapper of a terminal app (a `…shims/` directory) is used
 only when nothing else is found.

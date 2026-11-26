@@ -74,7 +74,7 @@ func (s *Server) handleSendFeedback(w http.ResponseWriter, r *http.Request, cu c
 	if !readJSON(w, r, &req) {
 		return
 	}
-	release, ok := s.takeFeedbackSlot(s.clientIP(r))
+	release, ok := s.takeFeedbackSlot(s.rateIP(r))
 	if !ok {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too much feedback from this address; try again later")
 		return

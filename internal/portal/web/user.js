@@ -258,6 +258,7 @@
       limit: tr('已达到数量上限，请先解除或撤销一些'),
       throttled: tr('尝试次数太多，请几分钟后再试'),
       codes_paused: tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试'),
+      request_cooldown: tr('你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请'),
       wrong_kind: tr('这是共享伙伴的邀请链接，请到下面的「共享伙伴」里输入'),
       not_found: tr('这一项已经不存在了'),
     })[ex.code] || ex.message;
@@ -349,6 +350,7 @@
       limit: tr('已达到数量上限，请先解除或撤销一些'),
       throttled: tr('尝试次数太多，请几分钟后再试'),
       codes_paused: tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试'),
+      request_cooldown: tr('你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请'),
       wrong_kind: tr('这是配对的邀请链接，请到上面的「配对的卖家」里输入'),
       not_found: tr('这一项已经不存在了'),
     })[ex.code] || ex.message;
@@ -365,15 +367,18 @@
     } }, h('div', { class: 'row' }, field(tr('邀请码或邀请链接'), pcode)), h('div', null, h('button', { class: 'primary', type: 'submit', id: 'partner-join' }, tr('成为伙伴'))));
     const pttl = h('select', { id: 'partner-ttl' }, h('option', { value: '24' }, tr('1 天')), h('option', { value: '72' }, tr('3 天')), h('option', { value: '168' }, tr('7 天')));
     const papproval = approvalBox('partner-approval');
+    const puses = input({ type: 'number', id: 'partner-uses', min: 1, max: 100, step: 1, value: 1 });
     const pinvite = h('form', { class: 'form', id: 'partner-invite-form', onsubmit: async e => {
       e.preventDefault();
       try {
-        const c = await api('POST', '/api/v1/sharing/invites', { ttl_hours: Number(pttl.value), approval: papproval.checked });
-        papproval.checked = false;
+        const c = await api('POST', '/api/v1/sharing/invites', { ttl_hours: Number(pttl.value), approval: papproval.checked, max_uses: Number(puses.value) || 1 });
+        papproval.checked = false; puses.value = 1;
         await loadPartners();
-        await shownInvite('s', c, tr('把邀请码或链接发给要共享的伙伴。邀请只能用一次。'));
+        await shownInvite('s', c, c.max_uses > 1
+          ? tr('把邀请码或链接发给要共享的伙伴。最多 {n} 人可以用它加入，每人分别和你成为伙伴。', { n: num(c.max_uses) })
+          : tr('把邀请码或链接发给要共享的伙伴。邀请只能用一次。'));
       } catch (ex) { pbad(ex); }
-    } }, h('div', { class: 'row' }, field(tr('有效期'), pttl)),
+    } }, h('div', { class: 'row' }, field(tr('有效期'), pttl), field(tr('可加入的人数'), puses)),
       h('label', { class: 'check' }, papproval, h('span', null, tr('需要我确认'), ' ', h('span', { class: 'muted' }, tr('对方使用后，要你确认才生效')))),
       h('div', null, h('button', { class: 'primary', type: 'submit', id: 'partner-invite' }, tr('邀请伙伴'))));
 
@@ -393,6 +398,7 @@
         v.invites.length ? h('div', { class: 'card', id: 'partner-invites' }, table([
           { title: tr('邀请码'), cell: c => [secret(c.code), c.approval ? badge(tr('需确认'), 'accent') : null] },
           { title: tr('邀请链接'), cell: c => linkCell('s', c, 'partner-' + c.id) },
+          { title: tr('已加入'), num: true, cell: c => num(c.used || 0) + ' / ' + num(c.max_uses || 1) },
           { title: tr('到期时间'), cell: c => time(c.expires_at) },
           { title: '', cell: c => end('partner-revoke', tr('撤销'), tr('撤销邀请码'), tr('撤销邀请码 {code}？', { code: c.code }), '/api/v1/sharing/invites/' + c.id) },
         ], v.invites)) : null);

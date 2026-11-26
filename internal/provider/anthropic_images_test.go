@@ -74,7 +74,8 @@ func TestFittedImageSides(t *testing.T) {
 	}
 	for _, c := range cases {
 		data := testImage(t, c.format, c.w, c.h)
-		mt, out, ok := fittedImage(c.mediaType, data, c.side)
+		budget := claudeScaledPixels
+		mt, out, ok := fittedImage(c.mediaType, data, c.side, &budget)
 		if c.wantW == 0 {
 			if ok {
 				t.Errorf("%s: changed", c.name)
@@ -89,13 +90,44 @@ func TestFittedImageSides(t *testing.T) {
 			t.Errorf("%s: %dx%d %s, want %dx%d %s", c.name, w, h, mt, c.wantW, c.wantH, c.wantType)
 		}
 	}
-	if _, _, ok := fittedImage("image/png", "not base64!", 10); ok {
+	budget := claudeScaledPixels
+	if _, _, ok := fittedImage("image/png", "not base64!", 10, &budget); ok {
 		t.Error("an unreadable image was changed")
 	}
 }
 
+// What a buyer's images may cost the seller before the model server is even
+// called is bounded: an image over the pixel limit is not decoded, and a
+// request has a budget of pixels to scale.
+func TestScalingABuyersImagesIsBounded(t *testing.T) {
+	budget := claudeScaledPixels
+	huge := testImage(t, "png", 8100, 2000) // 16.2 M pixels in a few kilobytes
+	if _, _, ok := fittedImage("image/png", huge, 8000, &budget); ok || budget != claudeScaledPixels {
+		t.Fatalf("an image over the pixel limit was decoded (budget %d)", budget)
+	}
+	// Tall and narrow: the smooth scaler's buffer would be over its limit.
+	tall := testImage(t, "png", 1000, 15000)
+	if _, out, ok := fittedImage("image/png", tall, 8000, &budget); !ok {
+		t.Fatal("a 15 M pixel image was not fitted")
+	} else if w, h, _ := imageSize(t, out); w != 533 || h != 8000 {
+		t.Fatalf("fitted to %dx%d", w, h)
+	}
+	if budget != claudeScaledPixels-15_000_000 {
+		t.Fatalf("budget %d", budget)
+	}
+	// Out of budget: the next image goes as it came; one scaled before is remembered.
+	budget = 1000
+	if _, _, ok := fittedImage("image/png", testImage(t, "png", 8200, 31), 8000, &budget); ok {
+		t.Fatal("an image was scaled past the request's budget")
+	}
+	if _, _, ok := fittedImage("image/png", tall, 8000, &budget); !ok || budget != 1000 {
+		t.Fatalf("a remembered image: %v, budget %d", ok, budget)
+	}
+}
+
 func TestWebPIsWrittenAsPNG(t *testing.T) {
-	mt, out, ok := fittedImage("image/webp", webpImage, 16)
+	budget := claudeScaledPixels
+	mt, out, ok := fittedImage("image/webp", webpImage, 16, &budget)
 	if !ok || mt != "image/png" {
 		t.Fatalf("%v %s", ok, mt)
 	}

@@ -90,8 +90,9 @@ portalCmd(['useradd', '-admin', 'verroot@example.test']);
 await go(env.PORTAL + '/admin/');
 const web = `{ 'Content-Type': 'application/json', 'X-Sharetoken-Web': '1' }`;
 const post = (path, body) => ev(`fetch(${q(path)}, { method: 'POST', headers: ${web}, body: ${q(JSON.stringify(body))} }).then(async r => ({ status: r.status, data: await r.json() }))`);
-ok((await post('/api/v1/auth/code', { email: 'verroot@example.test' })).status === 200, 'a sign-in code is mailed');
-const ch = (await post('/api/v1/web/auth/verify', { email: 'verroot@example.test', code: mailedCode('verroot@example.test') })).data;
+const sent = await post('/api/v1/auth/code', { email: 'verroot@example.test' });
+ok(sent.status === 200 && sent.data.nonce, 'a sign-in code is mailed, with the nonce it redeems with');
+const ch = (await post('/api/v1/web/auth/verify', { email: 'verroot@example.test', code: mailedCode('verroot@example.test'), nonce: sent.data.nonce })).data;
 const setup = (await post('/api/v1/web/mfa/setup', { challenge: ch.challenge })).data;
 ok((await post('/api/v1/web/mfa/confirm', { challenge: ch.challenge, code: totp(setup.secret) })).status === 200, 'an admin session');
 await go(env.PORTAL + '/app/'); // a full load, so that the page sees the new session
@@ -107,11 +108,11 @@ await ev(`[...document.querySelectorAll('main button')].find(b => b.textContent 
 await sleep(600);
 const policy = () => JSON.parse(portalCmd(['version-policy']));
 ok(policy().min_client !== 'bad', 'a bad version is refused');
-await ev(`(() => { const i = ${inputs}; i[0].value = ''; i[1].value = '9.9.9'; i[2].value = '9.9.9'; i[3].value = 'https://example.com/download'; i[4].checked = true; })()`);
+await ev(`(() => { const i = ${inputs}; i[0].value = ''; i[1].value = '9.9.9'; i[2].value = '9.9.9'; i[3].value = '/downloads/'; i[4].checked = true; })()`);
 await ev(`[...document.querySelectorAll('main button')].find(b => b.textContent === '保存').click()`);
 await sleep(800);
 const p = policy();
-ok(p.latest_client === '9.9.9' && p.download_url === 'https://example.com/download' && p.allow_dev, 'the policy is saved from the page');
+ok(p.latest_client === '9.9.9' && p.download_url === '/downloads/' && p.allow_dev, 'the policy is saved from the page');
 
 console.log('desktop client');
 // A build with a version number: one without has nothing to compare.
@@ -122,27 +123,30 @@ const daemonEnv = { ...process.env, SHARETOKEN_PORTAL: env.PORTAL };
 const startDaemon = async () => {
   const c = spawn(bin, ['-home', home, 'daemon', '-http', '127.0.0.1:19795', '-listen', '/ip4/127.0.0.1/tcp/0', '-nat=false'], { env: daemonEnv, stdio: 'ignore' });
   children.push(c);
-  for (let i = 0; i < 50; i++) { try { if ((await fetch(api + '/api/v1/session')).ok) break; } catch { /* starting */ } await sleep(200); }
+  for (let i = 0; i < 50; i++) { try { if ((await daemonGet('/api/v1/session')).ok) break; } catch { /* starting */ } await sleep(200); }
   return c;
 };
+// The management API takes the key the daemon writes to run.json at each start.
+const runKey = () => { try { return JSON.parse(readFileSync(home + '/run.json', 'utf8')).key || ''; } catch { return ''; } };
+const daemonGet = path => fetch(api + path, { headers: { Authorization: 'Bearer ' + runKey() } });
 let d = await startDaemon();
-const daemonPost = (path, body) => fetch(api + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const daemonPost = (path, body) => fetch(api + path, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + runKey() }, body: JSON.stringify(body) });
 ok((await daemonPost('/api/v1/auth/code', { pin: env.PIN, email: 'version@example.com' })).ok, 'a code through the daemon');
 const login = await daemonPost('/api/v1/auth/verify', { pin: env.PIN, email: 'version@example.com', code: mailedCode('version@example.com'), device: 'version-box' });
 ok(login.status === 200, 'signed up through the daemon');
 d.kill(); await sleep(800);
 d = await startDaemon();
-for (let i = 0; i < 40; i++) { const s = await (await fetch(api + '/api/v1/session')).json(); if (s.update.available) break; await sleep(250); }
-await go(api + '/?lang=zh-CN');
+for (let i = 0; i < 40; i++) { const s = await (await daemonGet('/api/v1/session')).json(); if (s.update.available) break; await sleep(250); }
+await go(api + '/?lang=zh-CN#key=' + runKey());
 await waitFor(el('#update-notice'));
 ok((await text('#update-text')).includes('9.9.9'), 'the client offers the new release');
 await click('#update-open'); await waitFor(el('#dlg-update'));
-ok((await text('#update-link')) === 'https://example.com/download', 'with where to get it');
+ok((await text('#update-link')) === env.PORTAL + '/downloads/', 'with where to get it, on the portal');
 await click('#update-close');
 ok((await text('#app-version')).startsWith('版本 '), 'the client shows its version');
 ok(!(await ev(`${el('#update-notice')}.classList.contains('bad')`)), 'an optional upgrade is a warning');
 await shot('client-update');
-await go(api + '/?lang=en');
+await go(api + '/?lang=en#key=' + runKey());
 await waitFor(el('#update-text'));
 ok(!/[\u4e00-\u9fa5]版本/.test(await text('#update-text')) && (await text('#update-text')).includes('9.9.9'), 'the notice is translated');
 if (problems.length) throw new Error('page problems:\n' + problems.join('\n'));

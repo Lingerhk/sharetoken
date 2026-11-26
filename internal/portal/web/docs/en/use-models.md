@@ -33,7 +33,7 @@ $env:OPENAI_API_KEY = ({{exe}} apikey -q)
 | `{{exe}} apikey off` | Let any request in without the key. Only on a machine nobody else uses |
 | `{{exe}} apikey on` | Require the key again |
 
-The desktop app has the same switch and **New key** under **Settings**. A running client follows the change at once. Without the key the endpoint answers 401 `invalid_api_key`; it also accepts the key in an `x-api-key` header.
+The desktop app has the same switch and **New key** under **Settings**. A running client follows the change at once. Without the key, or with a wrong one, the endpoint answers 401 `invalid_api_key`. Besides `Authorization: Bearer`, the key may come in an `x-api-key` or `X-Sharetoken-Key` header; a tool that cannot set headers can put it in the address: `http://127.0.0.1:{{port}}/k/<key>/v1`.
 
 ## List the models {#models}
 
@@ -157,14 +157,14 @@ If a tool on a web page calls the endpoint with a non-local `Origin`, the endpoi
 
 ## Use with Claude Code {#claude-code}
 
-Claude Code talks to the endpoint in the Anthropic Messages API. Point it at the client and pick a model from `{{exe}} models`:
+Claude Code talks to the endpoint in the Anthropic Messages API. `{{exe}} connect claude` sets it up (see [Keep your subscription](#subscription)); by hand, point it at the client and pick a model from `{{exe}} models`. The endpoint lists the network's models with `st-` before their IDs, so that they cannot be mistaken for a vendor's own; a request may name a model with or without it.
 
 ::: macos linux
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:{{port}}
 export ANTHROPIC_AUTH_TOKEN=$({{exe}} apikey -q)
-export ANTHROPIC_MODEL=claude-sonnet-4-6          # a model ID from `{{exe}} models`
-export ANTHROPIC_SMALL_FAST_MODEL=claude-sonnet-4-6  # for Claude Code's background tasks
+export ANTHROPIC_MODEL=st-claude-sonnet-4-6          # st- and a model ID from `{{exe}} models`
+export ANTHROPIC_SMALL_FAST_MODEL=st-claude-sonnet-4-6  # for Claude Code's background tasks
 claude
 ```
 :::
@@ -173,8 +173,8 @@ claude
 ```powershell
 $env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:{{port}}'
 $env:ANTHROPIC_AUTH_TOKEN = ({{exe}} apikey -q)
-$env:ANTHROPIC_MODEL = 'claude-sonnet-4-6'
-$env:ANTHROPIC_SMALL_FAST_MODEL = 'claude-sonnet-4-6'
+$env:ANTHROPIC_MODEL = 'st-claude-sonnet-4-6'
+$env:ANTHROPIC_SMALL_FAST_MODEL = 'st-claude-sonnet-4-6'
 claude
 ```
 :::
@@ -189,7 +189,7 @@ Tool use, thinking and prompt caching work as with Anthropic. Any model on the n
 Codex talks to the endpoint in the OpenAI Responses API. Add a provider to `~/.codex/config.toml`:
 
 ```toml
-model = "gpt-5.5"              # a model ID from `{{exe}} models`
+model = "st-gpt-5.5"           # st- and a model ID from `{{exe}} models`
 model_provider = "sharetoken"
 
 [model_providers.sharetoken]
@@ -228,7 +228,33 @@ codex
 ```
 :::
 
-Tool calls (`apply_patch` included), reasoning and context compaction work with any model on the network. Over a WebSocket, Codex sends only what is new in each request; the client keeps the conversation of the connection and sends it whole, since a node keeps nothing between requests. Over HTTP the client also answers `previous_response_id` (for tools such as the OpenAI Agents SDK): it keeps the last responses of each API key in memory for an hour and sends the conversation they make up; an id it does not have is refused with `previous_response_not_found`, and nothing is kept for a request with `store: false`. Codex's `/v1/responses/compact` is supported: a node with a ChatGPT login compacts natively, any other one has its model write a summary. As with Claude Code, raise `buy.budget_micros` if requests fail with `budget`.
+Tool calls (`apply_patch` included), reasoning and context compaction work with any model on the network. Over a WebSocket, Codex sends only what is new in each request; the client keeps the conversation of the connection and sends it whole, since a node keeps nothing between requests. Over HTTP the client also answers `previous_response_id` (for tools such as the OpenAI Agents SDK): it keeps the last responses of each API key in memory for an hour and sends the conversation they make up; an id it does not have is refused with `previous_response_not_found`, and nothing is kept for a request with `store: false`. Codex's `/v1/responses/compact` is supported: a node with a ChatGPT login compacts natively, any other one has its model write a summary. The network's models do not make images. As with Claude Code, raise `buy.budget_micros` if requests fail with `budget`.
+
+## Keep your Claude or ChatGPT subscription {#subscription}
+
+`{{exe}} connect` sets Claude Code or Codex up for you, in their own config files. A copy of each file is kept in the client's `backups` folder before it is changed, and `-off` puts the file back as it was. When the tool is signed in to its vendor (claude.ai, or ChatGPT for Codex), it keeps that login: its model menu lists the official models and, after them, the network's (their IDs start with `st-`). Each request goes where its model is: an official model runs on your own plan, an `st-` model on the network. You can switch between them within one conversation.
+
+```bash
+{{exe}} connect claude          # Claude Code: ~/.claude/settings.json
+{{exe}} connect codex           # Codex: ~/.codex/config.toml
+{{exe}} connect                 # what is connected
+{{exe}} connect claude -off     # put the file back
+```
+
+Restart the tool afterwards. Without a vendor login, or with `-subscription off`, the tool uses the network only, with the API key. The desktop app has the same switches under "Settings > Tools".
+
+- **Another gateway already set:** if the file's base URL points at another gateway (not this machine), `connect` leaves it alone; `-force` replaces it, and `-off` puts the old value back.
+- **Codex's earlier conversations:** `{{exe}} connect codex -openai-provider` uses Codex's built-in OpenAI provider instead, so its earlier conversations stay in Codex's list.
+- **Kept in step:** while the client runs in the background (the desktop app or `autostart`), it checks these files against the endpoint every minute: when the port, the API key or the network's models change, the files follow, with no need to `connect` again.
+
+The tools reach even their official models through the client, so it has to be running: `{{exe}} autostart on` starts it when you log in, and the desktop app's "Start ShareToken when you log in" (Settings > Tools) starts the app in the tray. Without either, after a restart, a logout, or quitting the client or the app, the connected tools fail to connect, for official models too, until it runs again; if you keep autostart off, run `{{exe}} connect claude -off` (or `codex`) before you stop using it. While the client runs but has not joined the network yet, the official models work as usual; only `st-` models fail. Your vendor login is passed to the vendor's own servers as it is; the client does not keep it, log it or send it to the network.
+
+When a plan runs out:
+
+- **Claude Code**: when Anthropic turns a request away because the plan is used up, the client answers that same request from the network, on the closest Claude model (the same one if it is offered), until the window resets. A 429 that does not say the plan is used up is passed on as it is, and so is the plan's when the network offers no Claude model and you picked none. `{{exe}} official fallback off` turns this off; `{{exe}} official fallback-model <model>` picks the model (`auto` goes back to choosing one). Requests answered this way run on the network and spend credit.
+- **Codex**: Codex Desktop locks its input once the ChatGPT plan is spent, even for network models. The client holds the official models when a window reaches 95% (`{{exe}} official guard <percent>`; `100` never holds them) and tells you to switch to an `st-` model. On macOS and Windows, `{{exe}} codex-unlock on` keeps the input open instead: the system asks you to trust a certificate valid for localhost only, and Codex Desktop then needs the client running.
+
+`{{exe}} official` shows the usage of the plans the client has seen and what happens when they run out.
 
 To have Claude Code or Codex check the client, call models and manage sharing for you, see [Use with coding agents](/docs/agents).
 
@@ -254,14 +280,16 @@ If an answer fails before anything arrived, the client tries other nodes as usua
 ## How billing works {#billing}
 
 - **Billed by actual tokens:** The node sets the price, and you pay for the token counts on the receipt.
-- **Prompt cache:** input tokens the model server reads from its prompt cache cost the node's cache read price (by default a tenth of its input price), and tokens it writes to the cache its cache write price (by default 1.25 times the input price for Anthropic models, the input price otherwise). The receipt counts both; the job list on the portal marks such jobs with `*`.
+- **Prompt cache:** input tokens the model server reads from its prompt cache cost the node's cache read price (by default a tenth of its input price), and tokens it writes to the cache its cache write price (by default 1.25 times the input price where the model server speaks the Anthropic Messages API, the input price otherwise). The receipt counts both; the job list on the portal marks such jobs with `*`.
 - **Reasoning you do not see:** some models reason without showing all of it (encrypted, summarized or omitted thinking). When the answer shows that the model reasoned, you pay the output tokens the model server reported, up to the request's output limit (`max_tokens`, `max_output_tokens`) or what the hold covers. Otherwise output is checked against the text you received.
 - **Hold:** When you send a request, an amount is put on hold first, and whatever is not used is returned afterward. If the request has `max_tokens`, only the worst case is held. If not, the whole budget is held (2 credits by default); when your balance is smaller, what there is is held, as long as it covers the prompt and a short answer.
 - **Always set `max_tokens`**, especially for batch or high-concurrency calls. Otherwise a large hold can easily cause `insufficient_funds`.
 - **Stopping midway:** If your program drops a streaming request midway (for example, the user pressed stop), the node stops generating at once and you are billed only for the part that was delivered.
-- **Network breaks:** If the connection breaks because a relay restarted or your network changed, the client reconnects within 60 seconds and the answer continues where it stopped. You do not need to send the request again.
+- **Network breaks:** If the connection breaks because a relay restarted or your network changed, the client reconnects within 45 seconds and the answer continues where it stopped. You do not need to send the request again.
+- **A model stuck in a loop:** an answer whose reasoning or text goes round in place is cut as if it reached its output limit, so you pay for no more of it; a request whose last eight turns are the same tool call with the same result is answered on your machine and sent nowhere.
+- **Share partners:** with [share partners](/docs/share#partners), a request goes to their nodes first and costs no credit; only when none of them can take it is it bought on the network (with partners only set, it fails instead).
 
-You can change the budget and price limits in the [configuration file](/docs/config#buy).
+You can change the budget, the price limits and the loop guard (`loop_guard`) in the [configuration file](/docs/config#buy).
 
 ## How responses are verified {#verify}
 
@@ -273,9 +301,10 @@ A non-streaming response is handed to you only after its receipt passes verifica
 | `X-Sharetoken-Job` | The job ID, for looking up bills and giving feedback |
 | `X-Sharetoken-Node` | The node that served this request |
 | `X-Sharetoken-Cost-Micros` | The cost of this request, in micro-credit |
-| `X-Sharetoken-Timing` | Time and traffic: `ticket_ms` (matching), `dial_ms` (connecting to the node), `first_byte_ms` (first byte), `relayed` (whether it went through a relay), `preferred` (whether it went back to the previous node), `frames`, `up_bytes`, `down_bytes` |
+| `X-Sharetoken-TEE` | Only when the node passed TEE verification: the name of its image in your trust list (see [Use only TEE nodes](#tee)) |
+| `X-Sharetoken-Timing` | Time and traffic: `ticket_ms` (matching), `dial_ms` (connecting to the node), `upload_ms` (sending the request), `first_byte_ms` (first byte), `total_ms` (all of it), `relayed` (whether it went through a relay), `preferred` (whether it went back to the previous node), `frames`, `up_bytes`, `down_bytes`; over a [direct tunnel](/docs/running#tailnet) also `tailnet` (`direct`, or the DERP relay it went through) |
 
-A streaming response has no such headers. The same information is in the closing comment line `: sharetoken job=… node=… verified=true …`, together with `resumes` (how many times the stream was picked up again after a break).
+A streaming response has no such headers. The same information is in the closing comment line `: sharetoken job=… node=… verified=true cost_micros=… …`, together with `resumes` (how many times the stream was picked up again after a break). If a streaming response's receipt fails verification, it ends with an error event instead of that line.
 
 If a node overstates usage, the client refuses to sign and hands over the key for that job as evidence. After the ruling, the refund is automatic. The config option `buy.evidence` controls this behavior, and it is on by default.
 
@@ -283,18 +312,25 @@ If a node overstates usage, the client refuses to sign and hands over the key fo
 
 - **Back to the same node:** Later requests of one conversation go to the node that served it last, when it can take them. The connection is already open and the model server's prompt cache is more likely to hit, so the first token comes sooner and the cost may be lower. The client recognizes a conversation by its session: a chat request's `session_id`, Claude Code's session, Codex's `prompt_cache_key`; or else by the model and the first two messages. If that node is busy or offline, another node is used as usual.
 - **Request size:** A request can be up to 32 MB (the limit of most cloud Claude APIs), so it can carry images such as screenshots. Requests are compressed before they are sent; a long conversation history usually shrinks to a third to a fifth.
+- **Answer length:** an answer has at most 32768 output tokens (chat completions) or 128000 (Messages, Responses), and no more than the request's output limit and what the hold covers.
 
 ## Use only TEE nodes {#tee}
 
-The operator of an ordinary node can in principle read the prompt. For sensitive content, send it only to TEE nodes. They run in confidential virtual machines, and the operator cannot read their memory. Set this in the [configuration file](/docs/config#buy) and restart the client:
+The operator of an ordinary node can in principle read the prompt. For sensitive content, send it only to TEE nodes. They run in confidential virtual machines, and the operator cannot read their memory. The client accepts only node images you trust: put their launch measurements in a JSON file, name it with `tee_policy` in the [configuration file](/docs/config#buy), and restart the client:
 
 ```json
 {
-  "buy": { "require_tee": true }
+  "buy": { "require_tee": true, "tee_policy": "/path/to/tee-policy.json" }
 }
 ```
 
-If no node qualifies, the request fails instead of falling back to an ordinary node. The `TEE` column of `models` shows how many TEE nodes exist.
+```json
+{
+  "measurements": { "<launch measurement in hex>": "sharetoken-node v1 / qwen2.5-7b" }
+}
+```
+
+With `require_tee` but no `tee_policy`, the client does not start. If no node qualifies, the request fails instead of falling back to an ordinary node. The `TEE` column of `models` shows how many TEE nodes the coordinator has verified.
 
 ## Buy only from sellers you know {#pairing}
 
@@ -316,7 +352,7 @@ From then on this account buys only from the sellers it is paired with, on all o
 - **Back to the whole network:** leave every seller, and requests go to any node again.
 - **What it does not change:** prices, billing and receipt checks stay the same. A paired seller still reads the prompt unless it is a TEE node.
 
-You can do the same in the desktop app under **Overview → Paired sellers**, and on the portal's [pairing page](/app/#/pairing). For the seller's side, see [Pair with your buyers](/docs/share#pairing).
+You can do the same in the desktop app under **Pairing → My sellers**, and on the portal's [pairing page](/app/#/pairing). For the seller's side, see [Pair with your buyers](/docs/share#pairing).
 
 ## Errors and retries {#errors}
 
@@ -325,11 +361,14 @@ Errors have the form `{"error":{"code","message"}}`; on `/v1/messages` they have
 | Code | HTTP | Meaning and what to do |
 |---|---|---|
 | `no_offers` | 503 | No node offers this model. Check the model ID or pick another model. If you are [paired](#pairing), only your paired sellers count |
-| `capacity` | 503 | All nodes are full, and there was still no free slot after waiting 30 seconds. Retry after `Retry-After` |
+| `capacity` | 503 | All nodes are full, and there was still no free slot after waiting 30 seconds (`buy.queue_seconds`). Retry after `Retry-After` |
 | `insufficient_funds` | 402 | The balance is not enough for the hold. Set a smaller `max_tokens`, or earn some credit |
-| `budget` | 400 | The cost of this request may exceed `buy.budget_micros`. Lower `max_tokens` or raise the budget |
+| `budget` | 400 | The per-request hold (`buy.budget_micros`) does not even pay for the prompt at the node's price. Raise the budget |
+| `context_length_exceeded` | 400 | The prompt is longer than the model's context window. Claude Code and Codex compact the conversation when they get it |
 | `bad_request` | 400 | The request is invalid. The message gives the reason. A request over 32 MB gets 413 |
 | `upstream_error`, `receipt_rejected` | 502 | The node failed, or the receipt did not pass verification. You can retry |
+| `invalid_api_key` | 401 | The client's API key is missing or wrong. See [Local endpoint](#endpoint) |
+| `not_logged_in` | 401 | The client is not signed in. Run `login`, or sign in in the desktop app |
 | `unauthorized`, `forbidden` | 403 | The sign-in expired or the account is disabled. Run `login` again |
 | `upgrade_required` | 426 | The client version is too old. See [Update](/docs/update#upgrade) |
 | `not_connected` | 503 | The client is not connected to the network yet. Wait a moment or check `status` |

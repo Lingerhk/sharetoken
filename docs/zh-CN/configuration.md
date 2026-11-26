@@ -45,6 +45,8 @@
 | `limits.max_reservations` | `-max-reservations` | 4096 | 同时持有的预约数，所有网络合计 |
 | `limits.max_reservations_per_ip` | `-max-reservations-per-ip` | 64 | 来自同一 IP 地址的预约数 |
 | `limits.max_circuits` | `-max-circuits` | 4096 | 到同一目的 peer 的并发电路数（协调器每个在线用户占一条） |
+| `limits.max_circuits_per_peer` | — | 32 | 同一 peer 同时持有的电路数。一个用户到协调器占一条，到每个正在购买的节点各占一条。libp2p 只允许一个 peer 占用 64 条中继服务的流，所以设得更高不起作用。`allow_peers` 不计入 |
+| `limits.max_circuits_per_ip` | — | 128 | 同一 IPv4 地址或同一 IPv6 /56 下所有 peer 合计的电路数（peer ID 可以随意生成）。中继对同一地址最多接受 32 条连接，相当于平均每条连接四条电路。`allow_peers` 不计入 |
 | `limits.reservation_ttl` | — | 1h | 预约的有效期；至少 1m |
 | `limits.circuit_buffer` | — | 16KiB | 每条电路的缓冲区 |
 | `limits.memory` | — | 本机（或 cgroup）内存的四分之三 | 所有对端合计可以向 libp2p 资源管理器预留的内存。yamux 每条流预留 256 KiB，一条电路是两条流，而一条空闲电路实际只占约 30 KiB，所以在小内存机器上，限制 TCP 电路数的是它，不是实际用量（453 MB 时约 510 条）。中继还会设置 85% 的 Go 软内存上限，除非设置了 `GOMEMLIMIT` |
@@ -77,11 +79,14 @@
 | `market.fee_bps` | `-fee-bps` | 500 | 平台手续费，按每笔结算的基点计（500 = 5%）；0–10000 |
 | `market.min_budget_micros` | — | 1 | 一张票的最小冻结额 |
 | `market.warm_up` | — | 30s | 重启后这段时间内，没有匹配 Offer 的请求返回 `capacity`，让买家排队而不是失败 |
+| `market.max_offers_per_account` | — | 16 | 一个账户同时在线的 Offer（节点）数上限；超出的节点的 Offer 以 `busy` 拒绝 |
 | `jobs.ticket_ttl` | — | 1m | 节点开始执行一单的时限；至少 10s |
 | `jobs.start_grace` | — | 30s | Ticket 过期后再等多久，释放始终没有开始的单 |
 | `jobs.reconnect_grace` | — | 2m | 节点重连后，释放推迟这么久 |
 | `jobs.max_stale_tickets` | — | 5 | 一个买家账户持有的闲置未开始的票达到这个数后，不再发新票 |
 | `jobs.stale_after` | — | 15s | 未开始的票签发多久后算闲置 |
+| `jobs.max_idle_tickets` | — | 32 | 一个买家账户可持有的未开始的票的总数，不看签发时间和连接状态。超出时 Ticket 请求返回 `capacity`，客户端等待后重试 |
+| `jobs.max_idle_per_node` | — | 8 | 其中发往同一个节点的上限；达到后该节点对这个买家视为已满，直到有票开始 |
 | `jobs.settle_grace` | — | 15m | 等待结算到达的额外时间 |
 | `jobs.dispute_window` | — | 24h | 未确认的结算过这么久后自动生效 |
 | `jobs.max_offer_ttl` | — | 5m | Offer 可声明的有效期上限 |
@@ -90,6 +95,8 @@
 | `references[]` | `-reference`（可重复） | 空 | 模型的参考副本：有了它才能抽检，争议时才能精确计 token。每项有 `id`（市场模型 ID）、`upstream`（上游服务里的模型名）、`url`（OpenAI 兼容的 base URL）、`api_key_env` 或 `api_key_file`、`verify`（抽检怎样核对回答：`vllm`、`deepseek-prefix`、`openai-div`，或只核对计费的 `none`；默认 `none`）、`verify_url`（抽检打分用的 base URL，默认同 `url`）和 `params`（抽检请求的附加字段，例如默认会思考的模型用 `{reasoning_effort: none}`） |
 | `audit.interval` | `-audit-interval` | 10m | 抽检的平均间隔；0 关闭抽检 |
 | `audit.budget_micros` | `-audit-budget` | 200000 | 每道题的冻结额，由平台手续费支付 |
+| `audit.price_multiple` | — | 3 | 抽检作业的价格上限：该模型各卖家账户价格中位数的这么多倍；价格高于上限的节点不抽检 |
+| `audit.daily_budget_micros` | — | 20000000 | 抽检作业每个 UTC 日最多从平台手续费中冻结的额度；用完后当天不再抽检 |
 | `audit.prompts_file` | `-audit-prompts` | 空 | 私有题库，每行一题：纯文本，或 `{"system": …, "messages": […]}`。为空：内置的开放题 |
 | `audit.max_tokens` | — | 96 | 每道题的输出上限 |
 | `audit.questions` | `-audit-questions` | 5 | 每次抽检的题数；按全部题目一起判定 |
@@ -145,6 +152,7 @@
 | `mail.from` | — | 空 | 门户所发邮件的发件人，例如 `ShareToken <team@example.com>`。所有人都用从这里发出的验证码登录，没有它（以及运行中的 `mailserver`）谁都登录不了。为空：不发邮件 |
 | `mail.support` | — | 空 | 用户反馈的地址；管理员的回复也从这里发出 |
 | `downloads.dir` | — | 空 | 客户端安装包所在的目录，在 `/downloads/` 提供下载。为空：不提供下载 |
+| `blog.dir` | — | 空 | `/blog/` 文章所在的目录：每篇文章一个子目录，里面是 `en.md`、`zh-CN.md`（开头的 front matter：`title`、`date`、`summary`、`cover`、`tags`、`author`、`draft`）和配图。门户只在内存里缓存文章列表，最多每 30 秒检查一次目录。为空：没有博客，首页也不显示文章 |
 | `relay_metrics.*` | — | 关闭 | 经 SSH 读取每个中继的 `/metrics`，供管理控制台的仪表盘使用：`key_file`、`known_hosts_file`、`interval`（1m）、`timeout`（20s），以及 `targets[]`，每项有 `relay`（中继登记里的名称）、`ssh`（`user@host[:port]`）和 `command` |
 | `admin.allow_from` | — | 空 | 允许访问管理页面（`/admin/`）、管理 API（`/api/v1/admin/…`）以及管理员登录的来源：IP 地址、CIDR 网段和域名（域名代表它解析出的全部 A 和 AAAA 地址）。来源是对端地址；对端是回环或 `http.trusted_proxies` 里的代理时，取它传来的 `X-Real-IP`。其他来源访问管理端一律 404，管理员输对邮件验证码后也会被拒绝登录（403）；普通用户和客户端不受影响。不会自动放行回环地址。为空：不限制 |
 | `admin.resolve_interval` | — | 5m | 多久重新解析一次 `admin.allow_from` 里的域名（至少 10s）。解析失败时沿用该域名上一次的地址；从未解析成功的域名不放行任何来源 |

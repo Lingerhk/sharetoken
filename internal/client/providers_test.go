@@ -26,6 +26,7 @@ func TestProviderConfigurationAPI(t *testing.T) {
 	a.providerRoutes(mux)
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, r)
 		return w

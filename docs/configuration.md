@@ -45,6 +45,8 @@ Example: [`configs/relay.example.yaml`](../configs/relay.example.yaml). The acce
 | `limits.max_reservations` | `-max-reservations` | 4096 | Reservations held at once, all networks together |
 | `limits.max_reservations_per_ip` | `-max-reservations-per-ip` | 64 | Reservations from one IP address |
 | `limits.max_circuits` | `-max-circuits` | 4096 | Open circuits to one destination peer (the coordinator receives one per online user) |
+| `limits.max_circuits_per_peer` | — | 32 | Circuits one peer may hold open at a time. A user holds one to the coordinator and one to each node it is buying from. libp2p allows a peer 64 streams of the relay service, so a higher value has no effect. `allow_peers` are not counted |
+| `limits.max_circuits_per_ip` | — | 128 | The same for all peers of one IPv4 address or one IPv6 /56 together, since peer IDs are free. The relay takes 32 connections from one address, so this is four circuits for each on average. `allow_peers` are not counted |
 | `limits.reservation_ttl` | — | 1h | Lifetime of a reservation; at least 1m |
 | `limits.circuit_buffer` | — | 16KiB | Buffer per circuit |
 | `limits.memory` | — | three quarters of the machine's (or the cgroup's) memory | What all peers may reserve with libp2p's resource manager. yamux reserves 256 KiB per stream and a circuit is two streams, although an idle circuit holds about 30 KiB, so on a small machine this, not the memory in use, caps TCP circuits (about 510 on 453 MB). The relay also sets a soft Go memory limit of 85% unless `GOMEMLIMIT` is set |
@@ -77,11 +79,14 @@ Example: [`configs/coordinator.example.yaml`](../configs/coordinator.example.yam
 | `market.fee_bps` | `-fee-bps` | 500 | Platform fee in basis points of each settled job (500 = 5%); 0–10000 |
 | `market.min_budget_micros` | — | 1 | Smallest hold for one ticket |
 | `market.warm_up` | — | 30s | After a restart, requests with no matching offer are answered with `capacity` for this long, so buyers queue instead of failing |
+| `market.max_offers_per_account` | — | 16 | Nodes of one account that may have a live offer; a further node's offer is refused with `busy` |
 | `jobs.ticket_ttl` | — | 1m | How long a node has to start a job; at least 10s |
 | `jobs.start_grace` | — | 30s | How long after the ticket expires a job that never started is released |
 | `jobs.reconnect_grace` | — | 2m | Release is postponed this long after a node reconnects |
 | `jobs.max_stale_tickets` | — | 5 | Stale, unstarted tickets a buyer account may hold before it gets no more |
 | `jobs.stale_after` | — | 15s | Age at which an unstarted ticket counts as stale |
+| `jobs.max_idle_tickets` | — | 32 | Unstarted tickets of any age a buyer account may hold, whoever is connected. Beyond it a ticket request is answered with `capacity`, so the client waits and asks again |
+| `jobs.max_idle_per_node` | — | 8 | How many of them may be for one node; the node counts as full for that buyer until one starts |
 | `jobs.settle_grace` | — | 15m | Extra time for a settlement to arrive |
 | `jobs.dispute_window` | — | 24h | An unconfirmed settlement becomes final after this long |
 | `jobs.max_offer_ttl` | — | 5m | Upper bound on the lifetime an offer may claim |
@@ -90,6 +95,8 @@ Example: [`configs/coordinator.example.yaml`](../configs/coordinator.example.yam
 | `references[]` | `-reference` (repeatable) | empty | Reference copies of models: they enable audits and exact token counts in disputes. Each entry has `id` (marketplace model ID), `upstream` (model name on the server), `url` (OpenAI-compatible base URL), `api_key_env` or `api_key_file`, `verify` (how audits check answers: `vllm`, `deepseek-prefix`, `openai-div`, or `none` for the bill only; default `none`), `verify_url` (base URL audits score against; default `url`) and `params` (extra fields of audit requests, e.g. `{reasoning_effort: none}` for a model that thinks by default) |
 | `audit.interval` | `-audit-interval` | 10m | Mean time between audits; 0 turns audits off |
 | `audit.budget_micros` | `-audit-budget` | 200000 | Hold per question, paid from platform fees |
+| `audit.price_multiple` | — | 3 | An audit job pays at most this many times the median price of its model among the accounts selling it; nodes priced above that are not audited |
+| `audit.daily_budget_micros` | — | 20000000 | The most audit jobs may reserve out of the platform's fees per UTC day; further audits wait for the next day |
 | `audit.prompts_file` | `-audit-prompts` | empty | Private question pool, one per line: plain text, or `{"system": …, "messages": […]}`. Empty: built-in open questions |
 | `audit.max_tokens` | — | 96 | Output limit of a question |
 | `audit.questions` | `-audit-questions` | 5 | Questions per audit; the verdict is on all of them together |
@@ -145,6 +152,7 @@ Example: [`configs/portal.example.yaml`](../configs/portal.example.yaml). `-db` 
 | `mail.from` | — | empty | Sender of the portal's mail, e.g. `ShareToken <team@example.com>`. Everyone signs in with a code mailed from here, so without it (and a running `mailserver`) nobody can sign in. Empty: no mail is sent |
 | `mail.support` | — | empty | Address for user feedback; administrators' replies are sent from it |
 | `downloads.dir` | — | empty | Directory of client packages served at `/downloads/`. Empty: no downloads |
+| `blog.dir` | — | empty | Directory of the articles at `/blog/`: one folder per article holding `en.md`, `zh-CN.md` (front matter: `title`, `date`, `summary`, `cover`, `tags`, `author`, `draft`) and its pictures. The portal keeps only the list in memory and looks at the folder again at most every 30 s. Empty: no blog, and the landing page shows no articles |
 | `relay_metrics.*` | — | off | Reads each relay's `/metrics` over SSH for the admin dashboard: `key_file`, `known_hosts_file`, `interval` (1m), `timeout` (20s) and `targets[]` with `relay` (name in the registry), `ssh` (`user@host[:port]`) and `command` |
 | `admin.allow_from` | — | empty | Where the admin pages (`/admin/`), the admin API (`/api/v1/admin/…`) and administrators' sign-ins may come from: IP addresses, CIDR prefixes and host names (each stands for all its A and AAAA addresses). The source is the peer's address, or `X-Real-IP` from a proxy on loopback or in `http.trusted_proxies`. From anywhere else the admin side answers 404 and an administrator's sign-in is refused (403) after the mailed code; users and clients are not affected. Loopback is not implied. Empty: no limit |
 | `admin.resolve_interval` | — | 5m | How often the host names in `admin.allow_from` are resolved again (at least 10s). A failed lookup keeps the name's last addresses; a name that never resolved admits nobody |
@@ -191,7 +199,7 @@ The directory is created with mode 0700. Files in it:
 | `update.json` | 0600 | The result of the last check for a new release |
 | `warmup.json` | 0600 | Warm-up settings of the Claude Code and Codex of this machine ([warmup.md](warmup.md)) |
 | `warmup-state.json` | 0600 | What the warm-up did and saw, so that a restart sends nothing twice |
-| `daemon.log` | 0600 | Log of the service started by the desktop app ([desktop.md](desktop.md)) |
+| `logs/` | 0700 | The client's own log and crash reports ([diagnostics.md](diagnostics.md)); `log.dir` moves it |
 
 `config.json` is written by the client itself (`login`, `share …`, and the local API used by the desktop app); `sharetoken config` prints it. It is written to a temporary file and renamed, so a crash does not leave half a file. Its fields:
 

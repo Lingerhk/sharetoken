@@ -99,9 +99,33 @@ that same key, the coordinator can check without trusting the buyer:
   (`internal/tokens`).
 
 Only that job is revealed: every job has its own key. The coordinator holds the
-plaintext in memory while it decides and records only the outcome. A claim about
-bytes the seller never signed cannot be decided this way and goes to an
-administrator.
+plaintext in memory while it decides and records only the outcome. Where it has
+a reference copy of the model, counting the tokens means sending that job's
+request and answer to the reference service, which may be another company's
+API. A claim about bytes the seller never signed cannot be decided this way and
+goes to an administrator.
+
+The seller alone cannot decide which receipt a job is paid by:
+
+- Once the client has checked a receipt it sends it to the coordinator itself,
+  with its acknowledgement. The job is settled at that receipt. If the seller
+  settles with another receipt it signed for the same job, the coordinator holds
+  two, refunds the buyer in full and counts a lost dispute against the seller.
+- A job can end without a receipt the client could check: the caller stopped
+  it, the stream broke after output had arrived, or the seller refused the
+  request. The client then tells the coordinator the most it accepts to pay for
+  what arrived (the prompt at the usual bound, the text it received, an
+  allowance for output still on its way, and nothing for a refusal). A receipt
+  the seller settles within that amount is paid after the dispute window as
+  before; one above it is not paid on the seller's word and waits for an
+  administrator.
+- The prompt estimate that bounds a bill reads the request by its exact field
+  names, the way the seller's node builds the model server's request, and is
+  never below a floor set by the request's size: a prompt cannot be hidden from
+  it in fields it does not know.
+
+A client from before the first two were added does neither: for its jobs a
+receipt without an acknowledgement is still paid after the dispute window.
 
 ### 2.4 The advertised model
 
@@ -163,7 +187,9 @@ Two mechanisms address that:
 - **A buyer that takes tickets and never connects** ties up a seller's slot for a
   bounded time: an unstarted job is released shortly after its ticket expires,
   with the hold returned and no penalty to the seller, and an account holding
-  several stale tickets gets no new ones.
+  several stale tickets gets no new ones. Whatever their age, an account
+  holds at most 32 tickets that have not started, and 8 for one node; further
+  requests wait for one to start or to be released.
 - **A seller that fails before delivering anything** abandons the job, which
   returns the buyer's hold at once.
 - **A user cannot trade with themselves** to farm reputation: matching excludes
@@ -192,7 +218,13 @@ cannot step around it.
   from the whole site stop codes for everyone for an hour (invite links still
   work), and 2000 wrong links stop the public preview of links for an hour.
   Each pause sends the administrators a Pushover alert
-  (`alerts.pushover_file`; `internal/portal/invites.go`). So at most about
+  (`alerts.pushover_file`; `internal/portal/invites.go`). An attempt is
+  counted before the code is looked up and given back when it was right, and
+  one account redeems one code at a time, so sending many guesses at once
+  gets no more tries. The counters live in memory with a bound on their keys;
+  a flood of keys evicts only counters that have aged out, and the counters
+  over everyone and per account are kept apart from those per client address
+  (an IPv6 /64 is one address) (`internal/portal/limits.go`). So at most about
   2400 codes can be tried a day, whoever tries: with 10 000 live codes, one is
   hit about every 45 days, and that only reaches the buyer side of a pairing
   or a share partnership the owner sees and can end (or a request, when the
@@ -229,9 +261,13 @@ node sees the prompt as any seller would, and receipts, hashes and audits work
 as usual.
 
 - An invite is a secret like a pairing code: 30 random bits with a 47.6-bit
-  link token, one day by default and 7 days at most, admits one person, can ask for
+  link token, one day by default and 7 days at most, admits one person (or up to 100 when made for more), can ask for
   the inviter's approval, and can be withdrawn. Wrong codes and links are
-  counted as for pairing codes. A
+  counted as for pairing codes. A request that was withdrawn (1 hour) or
+  rejected (24 hours) cannot be made again with the same code until the wait
+  is over, and the notices a request or an approval mails are capped per
+  recipient (6 an hour, 20 a day) and per account that caused them (10 an
+  hour, 30 a day), so asking in a loop floods nobody's mailbox. A
   leaked invite lets a stranger use the inviter's nodes for free within its
   limits; the inviter sees the partner and can end it.
 - Each side sees the other's account name masked, and the tokens each used of
@@ -306,15 +342,19 @@ tailcat) in place of a relay ([architecture.md](architecture.md) §2.17).
 |---|---|---|
 | Binding someone else's device to your account, to collect its earnings | A binding needs the device's signature over the user name, the peer ID and a timestamp within five minutes. A bound device cannot be bound elsewhere. | `internal/accounts` |
 | Stolen API token | Tokens can be revoked at any time, login tokens expire, and only their SHA-256 is stored. | `internal/accounts`, `internal/portal` |
-| Guessing a sign-in code | There are no passwords: a sign-in needs a six-digit code mailed to the account's address. A code lives 10 minutes and allows 5 tries; an address gets at most 5 codes an hour (20 per IP, 500 in total); wrong codes are also throttled per IP and per address. Only a salted hash of a code is stored, and the message is erased from the outbox once sent. | `internal/mailer/codes.go`, `internal/portal/auth.go` |
+| Guessing a sign-in code | There are no passwords: a sign-in needs a six-digit code mailed to the account's address. A code lives 10 minutes, allows 5 tries (counted before it is compared) and works only with the nonce returned to whoever asked for it, so guessing the six digits of someone else's code is not enough. An address gets at most 5 codes an hour (20 per IP or IPv6 /64); over everyone 500 an hour go to addresses with an account and 300 to addresses without, counted apart. Limits and the new code are one transaction. Wrong codes are also throttled per IP. A disabled account is answered like any other when a code is asked for. Only a salted hash of a code is stored, the code is not in the subject, and the message is erased from the outbox once sent or cancelled. What remains: anyone can use up an address's 5 codes an hour, which delays that person's sign-in but lets nobody in. | `internal/mailer/codes.go`, `internal/portal/auth.go` |
 | Someone else's mailbox | The mailbox is the key to the account: whoever reads it can sign in. Users may add TOTP two-factor authentication on the account page, and a notice is mailed when it is turned on or off. A portal without a working mail sender lets nobody sign in. | `internal/portal/mfa.go` |
 | A disabled user keeps trading | The coordinator checks the user's state on every request, tokens stop working at once, and relay passes run out within their lifetime (one hour by default). | `internal/accounts`, `internal/relaypass` |
-| An administrator's mailbox read by someone else | Administrators must use TOTP two-step verification and cannot turn it off. A token issued without it cannot reach the admin API. Wrong codes are throttled, a challenge is void after five mistakes, and a code cannot be replayed. TOTP secrets are stored encrypted (AES-GCM). | `internal/portal/mfa.go`, `internal/totp` |
+| An administrator's mailbox read by someone else | Administrators must use TOTP two-step verification and cannot turn it off. A token issued without it cannot reach the admin API. Wrong codes are throttled, a challenge is void after five tries (a try is deducted before the code is checked, so parallel requests get no more), and a code cannot be replayed. TOTP secrets are stored encrypted (AES-GCM). | `internal/portal/mfa.go`, `internal/totp` |
 | Session theft, cross-site request forgery, script injection in the web pages | Sessions are HttpOnly, SameSite=Strict cookies that only count together with a custom header, and the Origin must be the portal's own. A strict Content-Security-Policy allows no inline code and no third-party resources. The pages build the DOM from text and never from HTML strings. | `internal/portal/web.go` |
 | Eavesdropping on the portal connection | HTTPS by default. A self-signed certificate is pinned by fingerprint in the client, and the client refuses to send sign-in codes over plain HTTP to another machine. | `internal/portal/tls.go`, `internal/client` |
 | A web page calls the local client API to spend the user's credit | The local API binds to loopback and refuses any request whose Origin is not local. | `internal/client` |
 | Bypassing the relays to reach the coordinator | The coordinator listens on no address. | `cmd/coordinator` |
 | Strangers filling a relay's reservation slots | A reservation needs a short-lived pass signed by the portal and bound to the device's peer ID, with a limit on devices per user. Relays verify it offline. | `internal/relaypass`, `internal/relay` |
+| Filling the coordinator's memory, or buyers' dial queues, with offers | An offer lists at most 128 models and 64 addresses, and only addresses of TCP, QUIC, a relay circuit or a tunnel; a buyer dials no other kind. The frame that carries an offer is read up to 256 KiB. An account shares from at most 16 nodes at a time and binds at most 100 devices. Peers that are no user's device get no model list and cannot fill the coordinator's tables. | `internal/protocol/limits.go`, `internal/coordinator`, `internal/accounts` |
+| A seller cheap on input and output that bills prompts as cache traffic at any price | Matching and a buyer's price limits compare input and output prices only, so cache prices are tied to them: a cache read costs the input price at most, a cache write twice it at most. The coordinator refuses an offer that breaks this, and the client refuses such a ticket (`protocol.Prices.Fair`). |
+| A seller pricing itself high to collect the platform's audit payments | An audit job pays at most three times the model's median price (the median over accounts of each one's cheapest offer); a node priced above that is not audited. All audit jobs of a day together reserve at most `audit.daily_budget_micros`. | `internal/coordinator/auditcap.go` |
+| One peer holding a relay's circuits | A peer holds at most 32 circuits at a time and all peers of one address 128, so that the slots towards the coordinator cannot be taken from one place. | `internal/relay/circuits.go` |
 | Exhausting memory with huge frames or floods of streams | Frames grow with the data that arrives, never from the declared length. Stream handlers reserve memory from libp2p's resource manager first, with limits per stream, per peer and in total. | `internal/protocol`, `internal/p2p` |
 | A relay goes down | Clients switch relays automatically. Sellers reserve on more than one, and the coordinator reserves on all of them. | `internal/client`, `internal/p2p` |
 | Tampering with the ledger | Double-entry: every movement is a balanced transfer, journaled, and the journal is replayed against the balances on startup. All writes of the portal and the coordinator are serialized by one database lock. | `internal/ledger`, `internal/mysqldb` |
@@ -362,7 +402,14 @@ them more than the list above.
   bugs are out of scope.
 - **Relayed connections are not admission-controlled.** Anyone can open a circuit
   to a reserved peer. The peer authenticates and rejects strangers, but the
-  relay's bandwidth is used. Only aggregate limits bound it.
+  relay's bandwidth is used. A relay limits how many circuits one peer and one
+  address hold at a time, not who they are; someone with many addresses is
+  bounded only by the aggregate limits. A circuit has no idle timeout: it
+  lasts until one end closes it.
+- **The audit price cap follows the market.** Where one seller is the only one
+  offering a model, or a majority of accounts collude, the median is theirs;
+  the daily budget is then the bound. A node that prices itself above the cap
+  is not audited at all, and buyers see its price.
 - **A seller's own relay sees its buyers' addresses.** A buyer that reaches a
   node through the seller's private relay shows that relay its network
   address, the times and the byte counts: what a direct connection shows the

@@ -44,6 +44,7 @@ type Service struct {
 	relayMu sync.Mutex
 
 	relayDirty chan struct{}
+	relayPeers func(ids []string) // Config.RelayPeers
 }
 
 // NewService starts the coordinator on h, signing tickets with keys.
@@ -78,7 +79,7 @@ func NewService(ctx context.Context, h host.Host, keys *p2p.Keys, cfg Config) (*
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	s := &Service{Engine: eng, Errands: newErrands(), h: h, static: cfg.Relays, cancel: cancel, log: slog.Default().With("component", "coordinator")}
+	s := &Service{Engine: eng, Errands: newErrands(), h: h, static: cfg.Relays, relayPeers: cfg.RelayPeers, cancel: cancel, log: slog.Default().With("component", "coordinator")}
 	s.relayDirty = make(chan struct{}, 1)
 	s.relays = p2p.NewReserver(h, func() {
 		select { // record relay health promptly; the portal hands it to users
@@ -146,6 +147,15 @@ func (s *Service) syncRelays() error {
 			addrs = append(addrs, r.Addr)
 		}
 	}
+	if s.relayPeers != nil {
+		ids := make([]string, 0, len(addrs))
+		for _, a := range addrs {
+			if ai, perr := p2p.ParseRelay(a); perr == nil {
+				ids = append(ids, ai.ID.String())
+			}
+		}
+		s.relayPeers(ids)
+	}
 	return errors.Join(err, s.relays.SetRelays(addrs))
 }
 
@@ -190,7 +200,7 @@ func (s *Service) handleCtrl(st network.Stream) {
 	defer st.Close()
 	_ = st.SetDeadline(time.Now().Add(ctrlTimeout))
 	remote := st.Conn().RemotePeer().String()
-	env, err := protocol.RecvStream(st, protocol.MaxFrameSize)
+	env, err := protocol.RecvStreamTyped(st, ctrlFrameLimit)
 	if err != nil {
 		_ = st.Reset()
 		return
@@ -226,7 +236,10 @@ func (s *Service) handleCtrl(st network.Stream) {
 	case protocol.TypeWithdraw:
 		var req protocol.WithdrawRequest
 		if herr = decode(env, &req); herr == nil {
-			if herr = s.Engine.WithdrawOffer(remote, req.IssuedAt); herr == nil {
+			if herr = s.Engine.Authorize(remote); herr == nil {
+				herr = s.Engine.WithdrawOffer(remote, req.IssuedAt)
+			}
+			if herr == nil {
 				respType = protocol.TypeOK
 			}
 		}
@@ -265,7 +278,10 @@ func (s *Service) handleCtrl(st network.Stream) {
 		}
 	case protocol.TypeModels:
 		var ms []protocol.ModelSummary
-		if ms, herr = s.Engine.ModelsFor(remote); herr == nil {
+		if herr = s.Engine.Authorize(remote); herr == nil {
+			ms, herr = s.Engine.ModelsFor(remote)
+		}
+		if herr == nil {
 			resp, respType = protocol.ModelsResponse{Models: ms}, protocol.TypeModels
 		}
 	case protocol.TypeBalance:
@@ -285,6 +301,12 @@ func (s *Service) handleCtrl(st network.Stream) {
 		s.handleEvidence(st, remote, env)
 		return
 	case protocol.TypeErrandPoll:
+		// Only a device of a user carries anything; anyone else would just
+		// fill the board with names.
+		if err := s.Engine.Authorize(remote); err != nil {
+			s.sendError(st, env.Type, err)
+			return
+		}
 		e := s.Errands.poll(remote)
 		if err := protocol.Send(st, protocol.TypeErrand, e); err != nil && e.Job != nil {
 			// The job never left: free its ticket now and tell whoever waits.

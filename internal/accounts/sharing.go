@@ -72,8 +72,9 @@ CREATE TABLE IF NOT EXISTS share_settings (
 // Limits on sharing.
 const (
 	MaxShareGroupMembers = 2                  // members of a group made by an invite
-	MaxSharePartners     = 5                  // partners one user may have
+	MaxSharePartners     = 100                // partners one user may have
 	MaxShareInvites      = 10                 // live invites one user may hold
+	MaxShareInviteUses   = 100                // people one invite may admit
 	DefaultShareTTL      = 24 * time.Hour     // lifetime of an invite when none is asked for
 	MaxShareTTL          = 7 * 24 * time.Hour // longest lifetime of an invite
 	MaxShareDailyTokens  = 1 << 40            // the largest daily limit one may set
@@ -81,10 +82,13 @@ const (
 )
 
 // ShareInvite is an invite a user made. Code is the secret: whoever holds it
-// becomes the user's partner. It admits one person.
+// becomes the user's partner. It admits MaxUses people, each of whom becomes
+// a partner of the inviter alone (a group of two), not of one another.
 type ShareInvite struct {
 	ID        int64  `json:"id"`
 	Code      string `json:"code"`
+	MaxUses   int64  `json:"max_uses"`   // people it admits (1 to MaxShareInviteUses)
+	Used      int64  `json:"used"`       // people it admitted
 	LinkToken string `json:"link_token"` // the same secret for a link (invites.go)
 	Approval  bool   `json:"approval"`   // joining waits for the inviter to approve it
 	CreatedAt int64  `json:"created_at"`
@@ -143,7 +147,13 @@ func PartnerSlots(maxConcurrency uint32, sharePct int64) uint32 {
 	return max(1, uint32(int64(maxConcurrency)*sharePct/100))
 }
 
-const shareInviteLive = `revoked = 0 AND used_by = 0 AND expires_at > ?`
+// ShareInviteUsesSchema lets one invite admit several people (core migration 10).
+const ShareInviteUsesSchema = `ALTER TABLE share_invites ADD COLUMN max_uses BIGINT NOT NULL DEFAULT 1,
+	ADD COLUMN used BIGINT NOT NULL DEFAULT 0;
+UPDATE share_invites SET used = 1 WHERE used_by != 0 AND used = 0;
+`
+
+const shareInviteLive = `revoked = 0 AND used < max_uses AND expires_at > ?`
 
 // CreateShareInvite makes a one-person invite for userID. ttl 0 means
 // DefaultShareTTL.
@@ -154,14 +164,25 @@ func (s *Store) CreateShareInvite(userID int64, ttl time.Duration) (*ShareInvite
 // CreateShareInviteWith makes a one-person invite, and the link token that
 // stands for it. approval: whoever joins waits for userID to approve it.
 func (s *Store) CreateShareInviteWith(userID int64, ttl time.Duration, approval bool) (*ShareInvite, error) {
+	return s.CreateShareInviteFor(userID, ttl, approval, 1)
+}
+
+// CreateShareInviteFor makes an invite that admits maxUses people (0: one).
+func (s *Store) CreateShareInviteFor(userID int64, ttl time.Duration, approval bool, maxUses int64) (*ShareInvite, error) {
 	if ttl == 0 {
 		ttl = DefaultShareTTL
+	}
+	if maxUses == 0 {
+		maxUses = 1
+	}
+	if maxUses < 1 || maxUses > MaxShareInviteUses {
+		return nil, fmt.Errorf("%w: an invite admits between 1 and %d people", ErrInvalid, MaxShareInviteUses)
 	}
 	if ttl < minPairingTTL || ttl > MaxShareTTL {
 		return nil, fmt.Errorf("%w: an invite lasts between %s and %d days", ErrInvalid, minPairingTTL, int(MaxShareTTL/(24*time.Hour)))
 	}
 	now := s.now()
-	inv := &ShareInvite{Approval: approval, CreatedAt: now.UnixNano(), ExpiresAt: now.Add(ttl).UnixNano()}
+	inv := &ShareInvite{MaxUses: maxUses, Approval: approval, CreatedAt: now.UnixNano(), ExpiresAt: now.Add(ttl).UnixNano()}
 	err := s.tx(func(tx *sql.Tx) error {
 		var live int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM share_invites WHERE inviter_id = ? AND `+shareInviteLive, userID, now.UnixNano()).Scan(&live); err != nil {
@@ -183,8 +204,8 @@ func (s *Store) CreateShareInviteWith(userID int64, ttl time.Duration, approval 
 		if inv.LinkToken, err = uniqueValue(tx, "share_invites", "link_token", newLinkToken); err != nil {
 			return err
 		}
-		res, err := tx.Exec(`INSERT INTO share_invites (inviter_id, code, link_token, approval, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			userID, inv.Code, inv.LinkToken, boolInt(approval), inv.CreatedAt, inv.ExpiresAt)
+		res, err := tx.Exec(`INSERT INTO share_invites (inviter_id, code, link_token, max_uses, approval, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			userID, inv.Code, inv.LinkToken, maxUses, boolInt(approval), inv.CreatedAt, inv.ExpiresAt)
 		if err != nil {
 			return err
 		}
@@ -199,7 +220,7 @@ func (s *Store) CreateShareInviteWith(userID int64, ttl time.Duration, approval 
 
 // ShareInvites lists userID's open invites, newest first.
 func (s *Store) ShareInvites(userID int64) ([]ShareInvite, error) {
-	rows, err := s.DB.Query(`SELECT id, code, COALESCE(link_token, ''), approval, created_at, expires_at FROM share_invites WHERE inviter_id = ? AND `+shareInviteLive+` ORDER BY id DESC`,
+	rows, err := s.DB.Query(`SELECT id, code, COALESCE(link_token, ''), max_uses, used, approval, created_at, expires_at FROM share_invites WHERE inviter_id = ? AND `+shareInviteLive+` ORDER BY id DESC`,
 		userID, s.now().UnixNano())
 	if err != nil {
 		return nil, err
@@ -208,7 +229,7 @@ func (s *Store) ShareInvites(userID int64) ([]ShareInvite, error) {
 	out := []ShareInvite{}
 	for rows.Next() {
 		var inv ShareInvite
-		if err := rows.Scan(&inv.ID, &inv.Code, &inv.LinkToken, &inv.Approval, &inv.CreatedAt, &inv.ExpiresAt); err != nil {
+		if err := rows.Scan(&inv.ID, &inv.Code, &inv.LinkToken, &inv.MaxUses, &inv.Used, &inv.Approval, &inv.CreatedAt, &inv.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, inv)
@@ -219,7 +240,7 @@ func (s *Store) ShareInvites(userID int64) ([]ShareInvite, error) {
 // RevokeShareInvite withdraws an open invite.
 func (s *Store) RevokeShareInvite(userID, id int64) error {
 	return s.tx(func(tx *sql.Tx) error {
-		return mustAffect(tx.Exec(`UPDATE share_invites SET revoked = 1 WHERE id = ? AND inviter_id = ? AND revoked = 0 AND used_by = 0`, id, userID))
+		return mustAffect(tx.Exec(`UPDATE share_invites SET revoked = 1 WHERE id = ? AND inviter_id = ? AND revoked = 0 AND used < max_uses`, id, userID))
 	})
 }
 
@@ -331,8 +352,9 @@ func partnerLimits(tx *sql.Tx, userID, inviterID int64) error {
 	return nil
 }
 
-// joinTx makes userID a partner of inviterID through invite inviteID, which is
-// then used up, and returns their group.
+// joinTx makes userID a partner of inviterID through invite inviteID, which
+// then counts one more use, and returns their group. An invite that names no
+// group makes a new group of two for every person it admits.
 func joinTx(tx *sql.Tx, userID, inviteID, inviterID, groupID, now int64) (int64, error) {
 	if err := partnerLimits(tx, userID, inviterID); err != nil {
 		return 0, err
@@ -365,7 +387,7 @@ func joinTx(tx *sql.Tx, userID, inviteID, inviterID, groupID, now int64) (int64,
 	if _, err := tx.Exec(`INSERT INTO share_members (group_id, user_id, joined_at) VALUES (?, ?, ?)`, groupID, userID, now); err != nil {
 		return 0, err
 	}
-	_, err := tx.Exec(`UPDATE share_invites SET used_by = ?, used_at = ?, group_id = ? WHERE id = ?`, userID, now, groupID, inviteID)
+	_, err := tx.Exec(`UPDATE share_invites SET used = used + 1, used_by = ?, used_at = ? WHERE id = ?`, userID, now, inviteID)
 	return groupID, err
 }
 
@@ -440,7 +462,7 @@ func dissolveSmallGroup(tx *sql.Tx, g int64) error {
 	if _, err := tx.Exec(`DELETE FROM share_members WHERE group_id = ?`, g); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE share_invites SET revoked = 1 WHERE group_id = ? AND used_by = 0`, g); err != nil {
+	if _, err := tx.Exec(`UPDATE share_invites SET revoked = 1 WHERE group_id = ? AND used < max_uses`, g); err != nil {
 		return err
 	}
 	_, err := tx.Exec(`DELETE FROM share_groups WHERE id = ?`, g)

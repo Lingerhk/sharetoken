@@ -21,6 +21,7 @@ type Dashboard struct {
 	Day          DashWindow       `json:"day"`   // the last 24 hours
 	Daily        []DashDay        `json:"daily"` // the last 14 local days, oldest first
 	Versions     []DashVersion    `json:"client_versions"`
+	Crashes      DashCrashes      `json:"crashes"` // crash reports of the last 7 days (clientreports.go)
 	Relays       []DashRelay      `json:"relays"`
 	MetricsOn    bool             `json:"relay_metrics"` // the portal reads relay metrics
 	MetricsEvery int64            `json:"relay_metrics_interval_s,omitempty"`
@@ -235,6 +236,9 @@ func (s *Server) Dashboard() (*Dashboard, error) {
 	d.MetricsOn = s.relayMetrics != nil
 	if d.MetricsOn {
 		d.MetricsEvery = int64(s.relayMetrics.cfg.Interval / time.Second)
+	}
+	if d.Crashes, err = s.dashCrashes(); err != nil {
+		return nil, err
 	}
 	return d, nil
 }

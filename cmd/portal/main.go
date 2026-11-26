@@ -92,6 +92,10 @@ type File struct {
 	Downloads struct {
 		Dir string `yaml:"dir"`
 	} `yaml:"downloads"`
+	// Blog: the articles of /blog/, one folder per article (internal/portal/blog.go). Empty: no blog.
+	Blog struct {
+		Dir string `yaml:"dir"`
+	} `yaml:"blog"`
 	// RelayMetrics: read each relay's /metrics over SSH for the admin dashboard
 	// (on the relay, restrict the key to that one command in authorized_keys).
 	RelayMetrics struct {
@@ -344,7 +348,7 @@ func serve(f File, db *sql.DB, passKey ed25519.PrivateKey, passPub string, mfaKe
 	p, err := portal.New(portal.Config{DB: db, OpenRegistration: f.Accounts.OpenRegistration, SignupCreditMicros: f.Accounts.SignupCreditMicros,
 		LoginTTL: f.Sessions.LoginTTL.T(), PassKey: passKey, PassTTL: f.Sessions.PassTTL.T(), WebSessionTTL: f.Sessions.WebSessionTTL.T(),
 		SecureCookies: mode == "proxy", TrustedProxies: trustedProxies(f.HTTP.TrustedProxies), MFAKey: mfaKey, Log: lg,
-		Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir,
+		Mail: portal.MailConfig{From: f.Mail.From, Support: f.Mail.Support}, DownloadsDir: f.Downloads.Dir, BlogDir: f.Blog.Dir,
 		MFAIssuer: f.Accounts.MFAIssuer, RelayMetrics: relayMetricsConfig(f), PushoverFile: f.Alerts.PushoverFile,
 		AdminAllow: portal.AdminAllowConfig{From: f.Admin.AllowFrom, Refresh: f.Admin.ResolveInterval.T()}})
 	if err != nil {
@@ -437,7 +441,7 @@ func admin(p *portal.Server, cmd string, args []string) error {
 			fs.StringVar(&cur.MinClient, "min", cur.MinClient, "older clients are refused new business")
 			fs.StringVar(&cur.RecommendedClient, "recommended", cur.RecommendedClient, "older clients are told to upgrade")
 			fs.StringVar(&cur.LatestClient, "latest", cur.LatestClient, "the newest release")
-			fs.StringVar(&cur.DownloadURL, "download-url", cur.DownloadURL, "where to get it")
+			fs.StringVar(&cur.DownloadURL, "download-url", cur.DownloadURL, "where to get it: a path on this portal, like /#download")
 			fs.BoolVar(&cur.AllowDev, "allow-dev", cur.AllowDev, "serve builds that are not releases")
 			_ = fs.Parse(args[1:])
 			if err := accounts.SaveVersionPolicy(st.DB, cur); err != nil {
@@ -486,7 +490,7 @@ func admin(p *portal.Server, cmd string, args []string) error {
 			return err
 		}
 		p.AuditCLI("user.login_code", accounts.NormalizeEmail(args[0]), nil)
-		fmt.Printf("%s\nsigns in %s on the web pages or in a client, once, until %s (an earlier code of the address no longer works; two-factor authentication still applies)\n",
+		fmt.Printf("%s\nsigns in %s on the web pages or in a client, typed where the mailed code goes, once, until %s (an earlier code from this command no longer works; two-factor authentication still applies)\n",
 			code, accounts.NormalizeEmail(args[0]), exp.Local().Format("15:04:05"))
 		return nil
 	case "grant":

@@ -309,7 +309,7 @@ await ev(`localStorage.setItem('st_lang', 'zh-CN')`);
   await fill('#mfa-code', totp(secret));
   await ev(`document.querySelector('.login form').requestSubmit()`);
   await waitFor(`document.querySelector('.sidenav a.active') && document.querySelector('main h1')`);
-  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 16, 'all sixteen admin modules have icons');
+  ok(await ev(`document.querySelectorAll('.sidenav a svg').length`) === 17, 'all seventeen admin modules have icons');
   ok(await ev(`document.querySelector('.topbar a.gh-link')?.href`) === 'https://github.com/Lingerhk/sharetoken', 'the admin top bar links to GitHub');
   await pages('/admin/', ['overview', 'users', 'relays', 'versions', 'jobs', 'nodes', 'audits', 'disputes', 'pairings', 'ledger', 'mail', 'feedback'], 'admin');
   await size(1440, 900);

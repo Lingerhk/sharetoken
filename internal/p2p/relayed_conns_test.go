@@ -66,13 +66,16 @@ func TestRelayedConnsNotCountedAgainstRelayIP(t *testing.T) {
 			if out, err := open(rm, network.DirOutbound, circuit, 10); err != nil {
 				t.Fatalf("outbound relayed connection %d refused: %v", len(out)+1, err)
 			}
+			// Released first: on a machine with little memory the transient
+			// scope, which these unattached scopes stay in, has no room left
+			// for eight more.
+			for _, s := range in {
+				s.Done()
+			}
 			direct := ma.StringCast("/ip4/" + relayIP + "/udp/4001/quic-v1")
 			got, _ := open(rm, network.DirInbound, direct, 9)
 			if len(got) != 8 {
 				t.Fatalf("direct connections from the relay's address: %d, want libp2p's 8", len(got))
-			}
-			for _, s := range in {
-				s.Done()
 			}
 		})
 	}

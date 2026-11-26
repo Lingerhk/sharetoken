@@ -16,62 +16,62 @@ const (
 )
 
 // estimateMessages estimates an Anthropic Messages body.
-func estimateMessages(body []byte) (uint64, error) {
-	var req struct {
-		System   json.RawMessage `json:"system"`
-		Messages []struct {
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-		Tools json.RawMessage `json:"tools"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return 0, err
+func estimateMessages(body []byte) (uint64, int, error) {
+	req, err := fields(body)
+	if err != nil {
+		return 0, 0, err
 	}
 	var e estimator
-	e.raw(req.System)
-	for _, m := range req.Messages {
-		e.n += perMessageOverhead
-		e.raw(m.Content)
+	e.raw(req["system"])
+	if raw := req["messages"]; len(raw) > 0 && string(raw) != "null" {
+		var list []json.RawMessage
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return 0, 0, err
+		}
+		for _, one := range list {
+			m, err := fields(one)
+			if err != nil {
+				return 0, 0, err
+			}
+			e.n += perMessageOverhead
+			e.raw(m["content"])
+		}
 	}
-	if len(req.Tools) > 0 {
-		e.n += EstimateTokens(string(req.Tools))
+	if tools := req["tools"]; len(tools) > 0 && string(tools) != "null" {
+		e.n += EstimateTokens(string(tools))
 	}
-	return e.total(), nil
+	return e.total(), e.opaque, nil
 }
 
 // estimateResponses estimates an OpenAI Responses body.
-func estimateResponses(body []byte) (uint64, error) {
-	var req struct {
-		Instructions json.RawMessage `json:"instructions"`
-		Input        json.RawMessage `json:"input"`
-		Tools        json.RawMessage `json:"tools"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return 0, err
+func estimateResponses(body []byte) (uint64, int, error) {
+	req, err := fields(body)
+	if err != nil {
+		return 0, 0, err
 	}
 	var e estimator
-	e.raw(req.Instructions)
-	var items []json.RawMessage
-	if json.Unmarshal(req.Input, &items) == nil {
-		for _, it := range items {
+	e.raw(req["instructions"])
+	var list []json.RawMessage
+	if json.Unmarshal(req["input"], &list) == nil {
+		for _, it := range list {
 			e.n += perMessageOverhead
 			e.raw(it)
 		}
 	} else {
-		e.raw(req.Input)
+		e.raw(req["input"])
 	}
-	if len(req.Tools) > 0 {
-		e.n += EstimateTokens(string(req.Tools))
+	if tools := req["tools"]; len(tools) > 0 && string(tools) != "null" {
+		e.n += EstimateTokens(string(tools))
 	}
-	return e.total(), nil
+	return e.total(), e.opaque, nil
 }
 
 // attachmentTokens is the estimate for the images and files among a chat
-// message's content parts.
-func attachmentTokens(raw json.RawMessage) uint64 {
+// message's content parts, and the bytes they take in the body.
+func attachmentTokens(raw json.RawMessage) (uint64, int) {
 	var parts []any
 	if len(raw) == 0 || json.Unmarshal(raw, &parts) != nil {
-		return 0
+		return 0, 0
 	}
 	var e estimator
 	for _, p := range parts {
@@ -79,15 +79,16 @@ func attachmentTokens(raw json.RawMessage) uint64 {
 			e.attachment(m)
 		}
 	}
-	return e.n
+	return e.n, e.opaque
 }
 
 // estimator walks content of any of the APIs: strings are text, objects are
 // parts, items or blocks whose text fields count and whose attachments are
 // estimated by size.
 type estimator struct {
-	n    uint64
-	text strings.Builder
+	n      uint64
+	text   strings.Builder
+	opaque int // bytes of the attachments, which sizeFloor leaves out
 }
 
 func (e *estimator) total() uint64 { return e.n + EstimateTokens(e.text.String()) }
@@ -160,9 +161,11 @@ func (e *estimator) attachment(m map[string]any) bool {
 	switch typ {
 	case "image", "image_url", "input_image":
 		e.n += imageTokens
+		e.opaque += stringBytes(m, 0)
 		return true
 	case "document", "file", "input_file", "input_audio":
 		e.n += fileTokens + uint64(base64Size(m))/3
+		e.opaque += stringBytes(m, 0)
 		if src, ok := m["source"].(map[string]any); ok && src["type"] == "text" {
 			if s, ok := src["data"].(string); ok {
 				e.text.WriteString(s)
@@ -171,6 +174,27 @@ func (e *estimator) attachment(m map[string]any) bool {
 		return true
 	}
 	return false
+}
+
+// stringBytes is the size of the strings in an attachment part.
+func stringBytes(v any, depth int) int {
+	if depth > 8 {
+		return 0
+	}
+	n := 0
+	switch v := v.(type) {
+	case string:
+		n = len(v)
+	case []any:
+		for _, x := range v {
+			n += stringBytes(x, depth+1)
+		}
+	case map[string]any:
+		for _, x := range v {
+			n += stringBytes(x, depth+1)
+		}
+	}
+	return n
 }
 
 // base64Size finds the longest string in a part (its base64 data) and

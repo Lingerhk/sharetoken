@@ -163,6 +163,44 @@ const MaxEmailLen = 191
 // NormalizeEmail is the form an email address is stored and compared in.
 func NormalizeEmail(e string) string { return strings.ToLower(strings.TrimSpace(e)) }
 
+// MailboxKey is the mailbox an account name delivers to, as far as that can
+// be told from the address: without a "+tag", and for Gmail without the dots
+// it ignores. Accounts are still named, and signed in to, by the address as
+// typed; the key only answers "has this mailbox been here before" (the
+// sign-up credit, the blocklist). A domain of one's own with a catch-all is
+// out of its reach. mailboxSQL is the same in SQL.
+func MailboxKey(name string) string {
+	name = NormalizeEmail(name)
+	local, domain, ok := strings.Cut(name, "@")
+	if !ok {
+		return name
+	}
+	local, _, _ = strings.Cut(local, "+")
+	if domain == "googlemail.com" {
+		domain = "gmail.com"
+	}
+	if domain == "gmail.com" {
+		local = strings.ReplaceAll(local, ".", "")
+	}
+	return local + "@" + domain
+}
+
+// mailboxSQL is MailboxKey(username) for a users row.
+const mailboxSQL = `CASE WHEN LOCATE('@', username) = 0 THEN username
+	WHEN SUBSTRING_INDEX(username, '@', -1) IN ('gmail.com', 'googlemail.com')
+		THEN CONCAT(REPLACE(SUBSTRING_INDEX(SUBSTRING_INDEX(username, '@', 1), '+', 1), '.', ''), '@gmail.com')
+	ELSE CONCAT(SUBSTRING_INDEX(SUBSTRING_INDEX(username, '@', 1), '+', 1), '@', SUBSTRING_INDEX(username, '@', -1)) END`
+
+// fillMailboxes gives rows without a key theirs: those from before the
+// column, and those an older portal on the same database wrote since.
+const fillMailboxes = `UPDATE users SET mailbox = ` + mailboxSQL + ` WHERE mailbox = ''`
+
+// MailboxSchema adds the mailbox key of each account (core migration 12).
+const MailboxSchema = `ALTER TABLE users ADD COLUMN mailbox VARCHAR(191) NOT NULL DEFAULT '';
+ALTER TABLE users ADD KEY users_by_mailbox (mailbox);
+` + fillMailboxes + `;
+`
+
 // CheckEmail validates a normalized email address. It covers the addresses
 // people have, not all of RFC 5321: internationalized domains must be in
 // punycode. Whether the mailbox exists is a question for email verification.

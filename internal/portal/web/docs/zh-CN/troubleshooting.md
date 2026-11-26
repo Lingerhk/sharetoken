@@ -7,6 +7,8 @@
 {{exe}} status
 ```
 
+客户端的日志里通常有更具体的原因：`{{exe}} logs -n 50`，见[日志](/docs/config#logs)。
+
 ## 安装 {#install}
 
 ### 找不到命令 {#not-found}
@@ -72,17 +74,23 @@ chmod +x ~/.local/bin/{{exe}}
 
 ### 收不到验证码 {#no-code}
 
-先看垃圾邮件文件夹。验证码可能要等几分钟，10 分钟内有效。不要连续重发：一个邮箱每小时最多收 5 个验证码，一个验证码输错 5 次就要重新获取。一直收不到时，用这个邮箱写信给本门户的客服（{{support}}）：核实是你本人之后，管理员可以直接给你一个一次性的登录验证码（10 分钟内有效），在登录页照常输入即可。
+先看垃圾邮件文件夹。验证码可能要等几分钟，10 分钟内有效。不要连续重发：两次之间至少隔一分钟，一个邮箱每小时最多收 5 个验证码，一个验证码输错 5 次就要重新获取。一直收不到时，用这个邮箱写信给本门户的客服（{{support}}）：核实是你本人之后，管理员可以直接给你一个一次性的登录验证码（10 分钟内有效），在登录页照常输入即可。
+
+### 验证码被拒绝 {#code-refused}
+
+邮件里的验证码只能在申请它的地方使用。请在发出申请的同一个浏览器标签页、应用窗口或终端里输入：在手机上申请的验证码不能用来登录电脑，在另一个标签页里申请的也不行。新的验证码会替换上一个，所以要用最新那封邮件里的。用 `{{exe}} login -send` 时，`-code` 要在同一台机器上运行。如果刚收到的验证码在申请它的客户端里输入仍被拒绝，说明客户端版本太旧，这个门户已不接受：先[更新](/docs/update)。
 
 ### 提示 `not logged in` {#not-logged-in}
 
 这台机器还没登录，或者数据目录不对。运行 `{{exe}} version` 确认 `home` 一行，然后运行 `{{exe}} login`。
 
+登录过期（默认 60 天）或在门户被撤销后，运行中的客户端会停止使用它：`up` 退出并提示 `you are logged out or this login was revoked`，后台服务转为未登录。重新运行 `{{exe}} login`，再重启客户端。
+
 ### 提示 `throttled` 或 HTTP 429 {#throttled}
 
 连续失败次数太多，已被限流。等几分钟再试。
 
-### 提示 `logged in, but binding this device failed` {#bind-failed}
+### 提示 `signed in, but binding this device failed` {#bind-failed}
 
 有两种常见原因：
 
@@ -118,7 +126,7 @@ w32tm /resync
 
 ### 提示 `the client is not running` {#not-running}
 
-`status`、`models`、`relays` 需要客户端在运行。在另一个窗口运行 `{{exe}} up`，或者启动[后台服务](/docs/running#background)。
+`status`、`models`、`relays` 等命令需要客户端在运行。在另一个窗口运行 `{{exe}} up`，或者启动[后台服务](/docs/running#background)。
 
 ### 提示 `cannot reach the portal` {#no-portal}
 
@@ -140,7 +148,7 @@ curl.exe -sS {{origin}}/healthz
 
 ### 提示端口被占用 {#port-in-use}
 
-已经有别的程序在用端口 `{{port}}`，通常是另一个正在运行的客户端。
+消息是 `local API on 127.0.0.1:{{port}}: ... address already in use`。已经有别的程序在用端口 `{{port}}`，通常是另一个正在运行的客户端：另一个 `up`、后台服务，或者桌面应用。
 
 ::: macos
 ```bash
@@ -172,7 +180,9 @@ Get-NetTCPConnection -LocalPort {{port}} -State Listen | Select-Object OwningPro
 
 此刻没有节点提供这个模型。运行 `{{exe}} models` 确认模型 ID，注意大小写。
 
-如果你的账户已经和卖家配对，就只有这些卖家算数，这时错误消息以 `of the sellers you are paired with` 结尾。运行 `{{exe}} pair` 查看他们。等其中一个上线，或者解除配对，恢复为向整个网络购买。见[只向认识的卖家购买](/docs/use-models#pairing)。
+在配置里设置了 `max_price_in` 或 `max_price_out` 时，也可能是价格上限把现有的节点都排除了；消息里有 `natively` 时，是开启了 `require_native`，见[配置](/docs/config#buy)。只有你自己的节点提供这个模型时，消息以 `no other user's node` 开头：不能向自己购买。
+
+如果你的账户已经和卖家配对，就只有这些卖家算数，这时错误消息里有 `of the sellers you are paired with`。运行 `{{exe}} pair` 查看他们。等其中一个上线，或者解除配对，恢复为向整个网络购买。见[只向认识的卖家购买](/docs/use-models#pairing)。
 
 开启了私有模式的卖家对所有没有和它配对的买家隐藏，所以之前看到过的模型可能从 `models` 里消失。
 
@@ -182,7 +192,17 @@ Get-NetTCPConnection -LocalPort {{port}} -State Listen | Select-Object OwningPro
 
 ### `insufficient_funds` 或 `budget` {#funds}
 
-余额不足以冻结这次请求。给请求加上较小的 `max_tokens`，或者用 `{{exe}} balance` 查看余额。见[如何计费](/docs/use-models#billing)。
+`insufficient_funds`（HTTP 402）：余额不足以冻结这次请求。没写 `max_tokens` 的请求会冻结整个预算；给请求加上较小的 `max_tokens`，或者用 `{{exe}} balance` 查看余额。见[如何计费](/docs/use-models#billing)。
+
+`budget`（HTTP 400）：每个请求的预算连 prompt 都不够付，消息是 `reservation does not cover the prompt; raise the budget`。在配置里调大 `budget_micros`，或者在桌面应用的“设置 > 调用”里调大预算，见[配置](/docs/config#buy)。
+
+### 提示 `invalid_api_key`（HTTP 401） {#api-key}
+
+本地端点默认要求 API key，请求没带或带错了。用 `{{exe}} apikey` 查看 key，在工具里把它填为 OpenAI 或 Anthropic 的 API key（`Authorization: Bearer <key>` 或 `x-api-key`）。`{{exe}} apikey rotate` 之后，旧 key 立即失效。
+
+### 提示 `request body too large`（HTTP 413） {#too-large}
+
+一个请求最大 32 MiB。通常是对话里附带了大文件或大量图片：缩小或删掉它们，或者开一个新对话。
 
 ### 响应的 `content` 是空的 {#empty-content}
 
@@ -190,7 +210,7 @@ Get-NetTCPConnection -LocalPort {{port}} -State Listen | Select-Object OwningPro
 
 ### 请求很久后失败 {#stalled}
 
-节点什么都没再发（模型思考期间节点会发进度帧，连这个也没有），或者它的模型连续 5 分钟没有输出，于是被判定为卡死。如果只是节点或网络比较慢，调大配置里的 `first_byte_seconds` 和 `idle_seconds`，见[配置](/docs/config#buy)。
+节点什么都没再发（模型思考期间节点会发进度帧，连这个也没有），或者它的模型连续 5 分钟没有输出，于是被判定为卡死。还没收到任何输出时，客户端会换一个节点重试；连接中途断开时，会先尝试向同一节点续传。如果只是节点或网络比较慢，调大配置里的 `first_byte_seconds` 和 `idle_seconds`，见[配置](/docs/config#buy)。
 
 ### 开启直连隧道后大请求变慢 {#tunnel-slow}
 
@@ -241,3 +261,4 @@ curl.exe -s http://127.0.0.1:11434/v1/models
 - `{{exe}} version` 的输出
 - `{{exe}} status` 的输出
 - 报错的原文，以及作业 ID（响应头 `X-Sharetoken-Job`）
+- 出错前后的日志：`{{exe}} logs -n 100`。日志里没有 prompt 和回答，但可能有你的邮箱和 IP 地址，发送前请看一遍

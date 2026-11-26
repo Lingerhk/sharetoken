@@ -3,10 +3,10 @@
 The format of every command:
 
 ```bash
-{{exe}} [-home DIR] <command> [flags]
+{{exe}} [-home DIR] [-log-dir DIR] <command> [flags]
 ```
 
-`-home` goes **before** the command. It selects another state directory. Run with no arguments for short help.
+`-home` goes **before** the command. It selects another state directory. `-log-dir` also goes before the command: it chooses where `up` and `daemon` write their log ([Logs and crash reports](#logs)). Run with no arguments for short help.
 
 ## Account {#account}
 
@@ -26,10 +26,14 @@ Sign in with a code mailed to you, and bind this device. An address without an a
 | `-invite CODE` | Invite code, when the portal needs one for a new account |
 | `-totp CODE` | The authenticator code, when two-factor authentication is on. Asked for if omitted |
 | `-device NAME` | Device name. Defaults to the host name |
+| `-portal-pin FP` | The certificate fingerprint (`sha256:…`) the operator published, for a portal with a self-signed certificate. If omitted, the fingerprint is shown and you are asked to confirm it |
+| `-allow-http` | Allow plain HTTP to a portal on another machine. For test networks only |
+
+`-email` defaults to the address you last signed in with. `-send` and `-code` cannot be used together. A mailed code works only where it was asked for: run `-code` on the machine, and with the state directory, that ran `-send`.
 
 ### logout {#logout}
 
-Revoke this machine's token and remove it from the configuration file.
+Revoke this machine's token and remove it from the configuration file. A running client stops too.
 
 ### balance {#balance}
 
@@ -50,7 +54,7 @@ Show the balance, the amount on hold, buy and sell totals, and the number of dev
 
 ### up {#up}
 
-Run the client. `run` is an alias.
+Run the client. `run` is an alias. You must be signed in.
 
 | Option | Meaning |
 |---|---|
@@ -62,15 +66,15 @@ These options apply to this run only. They are not written to the configuration 
 
 ### daemon {#daemon}
 
-Run the service behind the desktop app, which serves the [web interface](/docs/desktop#browser-ui). Its options are the same as `up`. Unlike `up`, it can run while signed out, and registration and sign-in happen on its page.
+Run the service behind the desktop app, which serves the [web interface](/docs/desktop#browser-ui). Its options are the same as `up`, plus `-allow-http` (see [login](#login)). Unlike `up`, it can run while signed out, and registration and sign-in happen on its page.
 
 ### status {#status}
 
-Show the connection, relay and sharing status. The client must be running.
+Show the connection, relay, sharing and direct tunnel status, and a newer release if there is one. The client must be running.
 
 ### models {#models}
 
-List the models on the network, the node count, the TEE node count and the lowest price. The client must be running.
+List the models on the network, the node count, the TEE node count and the lowest price. The client must be running. `-codex <file>` writes them to a Codex model catalog file instead (see [Codex](/docs/use-models#codex)).
 
 ### relays {#relays}
 
@@ -85,17 +89,17 @@ Show the latency of each relay. `-measure` measures again right away. The client
 
 ### tailnet {#tailnet}
 
-Direct tunnels (see [Direct tunnels](/docs/running#tailnet)). A running client applies changes at once.
+Direct tunnels (see [Direct tunnels](/docs/running#tailnet)). The settings can be changed while the client is stopped; a running client applies changes at once.
 
 | Command | Meaning |
 |---|---|
 | `tailnet` | Whether it is on, the DERP region this machine is reachable through as a seller, and each tunnel's path and transport |
-| `tailnet on` | Turn it on. `-wait <ms>`: how long a request to a new node waits for the tunnel (default 0, at most 10000); `-derp-map <URL or file>`: a DERP map of your own; `-transport quic\|tcp`: what this machine's connections to sellers run over inside the tunnel (default `quic`) |
+| `tailnet on` | Turn it on. `-wait <ms>`: how long a request to a new node waits for the tunnel before it uses the relay (default 0, at most 10000); `-derp-map <URL or file>`: a DERP map of your own (default: tailcat's public relays); `-transport quic\|tcp`: what this machine's connections to sellers run over inside the tunnel (default `quic`) |
 | `tailnet off` | Turn it off: back to relays and hole punching |
 
 ### apikey {#apikey}
 
-The local endpoint's API key (see [Call models](/docs/use-models#endpoint)). A running client follows a change at once.
+The local endpoint's API key (see [Call models](/docs/use-models#endpoint)). It works while the client is stopped too; a running client follows a change at once.
 
 | Command | Meaning |
 |---|---|
@@ -110,12 +114,37 @@ The local endpoint's API key (see [Call models](/docs/use-models#endpoint)). A r
 |---|---|
 | `share` | Show the sharing settings |
 | `share detect [-upstream URL]` | List the models of the local model server |
-| `share add <model> [-id ID] [-in P] [-out P]` | Share a model and turn sharing on |
-| `share rm <id>` | Remove a model |
+| `share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-cache-read P] [-cache-write P] [-max-output N]` | Share a model and turn sharing on. Prices are micro-credits per million tokens, by default `-in 100000` and `-out 200000`; `-provider`: the model comes from a [hosted API](#providers) rather than the local model server; `-id`: the model ID on the network, by default `<model>`; `-max-output`: the model's own output limit per request |
+| `share rm <id>` | Remove a model (of the local model server or a hosted API) |
 | `share on`, `share off` | Turn sharing on or pause it |
 | `share upstream <url>` | Set the local model server. Default `http://127.0.0.1:11434/v1` |
 
-`<model>` must come right after `add`, and options go after it. See [Share a model](/docs/share).
+`<model>` must come right after `add`, and options go after it. For cache prices see [Cache prices](/docs/share#cache-prices). The settings can be changed while the client is stopped; a running client applies them at once. See [Share a model](/docs/share).
+
+## Hosted APIs {#providers}
+
+Share the models of a hosted API that you add with an API key or an account login. The credentials are kept in `providers.json` in the state directory, apart from the configuration file.
+
+| Command | What it does |
+|---|---|
+| `provider` | The kinds that can be added, and the providers already added |
+| `provider add <kind> [-name N] [-url URL] [-header K=V] [-no-check]` | Add one with an API key: `anthropic`, `openai`, `gemini`, `grok`, `deepseek`, or `custom` for any OpenAI-compatible API (its address with `-url`). The key is asked for, or read from standard input or `SHARETOKEN_PROVIDER_KEY`; never put it on the command line. `-name`: its name, by default the kind; `-header`: an extra request header, repeatable; `-no-check`: do not check the key with the provider first |
+| `provider login <kind> [-name N] [-project ID]` | Add one with an account login: `anthropic`, `openai`, `gemini`, `antigravity`, `grok`. `-project`: the Google Cloud project to use when a Google account has no Code Assist project of its own |
+| `provider login anthropic [-mode full\|inference] [-session-key]` | Anthropic: `-mode` is the authorization scope; `-session-key` signs in with a sessionKey cookie instead (typed without echo) |
+| `provider models <name>` | The models its credentials may use |
+| `provider test <name> [-model M] [-prompt TEXT]` | Send one small request through it and show the answer and token counts. By default it asks the first model it sells |
+| `provider on <name>`, `provider off <name>` | Sell its models, or pause |
+| `provider configure <name> [-proxy-mode environment\|direct\|custom] [-proxy URL] [-profile standard\|claude-code] [-sampling strict\|default] [-tls-profile native\|chrome] [-token-tls-profile native\|chrome]` | Proxy, Anthropic request profile and TLS settings. `add` and `login` take these options too. For a proxy address with a password, use `-proxy-mode custom` and `SHARETOKEN_PROVIDER_PROXY` |
+| `provider warmup <name> …` | Warm up a subscription login's usage windows, see [Warm-up](#warmup) |
+| `provider rm <name>` | Remove it and its credentials |
+
+```bash
+{{exe}} provider add deepseek
+{{exe}} provider models deepseek
+{{exe}} share add deepseek-flash -provider deepseek
+```
+
+See [Share a hosted API](/docs/share#providers).
 
 ## Pairing {#pairing}
 
@@ -148,7 +177,7 @@ Two users who pair up as partners use each other's nodes first, for free; when n
 | Command | What it does |
 |---|---|
 | `partner` | Show your partners, the tokens you gave and used in the last 24 hours, open invites and your settings |
-| `partner invite [-ttl 24h] [-approve]` | Make an invite for one person, and print its invite link. It lasts 24 hours unless you pass `-ttl` (168 hours at most); `-approve`: they wait for your approval |
+| `partner invite [-ttl 24h] [-uses N] [-approve]` | Make an invite for one person (or N, up to 100), and print its invite link. It lasts 24 hours unless you pass `-ttl` (168 hours at most); `-approve`: they wait for your approval |
 | `partner join <code\|link>` | Become the partner of whoever made the invite or link |
 | `partner approve <request id>`, `partner reject <request id>` | Approve or reject someone waiting for your approval |
 | `partner withdraw <request id>` | Withdraw your own request |
@@ -178,6 +207,29 @@ Every pairing code and share invite also has an invite link, `https://sharetoken
 
 A link can only be accepted by a client signed in to the portal it is from. See [Invite links](/docs/share#invite-links).
 
+## Claude Code and Codex {#connect}
+
+`connect` points Claude Code or Codex at the local endpoint. It changes the tool's own configuration file, after copying it to the `backups` directory in the state directory. If the tool is signed in to its own account (claude.ai or ChatGPT), it keeps that login by default: its model menu lists the official models, then the network's (starting with `st-`), and each request goes where its model is.
+
+| Command | What it does |
+|---|---|
+| `connect` | Whether each tool is connected, where its configuration file is, and whether it is signed in to its own account |
+| `connect claude\|codex [-subscription auto\|on\|off] [-openai-provider] [-force] [-off]` | Connect a tool. `-subscription`: keep its own login, by default `auto` (when it is signed in); `-openai-provider`: Codex uses its built-in OpenAI provider (earlier conversations stay listed); `-force`: replace an address that points at another gateway; `-off`: put the configuration file back as it was |
+| `official` | The plan usage the client has seen, and what happens when a plan runs out |
+| `official fallback on\|off` | Claude Code: when the plan is used up, go on with a model from the network (on by default) |
+| `official fallback-model <model\|auto>` | The model that takes over; `auto` picks the one closest to the model asked for |
+| `official guard <percent>` | Codex: hold the official models once a usage window reaches this percentage (default 95) |
+| `codex-unlock on\|off` | Codex Desktop (macOS, Windows): a used-up ChatGPT plan does not lock the input, so the network's models go on. You trust a certificate valid for localhost only. Without an argument it shows the state |
+| `autostart on\|off` | Run the client when you log in to the computer. Without an argument it shows the state |
+
+```bash
+{{exe}} connect claude
+{{exe}} connect codex -off
+{{exe}} official fallback off
+```
+
+These commands work while the client is stopped. A connected tool reaches even its official models through the client, so the client has to keep running. Restart the tool after a change. See [Use a Claude or ChatGPT subscription too](/docs/use-models#subscription).
+
 ## Coding agents {#agents}
 
 `skill install` teaches Claude Code and Codex on this computer to use the client: check its status and balance, call models through the local endpoint, share a model. It writes `skills/sharetoken/SKILL.md` under `~/.claude` and `~/.codex` (`%USERPROFILE%` on Windows; `CLAUDE_CONFIG_DIR` and `CODEX_HOME` move them). The skill asks the agent to check with you before it changes settings or spends many credits.
@@ -185,8 +237,8 @@ A link can only be accepted by a client signed in to the portal it is from. See 
 | Command | What it does |
 |---|---|
 | `skill` | Which agents were found, and whether they have the skill |
-| `skill install [-agent claude\|codex\|all]` | Install it, by default for every agent found. Run it again after updating the client |
-| `skill uninstall [-agent …]` | Remove it again |
+| `skill install [-agent claude\|codex\|all] [-force]` | Install it, by default for every agent found. Run it again after updating the client |
+| `skill uninstall [-agent …] [-force]` | Remove it again, by default from both agents |
 | `skill show` | Print the skill |
 
 ```bash
@@ -203,8 +255,8 @@ A Claude or ChatGPT (Codex) subscription's 5-hour window starts at the first req
 | Command | What it does |
 |---|---|
 | `warmup` | Every account there is to warm up, its times, the last warm-up and its usage windows |
-| `warmup set claude\|codex [-times 06:00,11:05] [-on-reset off\|week\|all] [-off]` | The Claude Code or Codex of this computer |
-| `provider warmup <name> [-times 06:00] [-on-reset off\|week\|all] [-off]` | A Claude or ChatGPT login you sell |
+| `warmup set claude\|codex [-times 06:00,11:05] [-on-reset off\|week\|all] [-model M] [-binary PATH] [-off]` | The Claude Code or Codex of this computer. `-model`: the model to ask (`default` for the cheapest); `-binary`: the full path of the program, whose file must be named `claude` or `codex` (`auto` to find it); `-off`: turn it off |
+| `provider warmup <name> [-times 06:00] [-on-reset off\|week\|all] [-model M] [-off]` | A Claude or ChatGPT login you sell |
 | `warmup run [claude\|codex\|provider:<name>]` | Warm up now (default: every one that is set) |
 | `warmup pause`, `warmup resume` | Stop every automatic warm-up, or go on |
 
@@ -214,18 +266,44 @@ A Claude or ChatGPT (Codex) subscription's 5-hour window starts at the first req
 {{exe}} warmup run claude
 ```
 
-At each time, a request is sent only if the 5-hour window isn't running; a time missed by more than an hour (the computer asleep) is skipped. `-on-reset week` starts the weekly window as soon as it resets, `all` the 5-hour one too. Nothing is sent while a window is used up or extra usage is in use. Warm-ups happen while the client runs (the desktop app, or `up`); times are this computer's local time. The desktop app has the same settings under Settings → Warm-up.
+At each time, a request is sent only if the 5-hour window isn't running; a time missed by more than an hour (the computer asleep) is skipped. `-on-reset week` starts the weekly window as soon as it resets, `all` the 5-hour one too. Nothing is sent while a window is used up or extra usage is in use. `-times none` clears the times. The settings can be changed while the client is stopped, but warm-ups happen only while it runs (the desktop app, or `up`), and `warmup run` needs it running too; times are this computer's local time. The desktop app has the same settings under Settings → Warm-up.
+
+## Logs and crash reports {#logs}
+
+### logs {#logs-cmd}
+
+```bash
+{{exe}} logs
+{{exe}} logs -n 50 -f
+{{exe}} logs path
+```
+
+Prints the last lines of the client's log (default 200; `-n` sets how many), and with `-f` keeps printing new lines. `-gui` prints the desktop app's own log instead. `logs path` prints the log directory. The client writes the log itself, whichever way it was started (in a terminal, by the desktop app, or at login), to `client.log` in that directory; a file over 10 MB is renamed `client.log.1` and so on, and five old files are kept (both are defaults). See [Logs and crash reports](/docs/config#logs) for the directory and its settings.
+
+### diagnostics {#diagnostics}
+
+```bash
+{{exe}} diagnostics
+{{exe}} diagnostics off
+{{exe}} diagnostics show
+```
+
+Shows whether crash reports are sent, the region the client believes you are in, how many reports wait to be sent, and the log directory. `on` and `off` change it; `off` also deletes the reports that were waiting. `show` prints exactly what would be sent. When the client crashes or recovers from a panic, it sends the portal a redacted report with your login: the error, where in the code it happened, and the last lines of the log before it. It is on unless you turn it off, except in the European Economic Area, where it starts off. See [Crash reports](/docs/config#crash-reports) for what a report contains.
 
 ## Other {#other}
 
 | Command | What it does |
 |---|---|
 | `config` | Show the configuration file path and contents. Only the start of the token is shown |
-| `version` | Show the version, network, portal, state directory and local API address. Writes no files |
-| `upgrade [-y]` | Install the newest release: fetch its package, check the release signature, install it the way this copy was installed. See [One-click update](/docs/update#one-click) |
+| `version [--check]` | Show the version, network, portal, state directory and local API address. Writes no files. `--check` also asks the portal whether there is a newer release |
+| `upgrade [-y]` | Install the newest release: fetch its package, check the release signature, install it the way this copy was installed. It asks first; `-y` does not ask. See [One-click update](/docs/update#one-click) |
 
 ## Environment variables {#env}
 
 | Variable | What it does |
 |---|---|
 | `SHARETOKEN_HOME` | State directory. Same as `-home` |
+| `SHARETOKEN_LOG_DIR` | Log directory. Takes precedence over `-log-dir` and the configuration's `log.dir` |
+| `SHARETOKEN_PROVIDER_KEY` | The API key for `provider add`, instead of typing it |
+| `SHARETOKEN_PROVIDER_PROXY` | A provider's proxy address, used with `-proxy-mode custom` when `-proxy` is not given. Put an address with a password here, not on the command line |
+| `SHARETOKEN_REGION` | Your country as two letters (such as `DE`), when the system's region settings do not say where you are. It decides whether crash reports start on or off |

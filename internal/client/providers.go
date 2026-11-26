@@ -62,6 +62,9 @@ func (a *Agent) providerRoutes(mux *http.ServeMux) {
 		if len(strings.TrimSpace(string(data))) == 0 {
 			return nil
 		}
+		if !jsonContent(r) {
+			return errors.New("send application/json")
+		}
 		if err := json.Unmarshal(data, v); err != nil {
 			return errors.New("malformed JSON: " + err.Error())
 		}
@@ -159,17 +162,32 @@ func (a *Agent) providerRoutes(mux *http.ServeMux) {
 		}
 		return provider.StartProviderLogin(a.home, req.Name, req.Type, req.LoginOptions)
 	})
-	handle("POST /api/v1/providers/oauth/session/start",func(w http.ResponseWriter,r *http.Request)(any,error){
-		var req struct { Name string `json:"name"`; SessionKey string `json:"session_key"`; provider.LoginOptions }
-		if err:=read(r,&req);err!=nil{return nil,err}
-		return provider.StartSessionLogin(r.Context(),a.home,req.Name,req.SessionKey,req.LoginOptions)
+	handle("POST /api/v1/providers/oauth/session/start", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var req struct {
+			Name       string `json:"name"`
+			SessionKey string `json:"session_key"`
+			provider.LoginOptions
+		}
+		if err := read(r, &req); err != nil {
+			return nil, err
+		}
+		return provider.StartSessionLogin(r.Context(), a.home, req.Name, req.SessionKey, req.LoginOptions)
 	})
-	handle("POST /api/v1/providers/oauth/session/finish",func(w http.ResponseWriter,r *http.Request)(any,error){
-		var req struct { ID string `json:"id"`; Name string `json:"name"`; SessionKey string `json:"session_key"`; Organization string `json:"organization"` }
-		if err:=read(r,&req);err!=nil{return nil,err}
-		out,err:=provider.FinishSessionLogin(r.Context(),a.home,req.ID,req.SessionKey,req.Organization,req.Name)
-		if err==nil{changed()}
-		return out,err
+	handle("POST /api/v1/providers/oauth/session/finish", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var req struct {
+			ID           string `json:"id"`
+			Name         string `json:"name"`
+			SessionKey   string `json:"session_key"`
+			Organization string `json:"organization"`
+		}
+		if err := read(r, &req); err != nil {
+			return nil, err
+		}
+		out, err := provider.FinishSessionLogin(r.Context(), a.home, req.ID, req.SessionKey, req.Organization, req.Name)
+		if err == nil {
+			changed()
+		}
+		return out, err
 	})
 	handle("POST /api/v1/providers/oauth/finish", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var req struct {

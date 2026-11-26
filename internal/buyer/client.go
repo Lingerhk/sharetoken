@@ -280,9 +280,14 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 		}
 		res, delivered, err := c.runJob(ctx, &tr.Ticket, e.plain, req, onChunk, &timing, nil)
 		timing.Preferred = prefer != "" && tr.Ticket.Node == prefer
-		if delivered || err == nil {
+		switch {
+		case errors.Is(err, ErrReceiptRejected):
+			// Its output may have reached the caller, but a node whose receipt
+			// did not hold is not the one to come back to next turn.
+			c.sticky.drop(session)
+		case delivered || err == nil:
 			c.sticky.put(session, tr.Ticket.Node)
-		} else if tr.Ticket.Node == prefer {
+		case tr.Ticket.Node == prefer:
 			c.sticky.drop(session)
 		}
 		if res != nil {
@@ -298,6 +303,11 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, onChunk func(payload
 			// The node's model server refused the request. Ask one more node in
 			// case this one lies or is misconfigured; two refusals mean the
 			// request itself is bad, so stop instead of trying every node.
+			// A node that refused has nothing to bill: the job is pre-disputed,
+			// so a receipt it settles all the same goes to arbitration (an
+			// honest node releases the job, and the dispute lapses with it).
+			jobID, reason := tr.Ticket.JobID, "the node refused the request: "+err.Error()
+			c.background(func() { c.fileDispute(jobID, reason) })
 			if rejected++; rejected >= 2 {
 				return nil, err
 			}
@@ -489,6 +499,8 @@ func (c *Client) verifyTicket(tr *protocol.TicketResponse, req ChatRequest) (str
 	case req.MaxPriceIn > 0 && t.PriceInMicros > req.MaxPriceIn,
 		req.MaxPriceOut > 0 && t.PriceOutMicros > req.MaxPriceOut:
 		return "", errors.New("ticket price exceeds the limit")
+	case !t.Prices().Fair():
+		return "", errors.New("the ticket's cache prices are out of proportion to its input price")
 	}
 	if err := o.VerifySignature(); err != nil {
 		return "", fmt.Errorf("node offer: %w", err)
@@ -549,12 +561,7 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 	if err != nil {
 		return nil, false, err
 	}
-	addrs := make([]ma.Multiaddr, 0, len(t.NodeAddrs))
-	for _, a := range t.NodeAddrs {
-		if m, err := ma.NewMultiaddr(a); err == nil {
-			addrs = append(addrs, m)
-		}
-	}
+	addrs := dialAddrs(t.NodeAddrs)
 	if c.NodeAddrs != nil {
 		if addrs = c.NodeAddrs(addrs); len(addrs) == 0 {
 			return nil, false, errors.New("no permitted address for the node")
@@ -628,6 +635,36 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 		}
 		jobPub = tr.jobKey.Public()
 	}
+	var (
+		content, reasoning, all strings.Builder
+		tools                   protocol.ToolCallAccumulator
+		thinking                []json.RawMessage
+		finish                  string
+		sr                      receipt.SignedReceipt
+		meter                   protocol.UsageMeter
+		payloads                [][]byte
+	)
+	if carry == nil {
+		// A job that ends here without a receipt this client checked may still
+		// be settled by its node, with a receipt nobody but the node has seen.
+		// Where the caller cannot fail over (output reached it, or it is gone)
+		// the coordinator is told what arrived, which bounds such a receipt;
+		// the other failures are pre-disputed by Chat.
+		defer func() {
+			if err == nil || errors.Is(err, ErrReceiptRejected) || (!delivered && ctx.Err() == nil && !js.cancelled()) {
+				return
+			}
+			jobID, reason, text := t.JobID, "the job ended without a receipt: "+err.Error(), all.String()
+			accept, ok := acceptable(t, req.Body, text)
+			c.background(func() {
+				if ok {
+					c.fileStatement(jobID, reason, accept)
+				} else {
+					c.fileDispute(jobID, reason)
+				}
+			})
+		}()
+	}
 	t0 = time.Now()
 	if err := protocol.SendRequest(st, protocol.TypeInfer, protocol.InferRequest{Ticket: *t, BuyerBoxPub: jobPub, RequestBytes: uint64(len(tr.request))}); err != nil {
 		return nil, false, err
@@ -639,15 +676,6 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 	tm.UploadMs = ms(sent.Sub(t0))
 	tm.Frames, tm.Progress, tm.Chunks = 0, 0, 0
 
-	var (
-		content, reasoning, all strings.Builder
-		tools                   protocol.ToolCallAccumulator
-		thinking                []json.RawMessage
-		finish                  string
-		sr                      receipt.SignedReceipt
-		meter                   protocol.UsageMeter
-		payloads                [][]byte
-	)
 	dec := protocol.NewResponseDecoder()
 	frames := 0
 	lastData := sent
@@ -785,7 +813,7 @@ recv:
 		case f.Env != nil:
 			// An error frame decodes to *protocol.Error; anything else is a
 			// protocol violation.
-			return nil, delivered, f.Env.Decode(protocol.TypeReceipt, nil)
+			return nil, delivered, clipNodeError(f.Env.Decode(protocol.TypeReceipt, nil))
 		default:
 			return nil, delivered, fmt.Errorf("unexpected frame of kind %d", f.Kind)
 		}
@@ -833,7 +861,76 @@ recv:
 	_ = js.cur().CloseWrite()
 	res.CostMicros = protocol.TicketCost(t, protocol.ReceiptUsage(&sr.Receipt))
 	res.Verified = true
+	// The receipt goes to the coordinator from this side too: the job is then
+	// settled with the receipt that was checked here, whatever the node sends.
+	ticket, checked := *t, sr
+	c.background(func() { c.settle(ticket, checked, ack) })
 	return res, delivered, nil
+}
+
+// maxNodeError bounds the text of a node's error: it is logged, shown to the
+// caller and quoted in disputes, and the node chooses its length.
+const maxNodeError = 512
+
+func clipNodeError(err error) error {
+	var pe *protocol.Error
+	if errors.As(err, &pe) && len(pe.Message) > maxNodeError {
+		return &protocol.Error{Code: pe.Code, Message: clipText(pe.Message, maxNodeError)}
+	}
+	return err
+}
+
+// clipText cuts s to at most n bytes of valid UTF-8.
+func clipText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "")
+}
+
+// acceptable is the most the buyer of ticket t agrees to be charged, without
+// arbitration, for a job of which text is all that arrived.
+func acceptable(t *protocol.Ticket, body []byte, text string) (uint64, bool) {
+	est, err := protocol.EstimatePromptTokens(t.API, body)
+	if err != nil {
+		return 0, false
+	}
+	return protocol.AcceptableCost(t, est, protocol.EstimateTokens(text)), true
+}
+
+// settle brings the coordinator the receipt this client checked and
+// acknowledged. Without it the node alone says which receipt a job is settled
+// with, and could show the buyer one and claim another: the coordinator
+// refunds a job for which it holds two.
+func (c *Client) settle(t protocol.Ticket, sr receipt.SignedReceipt, ack []byte) {
+	want := protocol.TicketCost(&t, protocol.ReceiptUsage(&sr.Receipt))
+	req := protocol.SettleRequest{Ticket: t, Receipt: sr, Ack: ack}
+	deadline := time.Now().Add(disputeRetryWindow)
+	backoff := time.Second
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), p2p.DefaultCallTimeout)
+		var resp protocol.SettleResponse
+		err := c.call(ctx, protocol.TypeSettle, req, protocol.TypeSettled, &resp)
+		cancel()
+		switch {
+		case err == nil && resp.Status == "refunded":
+			c.log.Warn("the node settled the job with another receipt than the one it showed; the job was refunded", "job", t.JobID, "node", t.Node)
+			return
+		case err == nil && resp.CostMicros != want:
+			c.log.Warn("the job was settled at another cost than its receipt says", "job", t.JobID, "node", t.Node, "status", resp.Status, "cost", resp.CostMicros, "receipt_cost", want)
+			return
+		case err == nil:
+			return
+		case protocol.CodeOf(err) != "":
+			c.log.Warn("the coordinator refused the settlement", "job", t.JobID, "err", err)
+			return
+		case time.Now().Add(backoff).After(deadline):
+			c.log.Warn("could not settle with the coordinator; the node's own settlement stands", "job", t.JobID, "err", err)
+			return
+		}
+		time.Sleep(backoff)
+		backoff = min(backoff*2, 15*time.Second)
+	}
 }
 
 // countingStream counts the bytes of a stream's frames.
@@ -1066,8 +1163,18 @@ func (c *Client) SubmitEvidence(ctx context.Context, ev *protocol.Evidence, requ
 	return &v, nil
 }
 
+// fileStatement tells the coordinator the most this buyer accepts to pay for
+// a job that ended without a receipt it could check.
+func (c *Client) fileStatement(jobID, reason string, accept uint64) {
+	c.fileDisputeRequest(protocol.DisputeRequest{JobID: jobID, Reason: reason, Accept: &accept})
+}
+
 // fileDispute reports a job to the coordinator, retrying transient failures.
 func (c *Client) fileDispute(jobID, reason string) {
+	c.fileDisputeRequest(protocol.DisputeRequest{JobID: jobID, Reason: reason})
+}
+
+func (c *Client) fileDisputeRequest(req protocol.DisputeRequest) {
 	// Keep trying for as long as the job can still be held: a buyer whose own
 	// path to the coordinator just broke (its relay died) files once it is
 	// reconnected; otherwise the failed tickets would count as unused ones.
@@ -1075,7 +1182,7 @@ func (c *Client) fileDispute(jobID, reason string) {
 	backoff := time.Second
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), p2p.DefaultCallTimeout)
-		err := c.Dispute(ctx, jobID, reason)
+		err := c.dispute(ctx, req)
 		cancel()
 		if err == nil || protocol.CodeOf(err) != "" || time.Now().Add(backoff).After(deadline) {
 			return
@@ -1091,8 +1198,13 @@ const disputeRetryWindow = 3 * time.Minute
 
 // Dispute contests a job's settlement without evidence.
 func (c *Client) Dispute(ctx context.Context, jobID, reason string) error {
-	return c.call(ctx, protocol.TypeDispute,
-		protocol.DisputeRequest{JobID: jobID, Reason: reason}, protocol.TypeOK, nil)
+	return c.dispute(ctx, protocol.DisputeRequest{JobID: jobID, Reason: reason})
+}
+
+func (c *Client) dispute(ctx context.Context, req protocol.DisputeRequest) error {
+	// The reason often quotes the node; the coordinator keeps this much of it.
+	req.Reason = clipText(req.Reason, maxNodeError)
+	return c.call(ctx, protocol.TypeDispute, req, protocol.TypeOK, nil)
 }
 
 // Models lists models with live offers, as the coordinator said within the

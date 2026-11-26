@@ -9,9 +9,10 @@
 // the best round-trip time (p2p.MeasureRelays).
 //
 // The coordinator holds a reservation on every relay and receives many
-// circuits through each, so the per-peer circuit limit and the reservation
-// limits are far above libp2p's defaults (16 circuits per peer, 128
-// reservations, 8 per IP), which suit hole-punch signalling only.
+// circuits through each, so the circuit limit of a destination and the
+// reservation limits are far above libp2p's defaults (16 circuits per peer,
+// 128 reservations, 8 per IP), which suit hole-punch signalling only. What
+// one peer or one address may open is limited separately (circuits.go).
 package relay
 
 import (
@@ -23,6 +24,7 @@ import (
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 	pbv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/pb"
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	ma "github.com/multiformats/go-multiaddr"
@@ -36,6 +38,8 @@ type Config struct {
 	MaxReservations      int           // default 4096
 	MaxReservationsPerIP int           // default 64 (carrier-grade NAT puts many users behind one IP)
 	MaxCircuits          int           // open circuits per destination peer; default 4096 (the coordinator)
+	MaxCircuitsPerPeer   int           // circuits one peer holds at a time; default 32, and libp2p allows no more than 64
+	MaxCircuitsPerIP     int           // circuits the peers of one IPv4 address or IPv6 /56 hold at a time; default 128
 	BufferSize           int           // per-circuit buffer; default 16 KiB
 	ReservationTTL       time.Duration // default 1h
 	MaxConns             int           // connection-manager high watermark; default 8192
@@ -67,6 +71,12 @@ func (c *Config) setDefaults() {
 	}
 	if c.MaxCircuits == 0 {
 		c.MaxCircuits = 4096
+	}
+	if c.MaxCircuitsPerPeer == 0 {
+		c.MaxCircuitsPerPeer = 32
+	}
+	if c.MaxCircuitsPerIP == 0 {
+		c.MaxCircuitsPerIP = 128
 	}
 	if c.BufferSize == 0 {
 		c.BufferSize = 16 << 10
@@ -185,6 +195,8 @@ func New(keys *p2p.Keys, cfg Config) (*Relay, error) {
 		Listen:   cfg.Listen,
 		MaxConns: cfg.MaxConns,
 		Memory:   cfg.Memory,
+		// The coordinators: each receives a stream for every user online.
+		Trunk: func(p peer.ID) bool { return adm.allow[p] != nil },
 		Options: append(opts,
 			// A relay is public by definition; the relay service only runs
 			// once the host believes it is publicly reachable.

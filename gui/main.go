@@ -97,6 +97,7 @@ func errText(e *error) string {
 }
 
 func main() {
+	gd := startGUILog(logDir(homeDir()))
 	sup := newSupervisor()
 	// The daemon is started once Wails holds the single-instance lock (taken in
 	// application.New), so a second start of the app leaves without touching
@@ -122,7 +123,7 @@ func main() {
 	// (invite.go; the release checks open such a link with the app this way).
 	inviteCheck := mode == "invite"
 	selftest := mode != "" && !trayCheck && !updateCheck && !inviteCheck
-	useTray := !selftest && !updateCheck && !inviteCheck && trayAvailable()
+	useTray := !selftest && !updateCheck && !inviteCheck && trayAvailableSoon(startHidden())
 	var inviteCheckErr atomic.Pointer[error]
 	var trayCheckErr atomic.Pointer[error]
 
@@ -163,6 +164,7 @@ func main() {
 		sup.stop()
 	})
 	finish := sync.OnceFunc(func() {
+		gd.finish()
 		if selftest {
 			// $SHARETOKEN_GUI_SELFTEST_REPORT: also into a file, for a copy started
 			// by an update, whose output goes nowhere.
@@ -279,8 +281,9 @@ func main() {
 		MinWidth:  minWindowWidth,
 		MinHeight: minWindowHeight,
 		URL:       "/",
-		Hidden:    selftest || updateCheck || inviteCheck,
-		Mac:       application.MacWindow{TitleBar: application.MacTitleBarHiddenInset},
+		// Started at login (autostart.go): in the tray, when there is one.
+		Hidden: selftest || updateCheck || inviteCheck || (useTray && startHidden()),
+		Mac:    application.MacWindow{TitleBar: application.MacTitleBarHiddenInset},
 	})
 	if useTray {
 		window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
@@ -353,6 +356,7 @@ func main() {
 	err := app.Run()
 	if err != nil {
 		stopDaemon()
+		gd.finish()
 		log.Fatalf("sharetoken-gui: %v", err)
 	}
 	finish()

@@ -66,6 +66,8 @@ limits:
   max_reservations: 4096         # reservations held at once, all networks
   max_reservations_per_ip: 64    # per IP address (many users can share one behind carrier NAT)
   max_circuits: 4096             # open circuits to one destination peer (the coordinator receives one per online user)
+  max_circuits_per_peer: 32      # circuits one peer may hold open at a time (a user holds one to the coordinator and one per node it buys from); at most 64
+  max_circuits_per_ip: 128       # the same for all peers of one IPv4 address or IPv6 /56 together; allow_peers are not counted
   reservation_ttl: 1h            # how long a reservation lasts
   circuit_buffer: 16KiB          # buffer of each circuit
 

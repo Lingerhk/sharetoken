@@ -81,7 +81,7 @@ sharetoken-gui（Wails v3 窗口，gui/）        sharetoken daemon（internal/c
 - 界面上的保护：没有模型时不能开启共享；同一个模型 ID 不能来自两个来源；新增厂商的名称和已有的重复时要求改名（接口会按“更换凭据”处理）；最后一个可出售的模型被移除或其厂商被停用时，共享一起关闭。
 - 和命令行的一处差别：`share add` 会顺带开启共享，界面不会，由用户点“开启共享”。
 - 模型表里的“网络最低价”来自 `GET /api/v1/models`（包含本机自己的报价）。厂商卡片显示登录令牌的有效期和附加请求头的名称。概览页有一张“共享”卡片，点击进入共享页；网络区域显示到协调器的链路质量（平均延迟、抖动、丢包）。
-- 配对（`app.js` 的 `pairingView`）有自己的视图，分三个标签。第一个是“共享伙伴”（`partnersView`）：伙伴和未用的邀请码，“邀请伙伴”和“输入邀请码”按钮，以及一个设置表单（只用伙伴、每日上限、并发比例），编辑期间轮询不会覆盖它；比例为 0 时提示共享已暂停。“可用模型”给伙伴节点提供的模型标上“伙伴 n”，作业列表里伙伴之间的作业显示“伙伴共享”而不是 credit。“我的卖家”：输入卖家的配对码，查看本账户配对的卖家，解除其中一个（`POST /api/v1/pairing/redeem`、`DELETE /api/v1/pairing/sellers/{id}`）；账户有配对时，这里会说明它只向这些卖家购买，“可用模型”也只列出他们的模型。“我的买家”：私有模式、配对码和配对的买家。配对保存在门户，所以接入网络之前就能用；每 15 秒重新读取一次。
+- 配对（`app.js` 的 `pairingView`）有自己的视图，分三个标签。第一个是“共享伙伴”（`partnersView`）：伙伴和未用的邀请码，“邀请伙伴”和“输入邀请码”按钮，以及一个设置表单（只用伙伴、每日上限、并发比例），编辑期间轮询不会覆盖它；比例为 0 时提示共享已暂停。“可用模型”给伙伴节点提供的模型标上“免费”（悬停显示伙伴节点数），作业列表里伙伴之间的作业显示“伙伴共享”而不是 credit。“我的卖家”：输入卖家的配对码，查看本账户配对的卖家，解除其中一个（`POST /api/v1/pairing/redeem`、`DELETE /api/v1/pairing/sellers/{id}`）；账户有配对时，这里会说明它只向这些卖家购买，“可用模型”也只列出他们的模型。“我的买家”：私有模式、配对码和配对的买家。配对保存在门户，所以接入网络之前就能用；每 15 秒重新读取一次。
 - 客户端有英语和简体中文两种语言。没有保存过选择时跟随系统语言，其他系统语言一律显示英语（见 [i18n.md](i18n.md)）。
 - 密钥只在提交时经过页面，接口返回的是打码后的形式。界面测试会检查页面和 `/api/v1/status` 里都没有密钥。
 - daemon 的告警和厂商返回的错误按英文原文显示。
@@ -119,8 +119,8 @@ macOS 在菜单栏、Windows 在通知区、Linux 以状态通知项（StatusNot
 |---|---|
 | `GET /api/v1/session` | `{env, state, logged_in, portal, user, device, peer, api, error, version, api_version, update}`。`state` 是 `logged_out`、`expired`（门户拒绝了 token，daemon 已退出登录）、`starting`、`retrying`（`error` 是原因）或 `running`。未登录时 `portal` 是内置地址（见下），`user` 是上次用的值，用于预填表单 |
 | `POST /api/v1/portal/probe` | `{}`（`portal` 可省略，默认是内置地址）→ `{portal, https, trusted, fingerprint, subject, not_after, known, pin_changed, pin_required, registration_open, invite_required, signup_credit_micros, support_email}`。向门户发送任何内容之前调用 |
-| `POST /api/v1/auth/code` | `{pin, email, invite_code}`：门户发送登录验证码。回答里说明这个邮箱是不是新的；`invite_required` 表示要先填邀请码 |
-| `POST /api/v1/auth/verify` | `{pin, email, code, invite_code, device}` → 会话。开启了两步验证的账户得到 401 `mfa_required`：daemon 保存门户给的 challenge，页面接着询问动态码 |
+| `POST /api/v1/auth/code` | `{pin, email, invite_code}`：门户发送登录验证码。回答里说明这个邮箱是不是新的；`invite_required` 表示要先填邀请码。门户返回的 nonce 由 daemon 保存，页面看不到 |
+| `POST /api/v1/auth/verify` | `{pin, email, code, invite_code, device}` → 会话。daemon 补上它申请验证码时得到的 nonce，所以验证码必须经申请它的那个 daemon 使用（`portal login-code` 的 12 位验证码不需要）。开启了两步验证的账户得到 401 `mfa_required`：daemon 保存门户给的 challenge，页面接着询问动态码 |
 | `POST /api/v1/auth/mfa` | `{code}`：完成等待两步验证的登录 → 会话。5 分钟后或错 5 次得到 401 `challenge_expired`，要重新获取邮件验证码 |
 | `POST /api/v1/logout` | 停止 Agent、吊销 token（门户不可达时跳过），并从 `config.json` 删除 token；其他设置保留 |
 | `GET /api/v1/account`、`/api/v1/jobs`、`/api/v1/ledger` | 透传到门户，不依赖 Agent。门户返回 401 时会话转为 `expired` |

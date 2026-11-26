@@ -39,6 +39,7 @@ market:
   fee_bps: 500                   # the platform's cut in basis points (500 = 5%)
   min_budget_micros: 1           # smallest hold of one ticket
   warm_up: 30s                   # after a restart, answer "capacity" for this long while offers arrive (buyers queue)
+  max_offers_per_account: 16     # nodes of one account that may share at once
 
 # Job timing. The values below are the defaults; change them only with a reason.
 jobs:
@@ -47,6 +48,8 @@ jobs:
   reconnect_grace: 2m            # release is put off this long after the node reconnects
   max_stale_tickets: 5           # stale unstarted tickets one buyer may hold
   stale_after: 15s               # a ticket not started this long after issue is stale
+  max_idle_tickets: 32           # unstarted tickets of any age one buyer account may hold; more wait ("capacity")
+  max_idle_per_node: 8           # of which for one node
   settle_grace: 15m              # extra time for a settlement to arrive
   dispute_window: 24h            # an unconfirmed settlement becomes final after this
   max_offer_ttl: 5m              # ceiling on the lifetime an offer may claim
@@ -72,6 +75,8 @@ references:
 audit:
   interval: 10m                  # mean time between audits; 0 turns them off
   budget_micros: 200000          # held for each question, paid from the platform's fees
+  price_multiple: 3              # a node priced above this many times its model's median price is not audited
+  daily_budget_micros: 20000000  # the most audit jobs may reserve out of the platform's fees per UTC day
   prompts_file: ""               # private question pool, one per line: text or {"system":..,"messages":[..]}; empty: built-in open questions
   max_tokens: 96                 # output limit of a question
   questions: 5                   # questions per audit; the verdict is on all of them together

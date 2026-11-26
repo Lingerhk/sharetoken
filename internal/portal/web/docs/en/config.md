@@ -38,10 +38,16 @@ You can also set the environment variable `SHARETOKEN_HOME`.
 |---|---|
 | `config.json` | Settings and the sign-in token. Readable only by you |
 | `device.key` | The device private key. Readable only by you. On another machine it would be a new device |
-| `network.json` | A cache of the relay list. If you delete it, it is fetched again automatically |
-| `run.json` | The API address of the running client and the key of its management API |
-| `apikey.json` | The OpenAI endpoint's API key and whether it is required (`{{exe}} apikey`) |
-| `daemon.log` | The log of the service started by the desktop app |
+| `network.json` | What the portal last said about the network (the relay list and so on), used when the portal cannot be reached. If you delete it, it is fetched again automatically |
+| `run.json` | The local API address of the running client, its process ID and the key of its management API. The key changes at each start, and the file is deleted when the client exits |
+| `apikey.json` | The local model endpoint's API key (it starts with `sk-st-`) and whether it is required. Managed with `{{exe}} apikey`; changes need no restart |
+| `providers.json` | Hosted APIs you share and their credentials, see [Sharing settings](#share) |
+| `warmup.json`, `warmup-state.json` | The [warm-up](/docs/cli#warmup) settings, and what it has done |
+| `official.json` | What happens when Claude Code or Codex uses up its own subscription (`{{exe}} official`) |
+| `connect.json`, `backups/` | Which tools' configuration files `{{exe}} connect` changed, and copies from before the change |
+| `update.json`, `update/` | Which release you skipped, and the package a one-click upgrade downloaded |
+| `derpmap.json` | A cache of the direct tunnels' DERP map |
+| `logs/` | The client's log (`client.log`), the desktop app's (`gui.log`), crash records and the crash reports waiting to be sent. See [Logs and crash reports](#logs) |
 
 > [!WARNING]
 > `config.json` and `device.key` act as this device's sign-in credentials. Do not share them, commit them to a code repository, or put them in a backup others can read. Losing them does not lose any credit: just sign in again. Once the device key changes, it is a new device, and you can unbind the old device on the portal.
@@ -52,7 +58,7 @@ You can also set the environment variable `SHARETOKEN_HOME`.
 {{exe}} config
 ```
 
-This command shows the file path and contents. To change a setting, open `config.json` in a text editor, then **restart the client** for it to take effect. Sharing settings are the exception. See [Sharing settings](#share).
+This command shows the file path and the settings in force (including defaults the file leaves out), with only the start of the token. To change a setting, open `config.json` in a text editor, then **restart the client** for it to take effect. The exceptions take effect at once in a running client: sharing settings and private relays (see [Sharing settings](#share)), direct tunnels (`tailnet on` / `tailnet off`), and the budget and `require_native` changed in the desktop app under "Settings > Requests".
 
 The file is strict JSON and cannot contain comments. The examples below list only the fields you would change.
 
@@ -78,13 +84,15 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 
 | Field | Meaning | Default |
 |---|---|---|
-| `budget_micros` | The most to hold for each request, in micro-credit. Whatever is unused is returned | `2000000` (2 credits) |
+| `budget_micros` | The most to hold for each request, in micro-credit. Whatever is unused is returned. A request with `max_tokens` holds only what its prices make necessary. When the budget does not even pay for the prompt, the request fails with `budget`. The desktop app can change it, from 0.01 to 1000 credits | `2000000` (2 credits) |
 | `max_price_in` | The most you will pay per million input tokens. `0` means no limit | `0` |
 | `max_price_out` | The most you will pay per million output tokens. `0` means no limit | `0` |
 | `evidence` | If a node overstates usage, hand over the key for that job to get an automatic refund | `true` |
-| `require_tee` | Send requests only to TEE nodes | `false` |
-| `require_native` | Send requests only to nodes whose model server speaks the request's API natively, never converted ([Native and converted](/docs/use-models#native)). A request can also ask for it with the header `X-Sharetoken-Require-Native: true` | `false` |
-| `loop_guard` | Stop paying for a model stuck in a loop. An answer whose reasoning or text keeps repeating the same few sentences is cut off as if it had reached its output limit, and the seller stops the model; a request whose last 8 turns are the same tool call with the same result is answered on your machine with a notice and not sent. Set `false` to turn it off | `true` |
+| `require_tee` | Send requests only to TEE nodes. Needs `tee_policy` too, or the client does not start ([Use only TEE nodes](/docs/use-models#tee)) | `false` |
+| `tee_policy` | Path of the JSON list of node images you trust. With it set, the client verifies nodes' TEE attestations | empty |
+| `tee_online` | Go online to check certificate revocation when verifying TEE attestations (and, for TDX, to fetch the collateral) | `false` |
+| `require_native` | Send requests only to nodes whose model server speaks the request's API natively, never converted ([Native and converted](/docs/use-models#native)). Off, such nodes are still preferred. A request can also ask for it with the header `X-Sharetoken-Require-Native: true` | `false` |
+| `loop_guard` | Stop paying for a model stuck in a loop. An answer whose reasoning or text keeps repeating the same few sentences is cut off as if it had reached its output limit, and the seller stops the model; a request whose last 8 turns are the same tool call with the same result is answered on your machine with a notice and not sent. A response handled this way carries the header `X-Sharetoken-Loop-Guard`. Set `false` to turn it off | `true` |
 | `spot_checks` | Help the platform spot-check sellers. The platform checks at random that sellers really run the model they advertise; with this on, the client now and then carries one short check to a seller, the way it sends your own requests, so the seller cannot tell a check from a buyer. The request and the answer are encrypted (your machine cannot read them) and it costs no credit. The seller sees your device's address as it does for any request you send. It is on unless this file turns it off; the desktop app has no switch for it | `true` |
 | `queue_seconds` | How long to wait when all nodes are full. A negative value fails immediately | `30` |
 | `first_byte_seconds` | Time limit for the node's first frame. On timeout, another node is used. Nodes send a progress frame every 10 seconds while the model is thinking, so slow models do not need a higher value | `30` |
@@ -116,12 +124,12 @@ The file is strict JSON and cannot contain comments. The examples below list onl
 | `concurrency` | Number of requests handled at the same time | `2` |
 | `relays` | How many of the network's relays to register on | `2` |
 | `keep_official` | With a [private relay](/docs/relay): also stay on the network's relays while it works | `false` |
-| `models` | The models you share. Usually managed with `share add`. A model may also set `price_cache_read` and `price_cache_write`, the prices of input tokens read from and written to the prompt cache; see [cache prices](/docs/share#cache-prices) | Empty |
+| `models` | The models you share. Usually managed with `share add`. A model may also set `price_cache_read` and `price_cache_write`, the prices of input tokens read from and written to the prompt cache; see [cache prices](/docs/share#cache-prices); and `max_output`, the model's own output limit per job (`share add -max-output`) | Empty |
 | `tee` | Confidential VM type: `off`, `auto`, `sev-snp`, `tdx` | `off` |
 
 Hosted APIs you share (providers) are not in this file: they are kept, with their API keys and logins, in `providers.json` in the same directory. Manage them with the [`provider` command](/docs/share#providers) rather than editing the file.
 
-When you change settings with the `share` subcommands, the running client applies them immediately. After you edit the file by hand, run `{{exe}} share on` once more to reload it.
+When you change settings with the `share` subcommands, the running client applies them immediately. After you edit the file by hand (`private_relays` included), run `{{exe}} share on` (or `share off`) once more to reload it.
 
 ## Network settings {#network}
 
@@ -132,7 +140,46 @@ When you change settings with the `share` subcommands, the running client applie
 | `nat` | UPnP, NAT-PMP and hole punching | `true` |
 | `relays` | If not empty, overrides the relay list from the portal | Empty |
 | `private_relays` | Relays of your own that your sharing runs through, see [Run your own relay](/docs/relay). Managed with `relays add` | Empty |
-| `tailnet.enabled` | Direct tunnels, see [Direct tunnels](/docs/running#tailnet). Managed with `tailnet on` / `tailnet off` | `false` |
+| `tailnet.enabled` | Direct tunnels, see [Direct tunnels](/docs/running#tailnet). Managed with `tailnet on` / `tailnet off`, which take effect at once in a running client | `false` |
 | `tailnet.wait_ms` | How long a request to a new node waits for the tunnel before it uses the relay (0 to 10000 ms) | `0` |
 | `tailnet.transport` | What this machine's connections to sellers run over inside the tunnel: `quic` or `tcp`. A seller accepts both | `quic` |
 | `tailnet.derp_map` | The DERP map tunnels start through: a URL or a file; empty for tailcat's public DERP relays | Empty |
+
+## Logs and crash reports {#logs}
+
+```json
+{
+  "log": { "dir": "", "level": "info", "max_size_mb": 10, "max_files": 5 },
+  "diagnostics": { "upload": true }
+}
+```
+
+| Field | Meaning | Default |
+|---|---|---|
+| `log.dir` | Where the log goes. The environment variable `SHARETOKEN_LOG_DIR` comes first, then `-log-dir`, then this. Read when the client starts: restart it after a change | `logs` in the state directory |
+| `log.level` | `debug`, `info`, `warn` or `error` | `info` |
+| `log.max_size_mb` | Size at which a log file is renamed (`client.log.1`, …) and a new one started | `10` |
+| `log.max_files` | How many renamed files are kept | `5` |
+| `diagnostics.upload` | Send crash reports. Leave it out to keep the default. Takes effect at once | `true`; `false` in the European Economic Area |
+
+The log directory holds:
+
+| File | Contents |
+|---|---|
+| `client.log` | The log of `up` and of the service behind the desktop app (`daemon`), whichever way it was started |
+| `gui.log` | The desktop app window's own log |
+| `daemon.stderr` | What the service started by the desktop app or by `autostart` printed before its log was open, and Go's own output |
+| `crash/` | The record of a crash: written as the program dies, turned into a report at the next start, then kept in `crash/old` (the last five) |
+| `reports/` | Crash reports waiting to be sent, already redacted: exactly what will be sent |
+
+### Crash reports {#crash-reports}
+
+When the client crashes (an unrecovered panic or a fatal error in Go) or recovers from a panic, the next start, or the moment itself, writes a report to `reports/`, and the client sends it to the portal with your login within about 10 minutes. Nothing is sent while you are signed out; reports wait until you sign in. A report contains:
+
+- the error message and the stack trace of the code that failed;
+- the last 100 lines of the client's log before it, redacted;
+- the version, the system and its release, and which settings were on (sharing, tailnet, private relay), as on/off.
+
+Before a report is written, e-mail addresses, tokens and API keys, IP addresses, host names, URLs (all but a few public services such as api.openai.com), your home directory and user name, pairing codes, and other devices' IDs are removed; in log lines only known fields keep their values. Prompts and answers are never logged, so they are never in a report. The portal applies the same rules again to what it receives, and keeps a report for 90 days after its last occurrence.
+
+Turn reports off in the desktop app (Settings → General → Diagnostics) or with `{{exe}} diagnostics off`; the reports waiting are deleted. Whether they start on depends on the system's region and time zone: in the European Economic Area they start off. `{{exe}} diagnostics show`, or "View pending reports" in the app, shows what waits to be sent.

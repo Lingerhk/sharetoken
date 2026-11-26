@@ -42,6 +42,35 @@ func (s *Server) notify(m mailer.Message) {
 	}
 }
 
+// Notices one account makes another receive (a request to approve, an
+// approval) are capped by who receives them and by who caused them: asking
+// with many codes, or from many accounts, must not turn the portal into a way
+// to flood a mailbox. What is over a cap is not mailed; the request itself
+// still shows on the owner's page.
+const (
+	noticesPerRecipientHour = 6
+	noticesPerRecipientDay  = 20
+	noticesPerSenderHour    = 10
+	noticesPerSenderDay     = 30
+)
+
+// notifyFrom is notify for a notice that account by caused to be sent to
+// someone else.
+func (s *Server) notifyFrom(by int64, m mailer.Message) {
+	if !s.mailEnabled() || !strings.Contains(m.To, "@") {
+		return
+	}
+	to, from := strings.ToLower(m.To), strconv.FormatInt(by, 10)
+	if _, refused := s.reserve(
+		failLimit{"mail:to:" + to, noticesPerRecipientHour}, failLimit{"mail:day:to:" + to, noticesPerRecipientDay},
+		failLimit{"mail:by:" + from, noticesPerSenderHour}, failLimit{"mail:day:by:" + from, noticesPerSenderDay},
+	); refused >= 0 {
+		s.log.Warn("notice not mailed: over the limit", "by", by, "kind", m.Kind, "limit", refused)
+		return
+	}
+	s.notify(m)
+}
+
 // ---- admin ----
 
 func (s *Server) mailRoutes(mux *http.ServeMux) {

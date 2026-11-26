@@ -49,6 +49,7 @@ var auditActions = map[string]string{
 	"POST /api/v1/admin/mail/send":                     "mail.send",
 	"POST /api/v1/admin/mail/test":                     "mail.test",
 	"POST /api/v1/admin/feedback/{id}/status":          "feedback.status",
+	"POST /api/v1/admin/client-reports/{fp}/status":    "client_report.status",
 	"PUT /api/v1/admin/settings":                       "settings.update",
 	"POST /api/v1/admin/settings/apply-blocklist":      "settings.apply_blocklist",
 	"POST /api/v1/admin/invites":                       "invite.create",
@@ -179,6 +180,84 @@ func cut(v string, maxRunes int) string {
 	return v
 }
 
+// What an entry keeps of its detail, in runes of JSON: the whole, and one
+// field of it.
+const (
+	maxAuditDetail = 8000
+	maxAuditField  = 1000
+)
+
+// auditDetail encodes an entry's detail within maxAuditDetail. What is too
+// long is cut field by field, never the encoded text: half a JSON document
+// is one the log page cannot show, and one entry like that hid its whole
+// page.
+func auditDetail(detail map[string]any) string {
+	if len(detail) == 0 {
+		return "{}"
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		return "{}"
+	}
+	if utf8.RuneCount(raw) <= maxAuditDetail {
+		return string(raw)
+	}
+	out := make(map[string]any, len(detail)+1)
+	size := map[string]int{}
+	for k, v := range detail {
+		enc, err := json.Marshal(v)
+		if err != nil {
+			continue
+		}
+		if utf8.RuneCount(enc) > maxAuditField {
+			text, isText := v.(string)
+			if !isText {
+				text = string(enc)
+			}
+			v = cut(text, maxAuditField) + "…"
+			enc, _ = json.Marshal(v)
+		}
+		out[k], size[k] = v, len(enc)+len(k)
+	}
+	out["truncated"] = true
+	// Still too long with every field cut: the longest fields go, the
+	// request's own method and path last.
+	for {
+		if raw, err = json.Marshal(out); err == nil && utf8.RuneCount(raw) <= maxAuditDetail {
+			return string(raw)
+		}
+		longest := ""
+		for k := range out {
+			if k == "truncated" || (longest != "" && rank(k, size) <= rank(longest, size)) {
+				continue
+			}
+			longest = k
+		}
+		if longest == "" {
+			return `{"truncated":true}`
+		}
+		delete(out, longest)
+	}
+}
+
+// rank orders detail fields by which is dropped first.
+func rank(key string, size map[string]int) int {
+	if key == "method" || key == "path" {
+		return -1
+	}
+	return size[key]
+}
+
+// storedDetail is a detail as the log page gets it. An entry written before
+// details were cut by field may hold half a document: it is shown as text.
+func storedDetail(detail string) json.RawMessage {
+	if json.Valid([]byte(detail)) {
+		return json.RawMessage(detail)
+	}
+	raw, _ := json.Marshal(map[string]any{"truncated": true, "raw": strings.ToValidUTF8(detail, "\uFFFD")})
+	return raw
+}
+
 // writeAudit appends an entry. What it records has already happened and cannot
 // be undone from here, so a failure is logged at error level and not returned.
 func (s *Server) writeAudit(r *http.Request, actorID int64, actor, action, target string, detail map[string]any, status int) {
@@ -190,13 +269,6 @@ func (s *Server) writeAudit(r *http.Request, actorID int64, actor, action, targe
 		detail["method"] = r.Method
 		detail["path"] = cut(r.URL.Path, 200)
 	}
-	raw := []byte("{}")
-	if len(detail) > 0 {
-		var err error
-		if raw, err = json.Marshal(detail); err != nil {
-			raw = []byte("{}")
-		}
-	}
 	var ip, ua string
 	if r != nil {
 		ip, ua = s.clientIP(r), r.UserAgent()
@@ -205,7 +277,7 @@ func (s *Server) writeAudit(r *http.Request, actorID int64, actor, action, targe
 	ctx, cancel := dbContext()
 	defer cancel()
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO admin_audit_log (at, actor_id, actor, action, target, detail, ip, user_agent, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		now.UnixNano(), actorID, cut(actor, 191), cut(action, 64), cut(target, 255), cut(string(raw), 8000), cut(ip, 64), cut(ua, 255), status); err != nil {
+		now.UnixNano(), actorID, cut(actor, 191), cut(action, 64), cut(target, 255), auditDetail(detail), cut(ip, 64), cut(ua, 255), status); err != nil {
 		s.log.Error("writing an audit entry", "err", err, "actor", actor, "action", action, "target", target)
 		return
 	}
@@ -285,7 +357,7 @@ func (s *Server) handleAuditLog(w http.ResponseWriter, r *http.Request, cu ctxUs
 				if err := rows.Scan(&e.ID, &e.At, &e.ActorID, &e.Actor, &e.Action, &e.Target, &detail, &e.IP, &e.UserAgent, &e.Status); err != nil {
 					return nil, err
 				}
-				e.Detail = json.RawMessage(detail)
+				e.Detail = storedDetail(detail)
 				out = append(out, e)
 			}
 			return out, rows.Err()

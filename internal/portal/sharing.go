@@ -27,6 +27,7 @@ type SharingView struct {
 	Served      int64 `json:"served"`
 	WindowHours int   `json:"window_hours"`
 	MaxPartners int   `json:"max_partners"`
+	MaxUses     int   `json:"max_invite_uses"` // the most people one invite may admit
 	// Requests wait for the caller's approval; Waiting are the caller's own.
 	Requests []accounts.InviteRequest `json:"requests"`
 	Waiting  []accounts.InviteRequest `json:"waiting"`
@@ -69,7 +70,7 @@ func (s *Server) sharingView(userID int64) (*SharingView, error) {
 		return nil, err
 	}
 	v := &SharingView{Partners: make([]PartnerView, 0, len(partners)), Invites: invites, Settings: settings,
-		WindowHours: int(accounts.ShareWindow / time.Hour), MaxPartners: accounts.MaxSharePartners}
+		WindowHours: int(accounts.ShareWindow / time.Hour), MaxPartners: accounts.MaxSharePartners, MaxUses: accounts.MaxShareInviteUses}
 	for _, f := range flows {
 		v.Served += f.Given
 	}
@@ -113,6 +114,7 @@ func (s *Server) handleNewShareInvite(w http.ResponseWriter, r *http.Request, cu
 	var req struct {
 		TTLHours float64 `json:"ttl_hours"` // 0: the default, one day
 		Approval bool    `json:"approval"`  // joining waits for the caller's approval
+		MaxUses  int64   `json:"max_uses"`  // people it admits; 0: one
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -121,7 +123,7 @@ func (s *Server) handleNewShareInvite(w http.ResponseWriter, r *http.Request, cu
 		writeErr(w, http.StatusBadRequest, "bad_request", "ttl_hours is out of range")
 		return
 	}
-	inv, err := s.store.CreateShareInviteWith(cu.user.ID, time.Duration(req.TTLHours*float64(time.Hour)), req.Approval)
+	inv, err := s.store.CreateShareInviteFor(cu.user.ID, time.Duration(req.TTLHours*float64(time.Hour)), req.Approval, req.MaxUses)
 	if err != nil {
 		s.sharingErr(w, err)
 		return

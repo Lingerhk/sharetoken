@@ -17,7 +17,7 @@
 
 ## 需要准备什么 {#requirements}
 
-一台有公网地址的 Linux 服务器（x86-64 或 ARM64），放行 4001 端口的 TCP 和 UDP。小配置就够：中继只是转发加密数据。
+一台有公网地址的 Linux 服务器（x86-64 或 ARM64），放行 4001 端口的 TCP 和 UDP（UDP 用于 QUIC）。服务器有 IPv6 时中继也在 IPv6 上监听；没有 IPv6，只有 IPv6 的用户就连不上它。小配置就够：中继只是转发加密数据。
 
 还需要你的账号 ID，在已登录客户端的机器上查看：
 
@@ -63,7 +63,11 @@ cd sharetoken-relay-{{version}}-linux-$ARCH
   -announce /dns4/relay.example.com/tcp/4001,/dns4/relay.example.com/udp/4001/quic-v1
 ```
 
-`init` 会向门户取用来证明账号身份的公钥，和你的账号列表一起写进 `relay.yaml`。文件很短，带注释。以后要加账号，在 `allow_accounts` 下加一行，重启中继。
+`init` 会向门户取用来证明账号身份的公钥，和你的账号列表一起写进 `relay.yaml`。文件很短，带注释。运行时中继每 6 小时向门户重新读一次这个公钥，门户换了公钥也能继续工作。以后要加账号，在 `allow_accounts` 下加一行，重启中继。
+
+- **其他门户：** `init` 默认使用 `https://sharetoken.app`。你的客户端登录的是别的门户时，加 `-portal {{origin}}`。
+- **检查配置：** 改过 `relay.yaml` 后，可以先用 `./sharetoken-relay -config relay.yaml -check-config` 检查，它会打印生效的设置。
+- `init` 不会覆盖已有的文件。
 
 ## 第 3 步：启动 {#start}
 
@@ -91,7 +95,7 @@ sudo cp sharetoken-relay.service /etc/systemd/system/
 sudo systemctl enable --now sharetoken-relay
 ```
 
-用 `journalctl -u sharetoken-relay -f` 看日志。
+用 `journalctl -u sharetoken-relay -f` 看日志，中继每 5 分钟记一行统计。升级时下载新版本的包，用其中的 `sharetoken-relay` 替换 `/opt/sharetoken-relay/sharetoken-relay`，再运行 `sudo systemctl restart sharetoken-relay`；`relay.key` 不变，地址就不变。
 
 ## 第 4 步：添加到设备 {#add}
 
@@ -131,6 +135,25 @@ sudo systemctl enable --now sharetoken-relay
 | `private_relays` | 你自己的中继，最多 8 个 | 空 |
 | `share.keep_official` | 私有中继正常时，也在网络的中继上占位置。买家会走先连通的那条路 | `false` |
 
+## 中继的限制和监控 {#limits}
+
+`init` 写出的 `relay.yaml` 按小规模使用设定，可以按需要修改，改完重启中继：
+
+| 字段 | 含义 | `init` 写入的值 |
+|---|---|---|
+| `access.networks[].max_devices_per_user` | 每个账号同时在中继上占位置的设备数 | `8` |
+| `limits.max_reservations` | 中继上同时占位置的设备总数 | `64` |
+| `limits.max_reservations_per_ip` | 同一个 IP 地址最多占的位置 | `16` |
+| `limits.max_circuits` | 每台设备同时经中继的连接数 | `256` |
+| `limits.max_circuits_per_peer` | 一台设备同时经中继发起的连接数 | 不写：`32` |
+| `limits.max_circuits_per_ip` | 同一个 IP 地址下所有设备合计的上限 | 不写：`128` |
+| `network.max_conns` | 中继的连接总数 | `1024` |
+| `limits.memory` | 所有连接一共可以占用的内存 | 不写：机器内存的四分之三 |
+
+- **每个地址的连接数：** 每个 IPv4 地址（IPv6 按 /56）最多 32 个连接，不能修改。同一个 NAT 后面的设备共用这个数。团队的设备都在同一个出口地址后面时，也要相应调大 `max_reservations_per_ip`。
+- **内存：** 机器内存按容器或 cgroup 的上限算（更小时）。没有设置环境变量 `GOMEMLIMIT` 时，中继把自己的内存上限设为机器内存的 85%。
+- **统计和指标：** 在 `status.listen` 填一个本机地址，例如 `127.0.0.1:8093`：`/` 返回 JSON 统计，`/metrics` 是 Prometheus 指标（以 `sharetoken_relay_` 开头）。这两个地址没有认证，所以只接受本机回环地址。`status.stats_interval`（默认 `5m`）是日志里记统计的间隔，`0` 表示不记。
+
 ## 不工作时 {#trouble}
 
 | 现象 | 原因和处理 |
@@ -138,6 +161,7 @@ sudo systemctl enable --now sharetoken-relay
 | `{{exe}} status` 警告私有中继没有列出你的账号 | 这台设备的账号不在 `allow_accounts` 里。把 `{{exe}} account` 显示的 ID 加进去，重启中继 |
 | 中继一栏显示错误而不是延迟 | 设备连不上它。检查防火墙（TCP 和 UDP 4001）和公布的地址 |
 | 中继能连上，但一直不显示 `sharing` | 这台设备没有打开共享（`{{exe}} share on`），或者中继拒绝了账号（见第一行） |
+| 团队里有的设备一直不显示 `sharing`，其他设备正常 | 超过了每个账号的设备数（`max_devices_per_user`）或每个 IP 的位置数（`max_reservations_per_ip`），见[中继的限制和监控](#limits)。调大后重启中继 |
 | 买家仍然经网络的中继连进来 | 私有中继中断超过了半分钟，或者打开了 `share.keep_official` |
 
 ## 私有中继能看到什么 {#privacy}

@@ -15,12 +15,14 @@
 
   const mailBadge = h('span', { class: 'nav-count', id: 'mail-unread', hidden: true, title: '未读邮件', 'data-unit': '{n} 封未读' });
   const feedbackBadge = h('span', { class: 'nav-count', id: 'feedback-new', hidden: true });
+  const crashBadge = h('span', { class: 'nav-count', id: 'crashes-new', hidden: true });
   const { nav, main } = ST.shell(app, {
     title: '管理控制台', role: '管理员',
     items: [
       { route: 'dashboard', icon: 'chart', label: '仪表盘' }, { route: 'overview', icon: 'grid', label: '总览' }, { route: 'users', icon: 'users', label: '用户' }, { route: 'relays', icon: 'server', label: '中继' }, { route: 'versions', icon: 'cube', label: '版本' },
       { route: 'jobs', icon: 'bolt', label: '作业' }, { route: 'nodes', icon: 'cpu', label: '节点' }, { route: 'audits', icon: 'shield', label: '推理审计' }, { route: 'disputes', icon: 'warning', label: '争议' }, { route: 'pairings', icon: 'swap', label: '配对' }, { route: 'partners', icon: 'link', label: '共享伙伴' },
       { route: 'ledger', icon: 'database', label: '账本' }, { route: 'mail', icon: 'mail', label: '邮件', badge: mailBadge }, { route: 'feedback', icon: 'chat', label: '反馈', badge: feedbackBadge },
+      { route: 'crashes', icon: 'warning', label: '客户端异常', badge: crashBadge },
       { route: 'oplog', icon: 'book', label: '操作日志' }, { route: 'settings', icon: 'cog', label: '系统设置' },
     ],
     links: [{ href: '/docs/', icon: 'book', label: '文档' }, { href: '/app/', icon: 'home', label: '用户门户' }],
@@ -189,6 +191,7 @@
           h('div', { class: 'card' }, section('cube', '客户端版本'), table([
             { title: '版本', cell: x => x.version || '未上报' }, { title: '设备', num: true, cell: x => num(x.devices) },
           ], d.client_versions || [], '还没有设备')),
+          crashCard(d.crashes),
           h('div', { class: 'card' }, section('bolt', '作业（全部）'), table([
             { title: '状态', cell: x => status(x[0]) }, { title: '数量', num: true, cell: x => num(x[1]) },
           ], Object.entries(d.jobs || {}).sort((a, b) => b[1] - a[1]), '没有作业'),
@@ -361,7 +364,7 @@
     const min = input({ type: 'text', value: r.policy.min_client || '', placeholder: '1.0.0', maxlength: 32 });
     const rec = input({ type: 'text', value: r.policy.recommended_client || '', placeholder: '1.0.0', maxlength: 32 });
     const latest = input({ type: 'text', value: r.policy.latest_client || '', placeholder: '1.0.0', maxlength: 32 });
-    const url = input({ type: 'text', value: r.policy.download_url || '', placeholder: 'https://sharetoken.app/#download', maxlength: 256 });
+    const url = input({ type: 'text', value: r.policy.download_url || '', placeholder: '/#download', maxlength: 256 });
     const dev = input({ type: 'checkbox' });
     dev.checked = !!r.policy.allow_dev;
     add(m, h('div', { class: 'card' }, section('cog', '客户端版本策略'),
@@ -799,6 +802,69 @@
       ], srv.dns))] : null);
   }
 
+  // ---- client crash reports ----
+  function setCrashNew(n) { crashBadge.hidden = !n; crashBadge.textContent = n ? String(n) : ''; }
+  const CRASH_STATUS = { new: ['待处理', 'warn'], known: ['已知', ''], fixed: ['已修复', 'ok'] };
+  const CRASH_KIND = { crash: ['崩溃', 'bad'], panic: ['panic', 'warn'] };
+  const CRASH_PROC = { daemon: '后台服务', cli: '命令行', gui: '桌面外壳' };
+  function crashCard(c) {
+    c = c || { problems: 0, new: 0, reports: 0, users: 0, by_version: [] };
+    return h('div', { class: 'card', id: 'dash-crashes' }, section('warning', '客户端异常（7 天）', h('small', null, h('a', { href: '#/crashes' }, '查看'))),
+      h('p', { class: 'muted' }, c.problems + ' 个问题（待处理 ' + c.new + '），' + num(c.reports) + ' 次上报，' + c.users + ' 个用户'),
+      table([{ title: '版本', cell: x => x.version || '—' }, { title: '上报', num: true, cell: x => num(x.reports) }, { title: '用户', num: true, cell: x => num(x.users) }],
+        c.by_version || [], '7 天内没有上报'));
+  }
+  async function crashDetail(fp, after) {
+    let d;
+    try { d = await api('GET', '/api/v1/admin/client-reports/' + fp); } catch (ex) { fail(ex); return; }
+    const [kt, kk] = CRASH_KIND[d.kind] || [d.kind, ''];
+    const [stt, stk] = CRASH_STATUS[d.status] || [d.status, ''];
+    const note = input({ id: 'crash-note', value: d.note || '', placeholder: '备注，比如修复的版本或 issue' });
+    const setStatus = st => async () => {
+      try { await api('POST', '/api/v1/admin/client-reports/' + fp + '/status', { status: st, note: note.value }); toast('已更新'); close(); if (after) await after(); } catch (ex) { fail(ex); }
+    };
+    const body = h('div', { class: 'audit-modal crash-modal' }, kv([
+      ['指纹', h('code', { class: 'mono' }, d.fingerprint)], ['类型', [badge(kt, kk), ' ', CRASH_PROC[d.process] || d.process]], ['消息', h('span', { class: 'mono wrap' }, d.message)],
+      ['上报', num(d.count) + ' 次，' + d.users + ' 个用户'], ['版本', d.versions.join('、')], ['系统', d.oses.join('、')],
+      ['首次 / 最近', ST.time(d.first_seen) + ' / ' + ST.time(d.last_seen)], ['状态', [badge(stt, stk), d.handled_by ? h('span', { class: 'muted' }, ' ' + d.handled_by) : null]],
+    ]), field('备注', note),
+    h('div', { class: 'row' }, h('button', { class: 'small', id: 'crash-known', onclick: setStatus('known') }, '标记已知'), h('button', { class: 'small', id: 'crash-fixed', onclick: setStatus('fixed') }, '标记已修复'),
+      h('button', { class: 'small', id: 'crash-reopen', onclick: setStatus('new') }, '重新打开')),
+    section('users', '上报明细', h('small', null, '每个用户、版本一行')),
+    table([
+      { title: '用户', cell: r => userLink(r.username) }, { title: '版本', cell: r => r.version }, { title: '系统', cell: r => [r.os + '/' + r.arch, h('div', { class: 'muted' }, r.os_version || '')] },
+      { title: '次数', num: true, cell: r => num(r.count) }, { title: '最近', cell: r => ST.time(r.last_seen) },
+      { title: '开关', cell: r => h('span', { class: 'muted' }, Object.entries(r.features || {}).map(([k, v]) => k + '=' + v).join(' ')) },
+    ], d.rows, '无'),
+    section('cube', '调用栈', h('small', null, '最近一次上报，已脱敏')), h('pre', { class: 'audit-detail crash-pre', id: 'crash-stack' }, d.stack || '（无）'),
+    section('book', '崩溃前的日志', h('small', null, '最多 100 行，已脱敏')), h('pre', { class: 'audit-detail crash-pre', id: 'crash-context' }, (d.context || []).join('\n') || '（无）'));
+    let close = () => {};
+    const shown = modal({ title: '客户端异常', body, okText: '关闭', cancel: false });
+    close = () => { const b = document.querySelector('.modal-back'); if (b) b.querySelector('.actions button.primary').click(); };
+    await shown;
+  }
+  async function crashes(m) {
+    const st = h('select', { id: 'crashes-status', onchange: () => list.reload() }, h('option', { value: 'new' }, '待处理'), h('option', { value: 'known' }, '已知'), h('option', { value: 'fixed' }, '已修复'), h('option', { value: '' }, '全部'));
+    const q = input({ type: 'search', id: 'crashes-q', placeholder: '指纹、消息或版本' });
+    let timer;
+    q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => list.reload(), 300); });
+    const list = ST.listView({ path: '/api/v1/admin/client-reports', key: 'problems', empty: '没有客户端异常', params: () => ({ status: st.value, q: q.value.trim() }), tools: [h('span', { class: 'muted' }, '状态'), st, q],
+      onData: r => setCrashNew(r.new),
+      columns: [
+        { title: '最近', cell: p => ST.time(p.last_seen) },
+        { title: '类型', cell: p => { const [t, k] = CRASH_KIND[p.kind] || [p.kind, '']; return [badge(t, k), h('div', { class: 'muted' }, CRASH_PROC[p.process] || p.process)]; } },
+        { title: '消息', cell: p => h('div', { class: 'feedback-text mono' }, p.message) },
+        { title: '次数 / 用户', num: true, cell: p => num(p.count) + ' / ' + num(p.users) },
+        { title: '版本', cell: p => p.versions.join('、') },
+        { title: '系统', cell: p => p.oses.join('、') },
+        { title: '状态', cell: p => { const [t, k] = CRASH_STATUS[p.status] || [p.status, '']; return [badge(t, k), p.note ? h('div', { class: 'muted' }, p.note) : null]; } },
+        { title: '', cell: p => h('button', { class: 'small', onclick: () => crashDetail(p.fingerprint, () => list.refresh()) }, '详情') },
+      ] });
+    add(m, pageTitle('客户端异常', h('small', null, '客户端崩溃和 panic 的脱敏报告，按问题（指纹）汇总；保留 90 天')), list.el);
+    await list.reload();
+  }
+  api('GET', '/api/v1/admin/client-reports?limit=1&status=new').then(r => setCrashNew(r.new)).catch(() => { /* the page itself reports errors */ });
+
   // ---- feedback ----
   function setFeedbackNew(n) { feedbackBadge.hidden = !n; feedbackBadge.textContent = n ? String(n) : ''; }
   const FEEDBACK_KIND = { bug: '问题', idea: '建议', other: '其他' };
@@ -864,9 +930,9 @@
     'user.rename': '修改用户邮箱', 'user.login_code': '生成登录验证码', 'user.mfa_reset': '重置两步验证', 'user.token_revoke': '吊销 token', 'user.tokens_revoke_all': '吊销全部 token', 'user.device_unbind': '解绑设备',
     'relay.add': '登记中继', 'relay.update': '编辑中继', 'relay.enable': '启用中继', 'relay.disable': '停用中继', 'relay.remove': '删除中继', 'dispute.resolve': '裁决争议', 'version_policy.set': '修改版本策略',
     'mail.send': '写邮件', 'mail.reply': '回复邮件', 'mail.mark_read': '批量标记已读 / 未读', 'mail.delete': '删除邮件', 'mail.move': '归档 / 移回邮件', 'mail.retry': '重发邮件', 'mail.cancel': '取消发送', 'mail.test': '发送测试邮件',
-    'feedback.status': '处理反馈', 'settings.update': '修改系统设置', 'settings.apply_blocklist': '禁用黑名单用户', 'invite.create': '创建邀请码', 'invite.disable': '停用邀请码',
+    'feedback.status': '处理反馈', 'client_report.status': '处理客户端异常', 'settings.update': '修改系统设置', 'settings.apply_blocklist': '禁用黑名单用户', 'invite.create': '创建邀请码', 'invite.disable': '停用邀请码',
     'export.users': '导出用户', 'export.jobs': '导出作业', 'export.journal': '导出账本', 'export.user-ledger': '导出用户账单', 'export.user-jobs': '导出用户作业', 'export.inference-audits': '导出推理审计', 'export.disputes': '导出争议',
-    'export.mail-inbox': '导出收件箱', 'export.mail-outbox': '导出发件箱', 'export.feedback': '导出反馈', 'export.audit-log': '导出操作日志',
+    'export.mail-inbox': '导出收件箱', 'export.mail-outbox': '导出发件箱', 'export.feedback': '导出反馈', 'export.client-reports': '导出客户端异常', 'export.audit-log': '导出操作日志',
   };
   // Labels for the keys handlers note; anything else shows its raw key.
   const AUDIT_KEYS = { is_admin: '管理员', memo: '备注', micros: '金额（micro）', count: '数量', found: '找到', read: '已读', status: '状态', subject: '主题', to: '收件人',
@@ -1050,7 +1116,7 @@
         fieldHint('新用户赠送 credit', f.signup_credit)),
         h('div', { class: 'settings-grid' },
           fieldHint('邮箱域名白名单', f.email_domain_allow, '一行一个，如 example.com、*.edu.cn（后者匹配所有子域名，不含 edu.cn 本身）。留空不限制。只管新注册。'),
-          h('div', { class: 'field' }, h('label', null, '邮箱黑名单（精确匹配）'), f.email_block, h('p', { class: 'hint' }, '一行一个。只阻止新注册；已注册的用户用下面的按钮处理。'),
+          h('div', { class: 'field' }, h('label', null, '邮箱黑名单'), f.email_block, h('p', { class: 'hint' }, '一行一个。同一个邮箱的其他写法（+后缀、Gmail 的点）也算命中。只阻止新注册；已注册的用户用下面的按钮处理。'),
             h('button', { type: 'button', class: 'small', id: 'set-block-apply', onclick: applyBlocklist }, '禁用已注册的命中用户'))),
         h('h3', null, '邀请码'), h('div', { class: 'row' }, h('button', { type: 'button', id: 'invite-new', onclick: newInvite }, '新建邀请码')), inviteList),
       section('mail', '邮件'), h('div', { class: 'card' }, h('div', { class: 'settings-grid' }, fieldHint('发件地址', f.mail_from, '验证码和通知从这里发出，域名要和 DKIM 一致。'), fieldHint('客服地址', f.mail_support, '用户看到的联系邮箱，回复邮件也从这里发出。')),
@@ -1067,7 +1133,7 @@
       h('div', { class: 'settings-actions' }, saveBtn, updated, err));
   }
 
-  const go = ST.router({ dashboard, overview, users, relays, versions, jobs, nodes, audits, disputes, pairings, partners, ledger, mail, feedback, oplog, settings }, nav, main, 'dashboard');
+  const go = ST.router({ dashboard, overview, users, relays, versions, jobs, nodes, audits, disputes, pairings, partners, ledger, mail, feedback, crashes, oplog, settings }, nav, main, 'dashboard');
   refreshUnread();
   await go();
 })();

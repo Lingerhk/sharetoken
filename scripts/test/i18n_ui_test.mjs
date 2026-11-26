@@ -173,8 +173,9 @@ await size(1280, 900);
 await go(`${portal}/app/?lang=en`);
 await waitFor(`document.getElementById('login-email')`);
 const user = `i18n${Date.now()}@example.com`;
-await ev(`ST.api('POST', '/api/v1/auth/code', { email: ${JSON.stringify(user)} }).then(() => true)`);
-await ev(`ST.api('POST', '/api/v1/web/auth/verify', { email: ${JSON.stringify(user)}, code: ${JSON.stringify(mailedCode(user))} }).then(() => true)`);
+// A code redeems only with the nonce its request returned.
+const nonce = await ev(`ST.api('POST', '/api/v1/auth/code', { email: ${JSON.stringify(user)} }).then(r => r.nonce)`);
+await ev(`ST.api('POST', '/api/v1/web/auth/verify', { email: ${JSON.stringify(user)}, code: ${JSON.stringify(mailedCode(user))}, nonce: ${JSON.stringify(nonce)} }).then(() => true)`);
 const ROUTES = ['home', 'ledger', 'jobs', 'tokens', 'devices', 'pairing', 'network', 'account', 'feedback'];
 for (const lang of LANGS) {
   await size(1280, 900);

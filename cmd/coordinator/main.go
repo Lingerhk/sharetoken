@@ -94,6 +94,8 @@ type File struct {
 		FeeBps          int64           `yaml:"fee_bps"`
 		MinBudgetMicros uint64          `yaml:"min_budget_micros"`
 		WarmUp          config.Duration `yaml:"warm_up"`
+		// MaxOffersPerAccount is how many nodes of one account may share at once.
+		MaxOffersPerAccount int `yaml:"max_offers_per_account"`
 	} `yaml:"market"`
 	Jobs struct {
 		TicketTTL       config.Duration `yaml:"ticket_ttl"`
@@ -106,6 +108,10 @@ type File struct {
 		MaxOfferTTL     config.Duration `yaml:"max_offer_ttl"`
 		JobRetention    config.Duration `yaml:"job_retention"`
 		SuspendFor      config.Duration `yaml:"suspend_for"`
+		// MaxIdleTickets and MaxIdlePerNode cap an account's tickets that have
+		// not started, of any age: in all, and for one node.
+		MaxIdleTickets int `yaml:"max_idle_tickets"`
+		MaxIdlePerNode int `yaml:"max_idle_per_node"`
 	} `yaml:"jobs"`
 	References []Reference `yaml:"references"`
 	Audit      struct {
@@ -131,6 +137,11 @@ type File struct {
 		CarryWait config.Duration `yaml:"carry_wait"`
 		// APIs are the APIs questions are asked in, one drawn per question.
 		APIs []string `yaml:"apis"`
+		// PriceMultiple caps an audit job's price at this many times the
+		// median of its model's sellers; DailyBudgetMicros is the most audit
+		// jobs may reserve out of the platform's fees per UTC day.
+		PriceMultiple     uint64 `yaml:"price_multiple"`
+		DailyBudgetMicros uint64 `yaml:"daily_budget_micros"`
 	} `yaml:"audit"`
 	TEE struct {
 		PolicyFile  string `yaml:"policy_file"`
@@ -161,7 +172,9 @@ func defaults() File {
 	j.MaxStaleTickets, j.StaleAfter = d.MaxStaleTickets, config.Duration(d.StaleAfter)
 	j.SettleGrace, j.DisputeWindow, j.MaxOfferTTL = config.Duration(d.SettleGrace), config.Duration(d.DisputeWindow), config.Duration(d.MaxOfferTTL)
 	j.JobRetention, j.SuspendFor = config.Duration(d.JobRetention), config.Duration(d.SuspendFor)
-	f.Market.MinBudgetMicros = d.MinBudgetMicros
+	f.Market.MinBudgetMicros, f.Market.MaxOffersPerAccount = d.MinBudgetMicros, d.MaxOffersPerAccount
+	j.MaxIdleTickets, j.MaxIdlePerNode = d.MaxIdleTickets, d.MaxIdlePerNode
+	f.Audit.PriceMultiple, f.Audit.DailyBudgetMicros = d.AuditPriceMultiple, d.AuditDailyMicros
 	a := &f.Audit
 	a.Interval, a.BudgetMicros, a.MaxTokens = config.D("10m"), 200_000, 96
 	a.Questions, a.Spread, a.ScoreTokens, a.Threshold, a.Margin, a.DivFails = 5, config.D("2m"), 64, 0.85, 0.03, 2
@@ -242,6 +255,12 @@ func (f *File) validate() error {
 	if j.MaxStaleTickets <= 0 {
 		bad("jobs.max_stale_tickets must be positive")
 	}
+	if j.MaxIdleTickets <= 0 || j.MaxIdlePerNode <= 0 || j.MaxIdlePerNode > j.MaxIdleTickets {
+		bad("jobs: want 0 < max_idle_per_node (%d) <= max_idle_tickets (%d)", j.MaxIdlePerNode, j.MaxIdleTickets)
+	}
+	if f.Market.MaxOffersPerAccount <= 0 {
+		bad("market.max_offers_per_account must be positive")
+	}
 	if j.TicketTTL > 0 && j.TicketTTL < config.D("10s") {
 		bad("jobs.ticket_ttl %v: nodes need at least 10s to start a job", j.TicketTTL)
 	}
@@ -272,6 +291,9 @@ func (f *File) validate() error {
 	}
 	if a.Spread < 0 || a.CalibrateEvery < 0 {
 		bad("audit.spread and audit.calibrate_every must not be negative")
+	}
+	if a.PriceMultiple == 0 || a.DailyBudgetMicros == 0 {
+		bad("audit.price_multiple and audit.daily_budget_micros must be positive")
 	}
 	if !slices.Contains(audit.Deliveries, a.Delivery) {
 		bad("audit.delivery %q: want one of %s", a.Delivery, strings.Join(audit.Deliveries, ", "))
@@ -390,6 +412,8 @@ func main() {
 		Relays: f.Network.Relays, RelaySync: f.Network.RelaySync.T(), MinBudgetMicros: f.Market.MinBudgetMicros, WarmUp: f.Market.WarmUp.T(),
 		TicketTTL: j.TicketTTL.T(), StartGrace: j.StartGrace.T(), ReconnectGrace: j.ReconnectGrace.T(),
 		MaxStaleTickets: j.MaxStaleTickets, StaleAfter: j.StaleAfter.T(), SettleGrace: j.SettleGrace.T(),
+		MaxIdleTickets: j.MaxIdleTickets, MaxIdlePerNode: j.MaxIdlePerNode, MaxOffersPerAccount: f.Market.MaxOffersPerAccount,
+		AuditPriceMultiple: f.Audit.PriceMultiple, AuditDailyMicros: f.Audit.DailyBudgetMicros,
 		DisputeWindow: j.DisputeWindow.T(), MaxOfferTTL: j.MaxOfferTTL.T(), JobRetention: j.JobRetention.T(), SuspendFor: j.SuspendFor.T(),
 		Log: lg}
 	references, servers := buildReferences(f.References)
@@ -404,7 +428,12 @@ func main() {
 		cfg.Attestation = &coordinator.Attestation{Verifier: cli.TEEVerifier(f.TEE.OnlineCheck), Policy: p}
 	}
 
-	h, err := p2p.NewHost(keys, p2p.HostConfig{Program: "coordinator", Listen: f.Network.Listen, DialOnly: len(f.Network.Listen) == 0, MaxConns: f.Network.MaxConns})
+	// Every user online holds a stream that arrives through one of the
+	// relays, so a relay may hold far more of them than any other peer.
+	var relays p2p.PeerSet
+	cfg.RelayPeers = relays.Set
+	h, err := p2p.NewHost(keys, p2p.HostConfig{Program: "coordinator", Listen: f.Network.Listen, DialOnly: len(f.Network.Listen) == 0, MaxConns: f.Network.MaxConns,
+		Trunk: relays.Has})
 	if err != nil {
 		log.Fatal(err)
 	}

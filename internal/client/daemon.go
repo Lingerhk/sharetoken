@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -21,6 +22,8 @@ import (
 	"time"
 
 	"sharetoken/internal/cli"
+	"sharetoken/internal/diag"
+	"sharetoken/internal/official"
 	"sharetoken/internal/p2p"
 	"sharetoken/internal/portal"
 	"sharetoken/internal/version"
@@ -43,6 +46,9 @@ type Daemon struct {
 	RetryMin, RetryMax time.Duration
 	// OnAgent, if set, adjusts each agent before it starts (embedding, tests).
 	OnAgent func(*Agent)
+	// Diag is the process's log and crash reporting (StartDiag); nil: the
+	// daemon still sends what the log directory's queue holds.
+	Diag *Diag
 
 	home string
 	log  *slog.Logger
@@ -61,7 +67,8 @@ type Daemon struct {
 	lastErr  string
 	portal   *PortalClient // nil: logged out
 	peer     string
-	mfa      *pendingMFA // a sign-in waiting for its second factor
+	mfa      *pendingMFA          // a sign-in waiting for its second factor
+	codes    map[string]codeNonce // sign-in codes asked for and not redeemed yet, by portal and address
 	agent    *Agent
 	agentAPI http.Handler
 	cancel   context.CancelFunc // ends the current run
@@ -69,6 +76,8 @@ type Daemon struct {
 	updates  *UpdateWatcher
 	warmup   *warmup.Service // runs logged in or out: it needs no portal
 	invites  pendingInvites  // the invite link the app was opened with (invites.go)
+	official *official.Gateway
+	reports  *diag.Uploader // sends the queued crash reports (diag.go)
 
 	stopUpdates context.CancelFunc
 }
@@ -109,6 +118,7 @@ func NewDaemon(home string) *Daemon {
 	d := &Daemon{home: home, log: slog.Default().With("component", "daemon"), state: StateLoggedOut}
 	d.updates = NewUpdateWatcher(home, "desktop", d.portalAddr)
 	d.warmup = warmup.New(home)
+	d.official = newGateway(home, slog.Default())
 	return d
 }
 
@@ -156,7 +166,7 @@ func (d *Daemon) Start() error {
 		ln.Close()
 		return err
 	}
-	d.srv = &http.Server{Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	d.srv = &http.Server{Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: diag.HTTPErrorLog("daemon")}
 	go func() {
 		if err := d.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			d.log.Error("local API stopped", "err", err)
@@ -169,13 +179,22 @@ func (d *Daemon) Start() error {
 	d.mu.Unlock()
 	uctx, stopUpdates := context.WithCancel(context.Background())
 	d.stopUpdates = stopUpdates
-	d.bg.Go(func() { d.updates.Run(uctx) })
-	d.bg.Go(func() { d.warmup.Run(uctx) })
+	d.bg.Go(diag.Wrap("updates", func() { d.updates.Run(uctx) }))
+	d.bg.Go(diag.Wrap("warmup", func() { d.warmup.Run(uctx) }))
+	d.official.StartUnlock(uctx)
+	d.bg.Go(diag.Wrap("connect", func() { d.connectLoop(uctx) }))
+	d.reports = NewReportUploader(d.home, d.reportQueue(), func() *PortalClient {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.portal
+	})
+	d.bg.Go(diag.Wrap("reports", func() { d.reports.Run(uctx) }))
 	if cfg.Portal != "" && cfg.Token != "" {
 		if keys, err := p2p.LoadOrCreateKeys(filepath.Join(d.home, KeyFile)); err == nil {
 			d.mu.Lock()
 			d.peer = keys.ID()
 			d.mu.Unlock()
+			setSelfPeer(keys.ID())
 		}
 		d.startRun(cfg)
 	}
@@ -238,7 +257,7 @@ func (d *Daemon) startRun(cfg Config) {
 	d.portal = NewPortalClient(cfg.Portal, cfg.Token, cfg.PortalPin)
 	d.cancel, d.done = cancel, done
 	d.mu.Unlock()
-	go d.joinNetwork(ctx, done, cfg)
+	go diag.Wrap("join", func() { d.joinNetwork(ctx, done, cfg) })()
 }
 
 // joinNetwork starts an agent, retrying until it runs: the portal, the relays
@@ -249,6 +268,7 @@ func (d *Daemon) joinNetwork(ctx context.Context, done chan struct{}, cfg Config
 	limit := cmpDuration(d.RetryMax, time.Minute)
 	for {
 		a := NewAgent(d.home, cfg)
+		a.Official = d.official
 		a.ExternalAPI = d.addr
 		a.Updates = d.updates
 		a.OnLoginEnded = func() { go d.expire(cfg.Token, "the portal rejected the login (expired or revoked)") }
@@ -557,13 +577,43 @@ func (d *Daemon) portalFor(ctx context.Context, req signInRequest) (pc *PortalCl
 	return NewPortalClient(base, "", pin), base, pin, nil
 }
 
-// requestCode asks the portal to mail a sign-in code.
+// codeNonce is what the portal returned with a code it mailed: the code only
+// redeems together with it.
+type codeNonce struct {
+	nonce   string
+	expires time.Time
+}
+
+func codeKey(base, email string) string {
+	return base + "\n" + strings.ToLower(strings.TrimSpace(email))
+}
+
+// requestCode asks the portal to mail a sign-in code, and keeps the nonce the
+// code goes with for signIn: the page never sees it.
 func (d *Daemon) requestCode(ctx context.Context, req signInRequest) (*CodeSent, error) {
-	pc, _, _, err := d.portalFor(ctx, req)
+	pc, base, _, err := d.portalFor(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return pc.RequestCode(ctx, strings.TrimSpace(req.Email), strings.TrimSpace(req.Invite))
+	sent, err := pc.RequestCode(ctx, strings.TrimSpace(req.Email), strings.TrimSpace(req.Invite))
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	d.mu.Lock()
+	if d.codes == nil {
+		d.codes = make(map[string]codeNonce)
+	}
+	for k, c := range d.codes {
+		if now.After(c.expires) {
+			delete(d.codes, k)
+		}
+	}
+	d.codes[codeKey(base, req.Email)] = codeNonce{sent.Nonce, now.Add(time.Duration(sent.ExpiresInSeconds) * time.Second)}
+	d.mu.Unlock()
+	out := *sent
+	out.Nonce = ""
+	return &out, nil
 }
 
 // errLoggedIn refuses a second sign-in.
@@ -595,11 +645,19 @@ func (d *Daemon) signIn(ctx context.Context, req signInRequest) error {
 	if err != nil {
 		return err
 	}
+	// The nonce of the code this daemon asked for; none for a code the
+	// portal's operator handed out, which needs none.
 	d.mu.Lock()
 	d.mfa = nil
+	nonce := d.codes[codeKey(base, req.Email)].nonce
 	d.mu.Unlock()
-	res, err := pc.SignIn(ctx, strings.TrimSpace(req.Email), strings.TrimSpace(req.Code), strings.TrimSpace(req.Invite), "", "desktop on "+device)
+	res, err := pc.SignIn(ctx, strings.TrimSpace(req.Email), strings.TrimSpace(req.Code), nonce, strings.TrimSpace(req.Invite), "", "desktop on "+device)
 	var pe *PortalError
+	if err == nil || errors.As(err, &pe) && (pe.Code == "mfa_required" || pe.Code == "mfa_setup_required") {
+		d.mu.Lock()
+		delete(d.codes, codeKey(base, req.Email)) // the code is used
+		d.mu.Unlock()
+	}
 	switch {
 	case errors.As(err, &pe) && pe.Code == "mfa_required" && pe.Challenge != "":
 		d.mu.Lock()
@@ -678,6 +736,9 @@ func (d *Daemon) finishSignIn(ctx context.Context, pc *PortalClient, base, pin s
 		_ = pc.Logout(lctx)
 		var pe *PortalError
 		if errors.As(err, &pe) {
+			if IsClockRejected(err) {
+				return &apiError{pe.Status, "clock_skew", "signed in, but the portal rejected this device's signature: check that this computer's date, time and time zone are right, then sign in again"}
+			}
 			return &apiError{pe.Status, "bind_failed", "signed in, but binding this device failed: " + pe.Message}
 		}
 		return &apiError{http.StatusBadGateway, "bind_failed", "signed in, but binding this device failed: " + err.Error()}
@@ -690,7 +751,11 @@ func (d *Daemon) finishSignIn(ctx context.Context, pc *PortalClient, base, pin s
 	d.peer = peer
 	d.mu.Unlock()
 	d.log.Info("signed in", "user", res.User.Username, "device", peer, "new_account", res.Created)
+	setSelfPeer(peer)
 	d.startRun(cfg)
+	if d.reports != nil {
+		d.reports.Kick() // crashes from before the sign-in waited for it
+	}
 	return nil
 }
 
@@ -967,8 +1032,13 @@ func (d *Daemon) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /api/v1/tailnet", tailnetSaved(false))
 	mux.HandleFunc("PUT /api/v1/tailnet", tailnetSaved(true))
+	d.official.Routes(mux)
+	d.connectRoutes(mux)
+	d.diagRoutes(mux)
+	mux.HandleFunc("/backend-api/", d.official.ServeBackend)
+	mux.HandleFunc("/api/hello", helloOK)
 	mux.HandleFunc("/api/v1/", d.toAgent)
-	mux.HandleFunc("/v1/", d.toAgent)
+	mux.HandleFunc("/v1/", d.toV1)
 	apiKeyRoutes(mux, d.home)
 	return guardHost(guardAPIOrigin(guardOrigin(requireLocalKey(d.key, daemonOpen, d.apiKeys, mux))))
 }
@@ -979,7 +1049,8 @@ func (d *Daemon) Handler() http.Handler {
 // endpoint, stay out.
 func guardAPIOrigin(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if o := r.Header.Get("Origin"); o != "" && strings.HasPrefix(r.URL.Path, "/api/v1/") && o != "http://"+r.Host {
+		// The path cleaned, as requireLocalKey and the mux judge it.
+		if o := r.Header.Get("Origin"); o != "" && strings.HasPrefix(path.Clean("/"+r.URL.Path), "/api/v1/") && o != "http://"+r.Host {
 			writeErrorCode(w, http.StatusForbidden, "bad_origin", "the management API is only for the sharetoken app")
 			return
 		}
@@ -1011,8 +1082,7 @@ func guardHost(h http.Handler) http.Handler {
 // out what a web form could post.
 func jsonBody[T any](h func(http.ResponseWriter, *http.Request, T)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if ct != "application/json" {
+		if !jsonContent(r) {
 			writeErrorCode(w, http.StatusUnsupportedMediaType, "bad_request", "send application/json")
 			return
 		}
@@ -1023,6 +1093,13 @@ func jsonBody[T any](h func(http.ResponseWriter, *http.Request, T)) http.Handler
 		}
 		h(w, r, req)
 	}
+}
+
+// jsonContent reports whether r says its body is JSON, which a web form
+// cannot (jsonBody; the routes that read their bodies themselves).
+func jsonContent(r *http.Request) bool {
+	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	return ct == "application/json"
 }
 
 func (d *Daemon) fromPortal(path string) http.HandlerFunc {

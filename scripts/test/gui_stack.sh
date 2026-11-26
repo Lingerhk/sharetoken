@@ -9,7 +9,7 @@
 #   scripts/test/gui_stack.sh code  DIR <email>   # the last sign-in code mailed to the address
 #
 # Nothing delivers mail: the portal's outbox keeps every message, and "code"
-# reads the sign-in code from its subject, as the recipient would.
+# reads the sign-in code from its text, as the recipient would.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CMD=${1:?start, stop or code}; DIR=${2:?directory}
@@ -22,8 +22,8 @@ if [ "$CMD" = code ]; then
   EMAIL=${3:?email}
   DB=$(sed 's|.*/||' "$DIR/dsn")
   for _ in $(seq 1 50); do
-    SUBJECT=$("$ROOT/scripts/test/local-mysql.sh" sql "$DB" "SELECT subject FROM mail_outbox WHERE to_addr='$EMAIL' AND subject LIKE '%code:%' ORDER BY id DESC LIMIT 1")
-    [ -n "$SUBJECT" ] && { echo "${SUBJECT##*: }"; exit 0; }
+    CODE=$("$ROOT/scripts/test/local-mysql.sh" sql "$DB" "SELECT REGEXP_SUBSTR(text_body, '[0-9]{6}') FROM mail_outbox WHERE to_addr='$EMAIL' AND kind='verify' ORDER BY id DESC LIMIT 1")
+    [ -n "$CODE" ] && { echo "$CODE"; exit 0; }
     sleep 0.2
   done
   echo "no code mailed to $EMAIL" >&2; exit 1
@@ -97,6 +97,9 @@ sign_in() {
 }
 ST="$BIN/sharetoken -home $DIR/seller"
 sign_in "$DIR/seller" seller@example.test seller-box
+# Its own local address: the share commands below look for a running client
+# there, and the build type's default port may belong to someone's own client.
+python3 -c 'import json,sys; p=sys.argv[1]; c=json.load(open(p)); c["http"]=sys.argv[2]; json.dump(c,open(p,"w"),indent=2)' "$DIR/seller/config.json" "127.0.0.1:$SELLER_API"
 $ST share upstream http://127.0.0.1:$MOCK_PORT/v1 > /dev/null
 $ST share add mock-fast -id mock-fast -in 100000 -out 200000 > /dev/null
 $ST share on > /dev/null
@@ -107,7 +110,7 @@ run seller.log $ST up -http 127.0.0.1:$SELLER_API -listen /ip4/127.0.0.1/tcp/0 -
 key_of() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["key"])' "$1/run.json" 2>/dev/null; }
 for _ in $(seq 1 100); do curl -s -H "Authorization: Bearer $(key_of "$DIR/seller")" http://127.0.0.1:$SELLER_API/api/v1/status | grep -q '"connected": true' && break; sleep 0.2; done
 
-run daemon.log env SHARETOKEN_PORTAL="$PORTAL" "$BIN/sharetoken-guistack" -home "$DIR/desktop" daemon -http 127.0.0.1:$DAEMON_API -listen /ip4/127.0.0.1/tcp/0 -nat=false
+run daemon.log env SHARETOKEN_PORTAL="$PORTAL" SHARETOKEN_REGION=CN SHARETOKEN_OPEN_DRY_RUN=1 "$BIN/sharetoken-guistack" -home "$DIR/desktop" daemon -http 127.0.0.1:$DAEMON_API -listen /ip4/127.0.0.1/tcp/0 -nat=false
 for _ in $(seq 1 50); do [ -n "$(key_of "$DIR/desktop")" ] && curl -sf -H "Authorization: Bearer $(key_of "$DIR/desktop")" http://127.0.0.1:$DAEMON_API/api/v1/session > /dev/null && break; sleep 0.2; done
 
 cat > env <<ENV

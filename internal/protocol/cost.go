@@ -128,58 +128,118 @@ const perMessageOverhead = 4 // role markers and separators in chat templates
 
 // EstimatePromptTokens estimates the prompt size of a request in api from
 // its text, tool definitions and attachments.
+//
+// Fields are matched by their exact names, as the node matches them when it
+// builds the model server's request (encoding/json would also take
+// "Messages" for "messages", and the later of the two). And the estimate is
+// never below a floor set by the body's size, so that what a request carries
+// in fields the estimate does not know still counts: a node may bill up to
+// promptBound(estimate), and pays its model server for all of it.
 func EstimatePromptTokens(api string, body []byte) (uint64, error) {
+	var (
+		n      uint64
+		opaque int
+		err    error
+	)
 	switch NormalAPI(api) {
 	case APIMessages:
-		return estimateMessages(body)
+		n, opaque, err = estimateMessages(body)
 	case APIResponses:
-		return estimateResponses(body)
+		n, opaque, err = estimateResponses(body)
+	default:
+		n, opaque, err = estimateChat(body)
 	}
-	return estimateChat(body)
+	if err != nil {
+		return 0, err
+	}
+	return max(n, sizeFloor(len(body), opaque)), nil
+}
+
+// floorBytesPerToken is deliberately high (JSON and code run 3 to 4 bytes a
+// token): the floor only has to keep promptBound above what a model server
+// can count in len(body) bytes, not to estimate them.
+const floorBytesPerToken = 8
+
+// sizeFloor is the least a body of size bytes is estimated at; opaque are the
+// bytes of attachments, which are estimated by kind (an image costs the same
+// whatever its size).
+func sizeFloor(size, opaque int) uint64 {
+	if opaque >= size {
+		return 0
+	}
+	return uint64(size-opaque) / floorBytesPerToken
+}
+
+// fields decodes a JSON object keeping its keys as they are written.
+func fields(raw []byte) (map[string]json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return nil, errors.New("protocol: the request is not a JSON object")
+	}
+	return m, nil
+}
+
+// items decodes a JSON array of objects (nil when raw is not one).
+func items(raw json.RawMessage) []map[string]json.RawMessage {
+	var list []map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &list) != nil {
+		return nil
+	}
+	return list
 }
 
 // estimateChat estimates an OpenAI chat-completions body.
-func estimateChat(body []byte) (uint64, error) {
-	var req struct {
-		Messages []struct {
-			Content  json.RawMessage `json:"content"`
-			Thinking []struct {
-				Thinking string `json:"thinking"`
-			} `json:"anthropic_thinking"`
-		} `json:"messages"`
-		Tools json.RawMessage `json:"tools"`
+func estimateChat(body []byte) (n uint64, opaque int, err error) {
+	req, err := fields(body)
+	if err != nil {
+		return 0, 0, err
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return 0, err
-	}
-	var n uint64
-	for _, m := range req.Messages {
-		n += perMessageOverhead + EstimateTokens(messageText(m.Content)) + attachmentTokens(m.Content)
-		for _, block := range m.Thinking {
-			n += EstimateTokens(block.Thinking)
+	if raw := req["messages"]; len(raw) > 0 && string(raw) != "null" {
+		var list []json.RawMessage
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return 0, 0, err
+		}
+		for _, one := range list {
+			m, err := fields(one)
+			if err != nil {
+				return 0, 0, err
+			}
+			att, skipped := attachmentTokens(m["content"])
+			n += perMessageOverhead + EstimateTokens(messageText(m["content"])) + att
+			opaque += skipped
+			for _, block := range items(m["anthropic_thinking"]) {
+				var s string
+				if json.Unmarshal(block["thinking"], &s) == nil {
+					n += EstimateTokens(s)
+				}
+			}
 		}
 	}
-	if len(req.Tools) > 0 {
-		n += EstimateTokens(string(req.Tools))
+	if tools := req["tools"]; len(tools) > 0 && string(tools) != "null" {
+		n += EstimateTokens(string(tools))
 	}
-	return n, nil
+	return n, opaque, nil
 }
 
 func messageText(raw json.RawMessage) string {
-	if len(raw) == 0 {
+	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
 		return s
 	}
-	var parts []struct {
-		Text string `json:"text"`
-	}
+	var parts []map[string]json.RawMessage
 	if json.Unmarshal(raw, &parts) == nil {
 		var b strings.Builder
 		for _, p := range parts {
-			b.WriteString(p.Text)
+			var text string
+			if json.Unmarshal(p["text"], &text) == nil {
+				b.WriteString(text)
+			}
 		}
 		return b.String()
 	}

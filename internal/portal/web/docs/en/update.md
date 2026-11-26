@@ -6,7 +6,7 @@
 {{exe}} version
 ```
 
-The client checks for new versions itself: the desktop app shows them at the top of its page, in the tray menu and as a system notification, and the command-line client writes them to its log. `{{exe}} status` shows them too. To check by hand:
+A running client checks for new versions when it starts and every hour after that: the desktop app shows them at the top of its window, in the tray menu and as a system notification, and the command-line client writes them to its log. `{{exe}} status` shows them too. To check by hand:
 
 ```bash
 {{exe}} version --check
@@ -16,7 +16,9 @@ See the [download section](/#download) for the latest version. If the client is 
 
 ## One-click update {#one-click}
 
-The desktop app installs a new version by itself: click **Update now** in the line at the top of its window. It downloads the package, checks that it carries the ShareToken release signature, lets jobs in progress finish, installs it and restarts. On macOS the app must be in the Applications folder (not opened from the disk image); on Linux the system asks for an administrator password, as for any package.
+The desktop app installs a new version by itself: click **Update now** in the line at the top of its window. It downloads the package, checks that it carries the ShareToken release signature, lets jobs in progress finish, installs it and restarts. On Windows the installer runs silently in the background; on Linux the system asks for an administrator password, as for any package.
+
+Only an app installed from its package can update itself this way: on macOS it must be in the Applications folder (not opened from the disk image), on Windows installed with the installer, and on Linux installed from the `.deb`, with `pkexec` on the system. Otherwise the line offers only "Details", with the download to [update by hand](#upgrade). "Skip this version" stops offering a version you do not want; a required upgrade cannot be skipped.
 
 The command-line client does the same with:
 
@@ -24,11 +26,11 @@ The command-line client does the same with:
 {{exe}} upgrade
 ```
 
-It asks before installing (`-y` does not ask) and installs the package the way this copy was installed: the program file of the command-line archive, the macOS app (quit it first, or update from the app), the Windows installer, or the `.deb` with `sudo dpkg -i`. A package without a valid release signature is never installed. A running `{{exe}} up` keeps the old version until you restart it.
+It asks before installing (`-y` does not ask) and installs the package the way this copy was installed: the program file of the command-line archive, the macOS app (quit it first, or update from the app), the Windows installer (it runs in the background; open the app again when it is done), or the `.deb` with `sudo dpkg -i`. A package without a valid release signature is never installed. A running `{{exe}} up` or `{{exe}} daemon` keeps the old version until you restart it.
 
 ## Update by hand {#upgrade}
 
-An update just replaces the program file. Your account, device key and configuration are in the state directory and are not affected, so you do not need to sign in again.
+An update just replaces the program file. Your account, device key and configuration are in the state directory and are not affected, so you do not need to sign in again. For the desktop app, download the new package and [install it as the first time](/docs/desktop#install); it replaces the old version. For the command-line edition:
 
 1. Stop the running client (`Ctrl+C`, or stop the [background service](/docs/running#background)).
 2. Download the new version and replace the program. The commands are below.
@@ -82,27 +84,35 @@ If you installed the [skill for coding agents](/docs/agents), remove it while th
 {{exe}} skill uninstall
 ```
 
+If you connected Claude Code or Codex with `{{exe}} connect`, put back their own settings first (the backups are in the state directory, which step 3 deletes), and turn off the Codex Desktop unlock (which makes the system stop trusting its localhost certificate). A command for something you never set up does nothing:
+
+```bash
+{{exe}} codex-unlock off
+{{exe}} connect claude -off
+{{exe}} connect codex -off
+```
+
 ### Step 2: Remove the program and background service {#uninstall-program}
+
+This removes the command-line edition and its background service. `{{exe}} autostart off` removes the service set up with `{{exe}} autostart on` as in [Run in the background](/docs/running#background), and does nothing when there is none. Uninstall the desktop app [its own way](/docs/desktop#upgrade); that removes its command-line program too.
 
 ::: macos
 ```bash
-launchctl bootout gui/$(id -u)/app.sharetoken.client 2>/dev/null
-rm -f ~/Library/LaunchAgents/app.sharetoken.client.plist
+{{exe}} autostart off
 rm -f ~/.local/bin/{{exe}}
 ```
 :::
 
 ::: linux
 ```bash
-systemctl --user disable --now sharetoken 2>/dev/null
-rm -f ~/.config/systemd/user/sharetoken.service
+{{exe}} autostart off
 rm -f ~/.local/bin/{{exe}}
 ```
 :::
 
 ::: windows
 ```powershell
-Unregister-ScheduledTask -TaskName ShareToken -Confirm:$false -ErrorAction SilentlyContinue
+{{exe}} autostart off
 Stop-Process -Name {{exe}} -ErrorAction SilentlyContinue
 Remove-Item "$HOME\AppData\Local\Programs\sharetoken\{{exe}}.exe"
 ```
@@ -124,3 +134,5 @@ rm -rf {{home}}
 Remove-Item -Recurse -Force "{{homewin}}"
 ```
 :::
+
+The logs are in the state directory's `logs` by default and go with it. If you moved them elsewhere with `log.dir` in the configuration, delete that directory too. If you once set up a service by hand following an older version of this guide, `~/Library/Logs/sharetoken.log` (macOS) or `$HOME\AppData\Local\sharetoken.log` (Windows) may be left; delete it too.

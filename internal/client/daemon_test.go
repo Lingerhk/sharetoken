@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -95,6 +96,8 @@ type testDaemon struct {
 	closeOnce     func()
 	portalForTest string
 }
+
+var mailedCodeRE = regexp.MustCompile(`(?m)^ {4}(\d{6})\r?$`)
 
 func (e *daemonEnv) daemonIn(home string) *testDaemon {
 	e.t.Helper()
@@ -207,14 +210,18 @@ func (d *testDaemon) waitState(want ...string) Session {
 // of the per-address cooldown and hourly limits, so a test can sign in again.
 func (e *daemonEnv) code(email string) string {
 	e.t.Helper()
-	var subject string
-	if err := e.db.QueryRow(`SELECT subject FROM mail_outbox WHERE to_addr = ? ORDER BY id DESC LIMIT 1`, accounts.NormalizeEmail(email)).Scan(&subject); err != nil {
+	var text string
+	if err := e.db.QueryRow(`SELECT text_body FROM mail_outbox WHERE to_addr = ? AND kind = 'verify' ORDER BY id DESC LIMIT 1`, accounts.NormalizeEmail(email)).Scan(&text); err != nil {
 		e.t.Fatalf("no code mailed to %s: %v", email, err)
 	}
 	if _, err := e.db.Exec(`UPDATE mail_codes SET created_at = created_at - 7200`); err != nil {
 		e.t.Fatal(err)
 	}
-	return subject[strings.LastIndex(subject, " ")+1:]
+	code := mailedCodeRE.FindStringSubmatch(text)
+	if code == nil {
+		e.t.Fatalf("no code in the mail to %s: %q", email, text)
+	}
+	return code[1]
 }
 
 // requestCode has the daemon ask for a code and returns the portal's answer.
@@ -388,6 +395,15 @@ func TestDaemonSignInErrors(t *testing.T) {
 	right := e.code("w@example.com")
 	try(401, "bad_code", "/api/v1/auth/verify", e.url, "w@example.com", wrongCode(right))
 	try(401, "bad_code", "/api/v1/auth/verify", e.url, "other@example.com", right)
+	// The daemon keeps the nonce a code goes with, and the page gets none: a
+	// code asked for elsewhere does not sign in here, only where it was asked for.
+	d2 := e.daemon()
+	if sent := d2.requestCode(e.url, "there@example.com"); sent.Nonce != "" || sent.ExpiresInSeconds == 0 {
+		t.Fatalf("the page was handed the nonce: %+v", sent)
+	}
+	elsewhere := e.code("there@example.com")
+	try(401, "bad_code", "/api/v1/auth/verify", e.url, "there@example.com", elsewhere)
+	d2.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": " There@Example.com ", "code": elsewhere})
 	// Asking again within a minute is refused (the test helper skips this wait).
 	d.requestCode(e.url, "cool@example.com")
 	try(429, "code_cooldown", "/api/v1/auth/code", e.url, "cool@example.com", "")
@@ -576,11 +592,12 @@ func enrollMFA(t *testing.T, e *daemonEnv, user string) []byte {
 			}
 		}
 	}
-	post("/api/v1/auth/code", map[string]string{"email": user}, nil)
+	var sent CodeSent
+	post("/api/v1/auth/code", map[string]string{"email": user}, &sent)
 	var ch struct {
 		Challenge string `json:"challenge"`
 	}
-	post("/api/v1/web/auth/verify", map[string]string{"email": user, "code": e.code(user)}, &ch)
+	post("/api/v1/web/auth/verify", map[string]string{"email": user, "code": e.code(user), "nonce": sent.Nonce}, &ch)
 	var setup portal.MFASetup
 	post("/api/v1/web/mfa/setup", map[string]string{"challenge": ch.Challenge}, &setup)
 	secret, err := totp.Decode(setup.Secret)
@@ -803,7 +820,15 @@ func TestDaemonUserDisabled(t *testing.T) {
 	}
 	d.call("GET", "/api/v1/account", nil)
 	d.waitState(StateExpired)
-	d.want(403, "account_disabled", "POST", "/api/v1/auth/code", map[string]string{"portal": e.url, "email": s.User})
+	// Asking for a code is answered as for any account (the portal does not
+	// say who is disabled): the mail tells the holder, and carries no code.
+	e.code(s.User) // out of the cooldown of the first sign-in
+	d.requestCode(e.url, s.User)
+	var kind, text string
+	if err := e.db.QueryRow(`SELECT kind, text_body FROM mail_outbox WHERE to_addr = ? ORDER BY id DESC LIMIT 1`, s.User).Scan(&kind, &text); err != nil || kind != "notice" || !strings.Contains(text, "disabled") {
+		t.Fatalf("mail to a disabled account: %q %q %v", kind, text, err)
+	}
+	d.want(401, "bad_code", "POST", "/api/v1/auth/verify", map[string]string{"portal": e.url, "email": s.User, "code": "000000"})
 }
 
 // Someone else signs in on this machine: their account gets its own device key.
@@ -880,6 +905,28 @@ func TestDaemonBindFailureRevokesToken(t *testing.T) {
 	bindFails.Store(false)
 	d.want(200, "", "POST", "/api/v1/auth/code", map[string]string{"portal": front.URL, "email": "a@example.com"})
 	d.want(200, "", "POST", "/api/v1/auth/verify", map[string]string{"portal": front.URL, "email": "a@example.com", "code": e.code("a@example.com")})
+}
+
+// A device signature the portal refuses at sign-in (a wrong clock) says to
+// check the clock, and leaves nobody logged in.
+func TestDaemonBindClockSkew(t *testing.T) {
+	e := newDaemonEnv(t, openPortal(), false)
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/devices" && r.Method == "POST" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"bad_signature","message":"accounts: device signature is too old or from the future"}}`))
+			return
+		}
+		e.portal.Handler().ServeHTTP(w, r)
+	}))
+	defer front.Close()
+	d := e.daemon()
+	d.want(200, "", "POST", "/api/v1/auth/code", map[string]string{"portal": front.URL, "email": "c@example.com"})
+	d.want(400, "clock_skew", "POST", "/api/v1/auth/verify", map[string]string{"portal": front.URL, "email": "c@example.com", "code": e.code("c@example.com")})
+	if s := d.session(); s.LoggedIn {
+		t.Fatalf("session: %+v", s)
+	}
 }
 
 // Web pages get nothing from this API; the desktop shell and CLI tools do.

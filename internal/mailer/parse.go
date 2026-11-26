@@ -40,9 +40,37 @@ type Parsed struct {
 // maxShownText bounds what a message page carries.
 const maxShownText = 512 << 10
 
+// What a message may be made of to be taken apart; mail people write has a
+// handful of multiparts and parts.
+const (
+	maxMultiparts = 64
+	maxParts      = 1000
+)
+
+var errTooManyParts = errors.New("mailer: the message has too many parts")
+
+// countFold counts s in b, whatever the case of ASCII letters, up to limit.
+func countFold(b []byte, s string, limit int) int {
+	n := 0
+	for i := 0; i+len(s) <= len(b) && n < limit; i++ {
+		if (b[i]|0x20) == s[0] && strings.EqualFold(string(b[i:i+len(s)]), s) {
+			n++
+			i += len(s) - 1
+		}
+	}
+	return n
+}
+
 // walk visits the leaf parts of raw. It stops without error at the first
 // structure it cannot read, keeping what it got.
 func walk(raw []byte, fn func(h mail.PartHeader, body io.Reader) error) (*mail.Header, error) {
+	// The message is a stranger's, and it is read in the portal's process
+	// when an administrator opens it: one built of multiparts nested by the
+	// thousand, or of a million empty parts, is not taken apart at all.
+	if countFold(raw, "multipart/", maxMultiparts+1) > maxMultiparts {
+		return nil, errTooManyParts
+	}
+	parts := 0
 	r, err := mail.CreateReader(bytes.NewReader(raw))
 	if err != nil && !message.IsUnknownCharset(err) {
 		return nil, err
@@ -61,6 +89,9 @@ func walk(raw []byte, fn func(h mail.PartHeader, body io.Reader) error) (*mail.H
 		}
 		if p == nil {
 			return &r.Header, err
+		}
+		if parts++; parts > maxParts {
+			return &r.Header, errTooManyParts
 		}
 		if err := fn(p.Header, p.Body); err != nil {
 			return &r.Header, err
@@ -268,6 +299,28 @@ func charsetPassthrough(_ string, input io.Reader) (io.Reader, error) { return i
 // headerSummary reads the header fields stored in columns.
 type headerSummary struct {
 	From, Subject, MessageID string
+	// FromDomain is the domain of the one mailbox in the one From field, as
+	// an address parser reads it; empty when there is not exactly one, and
+	// such a message is never shown as verified.
+	FromDomain string
+}
+
+// fromDomain is headerSummary.FromDomain. It is not taken from the text
+// shown for From: a display name may hold anything, "@other.example>"
+// included, and what is checked has to be the address the reader sees.
+func fromDomain(h *mail.Header) string {
+	if len(h.Values("From")) != 1 {
+		return ""
+	}
+	as, err := h.AddressList("From")
+	if err != nil || len(as) != 1 {
+		return ""
+	}
+	i := strings.LastIndexByte(as[0].Address, '@')
+	if i < 0 {
+		return ""
+	}
+	return strings.ToLower(as[0].Address[i+1:])
 }
 
 func summarize(raw []byte) headerSummary {
@@ -288,6 +341,7 @@ func summarize(raw []byte) headerSummary {
 	h := mail.Header{Header: r.Header}
 	s.Subject, _ = h.Subject()
 	s.From = addressList(&h, "From")
+	s.FromDomain = fromDomain(&h)
 	s.MessageID = strings.TrimSpace(h.Get("Message-Id"))
 	return s
 }

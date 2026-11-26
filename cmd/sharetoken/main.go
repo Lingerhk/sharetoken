@@ -42,6 +42,7 @@ import (
 	"sharetoken/internal/buyer"
 	"sharetoken/internal/cli"
 	"sharetoken/internal/client"
+	"sharetoken/internal/diag"
 	"sharetoken/internal/node"
 	"sharetoken/internal/p2p"
 	"sharetoken/internal/protocol"
@@ -49,7 +50,7 @@ import (
 	"sharetoken/internal/version"
 )
 
-const usage = `usage: sharetoken [-home DIR] <command> [flags]
+const usage = `usage: sharetoken [-home DIR] [-log-dir DIR] <command> [flags]
 
 Getting started:
   login [-email ADDR] [-code CODE] [-invite CODE] [-totp CODE] [-device NAME] [-portal-pin FP]
@@ -85,7 +86,7 @@ Account (portal):
 Sharing a model:
   share                                 show the sharing settings
   share detect                          list the models of the local model server
-  share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-max-output N]
+  share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-cache-read P] [-cache-write P] [-max-output N]
                                         share a model of the local model server, or of a provider
                                         (prices: micro-credits per million tokens)
   share rm <id>
@@ -104,7 +105,8 @@ Hosted APIs to share (kept in providers.json, apart from the configuration):
                            [-profile standard|claude-code] [-sampling strict|default]
                            [-tls-profile native|chrome] [-token-tls-profile native|chrome]
   provider login anthropic [-mode full|inference] [-session-key] [-profile standard|claude-code]
-  provider test <name> [-model M]       send one small request through it
+  provider test <name> [-model M] [-prompt TEXT]
+                                        send one small request through it
   provider on | off <name>              sell its models, or stop
   provider warmup <name> [-times 06:00,11:05] [-on-reset off|week|all] [-model M] [-off]
                                         a Claude or ChatGPT login: start its usage windows at times of day,
@@ -126,8 +128,10 @@ Pairing (a buyer that pairs with a seller buys only from the sellers it is paire
 
 Share partners (two users use each other's nodes for free, before the market):
   partner                               your partners, open invites, settings and the tokens shared in the last 24 hours
-  partner invite [-ttl 24h] [-approve]  make an invite and its link for one person (at most 168h);
-                                        -approve: joining waits for you to approve it
+  partner invite [-ttl 24h] [-uses 1] [-approve]
+                                        make an invite and its link (at most 168h); -uses: how many
+                                        people may join with it (at most 100); -approve: joining
+                                        waits for you to approve it
   partner join <code|link>              become the partner of whoever made the invite
   partner approve | reject <request id> approve or reject someone waiting for your approval
   partner withdraw <request id>         withdraw your own request
@@ -143,6 +147,20 @@ The OpenAI-compatible endpoint's API key (by default required; tools send it as 
   apikey [-q]                           the endpoint, whether the key is required, and the key; -q prints the key only
   apikey on | off                       require the key, or let any program of this machine in without it
   apikey rotate                         make a new key; the old one stops working
+
+Claude Code and Codex (their own config files, backed up first; sharetoken models are listed as st-…):
+  connect                               which tools are connected
+  connect claude|codex [-subscription auto|on|off] [-openai-provider] [-force] [-off]
+                                        point the tool at the local endpoint. With its own login (claude.ai,
+                                        ChatGPT) kept, its menu lists the official models and sharetoken's,
+                                        and each request goes where its model is; -off puts the file back
+  official                              the plans' usage seen, and what happens when one runs out
+  official fallback on|off              Claude Code: go on on sharetoken when the plan is used up (default on)
+  official fallback-model <model|auto>  the sharetoken model that takes over
+  official guard <percent>              Codex: hold official models at this share of a window (default 95)
+  codex-unlock on|off                   Codex Desktop (macOS, Windows): a spent ChatGPT plan does not lock the
+                                        input, so sharetoken models go on; trusts a localhost certificate
+  autostart on|off                      run the client at login (the connected tools need it running)
 
 Coding agents (Claude Code, Codex):
   skill                                 which agents are found, and whether they have the skill
@@ -161,6 +179,14 @@ Warm-up (start a Claude or ChatGPT 5-hour window early, so it resets while you w
                                         warm up now (default: every one that is set)
   warmup pause | resume                 stop every automatic warm-up, or go on
 
+Logs and crash reports:
+  logs [-n N] [-f] [-gui]               the client's log (-gui: the desktop app's); logs path: where it is.
+                                        It is in <home>/logs unless -log-dir, $SHARETOKEN_LOG_DIR or the
+                                        configuration's log.dir say otherwise (read at start)
+  diagnostics [on|off|show]             whether a crash or panic is reported to the portal, redacted, with
+                                        your login (default on; off in the European Economic Area);
+                                        show prints exactly what waits to be sent
+
   config                                show the configuration file
   version [--check]                     show what this client was built for; --check asks the portal for a newer release
   upgrade [-y]                          install the newest release: fetches its package, checks the release signature,
@@ -168,6 +194,7 @@ Warm-up (start a Claude or ChatGPT 5-hour window early, so it resets while you w
 
 func main() {
 	home := flag.String("home", client.Home(), "client state directory")
+	logDir := flag.String("log-dir", "", "where up and daemon write their log (default: the configuration's log.dir, else <home>/logs; $SHARETOKEN_LOG_DIR overrides)")
 	flag.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
 	flag.Parse()
 	if flag.NArg() == 0 {
@@ -190,7 +217,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	c := &cmdCtx{home: *home, cfg: cfg}
+	c := &cmdCtx{home: *home, cfg: cfg, logDir: *logDir}
 	var run func([]string) error
 	switch cmd {
 	case "login":
@@ -233,6 +260,18 @@ func main() {
 		run = c.showConfig
 	case "upgrade":
 		run = c.upgrade
+	case "connect":
+		run = c.connect
+	case "codex-unlock":
+		run = c.codexUnlock
+	case "official":
+		run = c.officialCmd
+	case "autostart":
+		run = c.autostart
+	case "logs":
+		run = c.logs
+	case "diagnostics":
+		run = c.diagnostics
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		flag.Usage()
@@ -245,8 +284,9 @@ func main() {
 }
 
 type cmdCtx struct {
-	home string
-	cfg  client.Config
+	home   string
+	cfg    client.Config
+	logDir string // -log-dir
 }
 
 func (c *cmdCtx) save() error { return client.SaveConfig(c.home, c.cfg) }
@@ -300,6 +340,10 @@ func (c *cmdCtx) login(args []string) error {
 		return err
 	}
 	pc := client.NewPortalClient(portalURL, "", *pin)
+	// A code only redeems with the nonce its request returned: "login -send"
+	// keeps it in the state directory for the "login -code" that follows. A
+	// code from the portal's operator needs none.
+	nonce := client.LoadPendingCode(c.home, portalURL, *email)
 	if *code == "" {
 		sent, err := pc.RequestCode(cx, *email, *invite)
 		var pe *client.PortalError
@@ -316,7 +360,12 @@ func (c *cmdCtx) login(args []string) error {
 			fmt.Printf("%s has no account yet: signing in creates one\n", *email)
 		}
 		fmt.Printf("a sign-in code was sent to %s (valid %d minutes)\n", *email, sent.ExpiresInSeconds/60)
+		nonce = sent.Nonce
 		if *send {
+			if err := client.SavePendingCode(c.home, portalURL, *email, sent); err != nil {
+				return fmt.Errorf("the code was sent, but it can only be redeemed by this command, which could not note that down: %w", err)
+			}
+			fmt.Println("redeem it on this machine: sharetoken login -email " + *email + " -code <code>")
 			return nil
 		}
 		if *code, err = cli.Prompt("Code from the email: "); err != nil {
@@ -331,8 +380,11 @@ func (c *cmdCtx) login(args []string) error {
 		*device, _ = os.Hostname()
 	}
 	tokenName := "client on " + *device
-	res, err := pc.SignIn(cx, *email, strings.TrimSpace(*code), strings.TrimSpace(*invite), strings.TrimSpace(*totpCode), tokenName)
+	res, err := pc.SignIn(cx, *email, strings.TrimSpace(*code), nonce, strings.TrimSpace(*invite), strings.TrimSpace(*totpCode), tokenName)
 	var pe *client.PortalError
+	if err == nil || errors.As(err, &pe) && pe.Code != "bad_code" && pe.Code != "throttled" {
+		client.ClearPendingCode(c.home) // the code is used, or will never be
+	}
 	switch {
 	case errors.As(err, &pe) && pe.Code == "mfa_required" && pe.Challenge != "":
 		second, perr := cli.Prompt("Code from your authenticator app: ")
@@ -779,14 +831,19 @@ func (c *cmdCtx) partner(args []string) error {
 		fs := flag.NewFlagSet("partner invite", flag.ExitOnError)
 		ttl := fs.Duration("ttl", 0, "how long the invite can be used (default 24h, at most 168h)")
 		approve := fs.Bool("approve", false, "joining waits for you to approve it")
+		uses := fs.Int64("uses", 1, "how many people may join with it; each becomes your partner")
 		_ = fs.Parse(args)
-		inv, err := pc.NewShareInvite(cx, ttl.Hours(), *approve)
+		inv, err := pc.NewShareInvite(cx, ttl.Hours(), *approve, *uses)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("share invite  %s\n", inv.Code)
 		fmt.Printf("link          %s\n", accounts.InviteLink(c.cfg.Portal, accounts.KindShare, inv.LinkToken))
-		fmt.Printf("  good until %s, for one person\n", time.Unix(0, inv.ExpiresAt).Format("2006-01-02 15:04"))
+		who := "one person"
+		if inv.MaxUses > 1 {
+			who = fmt.Sprintf("%d people", inv.MaxUses)
+		}
+		fmt.Printf("  good until %s, for %s\n", time.Unix(0, inv.ExpiresAt).Format("2006-01-02 15:04"), who)
 		fmt.Println("  send the link (it works before the app is installed), or they run: sharetoken partner join " + inv.Code)
 		if inv.Approval {
 			fmt.Println("  joining waits for your approval: `sharetoken partner` lists it, `sharetoken partner approve <id>` lets them in")
@@ -940,8 +997,15 @@ func (c *cmdCtx) up(args []string) error {
 	if c.cfg.Token == "" {
 		return errors.New("not logged in: run `sharetoken login` first")
 	}
+	dg, err := client.StartDiag(c.home, diag.ProcCLI, c.logDir, c.cfg, term.IsTerminal(int(os.Stderr.Fd())))
+	if err != nil {
+		return err
+	}
+	defer dg.Close()
 	sctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	pc := client.NewPortalClient(c.cfg.Portal, c.cfg.Token, c.cfg.PortalPin)
+	go client.NewReportUploader(c.home, dg.Queue, func() *client.PortalClient { return pc }).Run(sctx)
 	a := client.NewAgent(c.home, c.cfg)
 	updates := client.NewUpdateWatcher(c.home, "cli", func() (string, string) { return c.cfg.Portal, c.cfg.PortalPin })
 	a.Updates = updates
@@ -1002,8 +1066,13 @@ func (c *cmdCtx) runDaemon(args []string) error {
 			stop()
 		}()
 	}
+	dg, err := client.StartDiag(c.home, diag.ProcDaemon, c.logDir, c.cfg, term.IsTerminal(int(os.Stderr.Fd())))
+	if err != nil {
+		return err
+	}
+	defer dg.Close()
 	d := client.NewDaemon(c.home)
-	d.HTTP, d.Listen, d.NAT, d.AllowHTTP = *httpAddr, cli.List(*listen), nat, *allowHTTP
+	d.HTTP, d.Listen, d.NAT, d.AllowHTTP, d.Diag = *httpAddr, cli.List(*listen), nat, *allowHTTP, dg
 	if err := d.Start(); err != nil {
 		return err
 	}
@@ -1033,6 +1102,9 @@ func (c *cmdCtx) daemon(method, path string, body, out any) error {
 	}
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	hc := &http.Client{Timeout: 90 * time.Second}
 	resp, err := hc.Do(req)
@@ -1482,7 +1554,7 @@ func (c *cmdCtx) share(args []string) error {
 		from := fs.String("provider", "", "the provider whose model this is (default: the local model server)")
 		maxOut := fs.Uint64("max-output", 0, "the model's own limit of output tokens per request, if it refuses the usual one")
 		cacheRead := fs.Int64("cache-read", -1, "price per million prompt tokens read from the prompt cache (default: a tenth of -in)")
-		cacheWrite := fs.Int64("cache-write", -1, "price per million prompt tokens written to the prompt cache (default: 1.25 x -in for Anthropic models, else -in)")
+		cacheWrite := fs.Int64("cache-write", -1, "price per million prompt tokens written to the prompt cache (default: 1.25 x -in when the model server speaks Anthropic Messages, else -in)")
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			return errors.New("usage: sharetoken share add <model> [-provider NAME] [-id ID] [-in P] [-out P] [-cache-read P] [-cache-write P] [-max-output N]")
 		}
@@ -1499,6 +1571,9 @@ func (c *cmdCtx) share(args []string) error {
 		if *cacheWrite >= 0 {
 			v := uint64(*cacheWrite)
 			m.PriceCacheWrite = &v
+		}
+		if !m.Price().Prices().Fair() {
+			return fmt.Errorf("-cache-read may be -in at most and -cache-write %d times -in: the network refuses a node whose cache prices are higher", protocol.MaxCacheWriteFactor)
 		}
 		if *from != "" && *from != "local" {
 			var local []string

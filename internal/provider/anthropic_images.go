@@ -41,9 +41,22 @@ const (
 	// claudeImageBytes is the most base64 one image may carry.
 	claudeImageBytes = 5 << 20
 	// claudeImagePixels bounds the images decoded to be scaled: a larger one
-	// would hold too much of the seller's memory and goes as it came.
-	claudeImagePixels = 50_000_000
+	// would hold too much of the seller's memory and goes as it came. The
+	// images are a buyer's, and a few kilobytes of PNG can claim any size.
+	claudeImagePixels = 16_000_000
+	// claudeScaledPixels bounds what one request may have decoded and scaled,
+	// which happens before the model server is called and costs the buyer
+	// nothing if it then leaves.
+	claudeScaledPixels = 4 * claudeImagePixels
+	// scaleBufferBytes is the most the smooth scaler may take for its
+	// working buffer (32 bytes for every pixel of the target's width by the
+	// source's height); past it a scaler without one is used.
+	scaleBufferBytes = 64 << 20
 )
+
+// scaling lets one image be decoded and scaled at a time in the whole
+// process: jobs run side by side, and each image holds its pixels twice over.
+var scaling = make(chan struct{}, 1)
 
 // imageOmitted stands where an image over the model's cap was left out. It
 // goes to the model, so it names neither ShareToken nor the vendor.
@@ -148,6 +161,7 @@ func fitClaudeImages(req map[string]any, most int, scale bool) {
 	if len(refs) > claudeManyImages {
 		side = claudeManyImageSide
 	}
+	budget := claudeScaledPixels
 	for _, r := range refs {
 		src, _ := r.block()["source"].(map[string]any)
 		if src == nil || src["type"] != "base64" {
@@ -155,26 +169,34 @@ func fitClaudeImages(req map[string]any, most int, scale bool) {
 		}
 		data, _ := src["data"].(string)
 		mediaType, _ := src["media_type"].(string)
-		if mt, d, ok := fittedImage(mediaType, data, side); ok {
+		if mt, d, ok := fittedImage(mediaType, data, side, &budget); ok {
 			src["media_type"], src["data"] = mt, d
 		}
 	}
 }
 
 // fittedImage is a base64 image scaled to fit side px a side; false when it
-// fits already or cannot be read, and goes as it came.
-func fittedImage(mediaType, data string, side int) (string, string, bool) {
+// fits already or cannot be read, and goes as it came. budget is what the
+// request may still have scaled, in pixels: an image past it goes as it came.
+func fittedImage(mediaType, data string, side int, budget *int) (string, string, bool) {
 	if data == "" {
 		return "", "", false
 	}
 	cfg, _, err := image.DecodeConfig(base64.NewDecoder(base64.StdEncoding, strings.NewReader(data)))
-	if err != nil || (cfg.Width <= side && cfg.Height <= side) || cfg.Width*cfg.Height > claudeImagePixels {
+	if err != nil || (cfg.Width <= side && cfg.Height <= side) || cfg.Width <= 0 || cfg.Height <= 0 ||
+		cfg.Width > claudeImagePixels || cfg.Height > claudeImagePixels || cfg.Width*cfg.Height > claudeImagePixels {
 		return "", "", false
 	}
 	key := sha256.Sum256([]byte(strconv.Itoa(side) + "\x00" + mediaType + "\x00" + data))
 	if e, ok := fittedImages.get(key); ok {
 		return e.mediaType, e.data, e.data != ""
 	}
+	if *budget < cfg.Width*cfg.Height {
+		return "", "", false
+	}
+	*budget -= cfg.Width * cfg.Height
+	scaling <- struct{}{}
+	defer func() { <-scaling }()
 	e := scaledImage(data, side)
 	fittedImages.put(key, e)
 	return e.mediaType, e.data, e.data != ""
@@ -218,8 +240,15 @@ func scaledImage(data string, side int) fittedEntry {
 	} else {
 		w, h = max(w*side/h, 1), side
 	}
+	if b.Dx()*b.Dy() > claudeImagePixels {
+		return fittedEntry{} // not the size its header said
+	}
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.CatmullRom.Scale(dst, dst.Rect, src, b, draw.Src, nil)
+	var scaler draw.Scaler = draw.CatmullRom
+	if int64(w)*int64(b.Dy())*32 > scaleBufferBytes {
+		scaler = draw.ApproxBiLinear
+	}
+	scaler.Scale(dst, dst.Rect, src, b, draw.Src, nil)
 	fits := func(out []byte) bool { return base64.StdEncoding.EncodedLen(len(out)) <= claudeImageBytes }
 	var out bytes.Buffer
 	if format == "jpeg" {

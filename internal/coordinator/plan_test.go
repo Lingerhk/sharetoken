@@ -291,6 +291,8 @@ func TestPlansHotQueries(t *testing.T) {
 	}{
 		{"unused tickets", `SELECT buyer, node, created_at, dispute_reason != '' FROM jobs
 			WHERE buyer_acct = ? AND status = 'held' AND started_at = 0 AND created_at < ?`, []any{planBig, old}, "jobs_buyer_unstarted", false},
+		{"idle tickets", `SELECT node, COUNT(*) FROM jobs WHERE buyer_acct = ? AND status = 'held' AND started_at = 0 GROUP BY node`,
+			[]any{planBig}, "jobs_buyer_unstarted", false},
 		{"busy nodes", `SELECT node, COUNT(*) FROM jobs WHERE status = 'held'
 			AND (started_at != 0 OR ticket_expires = 0 OR ticket_expires > ?) GROUP BY node`, []any{old}, "jobs_status_node", false},
 		{"held past release", `SELECT job_id FROM jobs WHERE status = 'held' AND release_at <= ?`, []any{old}, "jobs_status_release", true},

@@ -117,7 +117,7 @@ async function sendCode(email) {
 // readCode returns the code just mailed to the address.
 async function readCode(email) {
   if (STACK) return runQuiet(ROOT + 'scripts/test/gui_stack.sh', 'code', STACK, email);
-  return (await mailTo(email, /code: (\d{6})/))[1];
+  return (await mailTo(email, /^\s{4}(\d{6})\s*$/m))[1];
 }
 // loginForm signs in with a mailed code, up to any two-factor step.
 async function loginForm(email) {
@@ -215,7 +215,8 @@ async function run() {
     await assertText('ui test ' + RUN, 'the new code is listed');
     const code = await evaluate('document.querySelector(".invite-code").textContent');
     check(/^[A-Z2-7]{16}$/.test(code), 'it looks like a code');
-    const email = `functest+ui${RUN}@example.com`, blocked = `functest+blocked${RUN}@example.com`;
+    // Another mailbox: the blocklist matches every spelling of one, "+tag" included.
+    const email = `functest+ui${RUN}@example.com`, blocked = `blocked-${RUN}@example.com`;
     let r = await apiCall('PUT', '/api/v1/admin/settings', { open_registration: true, invite_required: true, email_block: [blocked] });
     check(r.status === 200, 'invite required, one address blocked');
     await logout(); await goto(base + '/app/'); await sleep(600);
@@ -339,7 +340,7 @@ async function run() {
     r = await apiCall('GET', '/api/v1/admin/oplog?action=' + encodeURIComponent('auth.admin_login') + '&actor=' + encodeURIComponent(admin));
     check(r.body.total >= 1, 'admin sign-ins are on record');
     await route('versions'); await sleep(300);
-    await assertText('/ portal 3', 'the version page lists the new schema');
+    await assertText('/ portal 4', 'the version page lists the new schema');
 
     console.log('== phone width, dark theme');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 2, mobile: true });

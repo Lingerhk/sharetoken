@@ -196,8 +196,65 @@ func TestEstimates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := uint64(4+2) + uint64(4+3); got != want {
+	// The text comes to (4+2)+(4+3) = 13; a body this small is at its size floor.
+	if want := uint64(len(body) / 8); got != want {
 		t.Errorf("prompt estimate = %d, want %d", got, want)
+	}
+	long := []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("hello world ", 100) + `"}]}`)
+	if got, _ := protocol.EstimatePromptTokens(protocol.APIChat, long); got != 4+300 {
+		t.Errorf("prompt estimate = %d, want 304", got)
+	}
+}
+
+// A request cannot hide its prompt from the estimate: not behind a field name
+// encoding/json would also match (the node sends the exact one upstream), and
+// not in fields the estimate does not read.
+func TestEstimateCannotBeLowered(t *testing.T) {
+	big := strings.Repeat("lorem ipsum dolor sit amet ", 4000) // 108 kB, 27k tokens
+	for _, c := range []struct{ name, api, body string }{
+		{"chat, a later Messages", protocol.APIChat, `{"messages":[{"role":"user","content":"` + big + `"}],"Messages":[{"role":"user","content":"hi"}]}`},
+		{"chat, a later MESSAGES", protocol.APIChat, `{"messages":[{"role":"user","content":"` + big + `"}],"MESSAGES":[]}`},
+		{"chat, a later Content", protocol.APIChat, `{"messages":[{"role":"user","content":"` + big + `","Content":"hi"}]}`},
+		{"chat, a later Text", protocol.APIChat, `{"messages":[{"role":"user","content":[{"type":"text","text":"` + big + `","Text":"hi"}]}]}`},
+		{"messages, a later System", protocol.APIMessages, `{"system":"` + big + `","System":"hi","messages":[{"role":"user","content":"hi"}]}`},
+		{"messages, a later Messages", protocol.APIMessages, `{"messages":[{"role":"user","content":"` + big + `"}],"Messages":[]}`},
+		{"responses, a later Input", protocol.APIResponses, `{"input":"` + big + `","Input":"hi"}`},
+		{"responses, a later Instructions", protocol.APIResponses, `{"instructions":"` + big + `","INSTRUCTIONS":"","input":"hi"}`},
+	} {
+		got, err := protocol.EstimatePromptTokens(c.api, []byte(c.body))
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if want := protocol.EstimateTokens(big); got < want {
+			t.Errorf("%s: estimate = %d, want at least %d", c.name, got, want)
+		}
+	}
+	// Fields the estimate does not read count by their size.
+	for _, c := range []struct{ name, api, body string }{
+		{"chat tool call arguments", protocol.APIChat, `{"messages":[{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"` + big + `"}}]}]}`},
+		{"chat reasoning_content", protocol.APIChat, `{"messages":[{"role":"assistant","content":"","reasoning_content":"` + big + `"}]}`},
+		{"messages unknown block", protocol.APIMessages, `{"messages":[{"role":"user","content":[{"type":"future_block","payload":{"deep":["` + big + `"]}}]}]}`},
+		{"responses unknown item", protocol.APIResponses, `{"input":[{"type":"future_item","blob":"` + big + `"}]}`},
+		{"a field at the top", protocol.APIChat, `{"messages":[{"role":"user","content":"hi"}],"metadata":{"x":"` + big + `"}}`},
+	} {
+		got, err := protocol.EstimatePromptTokens(c.api, []byte(c.body))
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if want := uint64(len(big) / 8); got < want {
+			t.Errorf("%s: estimate = %d, want at least %d", c.name, got, want)
+		}
+	}
+	// An image costs the same whatever its size: its bytes are not text.
+	img := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + strings.Repeat("A", 400_000) + `"}}]}]}`
+	if got, _ := protocol.EstimatePromptTokens(protocol.APIChat, []byte(img)); got > 1700 {
+		t.Errorf("image estimate = %d, want about 1600", got)
+	}
+	// The output limit is read from the exact field too.
+	if got := protocol.RequestedOutput(protocol.APIMessages, []byte(`{"max_tokens":4096,"Max_Tokens":1}`)); got != 4096 {
+		t.Errorf("requested output = %d, want 4096", got)
 	}
 }
 
@@ -275,5 +332,25 @@ func TestHoldForCoversMaxTokens(t *testing.T) {
 	}
 	if protocol.HoldFor(1<<62, 1<<62, 1<<20, 1<<20) != math.MaxUint64 {
 		t.Error("overflow must saturate")
+	}
+}
+
+func TestFairCachePrices(t *testing.T) {
+	for _, c := range []struct {
+		p    protocol.Prices
+		want bool
+	}{
+		{protocol.Prices{In: 1000, Out: 5000, CacheRead: 100, CacheWrite: 1250}, true},
+		{protocol.Prices{In: 1000, Out: 5000, CacheRead: 1000, CacheWrite: 2000}, true},
+		{protocol.Prices{In: 1000, Out: 5000}, true},
+		{protocol.Prices{}, true},
+		{protocol.Prices{In: 1000, Out: 5000, CacheRead: 1001}, false},
+		{protocol.Prices{In: 1000, Out: 5000, CacheWrite: 2001}, false},
+		{protocol.Prices{In: 0, Out: 5000, CacheRead: 1}, false},
+		{protocol.Prices{In: 1 << 63, CacheWrite: ^uint64(0)}, true},
+	} {
+		if got := c.p.Fair(); got != c.want {
+			t.Errorf("%+v: fair = %v, want %v", c.p, got, c.want)
+		}
 	}
 }

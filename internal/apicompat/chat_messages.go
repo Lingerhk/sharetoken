@@ -755,7 +755,7 @@ func chatAnthropicSchema(schema json.RawMessage) json.RawMessage {
 	if len(schema) == 0 || json.Unmarshal(schema, &m) != nil || m == nil {
 		return json.RawMessage(empty)
 	}
-	chatFlattenUnions(m)
+	chatFlattenUnions(m, 0)
 	if raw, ok := m["type"]; !ok || string(raw) == "null" {
 		m["type"] = json.RawMessage(`"object"`)
 	} else {
@@ -774,7 +774,13 @@ func chatAnthropicSchema(schema json.RawMessage) json.RawMessage {
 	return out
 }
 
-func chatFlattenUnions(schema map[string]json.RawMessage) {
+// maxUnionDepth is how deep unions nested in unions are flattened. A tool
+// schema is a buyer's: each level parses its branch again, so without a
+// bound a schema nested thousands deep holds a job slot and a CPU for as
+// long as it likes, before the job's timeout applies.
+const maxUnionDepth = 32
+
+func chatFlattenUnions(schema map[string]json.RawMessage, depth int) {
 	props := map[string]json.RawMessage{}
 	if raw, ok := schema["properties"]; ok {
 		_ = json.Unmarshal(raw, &props)
@@ -798,10 +804,10 @@ func chatFlattenUnions(schema map[string]json.RawMessage) {
 		var common []string
 		for i, item := range items {
 			var branch map[string]json.RawMessage
-			if json.Unmarshal(item, &branch) != nil || branch == nil {
+			if depth >= maxUnionDepth || json.Unmarshal(item, &branch) != nil || branch == nil {
 				branch = nil
 			} else {
-				chatFlattenUnions(branch)
+				chatFlattenUnions(branch, depth+1)
 			}
 			object := false
 			if branch != nil {

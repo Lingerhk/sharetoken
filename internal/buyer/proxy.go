@@ -104,6 +104,7 @@ func (p *Proxy) request(r *http.Request, api, model string, body []byte) ChatReq
 	p.mu.RLock()
 	budget, native := p.BudgetMicros, p.RequireNative
 	p.mu.RUnlock()
+	model = NetworkModel(model)
 	header := forwardHeader(api, r.Header)
 	if api == protocol.APIResponses {
 		if turn := codexTurnID(r.Header, body); turn != "" {

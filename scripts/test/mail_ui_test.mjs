@@ -136,7 +136,7 @@ ok((await body()).includes('验证码错误或已过期'), 'a wrong code is expl
 await click('#send-code');
 ok((await ev(`${q('#send-code')}.disabled`)) && (await ev(`${q('#send-code')}.textContent`)).includes('秒后可重发'), 'the send button counts down');
 await shot('01-register');
-const code = sql(`SELECT subject FROM mail_outbox WHERE to_addr='ui@example.com' ORDER BY id DESC LIMIT 1`).match(/\b\d{6}\b/)?.[0];
+const code = sql(`SELECT REGEXP_SUBSTR(text_body, '[0-9]{6}') FROM mail_outbox WHERE to_addr='ui@example.com' AND kind='verify' ORDER BY id DESC LIMIT 1`).match(/\b\d{6}\b/)?.[0];
 ok(code, 'a code was mailed');
 await fill('#login-code', code);
 await ev(`document.querySelector('form').requestSubmit()`);
@@ -181,7 +181,7 @@ await waitFor(q('#login-email'));
 await fill('#login-email', 'root@ui.test');
 await click('#send-code');
 let adminCode;
-for (let i = 0; i < 50 && !adminCode; i++) { adminCode = sql(`SELECT subject FROM mail_outbox WHERE to_addr='root@ui.test' ORDER BY id DESC LIMIT 1`).match(/\b\d{6}\b/)?.[0]; if (!adminCode) await sleep(200); }
+for (let i = 0; i < 50 && !adminCode; i++) { adminCode = sql(`SELECT REGEXP_SUBSTR(text_body, '[0-9]{6}') FROM mail_outbox WHERE to_addr='root@ui.test' AND kind='verify' ORDER BY id DESC LIMIT 1`).match(/\b\d{6}\b/)?.[0]; if (!adminCode) await sleep(200); }
 await fill('#login-code', adminCode);
 await ev(`document.querySelector('form').requestSubmit()`);
 await waitFor(q('#mfa-secret'));

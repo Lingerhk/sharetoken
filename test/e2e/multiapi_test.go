@@ -546,7 +546,7 @@ func TestNativeSellersFirstAndRequireNative(t *testing.T) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&list)
 	resp.Body.Close()
-	if len(list.Data) != 1 || list.Data[0].ID != model || list.Data[0].Type != "model" || strings.Join(list.Data[0].APIs, ",") != "chat,messages,responses" {
+	if len(list.Data) != 1 || list.Data[0].ID != "st-"+model || list.Data[0].Type != "model" || strings.Join(list.Data[0].APIs, ",") != "chat,messages,responses" {
 		t.Fatalf("models: %+v", list)
 	}
 
@@ -778,7 +778,7 @@ func TestLocalAnswersAndErrors(t *testing.T) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&manifest)
 	resp.Body.Close()
-	if len(manifest.Models) != 1 || manifest.Models[0]["slug"] != model {
+	if len(manifest.Models) != 1 || manifest.Models[0]["slug"] != "st-"+model {
 		t.Fatalf("manifest: %v", manifest)
 	}
 	// An unknown model: a Messages error for Claude Code, an OpenAI one otherwise.

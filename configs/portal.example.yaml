@@ -80,6 +80,8 @@ admin:
 
 downloads:
   dir: ""      # directory of client packages, served at /downloads/; empty: none
+blog:
+  dir: ""      # articles of /blog/, one folder per article (en.md, zh-CN.md, pictures); empty: no blog
 
 sessions:
   login_ttl: 1440h               # lifetime of the token a client gets at sign-in (60 days)

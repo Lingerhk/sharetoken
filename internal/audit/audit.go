@@ -37,8 +37,9 @@
 // node included). Its host listens nowhere and never hole punches, so the
 // connection is never upgraded to a direct one. A node then sees an
 // official relay's address, as for any buyer coming through that relay.
-// Trades over other paths are not audited (they are under delegated audit,
-// a later step), and a node that offers no official circuit is not a target.
+// Questions that users' clients carry (deliver.go, delivery auto or carried)
+// reach a node however its carrier does, so any node can be a target; with
+// delivery direct, a node that offers no official circuit is not one.
 //
 // Limits, stated plainly: this shows that the node's answers behave like the
 // reference model's, not a cryptographic proof. A node that can tell audits
@@ -251,8 +252,8 @@ func (a *Auditor) Run(ctx context.Context) {
 }
 
 // pickTarget chooses uniformly among live (node, model) pairs that have a
-// reference and that the auditor can reach, so every node faces the same
-// audit rate.
+// reference, that the auditor can reach and whose price an audit may pay, so
+// every such node faces the same audit rate.
 func (a *Auditor) pickTarget() (node, model string, ok bool) {
 	type pair struct{ node, model string }
 	var pairs []pair
@@ -265,7 +266,9 @@ func (a *Auditor) pickTarget() (node, model string, ok bool) {
 			continue
 		}
 		for _, m := range o.Models {
-			if _, ok := a.refs[m.Model]; ok {
+			// A node priced far above the model's market is not audited: the
+			// platform pays for every question (the engine refuses its ticket).
+			if _, ok := a.refs[m.Model]; ok && a.eng.AuditPriceOK(o.Node, m.Model) {
 				pairs = append(pairs, pair{o.Node, m.Model})
 			}
 		}

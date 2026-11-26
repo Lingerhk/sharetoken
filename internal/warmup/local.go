@@ -61,10 +61,13 @@ func runCommand(ctx context.Context, c command) ([]byte, []byte, error) {
 // is taken only when nothing else is found.
 func findBinary(name, set string) (string, error) {
 	if set != "" {
-		if isFile(set) {
-			return set, nil
+		if err := checkBinaryPath(name, set); err != nil {
+			return "", err
 		}
-		return "", fmt.Errorf("%s not found at %s", name, set)
+		if st, err := os.Stat(set); err != nil || !st.Mode().IsRegular() || (runtime.GOOS != "windows" && st.Mode().Perm()&0o111 == 0) {
+			return "", fmt.Errorf("%s not found at %s", name, set)
+		}
+		return set, nil
 	}
 	var shim string
 	if p, err := exec.LookPath(name); err == nil {
@@ -85,6 +88,24 @@ func findBinary(name, set string) (string, error) {
 		return shim, nil
 	}
 	return "", fmt.Errorf("%s is not installed (or not found): set its path in the warm-up settings", name)
+}
+
+// checkBinaryPath: a program set for an agent is an absolute path to a file
+// named as the agent (claude, codex; on Windows with .exe, .cmd or .bat).
+// The client runs it as the user, so the setting must not name any program
+// there is, nor one a working directory decides.
+func checkBinaryPath(name, set string) error {
+	base := filepath.Base(set)
+	if runtime.GOOS == "windows" {
+		base = strings.ToLower(base)
+		for _, ext := range []string{".exe", ".cmd", ".bat"} {
+			base = strings.TrimSuffix(base, ext)
+		}
+	}
+	if !filepath.IsAbs(set) || base != name {
+		return fmt.Errorf("the path of %s must be absolute and end in %s, not %q", name, name, set)
+	}
+	return nil
 }
 
 func isShim(p string) bool {

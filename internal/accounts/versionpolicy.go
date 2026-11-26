@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,8 +27,34 @@ type VersionPolicy struct {
 
 const versionPolicyKey = "version_policy"
 
-// Validate checks the versions are versions and in order.
+// SitePath reports whether u is a path on the portal itself ("/#download",
+// "/downloads/"), and no link that leads anywhere else.
+func SitePath(u string) bool {
+	if len(u) > 256 || !strings.HasPrefix(u, "/") || strings.HasPrefix(u, "//") ||
+		strings.ContainsFunc(u, func(r rune) bool { return r <= ' ' || r == '\\' || r == 0x7f }) {
+		return false
+	}
+	p, err := url.Parse(u)
+	return err == nil && p.Scheme == "" && p.Host == ""
+}
+
+// Download is where clients are sent for a newer version: DownloadURL, when
+// it is a path on the portal. Every client shows it under "upgrade now", so a
+// policy that names another site (written before that was refused, or past
+// the portal) is not passed on.
+func (p VersionPolicy) Download() string {
+	if SitePath(p.DownloadURL) {
+		return p.DownloadURL
+	}
+	return ""
+}
+
+// Validate checks the versions are versions and in order, and that the
+// download page is on the portal.
 func (p VersionPolicy) Validate() error {
+	if p.DownloadURL != "" && !SitePath(p.DownloadURL) {
+		return errors.New("download_url must be a path on this portal, like /#download: clients are not sent to another site")
+	}
 	vs := []string{p.MinClient, p.RecommendedClient, p.LatestClient}
 	prev := ""
 	for _, v := range vs {

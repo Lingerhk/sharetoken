@@ -109,3 +109,55 @@ func (d *dribble) Read(p []byte) (int, error) {
 	}
 	return d.r.Read(p)
 }
+
+// A handler of several request types gives each its own size: the type is
+// read from the frame's beginning before the rest is taken, and a frame that
+// does not begin with its type gets the limit of type "".
+func TestRecvTypedLimitsByType(t *testing.T) {
+	limit := func(typ string) int {
+		if typ == protocol.TypeSettle {
+			return protocol.MaxFrameSize
+		}
+		return protocol.MaxSmallFrame
+	}
+	frame := func(typ string, body any) []byte {
+		var buf bytes.Buffer
+		if err := protocol.SendRequest(&buf, typ, body); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	big := protocol.Reject{Reason: strings.Repeat("x", 2*protocol.MaxSmallFrame)}
+	if env, err := protocol.RecvTyped(bytes.NewReader(frame(protocol.TypeSettle, big)), limit); err != nil || env.Type != protocol.TypeSettle {
+		t.Fatalf("a large frame of a type that may be large: %v", err)
+	}
+	if env, err := protocol.RecvTyped(bytes.NewReader(frame(protocol.TypeAnnounce, protocol.Reject{Reason: "x"})), limit); err != nil || env.Type != protocol.TypeAnnounce {
+		t.Fatalf("a small frame: %v", err)
+	}
+	// Refused after the first chunk: the megabytes behind it are never read.
+	r := &countingReader{r: bytes.NewReader(frame(protocol.TypeAnnounce, protocol.Reject{Reason: strings.Repeat("x", 4<<20)}))}
+	if _, err := protocol.RecvTyped(r, limit); err == nil {
+		t.Fatal("a large frame of a type that must be small was accepted")
+	}
+	if r.n > 2*protocol.MaxSmallFrame {
+		t.Fatalf("%d bytes of a refused frame were read", r.n)
+	}
+	// The type somewhere else than first: read as no type at all.
+	hidden := []byte(`{"body":{"reason":"` + strings.Repeat("x", 2*protocol.MaxSmallFrame) + `"},"type":"settle","ver":"1.0.5"}`)
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], uint32(len(hidden)))
+	if _, err := protocol.RecvTyped(bytes.NewReader(append(hdr[:], hidden...)), limit); err == nil {
+		t.Fatal("a large frame that hides its type was accepted")
+	}
+}
+
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
+}

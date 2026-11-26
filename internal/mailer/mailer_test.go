@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,7 +82,7 @@ func worker(st *Store, tr Transport) *Worker {
 // deliverAll claims and delivers what is due.
 func deliverAll(t *testing.T, st *Store, w *Worker) {
 	t.Helper()
-	msgs, err := st.claimDue(10)
+	msgs, err := st.claimDue(10, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +221,7 @@ func TestRetriesAndExpiry(t *testing.T) {
 	if m.Status != StatusQueued || m.NextAt != now.Add(time.Minute).Unix() || m.LastError == "" {
 		t.Fatalf("want a retry in a minute: %+v", m)
 	}
-	if msgs, _ := st.claimDue(10); len(msgs) != 0 {
+	if msgs, _ := st.claimDue(10, 10); len(msgs) != 0 {
 		t.Fatal("claimed before it was due")
 	}
 	// Past the window it fails, keeping the reason.
@@ -244,10 +247,10 @@ func TestRetriesAndExpiry(t *testing.T) {
 func TestCrashedDeliveryIsRequeued(t *testing.T) {
 	st := newStore(t)
 	id, _ := st.Enqueue(Message{Kind: KindNotice, From: "team@example.test", To: "user@localhost", Subject: "x", Text: "x"})
-	if msgs, err := st.claimDue(5); err != nil || len(msgs) != 1 {
+	if msgs, err := st.claimDue(5, 5); err != nil || len(msgs) != 1 {
 		t.Fatalf("claim: %v %d", err, len(msgs))
 	}
-	if msgs, _ := st.claimDue(5); len(msgs) != 0 {
+	if msgs, _ := st.claimDue(5, 5); len(msgs) != 0 {
 		t.Fatal("claimed twice")
 	}
 	st.Now = func() time.Time { return time.Now().Add(time.Hour) }
@@ -362,6 +365,31 @@ func TestInboundStoresBadEncodings(t *testing.T) {
 	}
 }
 
+// The domain checked against SPF and DKIM is that of the address a reader
+// sees, whatever the display name says, and there has to be exactly one.
+func TestFromDomainIsTheAddressShown(t *testing.T) {
+	for _, c := range []struct{ name, headers, want string }{
+		{"plain", "From: alice@victim.example\r\n", "victim.example"},
+		{"named", "From: Alice <alice@Victim.Example>\r\n", "victim.example"},
+		{"a domain in the display name", "From: \"@evil.example>\" <admin@victim.example>\r\n", "victim.example"},
+		{"an address in the display name", "From: \"x@evil.example\" <admin@victim.example>\r\n", "victim.example"},
+		{"two mailboxes", "From: a@evil.example, admin@victim.example\r\n", ""},
+		{"two From fields", "From: a@evil.example\r\nFrom: admin@victim.example\r\n", ""},
+		{"none", "Subject: x\r\n", ""},
+		{"unreadable", "From: <<>>\r\n", ""},
+	} {
+		sum := summarize([]byte(c.headers + "Subject: s\r\n\r\nbody\r\n"))
+		if sum.FromDomain != c.want {
+			t.Errorf("%s: domain %q, want %q (shown as %q)", c.name, sum.FromDomain, c.want, sum.From)
+		}
+	}
+	// What the old code read from the shown text.
+	sum := summarize([]byte("From: \"@evil.example>\" <admin@victim.example>\r\n\r\nx\r\n"))
+	if v, _ := authVerdict(sum.FromDomain, "evil.example", "pass", []DKIMResult{{"evil.example", true}}); v {
+		t.Fatal("mail from evil.example was shown as verified mail of victim.example")
+	}
+}
+
 func TestAuthVerdict(t *testing.T) {
 	for _, c := range []struct {
 		name, from, env, spfRes string
@@ -385,91 +413,155 @@ func TestAuthVerdict(t *testing.T) {
 	}
 }
 
+var mailedCodeRE = regexp.MustCompile(`(?m)^ {4}(\d{6})\r?$`)
+
+// lastCode reads the newest code mail, as its recipient would.
+func lastCode(t *testing.T, st *Store) string {
+	t.Helper()
+	ms, err := st.Outbox(OutFilter{Kind: KindVerify, Limit: 1})
+	if err != nil || len(ms) == 0 {
+		t.Fatalf("%v %v", err, ms)
+	}
+	m := outRow(t, st, ms[0].ID)
+	if !m.Sensitive || m.ExpiresAt == 0 {
+		t.Fatalf("code mail must be sensitive and expire: %+v", m)
+	}
+	got := mailedCodeRE.FindStringSubmatch(m.Text)
+	if got == nil {
+		t.Fatalf("no code in %q", m.Text)
+	}
+	if strings.Contains(m.Subject, got[1]) || !strings.Contains(m.HTML, got[1]) {
+		t.Fatalf("the code belongs in the body only: %q", m.Subject)
+	}
+	return got[1]
+}
+
+func otherCode(code string) string {
+	if code == "000000" {
+		return "000001"
+	}
+	return "000000"
+}
+
 func TestCodes(t *testing.T) {
 	st := newStore(t)
 	now := time.Now()
 	st.Now = func() time.Time { return now }
 	const email = "user@example.test"
 	req := CodeRequest{Purpose: PurposeLogin, Email: email, IP: "1.2.3.4", From: "team@example.test"}
-	codeFromOutbox := func() string {
+	ask := func(r CodeRequest) (nonce, code string) {
 		t.Helper()
-		ms, err := st.Outbox(OutFilter{Kind: KindVerify, Limit: 1})
-		if err != nil || len(ms) == 0 {
-			t.Fatalf("%v %v", err, ms)
+		nonce, err := st.RequestCode(r)
+		if err != nil || nonce == "" {
+			t.Fatalf("%q %v", nonce, err)
 		}
-		m := outRow(t, st, ms[0].ID)
-		if !m.Sensitive || m.ExpiresAt == 0 {
-			t.Fatalf("code mail must be sensitive and expire: %+v", m)
-		}
-		return strings.TrimPrefix(m.Subject, "Your ShareToken verification code: ")
+		return nonce, lastCode(t, st)
 	}
-	if err := st.RequestCode(req); err != nil {
-		t.Fatal(err)
-	}
-	code := codeFromOutbox()
-	if len(code) != 6 {
-		t.Fatalf("code %q", code)
-	}
-	if err := st.RequestCode(req); !errors.Is(err, ErrCodeCooldown) {
+	nonce, code := ask(req)
+	if _, err := st.RequestCode(req); !errors.Is(err, ErrCodeCooldown) {
 		t.Fatalf("cooldown: %v", err)
 	}
-	if err := st.VerifyCode(PurposeLogin, "other@example.test", code); !errors.Is(err, ErrBadCode) {
+	if err := st.VerifyCode(PurposeLogin, "other@example.test", nonce, code); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("code of another address: %v", err)
 	}
-	if err := st.VerifyCode("reset", email, code); !errors.Is(err, ErrBadCode) {
+	if err := st.VerifyCode("reset", email, nonce, code); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("code for another purpose: %v", err)
 	}
-	if err := st.VerifyCode(PurposeLogin, email, " "+code+" "); err != nil {
+	// The code alone is worth nothing: it goes with the nonce of its request.
+	for _, n := range []string{"", "AAAAAAAAAAAAAAAAAAAAAA"} {
+		for range 2 * maxCodeAttempts {
+			if err := st.VerifyCode(PurposeLogin, email, n, code); !errors.Is(err, ErrBadCode) {
+				t.Fatalf("code without its nonce (%q): %v", n, err)
+			}
+		}
+	}
+	// ... and none of that counted against the code.
+	if err := st.VerifyCode(PurposeLogin, email, nonce, " "+code[:3]+" "+code[3:]+" "); err != nil {
 		t.Fatalf("right code: %v", err)
 	}
-	if err := st.VerifyCode(PurposeLogin, email, code); !errors.Is(err, ErrBadCode) {
+	if err := st.VerifyCode(PurposeLogin, email, nonce, code); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("second use: %v", err)
 	}
 
-	// Guessing burns the code: even the right one stops working.
+	// Guessing with the nonce burns the code: even the right one stops working.
 	now = now.Add(2 * time.Minute)
-	if err := st.RequestCode(req); err != nil {
-		t.Fatal(err)
-	}
-	code = codeFromOutbox()
-	wrong := "000000"
-	if code == wrong {
-		wrong = "000001"
-	}
+	nonce, code = ask(req)
 	for range maxCodeAttempts {
-		if err := st.VerifyCode(PurposeLogin, email, wrong); !errors.Is(err, ErrBadCode) {
+		if err := st.VerifyCode(PurposeLogin, email, nonce, otherCode(code)); !errors.Is(err, ErrBadCode) {
 			t.Fatal(err)
 		}
 	}
-	if err := st.VerifyCode(PurposeLogin, email, code); !errors.Is(err, ErrBadCode) {
+	if err := st.VerifyCode(PurposeLogin, email, nonce, code); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("code survived %d wrong guesses: %v", maxCodeAttempts, err)
 	}
 
 	// Expiry.
 	now = now.Add(2 * time.Minute)
-	if err := st.RequestCode(req); err != nil {
-		t.Fatal(err)
-	}
-	code = codeFromOutbox()
+	nonce, code = ask(req)
 	now = now.Add(CodeTTL + time.Second)
-	if err := st.VerifyCode(PurposeLogin, email, code); !errors.Is(err, ErrBadCode) {
+	if err := st.VerifyCode(PurposeLogin, email, nonce, code); !errors.Is(err, ErrBadCode) {
 		t.Fatalf("expired code: %v", err)
 	}
 
-	// A new code replaces the old one.
+	// A second request leaves the first one's code alone: each works with its
+	// own nonce, and burning one does not touch the other.
+	other := CodeRequest{Purpose: PurposeLogin, Email: "n@example.test", IP: "5.6.7.8", From: "team@example.test"}
 	now = now.Add(2 * time.Minute)
-	_ = st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "n@example.test", IP: "1.2.3.4", From: "team@example.test"})
-	first := codeFromOutbox()
+	n1, c1 := ask(other)
 	now = now.Add(2 * time.Minute)
-	_ = st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "n@example.test", IP: "1.2.3.4", From: "team@example.test"})
-	second := codeFromOutbox()
-	if first != second {
-		if err := st.VerifyCode(PurposeLogin, "n@example.test", first); !errors.Is(err, ErrBadCode) {
-			t.Fatalf("old code still works: %v", err)
+	n2, c2 := ask(other)
+	if err := st.VerifyCode(PurposeLogin, other.Email, n2, c1); c1 != c2 && !errors.Is(err, ErrBadCode) {
+		t.Fatalf("a code with another request's nonce: %v", err)
+	}
+	for range maxCodeAttempts {
+		_ = st.VerifyCode(PurposeLogin, other.Email, n2, otherCode(c2))
+	}
+	if err := st.VerifyCode(PurposeLogin, other.Email, n2, c2); !errors.Is(err, ErrBadCode) {
+		t.Fatalf("the second code survived its guesses: %v", err)
+	}
+	if err := st.VerifyCode(PurposeLogin, other.Email, n1, c1); err != nil {
+		t.Fatalf("the first code was hurt by the second request: %v", err)
+	}
+}
+
+// An operator's code needs no nonce, cannot be used up by wrong guesses, and
+// leaves mailed codes alone.
+func TestOperatorCode(t *testing.T) {
+	st := newStore(t)
+	const email = "user@example.test"
+	nonce, err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: email, IP: "1.2.3.4", From: "team@example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailed := lastCode(t, st)
+	old, _, err := st.IssueCode(PurposeLogin, email)
+	if err != nil || len(old) != 12 {
+		t.Fatalf("%q %v", old, err)
+	}
+	code, _, err := st.IssueCode(PurposeLogin, email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 50 {
+		if err := st.VerifyCode(PurposeLogin, email, "", "000000000000"); !errors.Is(err, ErrBadCode) {
+			t.Fatal(err)
 		}
 	}
-	if err := st.VerifyCode(PurposeLogin, "n@example.test", second); err != nil {
-		t.Fatal(err)
+	if err := st.VerifyCode(PurposeLogin, email, "", old); !errors.Is(err, ErrBadCode) {
+		t.Fatalf("a replaced operator code: %v", err)
+	}
+	if err := st.VerifyCode(PurposeLogin, "other@example.test", "", code); !errors.Is(err, ErrBadCode) {
+		t.Fatalf("another address: %v", err)
+	}
+	// Typed into a form that asked for a mailed code first: the nonce is there, and does not matter.
+	if err := st.VerifyCode(PurposeLogin, email, nonce, code[:4]+"-"+code[4:8]+" "+code[8:]); err != nil {
+		t.Fatalf("operator code: %v", err)
+	}
+	if err := st.VerifyCode(PurposeLogin, email, "", code); !errors.Is(err, ErrBadCode) {
+		t.Fatalf("second use: %v", err)
+	}
+	if err := st.VerifyCode(PurposeLogin, email, nonce, mailed); err != nil {
+		t.Fatalf("the mailed code after an operator code: %v", err)
 	}
 }
 
@@ -478,21 +570,150 @@ func TestCodeLimits(t *testing.T) {
 	now := time.Now()
 	st.Now = func() time.Time { return now }
 	for i := range maxCodesPerEmail {
-		if err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "a@example.test", IP: fmt.Sprintf("10.0.0.%d", i), From: "team@example.test"}); err != nil {
+		if _, err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "a@example.test", IP: fmt.Sprintf("10.0.0.%d", i), From: "team@example.test"}); err != nil {
 			t.Fatal(err)
 		}
 		now = now.Add(CodeCooldown + time.Second)
 	}
-	if err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "a@example.test", IP: "10.0.1.1", From: "team@example.test"}); !errors.Is(err, ErrCodeLimit) {
+	if _, err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "a@example.test", IP: "10.0.1.1", From: "team@example.test"}); !errors.Is(err, ErrCodeLimit) {
 		t.Fatalf("per address: %v", err)
 	}
-	for i := range maxCodesPerIP {
-		if err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: fmt.Sprintf("u%d@example.test", i), IP: "9.9.9.9", From: "team@example.test"}); err != nil {
+	for i := range MaxCodesPerIP {
+		if _, err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: fmt.Sprintf("u%d@example.test", i), IP: "9.9.9.9", From: "team@example.test"}); err != nil {
 			t.Fatalf("%d: %v", i, err)
 		}
 	}
-	if err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "z@example.test", IP: "9.9.9.9", From: "team@example.test"}); !errors.Is(err, ErrCodeLimit) {
+	if _, err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "z@example.test", IP: "9.9.9.9", From: "team@example.test"}); !errors.Is(err, ErrCodeLimit) {
 		t.Fatalf("per IP: %v", err)
+	}
+	var queued int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM mail_outbox`).Scan(&queued); err != nil || queued != maxCodesPerEmail+MaxCodesPerIP {
+		t.Fatalf("%d mails queued, want one per code: %v", queued, err)
+	}
+}
+
+// The budget of addresses without an account can be used up by anyone; the
+// one of addresses with an account is another, and still serves them then.
+func TestCodeBudgets(t *testing.T) {
+	st := newStore(t)
+	now := time.Now().Unix()
+	fill := func(known, n int) {
+		t.Helper()
+		for i := range n {
+			if _, err := st.DB.Exec(`INSERT INTO mail_codes (purpose, email, ip, salt, code_hash, known, expires_at, created_at) VALUES ('login', ?, ?, 'x', 'x', ?, ?, ?)`,
+				fmt.Sprintf("f%d-%d@example.test", known, i), fmt.Sprintf("ip-%d-%d", known, i), known, now+600, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	req := func(email string, known bool) error {
+		_, err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: email, IP: "1.2.3.4", Known: known, From: "team@example.test"})
+		return err
+	}
+	fill(0, MaxNewCodesPerHour)
+	if err := req("new@example.test", false); !errors.Is(err, ErrNewCodeBudget) || !errors.Is(err, ErrCodeLimit) {
+		t.Fatalf("new addresses past their budget: %v", err)
+	}
+	if err := req("member@example.test", true); err != nil {
+		t.Fatalf("an address with an account while new ones are used up: %v", err)
+	}
+	fill(1, MaxKnownCodesPerHour-1)
+	if err := req("member2@example.test", true); !errors.Is(err, ErrKnownCodeBudget) {
+		t.Fatalf("known addresses past their budget: %v", err)
+	}
+	// An operator's codes count against nothing.
+	for range 3 {
+		if _, _, err := st.IssueCode(PurposeLogin, "member@example.test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Requests sent together cannot all pass a limit: counting and storing are
+// one transaction.
+func TestCodeLimitsHoldInParallel(t *testing.T) {
+	st := newStore(t)
+	const parallel = 3 * MaxCodesPerIP
+	run := func(req func(i int) CodeRequest) (ok int) {
+		t.Helper()
+		var wg sync.WaitGroup
+		var passed atomic.Int64
+		for i := range parallel {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, err := st.RequestCode(req(i))
+				switch {
+				case err == nil:
+					passed.Add(1)
+				case !errors.Is(err, ErrCodeLimit) && !errors.Is(err, ErrCodeCooldown):
+					t.Errorf("request %d: %v", i, err)
+				}
+			}()
+		}
+		wg.Wait()
+		return int(passed.Load())
+	}
+	if n := run(func(i int) CodeRequest {
+		return CodeRequest{Purpose: PurposeLogin, Email: fmt.Sprintf("p%d@example.test", i), IP: "7.7.7.7", From: "team@example.test"}
+	}); n != MaxCodesPerIP {
+		t.Fatalf("%d codes for one address of the network in parallel, want %d", n, MaxCodesPerIP)
+	}
+	// One mailbox, many addresses: the cooldown lets a single one through.
+	if n := run(func(i int) CodeRequest {
+		return CodeRequest{Purpose: PurposeLogin, Email: "one@example.test", IP: fmt.Sprintf("8.8.%d.1", i), From: "team@example.test"}
+	}); n != 1 {
+		t.Fatalf("%d codes to one mailbox in parallel, want 1", n)
+	}
+}
+
+// One code is tested maxCodeAttempts times at most, however the guesses come.
+func TestCodeGuessesHoldInParallel(t *testing.T) {
+	st := newStore(t)
+	const email = "user@example.test"
+	nonce, err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: email, IP: "1.2.3.4", From: "team@example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := lastCode(t, st)
+	var wg sync.WaitGroup
+	for range 40 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := st.VerifyCode(PurposeLogin, email, nonce, otherCode(code)); !errors.Is(err, ErrBadCode) {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	var attempts int
+	if err := st.DB.QueryRow(`SELECT attempts FROM mail_codes WHERE email = ?`, email).Scan(&attempts); err != nil || attempts != maxCodeAttempts {
+		t.Fatalf("%d guesses counted, want %d: %v", attempts, maxCodeAttempts, err)
+	}
+	if err := st.VerifyCode(PurposeLogin, email, nonce, code); !errors.Is(err, ErrBadCode) {
+		t.Fatalf("the code survived: %v", err)
+	}
+}
+
+// A disabled account's request is counted like any other and mails a notice
+// without a code.
+func TestNoCodeRequest(t *testing.T) {
+	st := newStore(t)
+	req := CodeRequest{Purpose: PurposeLogin, Email: "off@example.test", IP: "1.2.3.4", Known: true, NoCode: true, From: "team@example.test", ReplyTo: "support@example.test"}
+	nonce, err := st.RequestCode(req)
+	if err != nil || nonce == "" {
+		t.Fatalf("%q %v", nonce, err)
+	}
+	if _, err := st.RequestCode(req); !errors.Is(err, ErrCodeCooldown) {
+		t.Fatalf("cooldown: %v", err)
+	}
+	ms, _ := st.Outbox(OutFilter{})
+	if len(ms) != 1 || ms[0].Kind != KindNotice || ms[0].Sensitive {
+		t.Fatalf("%+v", ms)
+	}
+	if m := outRow(t, st, ms[0].ID); mailedCodeRE.MatchString(m.Text) || !strings.Contains(m.Text, "disabled") || !strings.Contains(m.Text, "support@example.test") {
+		t.Fatalf("%q", m.Text)
 	}
 }
 
@@ -500,7 +721,7 @@ func TestSensitiveBodyIsWiped(t *testing.T) {
 	st := newStore(t)
 	port, _ := startInbound(t, st, nil)
 	w := worker(st, direct(port))
-	if err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "support@localhost", IP: "1.1.1.1", From: "ShareToken <team@example.test>"}); err != nil {
+	if _, err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "support@localhost", IP: "1.1.1.1", From: "ShareToken <team@example.test>"}); err != nil {
 		t.Fatal(err)
 	}
 	deliverAll(t, st, w)
@@ -514,6 +735,52 @@ func TestSensitiveBodyIsWiped(t *testing.T) {
 	}
 	if err := st.Retry(m.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("sensitive retry: %v", err)
+	}
+}
+
+// Cancelling a code mail removes the code like sending it does; other mail
+// keeps its text.
+func TestCancelWipesSensitiveBody(t *testing.T) {
+	st := newStore(t)
+	if _, err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "user@example.test", IP: "1.1.1.1", From: "team@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	notice, _ := st.Enqueue(Message{Kind: KindNotice, From: "team@example.test", To: "user@example.test", Subject: "hello", Text: "kept"})
+	ms, _ := st.Outbox(OutFilter{Kind: KindVerify})
+	for _, id := range []int64{ms[0].ID, notice} {
+		if err := st.Cancel(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if m := outRow(t, st, ms[0].ID); m.Status != StatusCancelled || m.Text != wipedBody || m.HTML != "" || m.Subject != wipedBody {
+		t.Fatalf("a cancelled code mail kept its code: %+v", m)
+	}
+	if m := outRow(t, st, notice); m.Status != StatusCancelled || m.Text != "kept" || m.Subject != "hello" {
+		t.Fatalf("a cancelled notice: %+v", m)
+	}
+}
+
+// Sign-in codes are claimed before other mail, however much of that waits,
+// and other mail never takes more than its share of the deliveries.
+func TestCodesAreClaimedFirst(t *testing.T) {
+	st := newStore(t)
+	for i := range 6 {
+		if _, err := st.Enqueue(Message{Kind: KindNotice, From: "team@example.test", To: fmt.Sprintf("n%d@example.test", i), Subject: "x", Text: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.RequestCode(CodeRequest{Purpose: PurposeLogin, Email: "user@example.test", IP: "1.1.1.1", From: "team@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := st.claimDue(3, 3)
+	if err != nil || len(msgs) != 3 || msgs[0].Kind != KindVerify || msgs[1].Kind != KindNotice {
+		t.Fatalf("%v %+v", err, msgs)
+	}
+	if msgs, _ := st.claimDue(4, 1); len(msgs) != 1 {
+		t.Fatalf("%d notices claimed past their share", len(msgs))
+	}
+	if msgs, _ := st.claimDue(4, 0); len(msgs) != 0 {
+		t.Fatalf("%d notices claimed into the place kept for codes", len(msgs))
 	}
 }
 
@@ -594,5 +861,43 @@ func TestMFAChangedMail(t *testing.T) {
 	m = MFAChangedMail("<b>@example.test", false, when, "", "")
 	if strings.Contains(m.HTML, "<b>@") || strings.Contains(m.Text, "IP address") || !strings.Contains(m.Text, "turned off") {
 		t.Fatalf("%s\n%s", m.Text, m.HTML)
+	}
+}
+
+// A message built to be expensive to take apart is shown as it arrived.
+func TestMessagesOfTooManyPartsAreNotTakenApart(t *testing.T) {
+	var nested strings.Builder
+	nested.WriteString("From: a@b.example\r\nSubject: deep\r\nMIME-Version: 1.0\r\n")
+	const depth = 3000
+	for i := 0; i < depth; i++ {
+		fmt.Fprintf(&nested, "Content-Type: multipart/mixed; boundary=b%d\r\n\r\n--b%d\r\n", i, i)
+	}
+	nested.WriteString("Content-Type: text/plain\r\n\r\nhello\r\n")
+	start := time.Now()
+	p := Parse([]byte(nested.String()))
+	if !p.Malformed || len(p.Attachments) != 0 || !strings.Contains(p.Text, "multipart/mixed") {
+		t.Fatalf("a message nested %d deep was taken apart: malformed=%v text=%.60q", depth, p.Malformed, p.Text)
+	}
+	if _, _, err := ReadAttachment([]byte(nested.String()), 0); err == nil {
+		t.Fatal("an attachment was read from it")
+	}
+
+	var many strings.Builder
+	many.WriteString("From: a@b.example\r\nSubject: many\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n")
+	for i := 0; i < 5000; i++ {
+		many.WriteString("--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=a\r\n\r\nz\r\n")
+	}
+	many.WriteString("--x--\r\n")
+	p = Parse([]byte(many.String()))
+	if !p.Malformed || len(p.Attachments) > maxParts {
+		t.Fatalf("5000 parts: malformed=%v attachments=%d", p.Malformed, len(p.Attachments))
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("took %v", d)
+	}
+	// Ordinary mail is unaffected.
+	ok := "From: a@b.example\r\nSubject: s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nhello\r\n--x\r\nContent-Type: text/html\r\n\r\n<p>hello</p>\r\n--x--\r\n"
+	if p := Parse([]byte(ok)); p.Malformed || strings.TrimSpace(p.Text) != "hello" {
+		t.Fatalf("ordinary mail: %+v", p)
 	}
 }

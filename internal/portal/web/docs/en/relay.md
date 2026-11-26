@@ -17,7 +17,7 @@ Reasons to run one: your buyers are close to your server and far from the networ
 
 ## What you need {#requirements}
 
-A Linux server (x86-64 or ARM64) with a public address and port 4001 open for TCP and UDP. A small one is enough: a relay only copies encrypted bytes.
+A Linux server (x86-64 or ARM64) with a public address and port 4001 open for TCP and UDP (UDP carries QUIC). If the server has IPv6, the relay listens on it too; without it, users who have only IPv6 cannot reach the relay. A small server is enough: a relay only copies encrypted bytes.
 
 You also need your account ID, on the machine where the client is signed in:
 
@@ -63,7 +63,11 @@ Cloud servers usually sit behind an address translation and do not know their pu
   -announce /dns4/relay.example.com/tcp/4001,/dns4/relay.example.com/udp/4001/quic-v1
 ```
 
-`init` asks the portal for the key that proves an account, and writes it into `relay.yaml` together with your list. The file is short and commented. To add an account later, add it under `allow_accounts` and restart the relay.
+`init` asks the portal for the key that proves an account, and writes it into `relay.yaml` together with your list. The file is short and commented. While it runs, the relay reads that key from the portal again every 6 hours, so it keeps working when the portal changes its key. To add an account later, add it under `allow_accounts` and restart the relay.
+
+- **Another portal:** `init` uses `https://sharetoken.app` unless told otherwise. If your client signs in to another portal, add `-portal {{origin}}`.
+- **Checking the file:** after editing `relay.yaml`, `./sharetoken-relay -config relay.yaml -check-config` checks it and prints the settings in effect.
+- `init` never overwrites an existing file.
 
 ## Step 3: Start it {#start}
 
@@ -91,7 +95,7 @@ sudo cp sharetoken-relay.service /etc/systemd/system/
 sudo systemctl enable --now sharetoken-relay
 ```
 
-`journalctl -u sharetoken-relay -f` follows its log.
+`journalctl -u sharetoken-relay -f` follows its log; the relay writes a line of statistics every 5 minutes. To upgrade, download the new package, replace `/opt/sharetoken-relay/sharetoken-relay` with its `sharetoken-relay`, and run `sudo systemctl restart sharetoken-relay`. `relay.key` stays, so the address stays.
 
 ## Step 4: Add it to your devices {#add}
 
@@ -131,6 +135,25 @@ The list is kept in the client's [`config.json`](/docs/config#network):
 | `private_relays` | Your own relays, at most 8 | Empty |
 | `share.keep_official` | Also hold a place on the network's relays while a private relay works. Buyers then use whichever path connects first | `false` |
 
+## Limits and monitoring {#limits}
+
+The `relay.yaml` that `init` writes is sized for small use. Change it as you need and restart the relay:
+
+| Key | Meaning | Value `init` writes |
+|---|---|---|
+| `access.networks[].max_devices_per_user` | Devices of one account that may hold a place at once | `8` |
+| `limits.max_reservations` | Devices that may hold a place at once, in all | `64` |
+| `limits.max_reservations_per_ip` | Places one IP address may hold | `16` |
+| `limits.max_circuits` | Connections open through the relay to one device at once | `256` |
+| `limits.max_circuits_per_peer` | Connections one device may open through the relay at once | Not written: `32` |
+| `limits.max_circuits_per_ip` | The same for all devices of one IP address together | Not written: `128` |
+| `network.max_conns` | Connections the relay keeps in all | `1024` |
+| `limits.memory` | Memory all connections together may take | Not written: three quarters of the machine's memory |
+
+- **Connections per address:** each IPv4 address (each IPv6 /56) may have up to 32 connections. This is fixed. Devices behind one NAT share it. When a team's devices all leave through one address, raise `max_reservations_per_ip` as well.
+- **Memory:** the machine's memory is the container's or cgroup's limit when that is lower. Unless the environment variable `GOMEMLIMIT` is set, the relay sets its own memory limit to 85% of the machine's memory.
+- **Statistics and metrics:** put a local address in `status.listen`, for example `127.0.0.1:8093`: `/` answers JSON statistics and `/metrics` Prometheus metrics (named `sharetoken_relay_…`). Neither has authentication, so only a loopback address is accepted. `status.stats_interval` (`5m` by default) is how often statistics go to the log; `0` turns that off.
+
 ## When it does not work {#trouble}
 
 | What you see | Cause and fix |
@@ -138,6 +161,7 @@ The list is kept in the client's [`config.json`](/docs/config#network):
 | `{{exe}} status` warns that the private relay does not list your account | The account of this device is not under `allow_accounts`. Add the ID that `{{exe}} account` prints and restart the relay |
 | The relay is listed with an error instead of a latency | The device cannot reach it. Check the firewall (TCP and UDP 4001) and the announced address |
 | The relay is reachable but never shows `sharing` | Sharing is off on this device (`{{exe}} share on`), or the relay refused the account (see the first row) |
+| Some of a team's devices never show `sharing` while others do | Past the devices per account (`max_devices_per_user`) or the places per IP (`max_reservations_per_ip`); see [Limits and monitoring](#limits). Raise them and restart the relay |
 | Buyers still arrive through the network's relays | The private relay was down for more than half a minute, or `share.keep_official` is on |
 
 ## What a private relay can and cannot see {#privacy}

@@ -172,7 +172,8 @@ func (o *Offer) Sign(priv ed25519.PrivateKey) {
 	o.Sig = ed25519.Sign(priv, o.signingBytes())
 }
 
-// VerifySignature checks the offer is well formed and signed by o.Node. It does
+// VerifySignature checks the offer is well formed, within the limits of an
+// offer (limits.go) and signed by o.Node. It does
 // not check the validity window (see Verify) or the hardware quote: that needs
 // vendor verifiers and a measurement allow-list (attest.Verify), which is the
 // verifying party's policy.
@@ -191,6 +192,9 @@ func (o *Offer) VerifySignature() error {
 	}
 	if o.ClientVersion == "" || len(o.InferVersions) == 0 {
 		return errors.New("offer: no client or protocol version")
+	}
+	if err := o.checkLimits(); err != nil {
+		return err
 	}
 	seen := make(map[string]bool, len(o.Models))
 	for _, m := range o.Models {
@@ -492,9 +496,16 @@ type StartedRequest struct {
 }
 
 // DisputeRequest contests an unacknowledged settlement.
+//
+// With Accept it is a statement rather than a dispute: the buyer's job ended
+// without a receipt it could check (it stopped the job, or the stream broke
+// after output arrived), and Accept is the most it agrees to be charged for
+// what it received, in micro-credits. A receipt the node settles within it
+// takes the usual course; one that bills more is disputed.
 type DisputeRequest struct {
-	JobID  string `json:"job_id"`
-	Reason string `json:"reason"`
+	JobID  string  `json:"job_id"`
+	Reason string  `json:"reason"`
+	Accept *uint64 `json:"accept,omitempty"`
 }
 
 // Evidence opens a dispute that the coordinator can decide on the facts. It is

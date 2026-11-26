@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 
@@ -92,6 +93,10 @@ func readJSON(r *http.Request, v any) error {
 	if strings.TrimSpace(string(data)) == "" {
 		return nil
 	}
+	// The content type keeps out what a web form could post.
+	if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "application/json" {
+		return errors.New("send application/json")
+	}
 	if err := json.Unmarshal(data, v); err != nil {
 		return errors.New("malformed JSON: " + err.Error())
 	}
@@ -100,11 +105,11 @@ func readJSON(r *http.Request, v any) error {
 
 func answer(w http.ResponseWriter, v any, err error) {
 	if err != nil {
-		status := http.StatusBadRequest
+		status, code := http.StatusBadRequest, "bad_request"
 		if errors.Is(err, provider.ErrNotFound) {
-			status = http.StatusNotFound
+			status, code = http.StatusNotFound, "not_found"
 		}
-		writeJSON(w, status, map[string]any{"error": map[string]string{"message": err.Error()}})
+		writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})
 		return
 	}
 	writeJSON(w, http.StatusOK, v)

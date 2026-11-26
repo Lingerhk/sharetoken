@@ -204,7 +204,22 @@ type ResponseDecoder struct {
 	window []byte // the last windowSize bytes of output, or the dictionary
 	r      io.ReadCloser
 	done   bool
+	spent  int // of MaxResponseBytes
 }
+
+// What one job's response may come to once decompressed. A few kilobytes of
+// frame inflate to megabytes of zeros, or to millions of empty records, and
+// whoever reads the frames keeps what they hold; an answer at the output
+// limit, in the wordiest event format, stays far below these.
+const (
+	// MaxResponseBytes bounds a whole response: its decompressed bytes plus
+	// recordCharge for every record.
+	MaxResponseBytes = 256 << 20
+	recordCharge     = 64
+	// maxFrameRecords bounds the records of one frame: that many of 16 bytes
+	// each fill a frame.
+	maxFrameRecords = MaxFrameSize / 16
+)
 
 // NewResponseDecoder starts reading a response stream.
 func NewResponseDecoder() *ResponseDecoder {
@@ -230,7 +245,14 @@ func (d *ResponseDecoder) Frame(plain []byte) ([][]byte, error) {
 	} else if err := d.r.(flate.Resetter).Reset(src, d.window); err != nil {
 		return nil, err
 	}
-	out, err := io.ReadAll(io.LimitReader(d.r, MaxFrameSize))
+	out, err := io.ReadAll(io.LimitReader(d.r, MaxFrameSize+1))
+	if len(out) > MaxFrameSize {
+		// Not "the stream ended here": the limit cut it.
+		return nil, fmt.Errorf("protocol: frame decompresses to more than %d bytes", MaxFrameSize)
+	}
+	if d.spent += len(out); d.spent > MaxResponseBytes {
+		return nil, fmt.Errorf("protocol: the response is larger than %d bytes", MaxResponseBytes)
+	}
 	switch {
 	case err == nil:
 		// The stream's final block: the sync tail appended is never read.
@@ -254,8 +276,14 @@ func (d *ResponseDecoder) Frame(plain []byte) ([][]byte, error) {
 		if k <= 0 || l > uint64(len(out)-k) {
 			return nil, errors.New("protocol: frame ends inside a record")
 		}
+		if len(recs) == maxFrameRecords {
+			return nil, errors.New("protocol: too many records in a frame")
+		}
 		recs = append(recs, out[k:k+int(l)])
 		out = out[k+int(l):]
+	}
+	if d.spent += recordCharge * len(recs); d.spent > MaxResponseBytes {
+		return nil, fmt.Errorf("protocol: the response is larger than %d bytes", MaxResponseBytes)
 	}
 	return recs, nil
 }

@@ -88,7 +88,15 @@ I18N.ready.then(() => {
     mfa_setup_required: tr('管理员账号需要先在门户网页上完成两步验证设置'),
     already_logged_in: tr('已经登录，请先退出'),
     daemon_down: tr('后台服务没有响应，请重新打开应用'),
+    clock_skew: tr('已登录，但门户拒绝了本机的设备签名：请确认系统的日期、时间和时区是否正确，然后重新登录'),
   };
+  // The daemon's warnings are English; the ones this page knows it says in its
+  // own language (internal/client.ClockWarning).
+  const WARNINGS = {
+    "the portal rejected this device's signature: check that this computer's date, time and time zone are right (set them automatically); the warning clears within a minute once they are":
+      tr('门户拒绝了本机的设备签名：请确认系统的日期、时间和时区是否正确（建议设为自动），改好后一分钟内提示会自动消失'),
+  };
+  const warningText = w => WARNINGS[w] || w;
   const message = e => MESSAGES[e.code] || (e.code === 'bad_request' ? badRequest(e.message) : e.message || String(e));
   function badRequest(m) {
     if (/email/.test(m)) return tr('请填写正确的邮箱地址');
@@ -100,6 +108,15 @@ I18N.ready.then(() => {
   // rounding them away would make a balance look unchanged.
   const credit = (m, digits = 6) => (Number(m || 0) / MICRO).toLocaleString(I18N.lang, { minimumFractionDigits: 0, maximumFractionDigits: digits });
   const num = n => Number(n || 0).toLocaleString(I18N.lang);
+  // A token count in K, M, B or T (thousands, millions, ...): 36, 12.3K, 4.5M.
+  const TOKEN_UNITS = ['', 'K', 'M', 'B', 'T'];
+  function tok(n) {
+    // One decimal under 100, none above; 999.95K rounds up to 1M, not 1,000K.
+    const shown = v => Math.abs(v) < 99.95 ? Math.round(v * 10) / 10 : Math.round(v);
+    let v = Number(n || 0), i = 0;
+    while (i < TOKEN_UNITS.length - 1 && Math.abs(shown(v)) >= 1000) { v /= 1000; i++; }
+    return i === 0 ? num(v) : shown(v).toLocaleString(I18N.lang) + TOKEN_UNITS[i];
+  }
   const time = nanos => nanos ? new Date(Number(nanos) / 1e6).toLocaleString(I18N.lang, { hour12: false }) : '—';
   const pricePerM = m => credit(m, 6) + ' / M';
   const shortPeer = p => p && p.length > 16 ? p.slice(0, 8) + '…' + p.slice(-6) : (p || '—');
@@ -206,7 +223,8 @@ I18N.ready.then(() => {
 
     const lastEmail = (session.user || '').includes('@') ? session.user : '';
     const email = h('input', { type: 'email', id: 'email', autocomplete: 'email', value: lastEmail, autocapitalize: 'off', spellcheck: 'false' });
-    const mailCode = h('input', { type: 'text', id: 'mail-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '7' });
+    // Room for the twelve digits of a code the portal's operator hands out.
+    const mailCode = h('input', { type: 'text', id: 'mail-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '16' });
     const invite = h('input', { type: 'text', id: 'invite', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false' });
     const totp = h('input', { type: 'text', id: 'totp', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '7' });
     const sendCode = h('button', { type: 'button', id: 'send-code', onclick: requestCode }, tr('发送验证码'));
@@ -372,7 +390,7 @@ I18N.ready.then(() => {
     const hintBtn = hint ? h('button', { type: 'button', class: 'hint-btn', id: id + '-hint-btn', title: opts.hint, 'aria-label': tr('说明'), 'aria-expanded': 'false',
       onclick: () => { hint.hidden = !hint.hidden; hintBtn.setAttribute('aria-expanded', String(!hint.hidden)); } }, '?') : null;
     const el = h('section', { class: 'panel' + (opts.fill ? ' fill' : '') + (opts.row ? ' row' : ''), id },
-      h('div', { class: 'panel-head' }, title ? h('h2', null, title) : null, hintBtn, h('span', { class: 'spacer' }), opts.actions ? h('span', { class: 'actions' }, opts.actions) : null),
+      h('div', { class: 'panel-head' }, title ? h('h2', null, title) : null, hintBtn, opts.badge || null, h('span', { class: 'spacer' }), opts.actions ? h('span', { class: 'actions' }, opts.actions) : null),
       hint, body);
     return { el, set(key, ...nodes) { const k = JSON.stringify(key); if (k !== last) { last = k; body.replaceChildren(...nodes.flat().filter(Boolean)); } } };
   }
@@ -604,9 +622,9 @@ I18N.ready.then(() => {
           tile('share-tile-jobs', tr('已完成作业'), num(stats.jobs_served), tr('失败：{n}', { n: num(stats.jobs_failed) })),
           tile('share-tile-active', tr('进行中'), num(stats.active_jobs) + ' / ' + num(s.concurrency)),
           tile('share-tile-earned', tr('本次运行收益'), credit(stats.earned_micros), stats.last_announce ? tr('最近报价：{time}', { time: clock(stats.last_announce) }) : null),
-          acct ? tile('share-tile-total', tr('卖出收益'), credit(acct.usage.sold.micros), tr('{n} 次，{tokens} tokens', { n: num(acct.usage.sold.jobs), tokens: num(acct.usage.sold.prompt_tokens + acct.usage.sold.completion_tokens) })) : null) : null,
+          acct ? tile('share-tile-total', tr('卖出收益'), credit(acct.usage.sold.micros), tr('{n} 次，{tokens} tokens', { n: num(acct.usage.sold.jobs), tokens: tok(acct.usage.sold.prompt_tokens + acct.usage.sold.completion_tokens) })) : null) : null,
         stats.announce_error ? h('div', { class: 'notice warn small' }, tr('向协调器报价失败：{error}', { error: stats.announce_error })) : null,
-        (st.warnings || []).map(w => h('div', { class: 'notice warn small share-warning' }, w)));
+        (st.warnings || []).map(w => h('div', { class: 'notice warn small share-warning' }, warningText(w))));
 
       provs.set([ps, [...serving], ui.flash, marketKey()],
         ui.flash ? h('div', { class: 'notice ' + ui.flash.cls, id: 'provider-flash' }, ui.flash.text) : null,
@@ -661,7 +679,7 @@ I18N.ready.then(() => {
         { title: tr('时间'), get: j => time(j.created_at) },
         { title: tr('模型'), get: j => j.model },
         { title: tr('状态'), get: j => JOB_STATUS[j.status] || j.status },
-        { title: 'Tokens', num: true, get: j => num(j.prompt_tokens + j.completion_tokens) },
+        { title: 'Tokens', num: true, get: j => tok(j.prompt_tokens + j.completion_tokens) },
         { title: 'Credit', num: true, get: j => j.shared ? h('span', { class: 'pill ok job-shared' }, tr('伙伴共享')) : '+' + credit(j.earned_micros, 6) },
       ], sold));
     }
@@ -1038,13 +1056,13 @@ I18N.ready.then(() => {
         { title: tr('备注'), get: r => r.label || '—' },
         { title: tr('申请时间'), get: r => time(r.created_at) },
         { title: '', get: r => h('span', { class: 'row-actions' },
-          act(area + '-approve', tr('确认'), 'POST', r => '/api/v1/' + area + '/requests/' + r.id + '/approve')(r),
-          act(area + '-reject', tr('拒绝'), 'DELETE', r => '/api/v1/' + area + '/requests/' + r.id, true)(r)) },
+          act(area + '-approve', tr('确认'), 'POST', r => '/api/v1/' + area + '/requests/' + encodeURIComponent(r.id) + '/approve')(r),
+          act(area + '-reject', tr('拒绝'), 'DELETE', r => '/api/v1/' + area + '/requests/' + encodeURIComponent(r.id), true)(r)) },
       ], requests)] : null,
       waiting && waiting.length ? [h('h3', { class: 'sub-title', id: area + '-waiting-title' }, tr('等待对方确认')), table([
         { title: tr('账户'), get: r => r.username },
         { title: tr('申请时间'), get: r => time(r.created_at) },
-        { title: '', get: act(area + '-withdraw', tr('撤回'), 'DELETE', r => '/api/v1/' + area + '/waiting/' + r.id, true) },
+        { title: '', get: act(area + '-withdraw', tr('撤回'), 'DELETE', r => '/api/v1/' + area + '/waiting/' + encodeURIComponent(r.id), true) },
       ], waiting)] : null,
     ].flat().filter(Boolean);
   }
@@ -1075,6 +1093,7 @@ I18N.ready.then(() => {
       if (e.code === 'wrong_kind') return tr('这是共享伙伴的邀请链接，请到「共享伙伴」里输入');
       if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
       if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
+      if (e.code === 'request_cooldown') return tr('你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请');
       return message(e);
     }
 
@@ -1184,15 +1203,15 @@ I18N.ready.then(() => {
 
     function leave(u) {
       confirmBox(tr('解除和卖家 {name} 的配对？之后这个账户不再向他购买，除非重新配对。', { name: u.username }), tr('解除'),
-        () => api('DELETE', '/api/v1/pairing/sellers/' + u.id), async () => { flash.sellers = null; await reload(); }, pairError);
+        () => api('DELETE', '/api/v1/pairing/sellers/' + encodeURIComponent(u.id)), async () => { flash.sellers = null; await reload(); }, pairError);
     }
     function remove(u) {
       confirmBox(tr('移除买家 {name}？如果这是他唯一配对的卖家，他会恢复为向整个网络购买。', { name: u.username }), tr('移除'),
-        () => api('DELETE', '/api/v1/pairing/buyers/' + u.id), async () => { flash.buyers = null; await reload(); }, pairError);
+        () => api('DELETE', '/api/v1/pairing/buyers/' + encodeURIComponent(u.id)), async () => { flash.buyers = null; await reload(); }, pairError);
     }
     function revoke(c) {
       confirmBox(tr('撤销配对码 {code}？它不能再用来配对，已经配对的买家不受影响。', { code: c.code }), tr('撤销'),
-        () => api('DELETE', '/api/v1/pairing/codes/' + c.id), async () => { flash.buyers = null; await reload(); }, pairError);
+        () => api('DELETE', '/api/v1/pairing/codes/' + encodeURIComponent(c.id)), async () => { flash.buyers = null; await reload(); }, pairError);
     }
 
     render();
@@ -1228,6 +1247,7 @@ I18N.ready.then(() => {
       if (e.code === 'wrong_kind') return tr('这是配对的邀请链接，请到「我的卖家」里输入');
       if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
       if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
+      if (e.code === 'request_cooldown') return tr('你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请');
       return message(e);
     }
 
@@ -1286,8 +1306,8 @@ I18N.ready.then(() => {
         v.partners.length === 0 ? h('div', { class: 'empty', id: 'partners-empty' }, tr('还没有共享伙伴')) : table([
           { title: tr('伙伴'), get: u => who(u) },
           { title: tr('配对时间'), get: u => time(u.since) },
-          { title: tr('我给出'), num: true, get: u => num(u.given || 0) },
-          { title: tr('我使用'), num: true, get: u => num(u.taken || 0) },
+          { title: tr('我给出'), num: true, get: u => tok(u.given || 0) },
+          { title: tr('我使用'), num: true, get: u => tok(u.taken || 0) },
           { title: '', get: u => h('button', { type: 'button', class: 'mini danger partner-leave', 'data-id': String(u.id), onclick: () => leave(u) }, tr('解除')) },
         ], v.partners),
         v.invites.length === 0 ? null : [
@@ -1302,8 +1322,8 @@ I18N.ready.then(() => {
       saveBtn.disabled = !view;
       const st = v.settings;
       servedText.textContent = st.daily_limit_tokens > 0
-        ? tr('最近 {h} 小时已给出 {used} / {limit} tokens', { h: num(v.window_hours), used: num(v.served), limit: num(st.daily_limit_tokens) })
-        : tr('最近 {h} 小时已给出 {used} tokens', { h: num(v.window_hours), used: num(v.served) });
+        ? tr('最近 {h} 小时已给出 {used} / {limit} tokens', { h: num(v.window_hours), used: tok(v.served), limit: tok(st.daily_limit_tokens) })
+        : tr('最近 {h} 小时已给出 {used} tokens', { h: num(v.window_hours), used: tok(v.served) });
       settings.set([st, error, settingsFlash, !view],
         failed(),
         flashLine(settingsFlash, 'partner-settings-flash'),
@@ -1345,11 +1365,11 @@ I18N.ready.then(() => {
 
     function leave(u) {
       confirmBox(tr('解除和 {name} 的共享？之后双方不能再免费使用对方的节点，除非重新配对。', { name: u.username }), tr('解除'),
-        () => api('DELETE', '/api/v1/sharing/partners/' + u.id), async () => { flash = null; await reload(); }, partnerError);
+        () => api('DELETE', '/api/v1/sharing/partners/' + encodeURIComponent(u.id)), async () => { flash = null; await reload(); }, partnerError);
     }
     function revoke(c) {
       confirmBox(tr('撤销邀请码 {code}？', { code: c.code }), tr('撤销'),
-        () => api('DELETE', '/api/v1/sharing/invites/' + c.id), async () => { flash = null; await reload(); }, partnerError);
+        () => api('DELETE', '/api/v1/sharing/invites/' + encodeURIComponent(c.id)), async () => { flash = null; await reload(); }, partnerError);
     }
 
     render();
@@ -1463,6 +1483,110 @@ I18N.ready.then(() => {
     return { el: panel.el, reload };
   }
 
+  // ---- Claude Code and Codex (internal/connect, internal/official) ----
+
+  // The coding tools of this machine: whether their config points at the
+  // local endpoint, with or without their own vendor login kept; the plans'
+  // usage seen on the way, what happens when one runs out, and the Codex
+  // Desktop unlock.
+  function toolsView() {
+    const panel = section('tools', tr('Claude Code 与 Codex'), { fill: true, hint: tr('连接后，工具的配置指向本机接口（修改前会备份）。保留官方登录时，模型菜单里官方模型后面会列出 ShareToken 的模型（st- 开头），每个请求按所选模型分流：官方模型用自己的订阅，st- 模型走 ShareToken 网络。工具需要本机客户端一直运行。') });
+    const err = errorBox('tools-error');
+    let cv = null, ov = null, auto = null;
+    const NAMES = { claude: 'Claude Code', codex: 'Codex' };
+    function state(tool) {
+      const a = cv && cv.state[tool];
+      if (!a) return tr('未连接');
+      return a.options.subscription ? tr('已连接 · 保留官方登录') : tr('已连接 · 只用 ShareToken');
+    }
+    function toolRow(tool) {
+      const a = cv.state[tool];
+      const signed = tool === 'claude' ? cv.claude_signed_in : cv.codex_chatgpt;
+      const sub = h('input', { type: 'checkbox', id: 'tools-sub-' + tool, checked: (a ? a.options.subscription : signed) || null });
+      const openai = tool === 'codex' ? h('input', { type: 'checkbox', id: 'tools-openai-provider', checked: (a && a.options.openai_provider) || null }) : null;
+      const go = h('button', { type: 'button', class: 'primary small', id: 'tools-connect-' + tool, onclick: () => run(go, err, async () => {
+        cv = await api('POST', '/api/v1/connect', { tool, subscription: sub.checked, openai_provider: openai ? openai.checked : false });
+        render();
+      }, e => message(e)) }, a ? tr('重新连接') : tr('连接'));
+      const off = a ? h('button', { type: 'button', class: 'small', id: 'tools-off-' + tool, onclick: () => confirmBox(
+        tr('把 {name} 的配置恢复成连接前的样子？', { name: NAMES[tool] }), tr('断开'),
+        async () => { cv = await api('POST', '/api/v1/connect', { tool, off: true }); }, async () => render(), e => message(e)) }, tr('断开')) : null;
+      return h('div', { class: 'tool-row', id: 'tools-row-' + tool },
+        h('div', null, h('strong', null, NAMES[tool]), ' ', h('span', { class: 'small ' + (a ? '' : 'muted'), id: 'tools-state-' + tool }, state(tool))),
+        h('div', { class: 'small muted' }, (tool === 'claude' ? cv.claude_path : cv.codex_path) + ' · ' + (signed ? tr('已登录官方账号') : tr('未登录官方账号'))),
+        h('label', { class: 'check' }, sub, h('span', null, tool === 'claude' ? tr('保留 Claude 订阅登录（共存）') : tr('保留 ChatGPT 登录（共存）'))),
+        openai ? h('label', { class: 'check' }, openai, h('span', null, tr('用 Codex 内置的 OpenAI provider（以前的对话仍可见）'))) : null,
+        h('div', { class: 'actions' }, go, off));
+    }
+    function officialBox() {
+      if (!ov) return null;
+      const s = ov.settings;
+      const save = async (patch, el) => {
+        if (el) el.disabled = true;
+        try { ov = await api('PUT', '/api/v1/official', Object.assign({}, s, patch)); err.say(''); }
+        catch (e) { err.say(message(e)); }
+        render();
+      };
+      const fb = h('input', { type: 'checkbox', id: 'tools-fallback', checked: !s.claude_fallback_off || null, onchange: () => save({ claude_fallback_off: !fb.checked }, fb) });
+      const fbModel = h('input', { id: 'tools-fallback-model', value: s.claude_fallback_model || '', placeholder: tr('自动（与所选模型最接近）') });
+      const fbSave = h('button', { type: 'button', class: 'small', id: 'tools-fallback-model-save', onclick: () => save({ claude_fallback_model: fbModel.value.trim().replace(/^st-/, '') }, fbSave) }, tr('保存'));
+      const guard = h('input', { id: 'tools-guard', type: 'number', min: 1, max: 100, value: s.codex_guard_percent || 95, disabled: s.codex_unlock || null });
+      const gSave = h('button', { type: 'button', class: 'small', id: 'tools-guard-save', disabled: s.codex_unlock || null, onclick: () => {
+        const v = Number(guard.value);
+        if (!(v > 0 && v <= 100)) { err.say(tr('请输入 1 到 100')); return; }
+        save({ codex_guard_percent: v }, gSave);
+      } }, tr('保存'));
+      const unlock = h('input', { type: 'checkbox', id: 'tools-unlock', checked: s.codex_unlock || null, onchange: async () => {
+        unlock.disabled = true;
+        try { ov = await api('POST', '/api/v1/official/unlock', { on: unlock.checked }); cv = await api('GET', '/api/v1/connect'); err.say(''); }
+        catch (e) { err.say(message(e)); }
+        render();
+      } });
+      const c = ov.claude || {};
+      const held = c.held_until ? tr('额度已用完，{time} 前的请求由 ShareToken 处理', { time: new Date(c.held_until).toLocaleString(I18N.lang, { hour12: false }) }) : '';
+      const falls = c.fallbacks ? tr('已转到 ShareToken {n} 次，最近一次用 {model}', { n: num(c.fallbacks), model: c.last_model }) : '';
+      const u = ov.unlock || {};
+      return h('div', { class: 'tools-official', id: 'tools-official' },
+        h('h3', null, 'Claude Code'),
+        h('div', { class: 'small', id: 'tools-claude-usage' }, tr('订阅用量：{text}', { text: usageText(c.usage) })),
+        held ? h('div', { class: 'small warn-text', id: 'tools-claude-held' }, held) : null,
+        falls ? h('div', { class: 'small muted', id: 'tools-claude-fallbacks' }, falls) : null,
+        h('label', { class: 'check' }, fb, h('span', null, tr('订阅额度用完后自动转到 ShareToken 继续'))),
+        field(tr('接手的 ShareToken 模型'), h('div', { class: 'endpoint' }, fbModel, fbSave)),
+        h('h3', null, 'Codex'),
+        (ov.codex || []).length ? (ov.codex || []).map(x => h('div', { class: 'small' }, tr('ChatGPT 订阅用量：{text}', { text: usageText(x.usage) }))) : h('div', { class: 'small muted' }, tr('还没有看到 ChatGPT 订阅的用量')),
+        field(tr('额度用到这个百分比时暂停官方模型'), h('div', { class: 'endpoint' }, guard, gSave), tr('Codex Desktop 在订阅额度用完后会锁住输入框，连 ShareToken 的模型也发不出去。提前暂停官方模型，并提示换成 st- 模型。开启无锁模式后不再暂停。')),
+        h('label', { class: 'check' }, unlock, h('span', null, tr('Codex Desktop 无锁模式（macOS / Windows）'))),
+        h('div', { class: 'small muted hint' }, tr('额度用完后 Codex Desktop 不锁输入框，ShareToken 模型照常可用。打开时系统会请你信任一张只对 localhost 有效的证书，并占用本机 {port} 端口；打开后 Codex Desktop 需要客户端一直运行。需要退出并重新打开 Codex Desktop。', { port: u.port || 443 })),
+        s.codex_unlock ? h('div', { class: 'small ' + (u.listening && u.trusted ? 'muted' : 'warn-text'), id: 'tools-unlock-state' },
+          u.error || (u.listening ? (u.trusted ? tr('无锁模式运行中') : tr('证书未被信任')) : tr('未在监听'))) : null);
+    }
+    function render() {
+      if (!cv) return;
+      const anyConnected = !!(cv.state.claude || cv.state.codex);
+      const autoBox = auto ? h('div', { class: 'tools-autostart', id: 'tools-autostart-row' },
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'tools-autostart', checked: auto.on || null, onchange: async e => {
+          e.target.disabled = true;
+          try { auto = await api('PUT', '/api/v1/autostart', { on: e.target.checked }); err.say(''); }
+          catch (x) { err.say(message(x)); }
+          render();
+        } }), h('span', null, auto.app ? tr('登录系统时自动启动 ShareToken（窗口不打开，在托盘后台运行）') : tr('登录系统时自动启动客户端（连接的工具需要它一直运行）'))),
+        h('div', { class: 'small ' + (!auto.on && anyConnected ? 'warn-text' : 'muted'), id: 'tools-autostart-note' }, auto.on
+          ? tr('已开启：登录系统后 ShareToken 在后台运行，占用少量内存和网络；开启了共享时，也会在后台接单卖出算力。从托盘退出 ShareToken 后，已连接的工具同样无法使用，直到再次打开。')
+          : anyConnected
+            ? tr('未开启：电脑重启、注销，或从托盘退出 ShareToken 后，已连接的 Claude Code 和 Codex 会连不上本机接口，连它们自己的官方模型也用不了（请求报连接失败），直到再次打开 ShareToken。不想自动启动的话，不用 ShareToken 时请先断开工具（会恢复原配置）。')
+            : tr('未开启：连接 Claude Code 或 Codex 后，它们所有的请求（包括官方模型）都经过 ShareToken；ShareToken 没有运行时这些工具无法使用。'))) : null;
+      panel.set(JSON.stringify([cv, ov, auto]), err.el, toolRow('claude'), toolRow('codex'), autoBox, officialBox());
+    }
+    async function reload() {
+      try {
+        [cv, ov, auto] = await Promise.all([api('GET', '/api/v1/connect'), api('GET', '/api/v1/official'), api('GET', '/api/v1/autostart').catch(() => null)]);
+        err.say(''); render();
+      } catch (e) { err.say(message(e)); if (!cv) panel.set('err', err.el); }
+    }
+    return { el: panel.el, reload };
+  }
+
   // The window after sign-in: a sidebar that chooses the view, the view, and a
   // status bar. Every view stays in the page, so that polling keeps the hidden
   // ones current and switching shows them at once.
@@ -1478,7 +1602,9 @@ I18N.ready.then(() => {
     const banner = h('div', { id: 'banner' });
     const tiles = h('div', { class: 'tiles', id: 'tiles' });
     const endpoint = section('endpoint', tr('本地模型接口'), { row: true, hint: tr('OpenAI 工具、Claude Code 和 Codex 都可以把 base URL 改成这个地址使用（Claude Code 用不带 /v1 的地址）。') });
-    const network = section('network', tr('网络'), { fill: true });
+    // Whether the coordinator answers, next to the network's title.
+    const coordPill = h('span', { class: 'pill', id: 'coord-line', hidden: true });
+    const network = section('network', tr('网络'), { fill: true, badge: coordPill });
     const models = section('models', tr('可用模型'), { fill: true });
     const devices = section('devices', tr('我的设备'), { fill: true });
     const jobs = section('jobs', tr('最近作业'), { fill: true });
@@ -1560,6 +1686,33 @@ I18N.ready.then(() => {
       el.disabled = false;
     }
 
+    // Crash reports (GET/PUT /api/v1/diagnostics; internal/client/diag.go).
+    const diagBox = h('input', { type: 'checkbox', id: 'diag-upload', onchange: async e => {
+      e.target.disabled = true;
+      try { showDiag(await api('PUT', '/api/v1/diagnostics', { upload: e.target.checked })); }
+      catch (x) { diagNote.className = 'hint small warn-text'; diagNote.textContent = message(x); }
+      e.target.disabled = false;
+    } });
+    const diagNote = h('span', { class: 'hint small muted', id: 'diag-note' });
+    const diagShow = h('button', { type: 'button', id: 'diag-show', onclick: showReports }, tr('查看待发送内容'));
+    function showDiag(d) {
+      diagBox.checked = !!d.upload;
+      diagNote.className = 'hint small muted';
+      const parts = [tr('程序崩溃或出错时，把脱敏后的错误信息（错误类型、调用栈、崩溃前的程序日志）随你的账户发给 ShareToken，帮助我们修复问题。不含对话内容、密钥、邮箱和 IP 地址。')];
+      if (!d.chosen && !d.default_upload) parts.push(tr('你所在的地区（欧洲经济区）默认关闭。'));
+      if (d.pending) parts.push(tr('待发送 {n} 份。', { n: d.pending }));
+      diagNote.textContent = parts.join(' ');
+    }
+    async function loadDiag() { try { showDiag(await api('GET', '/api/v1/diagnostics')); } catch (x) { /* an older daemon: the row stays empty */ } }
+    async function showReports() {
+      let reps = [];
+      try { reps = (await api('GET', '/api/v1/diagnostics/reports')).reports || []; } catch (x) { diagNote.textContent = message(x); return; }
+      modal('dlg-reports', tr('待发送的诊断报告'),
+        h('p', { class: 'small muted' }, reps.length ? tr('下面就是会发送的全部内容，已经脱敏。关闭上报会清空它们。') : tr('现在没有待发送的报告。')),
+        reps.map(r => h('details', { class: 'report' }, h('summary', null, new Date(r.occurred_at * 1000).toLocaleString() + ' · ' + r.kind + ' · ' + r.message.split('\n')[0]),
+          h('pre', { class: 'report-json' }, JSON.stringify(r, null, 2)))));
+    }
+
     const settings = h('section', { class: 'panel', id: 'settings' }, h('div', { class: 'rows' },
       h('span', { class: 'k' }, tr('账户')), accountName, logoutBtn,
       h('span', { class: 'k' }, tr('API key')), h('label', { class: 'v check' }, apiKeyBox, h('span', null, tr('调用本地模型接口需要 API key'))), apiKeyCopy,
@@ -1567,7 +1720,10 @@ I18N.ready.then(() => {
       h('span', { class: 'k' }, tr('语言')), h('span', { class: 'v' }), I18N.picker() || h('span'),
       h('span', { class: 'k' }, tr('版本')), h('span', { class: 'v' }, versionText, ' ', checkResult), checkBtn,
       h('span', { class: 'k' }, tr('反馈')), h('span', { class: 'v muted' }, tr('告诉我们你遇到的问题或建议。')),
-      h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈'))));
+      h('button', { type: 'button', id: 'settings-feedback', onclick: () => feedbackDialog() }, tr('提交反馈')),
+      h('span', { class: 'k' }, tr('诊断')), h('label', { class: 'v check' }, diagBox, h('span', null, tr('发送异常诊断报告'))), diagShow,
+      h('span', { class: 'k' }), diagNote));
+    loadDiag();
     // How requests are bought (PUT /api/v1/buy).
     const buyPanel = h('section', { class: 'panel', id: 'buy-settings' }, h('div', { class: 'rows' },
       h('span', { class: 'k' }, tr('原生卖家')), h('label', { class: 'v check' }, nativeBox, h('span', null, tr('只用原生支持请求接口的卖家'))), h('span'),
@@ -1666,7 +1822,7 @@ I18N.ready.then(() => {
         { title: tr('路径'), get: x => h('span', { class: 'badge' + (x.path === 'direct' ? ' accent' : ''), title: x.endpoint || null }, tunnelPath(x.path)) },
         { title: tr('协议'), get: x => x.proto ? x.proto.toUpperCase() : '—' },
         { title: tr('延迟'), num: true, get: x => rtt(x.ms) },
-        { title: tr('连接'), num: true, get: x => num(x.conns) },
+        { title: tr('连接数'), num: true, get: x => num(x.conns) },
         { title: tr('流量'), num: true, get: x => '↓ ' + bytes(x.rx_bytes) + '  ↑ ' + bytes(x.tx_bytes) },
       ], list));
       drawTunnelStat();
@@ -1694,6 +1850,7 @@ I18N.ready.then(() => {
     const partners = partnersView();
     const share = shareView(() => market);
     const warm = warmupView();
+    const tools = toolsView();
 
     // name, label, panels, or tabs of panels.
     const VIEWS = [
@@ -1701,7 +1858,7 @@ I18N.ready.then(() => {
       ['share', tr('共享'), null, [['state', tr('状态'), share.panes.state], ['providers', tr('厂商 API'), share.panes.providers], ['local', tr('本机模型'), share.panes.local]]],
       ['pairing', tr('配对'), null, [['partners', tr('共享伙伴'), [partners.partners, partners.settings]], ['sellers', tr('我的卖家'), [pairing.sellers]], ['buyers', tr('我的买家'), [pairing.buyers]]]],
       ['activity', tr('记录'), null, [['all', tr('全部'), [jobs.el]], ['sold', tr('卖出'), [share.sold]]]],
-      ['settings', tr('设置'), null, [['general', tr('通用'), [settings]], ['buy', tr('调用'), [buyPanel]], ['network', tr('网络'), [tailnetPanel, tunnels.el]], ['devices', tr('我的设备'), [devices.el]], ['warmup', tr('预热'), [warm.el]]]],
+      ['settings', tr('设置'), null, [['general', tr('通用'), [settings]], ['buy', tr('调用'), [buyPanel]], ['network', tr('网络'), [tailnetPanel, tunnels.el]], ['devices', tr('我的设备'), [devices.el]], ['warmup', tr('预热'), [warm.el]], ['tools', tr('工具接入'), [tools.el]]]],
     ];
     const views = {}, navButtons = {}, tabs = {}, labels = {};
     const title = h('h1', { id: 'view-title' });
@@ -1760,8 +1917,8 @@ I18N.ready.then(() => {
         tiles.replaceChildren(
           tile('tile-available', tr('可用 credit'), credit(b.available_micros)),
           tile('tile-held', tr('冻结中'), credit(b.held_micros), null, tr('请求结束后多余部分退回')),
-          tile('tile-bought', tr('买入'), credit(u.bought.micros), tr('{n} 次，{tokens} tokens', { n: num(u.bought.jobs), tokens: num(u.bought.prompt_tokens + u.bought.completion_tokens) })),
-          tile('tile-sold', tr('卖出收益'), credit(u.sold.micros), tr('{n} 次，{tokens} tokens', { n: num(u.sold.jobs), tokens: num(u.sold.prompt_tokens + u.sold.completion_tokens) })),
+          tile('tile-bought', tr('买入花费'), credit(u.bought.micros), tr('{n} 次，{tokens} tokens', { n: num(u.bought.jobs), tokens: tok(u.bought.prompt_tokens + u.bought.completion_tokens) })),
+          tile('tile-sold', tr('卖出收益'), credit(u.sold.micros), tr('{n} 次，{tokens} tokens', { n: num(u.sold.jobs), tokens: tok(u.sold.prompt_tokens + u.sold.completion_tokens) })),
           shareTile());
       }
       devices.set(me.devices, me.devices.length === 0 ? h('div', { class: 'empty' }, tr('暂无设备')) : table([
@@ -1792,25 +1949,28 @@ I18N.ready.then(() => {
       const cur = (st.relays || []).find(r => r.current);
       // The live pings of the relay in use say more than the last survey of all relays.
       setRelayStat(cur, link && link[0] ? link[0] : cur && !cur.error ? cur.rtt_ms : 0);
+      coordPill.hidden = false;
+      coordPill.className = 'pill ' + (c.connected ? 'ok' : 'bad');
+      coordPill.textContent = c.connected ? tr('协调器已连接') : tr('协调器未连接');
       network.set([st.relays, c.connected, c.via, st.warnings, link, tun.text, Math.round(tun.ms)],
-        h('div', { class: 'kv' },
-          h('span', { class: 'pill ' + (c.connected ? 'ok' : 'bad'), id: 'coord-line' }, c.connected ? tr('协调器已连接') : tr('协调器未连接')),
+        tun.on || link ? h('div', { class: 'kv' },
           tun.on ? h('span', { class: 'small', id: 'tunnel-line' }, tr('直连隧道：{state}', { state: tun.text }), tun.ms ? [' ', rtt(tun.ms)] : null) : null,
           link ? h('span', { class: 'small', id: 'link-line' }, I18N.parts('链路质量：平均 {avg} ms · 抖动 {jitter} ms · 丢包 {loss}%', {
             avg: h('strong', { class: link[0] ? rttClass(link[0]) + ' rtt-text' : null }, String(link[0])), jitter: String(link[1]),
-            loss: h('strong', { class: link[2] >= 5 ? 'bad rtt-text' : link[2] > 0 ? 'warn rtt-text' : null }, String(link[2])) })) : null),
-        (st.warnings || []).map(w => h('div', { class: 'notice warn small' }, w)),
+            loss: h('strong', { class: link[2] >= 5 ? 'bad rtt-text' : link[2] > 0 ? 'warn rtt-text' : null }, String(link[2])) })) : null) : null,
+        (st.warnings || []).map(w => h('div', { class: 'notice warn small' }, warningText(w))),
         !st.relays || st.relays.length === 0 ? h('div', { class: 'empty' }, tr('门户还没有登记中继')) : table([
           { title: tr('中继'), get: r => r.name || shortPeer(r.addr) },
           { title: tr('地区'), get: r => r.region || '—' },
           { title: tr('延迟'), num: true, get: r => r.error ? h('span', { class: 'rtt bad', title: r.error }, tr('不可达')) : rtt(r.rtt_ms) },
-          { title: '', get: r => [r.current ? h('span', { class: 'badge accent' }, tr('当前使用')) : null, r.reserved ? h('span', { class: 'badge' }, tr('已预约')) : null].filter(Boolean) },
+          { title: '', get: r => [r.current ? h('span', { class: 'badge accent' }, tr('使用中')) : null, r.reserved ? h('span', { class: 'badge' }, tr('已预约')) : null].filter(Boolean) },
         ], st.relays));
     }
 
     function renderNetworkDown(s) {
       const t = s.state === 'retrying' ? (s.error || tr('连接失败，正在重试')) : tr('正在连接…');
       network.set(['down', t], h('div', { class: 'empty', id: 'network-down' }, t));
+      coordPill.hidden = true;
       models.set(['down'], h('div', { class: 'empty' }, tr('连接网络后显示')));
       share.update(null);
       setBrief(null);
@@ -1822,9 +1982,9 @@ I18N.ready.then(() => {
       market = ms || [];
       models.set(ms, !ms || ms.length === 0 ? h('div', { class: 'empty', id: 'models-empty' }, tr('网络上暂时没有在线的模型')) : table([
         { title: tr('模型'), get: m => m.model },
-        { title: tr('节点'), num: true, get: m => m.shared_nodes ? [num(m.nodes), ' ', h('span', { class: 'pill ok model-shared', title: tr('伙伴的节点：免费') }, tr('伙伴 {n}', { n: num(m.shared_nodes) }))] : num(m.nodes) },
-        { title: tr('最低输入价'), num: true, get: m => pricePerM(m.min_price_in) },
-        { title: tr('最低输出价'), num: true, get: m => pricePerM(m.min_price_out) },
+        { title: tr('节点'), num: true, get: m => m.shared_nodes ? [num(m.nodes), ' ', h('span', { class: 'pill ok model-shared', title: tr('节点：伙伴 {n}', { n: num(m.shared_nodes) }) }, tr('免费'))] : num(m.nodes) },
+        { title: tr('输入价'), num: true, get: m => pricePerM(m.min_price_in) },
+        { title: tr('输出价'), num: true, get: m => pricePerM(m.min_price_out) },
       ], ms));
     }
 
@@ -1834,7 +1994,7 @@ I18N.ready.then(() => {
         { title: tr('方向'), get: j => j.role === 'sell' ? tr('卖出') : tr('买入') },
         { title: tr('模型'), get: j => j.model },
         { title: tr('状态'), get: j => JOB_STATUS[j.status] || j.status },
-        { title: 'Tokens', num: true, get: j => num(j.prompt_tokens + j.completion_tokens) },
+        { title: 'Tokens', num: true, get: j => tok(j.prompt_tokens + j.completion_tokens) },
         { title: 'Credit', num: true, get: j => j.shared ? h('span', { class: 'pill ok job-shared' }, tr('伙伴共享')) : j.role === 'sell' ? '+' + credit(j.earned_micros, 6) : '-' + credit(j.cost_micros, 6) },
       ], js));
     }
@@ -1849,6 +2009,7 @@ I18N.ready.then(() => {
       if (e.code === 'limit') return tr('已达到数量上限，请先解除或撤销一些');
       if (e.code === 'throttled') return tr('尝试次数太多，请几分钟后再试');
       if (e.code === 'codes_paused') return tr('配对码暂时停用：全站输错的次数太多。请改用邀请链接，或一小时后再试');
+      if (e.code === 'request_cooldown') return tr('你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请');
       return message(e);
     }
     async function openInvite(inv) {
@@ -1958,7 +2119,34 @@ I18N.ready.then(() => {
           h('span', { class: 'spacer' }),
           h('button', { type: 'button', id: 'update-close', onclick: () => closeModal() }, tr('关闭')),
           installBtn));
-      if (start && installBtn) installUpdate(u, installBtn, progress);
+      if (!installBtn) return;
+      // An update the shell is already installing (started from an earlier
+      // dialog) is followed, not started again: the button stays off.
+      installBtn.disabled = true;
+      api('GET', '/__shell/update').catch(() => null).then(st => {
+        if (!installBtn.isConnected) return;
+        if (st && BUSY.has(st.state)) { showUpdate(st, progress); followUpdate(installBtn, progress); }
+        else if (start) installUpdate(u, installBtn, progress);
+        else installBtn.disabled = false;
+      });
+    }
+
+    // The shell's states while it fetches and installs; the app restarts after.
+    const BUSY = new Set(['downloading', 'installing', 'restarting']);
+
+    function showUpdate(st, progress) {
+      progress.className = 'small';
+      if (st.state === 'downloading') {
+        const total = Number(st.total) || 0, written = Number(st.written) || 0; // 0 is left out of the answer
+        progress.textContent = total > 0 ? tr('正在下载 {pct}%', { pct: Math.min(100, Math.floor(written * 100 / total)) }) : tr('正在下载…');
+      } else if (st.state === 'installing') {
+        progress.textContent = tr('已校验签名，正在安装…');
+      } else if (st.state === 'restarting') {
+        progress.textContent = tr('正在重启…');
+      } else if (st.state === 'failed') {
+        progress.className = 'small bad';
+        progress.textContent = tr('更新失败：{error}', { error: st.error || '' });
+      }
     }
 
     // installUpdate asks the window's shell to fetch, check and install the
@@ -1970,24 +2158,27 @@ I18N.ready.then(() => {
       try {
         await api('POST', '/__shell/update', { key: u.key });
       } catch (e) {
+        // Refused because one is already under way: follow that one.
+        const st = await api('GET', '/__shell/update').catch(() => null);
+        if (st && BUSY.has(st.state)) { showUpdate(st, progress); return followUpdate(btn, progress); }
         progress.className = 'small bad';
         progress.textContent = tr('更新失败：{error}', { error: message(e) });
         btn.disabled = false;
         return;
       }
+      return followUpdate(btn, progress);
+    }
+
+    // followUpdate shows the shell's progress in the dialog until the app
+    // restarts, the update fails, or the dialog is closed.
+    async function followUpdate(btn, progress) {
       for (;;) {
         await new Promise(r => setTimeout(r, 400));
+        if (!progress.isConnected) return; // closed; a new dialog follows it again
         let st;
         try { st = await api('GET', '/__shell/update'); } catch (e) { continue; } // the service stops before the restart
-        if (st.state === 'downloading') {
-          progress.textContent = st.total > 0 ? tr('正在下载 {pct}%', { pct: Math.floor(st.written * 100 / st.total) }) : tr('正在下载…');
-        } else if (st.state === 'installing') {
-          progress.textContent = tr('已校验签名，正在安装…');
-        } else if (st.state === 'restarting') {
-          progress.textContent = tr('正在重启…');
-        } else if (st.state === 'failed') {
-          progress.className = 'small bad';
-          progress.textContent = tr('更新失败：{error}', { error: st.error || '' });
+        showUpdate(st, progress);
+        if (st.state === 'failed' || st.state === 'idle') {
           btn.disabled = false;
           return;
         }
@@ -2025,6 +2216,7 @@ I18N.ready.then(() => {
         if (tick++ % 3 === 0) {
           loadAPIKey();
           warm.reload();
+          tools.reload();
           try {
             const [me, j, sj] = await Promise.all([api('GET', '/api/v1/account'), api('GET', '/api/v1/jobs?limit=10'), api('GET', '/api/v1/jobs?role=sell&limit=10')]);
             if (stopped) return;

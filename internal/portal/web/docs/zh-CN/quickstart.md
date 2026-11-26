@@ -1,6 +1,6 @@
 # 快速开始
 
-从下载到第一次调用模型，大约 5 分钟。请先在页面上方选择你的系统。
+这一页从下载开始，一步步带你完成第一次模型调用。请先在页面上方选择你的系统。
 
 > [!TIP]
 > 这里用的是命令行版。想用图形界面的话，请安装[桌面应用](/docs/desktop)。
@@ -66,7 +66,7 @@ $env:Path += ";$dir"
 {{exe}} login -email you@example.com
 ```
 
-没有密码：输入邮箱收到的 6 位验证码即可。一个邮箱第一次登录时会自动创建账户。完成后这台机器就绑定到了你的账户。
+没有密码：输入邮箱收到的 6 位验证码即可。一个邮箱第一次登录时会自动创建账户。完成后这台机器就绑定到了你的账户。开启了两步验证、门户要求邀请码等情况见[账户和设备](/docs/account#login)。
 
 ## 3. 启动客户端 {#up}
 
@@ -88,11 +88,26 @@ $env:Path += ";$dir"
 {{exe}} models
 ```
 
-把下面的 `MODEL` 换成上一步列出的模型 ID：
+本地端点默认要求 API key。key 以 `sk-st-` 开头，保存在本机，`{{exe}} apikey -q` 会打印它。先把它放进环境变量：
+
+::: macos linux
+```bash
+export OPENAI_API_KEY=$({{exe}} apikey -q)
+```
+:::
+
+::: windows
+```powershell
+$env:OPENAI_API_KEY = ({{exe}} apikey -q)
+```
+:::
+
+再把下面的 `MODEL` 换成 `models` 列出的模型 ID：
 
 ::: macos linux
 ```bash
 curl http://127.0.0.1:{{port}}/v1/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"MODEL","messages":[{"role":"user","content":"Hello"}],"max_tokens":200}'
 ```
@@ -101,7 +116,7 @@ curl http://127.0.0.1:{{port}}/v1/chat/completions \
 ::: windows
 ```powershell
 $body = @{ model = 'MODEL'; max_tokens = 200; messages = @(@{ role = 'user'; content = 'Hello' }) } | ConvertTo-Json -Depth 5
-Invoke-RestMethod http://127.0.0.1:{{port}}/v1/chat/completions -Method Post -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 8
+Invoke-RestMethod http://127.0.0.1:{{port}}/v1/chat/completions -Method Post -Headers @{ Authorization = "Bearer $env:OPENAI_API_KEY" } -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 8
 ```
 :::
 
@@ -117,8 +132,9 @@ Invoke-RestMethod http://127.0.0.1:{{port}}/v1/chat/completions -Method Post -Co
 ## 下一步 {#next}
 
 ::: cards
-[调用模型](/docs/use-models) 接入 Python、Node.js 和各种 OpenAI 兼容工具。
-[共享模型](/docs/share) 把本机模型共享出去赚 credit。
+[调用模型](/docs/use-models) 接入 Python、Node.js、Claude Code、Codex 和各种 OpenAI 兼容工具。
+[同时使用 Claude 或 ChatGPT 订阅](/docs/use-models#subscription) Claude Code 和 Codex 保留自己的登录，再加上网络上的模型。
+[共享模型](/docs/share) 把本机模型、厂商 API key 或账号登录共享出去赚 credit。
 [运行客户端](/docs/running) 让客户端在后台一直运行。
 [在编程助手中使用](/docs/agents) 让 Claude Code 或 Codex 替你操作客户端。
 :::

@@ -229,15 +229,161 @@ func TestLateAckFinalizesPendingJob(t *testing.T) {
 	sr := signReceipt(t, node, tk, 10, 5)
 	_, _ = f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: sr})
 
-	// An ack for a DIFFERENT receipt must not finalize the job.
+	// A receipt without an ack never replaces the one the job was settled with.
 	other := signReceipt(t, node, tk, 999, 999)
-	if resp, _ := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: other, Ack: ack(buyer, &other)}); resp.Status != string(StatusPending) {
-		t.Fatalf("ack for another receipt changed the job: %+v", resp)
+	if resp, _ := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: other}); resp.Status != string(StatusPending) || resp.CostMicros != 20 {
+		t.Fatalf("another receipt changed the job: %+v", resp)
 	}
 	resp, err := f.eng.Settle(buyer.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: sr, Ack: ack(buyer, &sr)})
 	if err != nil || resp.Status != string(StatusFinal) {
 		t.Fatalf("late ack should finalize: %+v %v", resp, err)
 	}
+}
+
+// A node that shows the buyer one receipt and settles another (the audit's
+// CO-1) is found out when the buyer brings the one it acknowledged: nothing
+// is paid, and the node loses a dispute.
+func TestTwoReceiptsRefundTheBuyer(t *testing.T) {
+	for _, disputed := range []bool{false, true} {
+		f := newFixture(t, Config{DisputeWindow: time.Hour})
+		node, buyer := mustKeys(t), mustKeys(t)
+		f.offer(node, "m", priceIn, priceOut, 4)
+		f.deposit(buyer, 1_000_000)
+		tk := f.ticket(buyer, 100_000)
+		shown := signReceipt(t, node, tk, 10, 5)
+		inflated := signReceipt(t, node, tk, 40_000, 20_000)
+		if disputed {
+			if err := f.eng.Dispute(buyer.ID(), protocol.DisputeRequest{JobID: tk.JobID, Reason: "x"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := StatusPending
+		if disputed {
+			want = StatusDisputed
+		}
+		if resp, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: inflated}); err != nil || resp.Status != string(want) {
+			t.Fatalf("want %s, got %+v %v", want, resp, err)
+		}
+		// An ack somebody else signed proves nothing.
+		if _, err := f.eng.Settle(buyer.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: shown, Ack: ack(node, &shown)}); err == nil {
+			t.Fatal("an ack not signed by the buyer was accepted")
+		}
+		resp, err := f.eng.Settle(buyer.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: shown, Ack: ack(buyer, &shown)})
+		if err != nil || resp.Status != string(StatusRefunded) {
+			t.Fatalf("want refunded, got %+v %v", resp, err)
+		}
+		if got := f.balance(buyer); got != 1_000_000 {
+			t.Fatalf("buyer balance = %d, want everything back", got)
+		}
+		if got := f.balance(node); got != 0 {
+			t.Fatalf("node earned %d", got)
+		}
+		if st := f.stats(node); st.DisputesLost != 1 {
+			t.Fatalf("disputes lost = %d, want 1", st.DisputesLost)
+		}
+		// Settled for good: neither receipt moves it again.
+		if resp, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: inflated}); err == nil {
+			t.Fatalf("settled a refunded job: %+v", resp)
+		}
+		f.booksBalance()
+	}
+}
+
+// The buyer's own settlement, with its ack, is final at once, and the node's
+// later claim with another receipt changes nothing.
+func TestBuyerSettlesFirst(t *testing.T) {
+	f := newFixture(t, Config{})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 4)
+	f.deposit(buyer, 1_000_000)
+	tk := f.ticket(buyer, 100_000)
+	shown := signReceipt(t, node, tk, 10, 5)
+	resp, err := f.eng.Settle(buyer.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: shown, Ack: ack(buyer, &shown)})
+	if err != nil || resp.Status != string(StatusFinal) || resp.CostMicros != 20 {
+		t.Fatalf("want final at 20, got %+v %v", resp, err)
+	}
+	inflated := signReceipt(t, node, tk, 40_000, 20_000)
+	if resp, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: inflated}); err != nil || resp.Status != string(StatusFinal) || resp.CostMicros != 20 {
+		t.Fatalf("the node's other receipt changed a final job: %+v %v", resp, err)
+	}
+	if got := f.balance(buyer); got != 1_000_000-20 {
+		t.Fatalf("buyer balance = %d", got)
+	}
+	f.booksBalance()
+}
+
+// A buyer whose job ended without a receipt says what it accepts to pay for
+// what it received (the audit's BN-1): a receipt within it takes the usual
+// course, one above it waits for arbitration with the whole hold.
+func TestBuyerStatementBoundsUnacknowledgedSettlement(t *testing.T) {
+	accept := func(n uint64) *uint64 { return &n }
+	f := newFixture(t, Config{DisputeWindow: time.Hour})
+	node, buyer := mustKeys(t), mustKeys(t)
+	f.offer(node, "m", priceIn, priceOut, 8)
+	f.deposit(buyer, 1_000_000)
+
+	// Stated first, billed within it.
+	tk := f.ticket(buyer, 100_000)
+	if err := f.eng.Dispute(buyer.ID(), protocol.DisputeRequest{JobID: tk.JobID, Reason: "stopped", Accept: accept(50)}); err != nil {
+		t.Fatal(err)
+	}
+	// A later, lower statement does not replace the first.
+	if err := f.eng.Dispute(buyer.ID(), protocol.DisputeRequest{JobID: tk.JobID, Reason: "stopped", Accept: accept(0)}); err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: signReceipt(t, node, tk, 10, 5)}); err != nil || resp.Status != string(StatusPending) {
+		t.Fatalf("want pending, got %+v %v", resp, err)
+	}
+
+	// Stated first, billed above it.
+	tk = f.ticket(buyer, 100_000)
+	if err := f.eng.Dispute(buyer.ID(), protocol.DisputeRequest{JobID: tk.JobID, Reason: "stream broke", Accept: accept(50)}); err != nil {
+		t.Fatal(err)
+	}
+	before := f.held(buyer)
+	if resp, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: signReceipt(t, node, tk, 40_000, 20_000)}); err != nil || resp.Status != string(StatusDisputed) {
+		t.Fatalf("want disputed, got %+v %v", resp, err)
+	}
+	if f.held(buyer) != before {
+		t.Fatal("the hold of a disputed job must stay whole")
+	}
+	over := tk.JobID
+
+	// Settled first, then stated: within it nothing changes, above it the payout freezes.
+	tk = f.ticket(buyer, 100_000)
+	_, _ = f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: signReceipt(t, node, tk, 10, 5)})
+	if err := f.eng.Dispute(buyer.ID(), protocol.DisputeRequest{JobID: tk.JobID, Accept: accept(20)}); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := f.eng.JobStatus(tk.JobID); st != StatusPending {
+		t.Fatalf("a receipt within the statement was disputed: %s", st)
+	}
+	tk = f.ticket(buyer, 100_000)
+	_, _ = f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: signReceipt(t, node, tk, 40_000, 20_000)})
+	if err := f.eng.Dispute(buyer.ID(), protocol.DisputeRequest{JobID: tk.JobID, Accept: accept(20)}); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := f.eng.JobStatus(tk.JobID); st != StatusDisputed {
+		t.Fatalf("a receipt above the statement stayed %s", st)
+	}
+
+	// An ack still settles a job with a statement at once.
+	tk = f.ticket(buyer, 100_000)
+	_ = f.eng.Dispute(buyer.ID(), protocol.DisputeRequest{JobID: tk.JobID, Accept: accept(0)})
+	sr := signReceipt(t, node, tk, 10, 5)
+	if resp, err := f.eng.Settle(node.ID(), protocol.SettleRequest{Ticket: *tk, Receipt: sr, Ack: ack(buyer, &sr)}); err != nil || resp.Status != string(StatusFinal) {
+		t.Fatalf("want final, got %+v %v", resp, err)
+	}
+	// Only the buyer may state anything.
+	tk = f.ticket(buyer, 100_000)
+	if err := f.eng.Dispute(node.ID(), protocol.DisputeRequest{JobID: tk.JobID, Accept: accept(1 << 40)}); err == nil {
+		t.Fatal("the node stated what the buyer accepts")
+	}
+	f.eng.Tick(f.now.Add(2 * time.Hour))
+	if st, _ := f.eng.JobStatus(over); st != StatusDisputed {
+		t.Fatalf("a disputed job was paid out: %s", st)
+	}
+	f.booksBalance()
 }
 
 func TestDisputeFreezesPayoutAndRefundPenalizesNode(t *testing.T) {

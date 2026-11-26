@@ -50,6 +50,27 @@ type Config struct {
 	Share ShareConfig `json:"share"`
 	// Tailnet is the direct path over Tailscale's data plane (tailnet.go).
 	Tailnet TailnetConfig `json:"tailnet"`
+
+	// Log is where the client writes its log (diag.go); it is read at start.
+	Log LogConfig `json:"log,omitzero"`
+	// Diagnostics says whether crash reports go to the portal.
+	Diagnostics DiagConfig `json:"diagnostics,omitzero"`
+}
+
+// LogConfig is the log section. Zero values are the defaults: <home>/logs,
+// info, 10 MiB per file, 5 old files.
+type LogConfig struct {
+	Dir       string `json:"dir,omitempty"`
+	Level     string `json:"level,omitempty"`
+	MaxSizeMB int    `json:"max_size_mb,omitempty"`
+	MaxFiles  int    `json:"max_files,omitempty"`
+}
+
+// DiagConfig is the diagnostics section.
+type DiagConfig struct {
+	// Upload: send crash reports. Unset, they are on, except in the European
+	// Economic Area (diag.DefaultUpload).
+	Upload *bool `json:"upload,omitempty"`
 }
 
 // BuyConfig tunes buying.

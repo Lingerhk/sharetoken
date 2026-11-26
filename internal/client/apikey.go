@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"sharetoken/internal/official"
 	"sharetoken/internal/secfile"
 )
 
@@ -126,10 +127,28 @@ func (g *apiKeyGate) current() (APIKeySettings, error) { return LoadAPIKey(g.hom
 // presentedAPIKey is the key a request carries, the OpenAI way or the
 // Anthropic way.
 func presentedAPIKey(r *http.Request) string {
+	if k := strings.TrimSpace(r.Header.Get(official.HeaderKey)); k != "" {
+		return k
+	}
 	if k, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 		return strings.TrimSpace(k)
 	}
 	return strings.TrimSpace(r.Header.Get("X-Api-Key"))
+}
+
+// matches reports whether key is the endpoint's key (or none is required).
+func (g *apiKeyGate) matches(key string) bool {
+	s, err := g.current()
+	if err != nil {
+		return false
+	}
+	return !s.Required || subtle.ConstantTimeCompare([]byte(key), []byte(s.Key)) == 1
+}
+
+// is reports whether key is the endpoint's key, required or not.
+func (g *apiKeyGate) is(key string) bool {
+	s, err := g.current()
+	return err == nil && subtle.ConstantTimeCompare([]byte(key), []byte(s.Key)) == 1
 }
 
 // allow reports whether r may use the endpoint, and if not, why.

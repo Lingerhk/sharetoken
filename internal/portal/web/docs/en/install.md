@@ -1,6 +1,6 @@
 # Install the command-line client
 
-The command-line edition is a single executable. It has no other dependencies and does not need a window system.
+The command-line edition is a single executable. It has no other dependencies and does not need a window system. If you installed the [desktop app](/docs/desktop#with-cli), you already have it: the app contains the same program.
 
 ## System requirements {#requirements}
 

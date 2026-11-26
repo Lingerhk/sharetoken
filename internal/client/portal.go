@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -177,6 +179,9 @@ type CodeSent struct {
 	NewAccount       bool `json:"new_account"` // signing in will create the account
 	CooldownSeconds  int  `json:"cooldown_seconds"`
 	ExpiresInSeconds int  `json:"expires_in_seconds"`
+	// Nonce goes back to the portal with the code (SignIn): the code only
+	// works for who asked for it. The daemon keeps it and does not pass it on.
+	Nonce string `json:"nonce,omitempty"`
 }
 
 // RequestCode asks the portal to mail a sign-in code to email. invite is the
@@ -188,15 +193,61 @@ func (p *PortalClient) RequestCode(ctx context.Context, email, invite string) (*
 }
 
 // SignIn redeems a mailed code for a token, creating the account of a new
-// address. totp is an authenticator code for accounts with two-factor
-// authentication; without it such an account gets a *PortalError with Code
-// mfa_required and a Challenge for CompleteMFA.
-func (p *PortalClient) SignIn(ctx context.Context, email, code, invite, totp, tokenName string) (*AuthResult, error) {
+// address. nonce is what RequestCode returned for that code ("" for a code the
+// portal's operator handed out). totp is an authenticator code for accounts
+// with two-factor authentication; without it such an account gets a
+// *PortalError with Code mfa_required and a Challenge for CompleteMFA.
+func (p *PortalClient) SignIn(ctx context.Context, email, code, nonce, invite, totp, tokenName string) (*AuthResult, error) {
 	var out AuthResult
-	err := p.Do(ctx, http.MethodPost, "/api/v1/auth/verify", map[string]string{"email": email, "code": code,
+	err := p.Do(ctx, http.MethodPost, "/api/v1/auth/verify", map[string]string{"email": email, "code": code, "nonce": nonce,
 		"invite_code": invite, "totp": totp, "token_name": tokenName}, &out)
 	return &out, err
 }
+
+// pendingCodeFile keeps the nonce of a code "sharetoken login -send" asked
+// for, until "login -code" redeems it in another run.
+const pendingCodeFile = "login-code.json"
+
+type pendingCode struct {
+	Portal  string `json:"portal"`
+	Email   string `json:"email"`
+	Nonce   string `json:"nonce"`
+	Expires int64  `json:"expires"` // unix seconds
+}
+
+// SavePendingCode remembers, in the state directory home, the nonce of the
+// code just mailed to email by portal.
+func SavePendingCode(home, portal, email string, sent *CodeSent) error {
+	if sent == nil || sent.Nonce == "" {
+		return nil
+	}
+	data, err := json.Marshal(pendingCode{Portal: portal, Email: accounts.NormalizeEmail(email), Nonce: sent.Nonce,
+		Expires: time.Now().Add(time.Duration(sent.ExpiresInSeconds) * time.Second).Unix()})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(home, pendingCodeFile), data, 0o600)
+}
+
+// LoadPendingCode returns the nonce SavePendingCode kept for email at portal,
+// or "" when there is none or its code has expired.
+func LoadPendingCode(home, portal, email string) string {
+	data, err := os.ReadFile(filepath.Join(home, pendingCodeFile))
+	if err != nil {
+		return ""
+	}
+	var p pendingCode
+	if json.Unmarshal(data, &p) != nil || p.Portal != portal || p.Email != accounts.NormalizeEmail(email) || time.Now().Unix() > p.Expires {
+		return ""
+	}
+	return p.Nonce
+}
+
+// ClearPendingCode forgets the nonce: its code is used.
+func ClearPendingCode(home string) { _ = os.Remove(filepath.Join(home, pendingCodeFile)) }
 
 // CompleteMFA finishes a sign-in that SignIn left waiting for its second factor.
 func (p *PortalClient) CompleteMFA(ctx context.Context, challenge, code, tokenName string) (*AuthResult, error) {

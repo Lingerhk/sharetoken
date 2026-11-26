@@ -123,11 +123,12 @@ func (t *tenant) admits(account string) bool {
 // coordinator) or have presented a valid pass of that network; device limits
 // count within the network, so "user:3" of one network is not "user:3" of another.
 //
-// Only reservations are gated. Connecting through the relay to a peer that
-// holds a reservation is not: every such peer is a registered user or a
-// coordinator, and each authenticates whoever reaches it (a coordinator
-// refuses unbound devices, nodes accept only tickets). The relay could not
-// tell a buyer's network anyway: buyers hold no reservation and show no pass.
+// Who may connect through the relay to a peer that holds a reservation is not
+// gated: every such peer is a registered user or a coordinator, and each
+// authenticates whoever reaches it (a coordinator refuses unbound devices,
+// nodes accept only tickets). The relay could not tell a buyer's network
+// anyway: buyers hold no reservation and show no pass. How many circuits one
+// peer and one address hold at a time is limited (circuits.go).
 type admission struct {
 	tenants []*tenant
 	allow   map[peer.ID]*tenant
@@ -135,6 +136,9 @@ type admission struct {
 	now     func() time.Time
 
 	ttl time.Duration // reservation lifetime
+
+	perPeer, perAddr int // circuits one peer and one address may hold
+	sources          sources
 
 	mu       sync.Mutex
 	passes   map[peer.ID]admitted
@@ -160,6 +164,7 @@ type holder struct {
 
 func newAdmission(cfg Config) *admission {
 	a := &admission{allow: map[peer.ID]*tenant{}, now: cfg.Now, ttl: cfg.ReservationTTL,
+		perPeer: cfg.MaxCircuitsPerPeer, perAddr: cfg.MaxCircuitsPerIP,
 		passes: map[peer.ID]admitted{}, reserved: map[peer.ID]holder{}}
 	for _, n := range cfg.Networks {
 		if n.MaxDevicesPerAccount == 0 {
@@ -222,9 +227,6 @@ func (a *admission) AllowReserve(p peer.ID, _ ma.Multiaddr) bool {
 	a.reserved[p] = holder{tenant: e.tenant, account: e.account, client: e.client, until: now.Add(a.ttl)}
 	return true
 }
-
-// AllowConnect implements relayv2.ACLFilter: connecting is not gated (see above).
-func (a *admission) AllowConnect(peer.ID, ma.Multiaddr, peer.ID) bool { return true }
 
 // verify finds the network whose portal signed p.
 func (a *admission) verify(p *relaypass.Pass, remote string, now time.Time) (*tenant, error) {
@@ -432,5 +434,6 @@ func (a *admission) register(h host.Host) {
 	a.mu.Lock()
 	a.h = h
 	a.mu.Unlock()
+	a.sources.watch(h)
 	h.SetStreamHandler(lproto.ID(relaypass.Protocol), a.handlePass)
 }

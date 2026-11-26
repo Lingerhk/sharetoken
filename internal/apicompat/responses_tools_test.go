@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func respTestTools(t *testing.T, tools string, input string) (*respTools, error) {
@@ -264,5 +265,24 @@ func TestResponsesLocalShellAction(t *testing.T) {
 	args := respLocalShellArguments(json.RawMessage(`{"type":"exec","command":["ls"],"working_directory":"/w","timeout_ms":5}`))
 	if args != `{"command":["ls"],"timeout_ms":5,"workdir":"/w"}` {
 		t.Errorf("arguments %s", args)
+	}
+}
+
+// A schema of unions nested thousands deep is a buyer's to send: flattening
+// stops at a depth instead of parsing the rest once per level.
+func TestDeeplyNestedUnionsAreNotFlattenedForever(t *testing.T) {
+	const depth = 2000 // encoding/json reads 10000 levels, and each of these is two
+	pad := `{"type":"object","properties":{"pad":{"type":"string","description":"` + strings.Repeat("x", 4096) + `"}}}`
+	schema := strings.Repeat(`{"anyOf":[`+pad+`,`, depth) + `{"type":"object","properties":{"a":{"type":"string"}}}` + strings.Repeat(`]}`, depth)
+	for name, fn := range map[string]func(json.RawMessage) json.RawMessage{"responses": respObjectSchema, "chat": chatAnthropicSchema} {
+		start := time.Now()
+		out := fn(json.RawMessage(schema))
+		if d := time.Since(start); d > 5*time.Second {
+			t.Errorf("%s: took %v", name, d)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(out, &m); err != nil || string(m["type"]) != `"object"` {
+			t.Errorf("%s: not an object schema: %v", name, err)
+		}
 	}
 }
