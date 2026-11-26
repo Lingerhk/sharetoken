@@ -358,7 +358,9 @@ await click('#nav-overview');
 console.log('warm-up');
 {
   // A stand-in for Claude Code: the test sends nothing to a real account.
-  const fake = dir + '/fake-claude';
+  // The daemon runs only a file named claude, given by its full path.
+  mkdirSync(dir + '/fake-bin', { recursive: true });
+  const fake = dir + '/fake-bin/claude';
   writeFileSync(fake, '#!/bin/sh\ncase "$*" in\n  *--version*) echo "9.9.9 (Claude Code)";;\n  */usage*) echo "Current session: 0% used"; echo "Current week (all models): 5% used";;\n' +
     '  *) cat >/dev/null; echo \'{"type":"result","is_error":false,"result":"Hi"}\';;\nesac\n', { mode: 0o755 });
   const warmup = async () => (await fetch(env.DAEMON + '/api/v1/warmup', { headers: { Authorization: 'Bearer ' + env.DAEMON_KEY } })).json();
