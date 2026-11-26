@@ -100,6 +100,13 @@ type Config struct {
 	// MaxOffersPerAccount is how many nodes of one account may have a live
 	// offer (default 16); a further node's offer is refused.
 	MaxOffersPerAccount int
+	// AuditPriceMultiple caps what an audit job pays: this many times the
+	// median price of the model among current offers (default 3). Nodes that
+	// charge more are not audited.
+	AuditPriceMultiple uint64
+	// AuditDailyMicros is the most audit jobs may reserve per UTC day out of
+	// the platform's fees (default 20,000,000: 20 credits).
+	AuditDailyMicros uint64
 	// MaxIdleTickets is how many held tickets a buyer account may have that
 	// never started, whatever their age and whoever is connected (default
 	// 32). Past it a ticket request is answered with CodeCapacity, so a
@@ -188,6 +195,14 @@ func (c *Config) setDefaults() {
 		// A relay admits four devices of an account; nodes with an address
 		// of their own need no relay.
 		c.MaxOffersPerAccount = 16
+	}
+	if c.AuditPriceMultiple == 0 {
+		c.AuditPriceMultiple = 3
+	}
+	if c.AuditDailyMicros == 0 {
+		// Five questions every ten minutes at a hundred times the default
+		// price reserve under 8 credits a day.
+		c.AuditDailyMicros = 20_000_000
 	}
 	if c.StaleAfter == 0 {
 		// Start reports normally arrive within 0.3-2.5 s; 15 s leaves room for
@@ -794,6 +809,14 @@ func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bo
 				return protocol.Errorf(protocol.CodeCapacity, "%d tickets of this account have not started yet; new ones wait until they start or expire", total)
 			}
 		}
+		// The platform pays for an audit job, carried or asked by an audit
+		// identity, so no buyer's price limit applies: it has a cap of its
+		// own, and a budget per day.
+		audit := errand || scope.auditor
+		var auditCap *priceCap
+		if audit {
+			auditCap = e.auditPriceCap(req.Model, now.UnixNano())
+		}
 		busy, sharedBusy, err := busyNodes(tx, now.Add(-e.cfg.StartGrace).UnixNano())
 		if err != nil {
 			return err
@@ -825,7 +848,7 @@ func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bo
 				if !ok || (paid && ((req.MaxPriceIn > 0 && p.PriceInMicros > req.MaxPriceIn) || (req.MaxPriceOut > 0 && p.PriceOutMicros > req.MaxPriceOut))) {
 					continue
 				}
-				if req.RequireNative && !p.Native(req.API) {
+				if req.RequireNative && !p.Native(req.API) || !auditCap.allows(p) {
 					continue
 				}
 				st, err := loadStats(tx, node)
@@ -942,6 +965,11 @@ func (e *Engine) issueTicket(buyer string, req protocol.TicketRequest, errand bo
 		hold := req.BudgetMicros
 		if req.MaxTokens > 0 && req.PromptTokens > 0 {
 			hold = min(hold, max(e.cfg.MinBudgetMicros, protocol.HoldFor(req.PromptTokens, req.MaxTokens, best.price.Prices().PromptCeiling(), best.price.PriceOutMicros)))
+		}
+		if audit {
+			if err := e.chargeAuditBudget(tx, hold, now); err != nil {
+				return err
+			}
 		}
 		// A shared job moves no credits; its reservation only caps the output.
 		if errand {
