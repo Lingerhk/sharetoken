@@ -147,3 +147,53 @@ func TestSealedRequestFrames(t *testing.T) {
 		t.Fatalf("longer than announced: %v", err)
 	}
 }
+
+// A frame of a few kilobytes cannot make its reader hold megabytes of zeros
+// or millions of empty records, and a response has a size in all.
+func TestResponseDecoderBoundsWhatItInflates(t *testing.T) {
+	frame := func(enc *protocol.ResponseEncoder, records int, size int) []byte {
+		t.Helper()
+		rec := make([]byte, size)
+		for i := 0; i < records; i++ {
+			if err := enc.Write(rec); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f, err := enc.Frame(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	enc := protocol.NewResponseEncoder()
+	empty := frame(enc, 600_000, 0)
+	if len(empty) > 64<<10 {
+		t.Fatalf("the test frame is %d bytes", len(empty))
+	}
+	if _, err := protocol.NewResponseDecoder().Frame(empty); err == nil || !strings.Contains(err.Error(), "too many records") {
+		t.Fatalf("600000 empty records in a frame: %v", err)
+	}
+	// As many small records as fit a frame are fine.
+	enc = protocol.NewResponseEncoder()
+	if recs, err := protocol.NewResponseDecoder().Frame(frame(enc, 100_000, 30)); err != nil || len(recs) != 100_000 {
+		t.Fatalf("100000 records of 30 bytes: %d, %v", len(recs), err)
+	}
+	enc = protocol.NewResponseEncoder()
+	if _, err := protocol.NewResponseDecoder().Frame(frame(enc, 1, protocol.MaxFrameSize+1)); err == nil || !strings.Contains(err.Error(), "decompresses to more") {
+		t.Fatalf("a frame past the limit: %v", err)
+	}
+	enc, dec := protocol.NewResponseEncoder(), protocol.NewResponseDecoder()
+	n := 0
+	for ; n < 64; n++ {
+		if _, err := dec.Frame(frame(enc, 1, protocol.MaxFrameSize-16)); err != nil {
+			if !strings.Contains(err.Error(), "the response is larger") {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	// 32 frames fill the allowance but for the charge of their records.
+	if want := protocol.MaxResponseBytes/protocol.MaxFrameSize - 1; n != want {
+		t.Fatalf("the response was cut after %d full frames, want %d", n, want)
+	}
+}
