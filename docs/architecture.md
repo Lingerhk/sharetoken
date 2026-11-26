@@ -100,7 +100,7 @@ The coordinator has to tell "the buyer never came" from "the job is still runnin
 - When a node takes a job (the buyer connected, the ticket verified, a concurrency slot acquired) it sends `started` to the coordinator **in the background**, adding nothing to the time to first byte. The coordinator records `jobs.started_at`.
 - A job that has not started 30 seconds after its ticket expired (ticket lifetime: 1 minute by default) is released: the whole hold goes back to the buyer, the node's **reputation is not touched**, and its slot is free again. A node is held up for at most 1.5 minutes.
 - A job that has started runs as usual until it is settled or reaches its settlement deadline; only then does it count as the node's failure.
-- To stop ticket hoarding: once a buyer account holds 5 tickets that were issued more than 15 seconds ago and never started, it gets no new ticket (`busy`). Normal concurrent requests start within seconds and are not affected.
+- To stop ticket hoarding: once a buyer account holds 5 tickets that were issued more than 15 seconds ago and never started, it gets no new ticket (`busy`). Normal concurrent requests start within seconds and are not affected. Whatever their age, an account holds at most 32 tickets that never started, and 8 for one node (`jobs.max_idle_tickets`, `jobs.max_idle_per_node`); a request beyond that is answered `capacity`, which clients retry.
 - A late `started` (the job was already released as never started) is answered with `conflict`, and the node stops working on that job.
 - Parameters: `TicketTTL`, `StartGrace`, `MaxStaleTickets`, `StaleAfter` in `coordinator.Config` (`jobs.*` in the configuration file).
 
@@ -258,7 +258,7 @@ The full threat model and the guarantees the system makes are in [security.md](s
 | Guessing a sign-in code | There are no passwords. Six-digit codes live 10 minutes with 5 tries each and 5 codes an hour per address; wrong codes are throttled per IP and per address (8 in 5 minutes, then 429). The mailbox is the key to the account; two-factor authentication guards it further | `internal/mailer/codes.go`, `portal.Server.throttled` |
 | A malicious web page calls the local endpoint | Origin check | `client.guardOrigin` |
 | Another program or user of the machine calls the local management API, or poses as the daemon | Key in `run.json` (0600); the desktop app checks the daemon's HMAC proof before using it | `client.requireLocalKey`, `client.LocalProof`, `gui/supervisor.go` |
-| Taking tickets without connecting, to fill a node's slots | A job that never started is released 30 seconds after its ticket expires; an account with 5 stale tickets gets no more | `coordinator.Engine.MarkStarted`, `coordinator.Engine.Tick` |
+| Taking tickets without connecting, to fill a node's slots | A job that never started is released 30 seconds after its ticket expires; an account with 5 stale tickets gets no more, and holds at most 32 unstarted tickets of any age, 8 for one node | `coordinator.Engine.MarkStarted`, `coordinator.Engine.Tick` |
 | Strangers occupying a relay's reservation slots | A reservation needs a short-lived pass signed by the portal; devices are limited per user | `internal/relaypass`, `internal/relay/admission.go` |
 | Eavesdropping on or tampering with portal traffic (sign-in codes, tokens) | HTTPS by default; the client pins a self-signed certificate's fingerprint; refuses to send secrets in plaintext to a remote host | `internal/portal/tls.go`, `client.NewPortalClient` |
 | A disabled user keeps trading | The coordinator checks the user's state on every request; tokens stop working at once | `accounts.DeviceAccount` |
@@ -269,7 +269,7 @@ The full threat model and the guarantees the system makes are in [security.md](s
 ## 5. Honest limits
 
 - **Connections through a relay are not gated.** Anyone can connect through a relay to a peer that holds a reservation. The peer authenticates and refuses them, but relay bandwidth is spent. A relay's traffic is bounded only by its overall limits.
-- **Taking a ticket and not connecting still has a short cost.** Each such ticket can keep a node waiting for up to 1.5 minutes; the cap on stale tickets per account bounds how many.
+- **Taking a ticket and not connecting still has a short cost.** Each such ticket can keep a node waiting for up to 1.5 minutes; the caps on stale and on unstarted tickets per account bound how many.
 - **A self-signed certificate depends on the first confirmation.** The user has to compare the fingerprint with the one the operator published. With a domain name a CA certificate is the better choice. There is no built-in ACME client: point `-tls-cert` at a certificate from certbot, or put the portal behind Caddy or nginx.
 - **The coordinator is a single instance.** The ledger is kept by it and the portal.
 - **Usage statistics cover only jobs within the retention period** (30 days by default). The history of money is kept in the ledger permanently.
