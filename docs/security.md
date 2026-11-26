@@ -218,7 +218,13 @@ cannot step around it.
   from the whole site stop codes for everyone for an hour (invite links still
   work), and 2000 wrong links stop the public preview of links for an hour.
   Each pause sends the administrators a Pushover alert
-  (`alerts.pushover_file`; `internal/portal/invites.go`). So at most about
+  (`alerts.pushover_file`; `internal/portal/invites.go`). An attempt is
+  counted before the code is looked up and given back when it was right, and
+  one account redeems one code at a time, so sending many guesses at once
+  gets no more tries. The counters live in memory with a bound on their keys;
+  a flood of keys evicts only counters that have aged out, and the counters
+  over everyone and per account are kept apart from those per client address
+  (an IPv6 /64 is one address) (`internal/portal/limits.go`). So at most about
   2400 codes can be tried a day, whoever tries: with 10 000 live codes, one is
   hit about every 45 days, and that only reaches the buyer side of a pairing
   or a share partnership the owner sees and can end (or a request, when the
@@ -257,7 +263,11 @@ as usual.
 - An invite is a secret like a pairing code: 30 random bits with a 47.6-bit
   link token, one day by default and 7 days at most, admits one person (or up to 100 when made for more), can ask for
   the inviter's approval, and can be withdrawn. Wrong codes and links are
-  counted as for pairing codes. A
+  counted as for pairing codes. A request that was withdrawn (1 hour) or
+  rejected (24 hours) cannot be made again with the same code until the wait
+  is over, and the notices a request or an approval mails are capped per
+  recipient (6 an hour, 20 a day) and per account that caused them (10 an
+  hour, 30 a day), so asking in a loop floods nobody's mailbox. A
   leaked invite lets a stranger use the inviter's nodes for free within its
   limits; the inviter sees the partner and can end it.
 - Each side sees the other's account name masked, and the tokens each used of
@@ -332,10 +342,10 @@ tailcat) in place of a relay ([architecture.md](architecture.md) §2.17).
 |---|---|---|
 | Binding someone else's device to your account, to collect its earnings | A binding needs the device's signature over the user name, the peer ID and a timestamp within five minutes. A bound device cannot be bound elsewhere. | `internal/accounts` |
 | Stolen API token | Tokens can be revoked at any time, login tokens expire, and only their SHA-256 is stored. | `internal/accounts`, `internal/portal` |
-| Guessing a sign-in code | There are no passwords: a sign-in needs a six-digit code mailed to the account's address. A code lives 10 minutes and allows 5 tries; an address gets at most 5 codes an hour (20 per IP, 500 in total); wrong codes are also throttled per IP and per address. Only a salted hash of a code is stored, and the message is erased from the outbox once sent. | `internal/mailer/codes.go`, `internal/portal/auth.go` |
+| Guessing a sign-in code | There are no passwords: a sign-in needs a six-digit code mailed to the account's address. A code lives 10 minutes, allows 5 tries (counted before it is compared) and works only with the nonce returned to whoever asked for it, so guessing the six digits of someone else's code is not enough. An address gets at most 5 codes an hour (20 per IP or IPv6 /64); over everyone 500 an hour go to addresses with an account and 300 to addresses without, counted apart. Limits and the new code are one transaction. Wrong codes are also throttled per IP. A disabled account is answered like any other when a code is asked for. Only a salted hash of a code is stored, the code is not in the subject, and the message is erased from the outbox once sent or cancelled. What remains: anyone can use up an address's 5 codes an hour, which delays that person's sign-in but lets nobody in. | `internal/mailer/codes.go`, `internal/portal/auth.go` |
 | Someone else's mailbox | The mailbox is the key to the account: whoever reads it can sign in. Users may add TOTP two-factor authentication on the account page, and a notice is mailed when it is turned on or off. A portal without a working mail sender lets nobody sign in. | `internal/portal/mfa.go` |
 | A disabled user keeps trading | The coordinator checks the user's state on every request, tokens stop working at once, and relay passes run out within their lifetime (one hour by default). | `internal/accounts`, `internal/relaypass` |
-| An administrator's mailbox read by someone else | Administrators must use TOTP two-step verification and cannot turn it off. A token issued without it cannot reach the admin API. Wrong codes are throttled, a challenge is void after five mistakes, and a code cannot be replayed. TOTP secrets are stored encrypted (AES-GCM). | `internal/portal/mfa.go`, `internal/totp` |
+| An administrator's mailbox read by someone else | Administrators must use TOTP two-step verification and cannot turn it off. A token issued without it cannot reach the admin API. Wrong codes are throttled, a challenge is void after five tries (a try is deducted before the code is checked, so parallel requests get no more), and a code cannot be replayed. TOTP secrets are stored encrypted (AES-GCM). | `internal/portal/mfa.go`, `internal/totp` |
 | Session theft, cross-site request forgery, script injection in the web pages | Sessions are HttpOnly, SameSite=Strict cookies that only count together with a custom header, and the Origin must be the portal's own. A strict Content-Security-Policy allows no inline code and no third-party resources. The pages build the DOM from text and never from HTML strings. | `internal/portal/web.go` |
 | Eavesdropping on the portal connection | HTTPS by default. A self-signed certificate is pinned by fingerprint in the client, and the client refuses to send sign-in codes over plain HTTP to another machine. | `internal/portal/tls.go`, `internal/client` |
 | A web page calls the local client API to spend the user's credit | The local API binds to loopback and refuses any request whose Origin is not local. | `internal/client` |

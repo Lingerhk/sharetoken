@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -293,6 +294,10 @@ func (w *Worker) Run(ctx context.Context) {
 	st := w.cfg.Store
 	_ = st.requeueStuck(0) // a stuck row from before this start belongs to nobody
 	sem := make(chan struct{}, w.cfg.Workers)
+	// One delivery is kept for sign-in codes (when there is more than one):
+	// slow deliveries of other mail cannot take every place.
+	var others atomic.Int64
+	maxOthers := max(w.cfg.Workers-1, 1)
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	tick := time.NewTicker(w.cfg.PollEvery)
@@ -301,7 +306,7 @@ func (w *Worker) Run(ctx context.Context) {
 	for {
 		free := w.cfg.Workers - len(sem)
 		if free > 0 {
-			msgs, err := st.claimDue(free)
+			msgs, err := st.claimDue(free, maxOthers-int(others.Load()))
 			if err != nil {
 				w.cfg.Log.Warn("reading the outbox", "err", err)
 			}
@@ -309,9 +314,16 @@ func (w *Worker) Run(ctx context.Context) {
 				m := msgs[i]
 				sem <- struct{}{}
 				wg.Add(1)
+				other := m.Kind != KindVerify
+				if other {
+					others.Add(1)
+				}
 				go func() {
 					defer wg.Done()
 					defer func() { <-sem }()
+					if other {
+						defer others.Add(-1)
+					}
 					w.deliver(ctx, &m)
 				}()
 			}

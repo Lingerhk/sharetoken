@@ -139,7 +139,7 @@ func TestInviteLinksAndApproval(t *testing.T) {
 
 	// A request whose code no longer admits anyone is dropped when approved.
 	ask2, _ := s.CreatePairingCodeWith(seller.ID, PairingCodeOptions{MaxUses: 1, Approval: true})
-	ask3, _ := s.CreatePairingCodeWith(seller.ID, PairingCodeOptions{Approval: true})
+	ask3, _ := s.CreatePairingCodeWith(seller.ID, PairingCodeOptions{Approval: true, TTL: MaxPairingTTL})
 	if _, err := s.RedeemPairingCode(b3.ID, ask2.Code); err != nil {
 		t.Fatal(err)
 	}
@@ -167,6 +167,19 @@ func TestInviteLinksAndApproval(t *testing.T) {
 	if err := s.RejectRequest(seller.ID, reqs[0].ID); err != nil {
 		t.Fatal(err)
 	}
+	// Asking again with the same code waits: each request mails the seller.
+	// Another user, and another code, do not wait.
+	if _, err := s.RedeemPairingCode(b3.ID, ask3.Code); !errors.Is(err, ErrCooldown) {
+		t.Fatalf("asked again right after a rejection: %v", err)
+	}
+	if w, _ := s.WaitingRequests(b3.ID, KindPair); len(w) != 0 {
+		t.Fatalf("a refused request was filed: %+v", w)
+	}
+	now = now.Add(RejectCooldown - time.Minute)
+	if _, err := s.RedeemPairingCode(b3.ID, ask3.Code); !errors.Is(err, ErrCooldown) {
+		t.Fatalf("asked again before the wait was over: %v", err)
+	}
+	now = now.Add(time.Minute)
 	if _, err := s.RedeemPairingCode(b3.ID, ask3.Code); err != nil {
 		t.Fatal(err)
 	}
@@ -177,8 +190,17 @@ func TestInviteLinksAndApproval(t *testing.T) {
 	if err := s.WithdrawRequest(b3.ID, w[0].ID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.RedeemPairingCode(b3.ID, ask3.Code); !errors.Is(err, ErrCooldown) {
+		t.Fatalf("asked again right after withdrawing: %v", err)
+	}
+	now = now.Add(WithdrawCooldown)
 	if _, err := s.RedeemPairingCode(b3.ID, ask3.Code); err != nil {
 		t.Fatal(err)
+	}
+	// The waits that are over are swept when the next one starts.
+	var waits int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM invite_cooldowns`).Scan(&waits); err != nil || waits != 1 {
+		t.Fatalf("%d waits kept, want the last one: %v", waits, err)
 	}
 	reqs, _ = s.InviteRequests(seller.ID, KindPair)
 	now = now.Add(RequestTTL + time.Second)

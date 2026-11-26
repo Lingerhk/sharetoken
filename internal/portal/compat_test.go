@@ -40,13 +40,13 @@ func TestRequestsIgnoreUnknownFields(t *testing.T) {
 // GET /api/v1/version answers without a login and says what this portal is.
 func TestVersionEndpoint(t *testing.T) {
 	s, a := newPortal(t, Config{})
-	if err := accounts.SaveVersionPolicy(s.db, accounts.VersionPolicy{MinClient: "1.0.0", LatestClient: "1.2.0", DownloadURL: "https://example.com/d"}); err != nil {
+	if err := accounts.SaveVersionPolicy(s.db, accounts.VersionPolicy{MinClient: "1.0.0", LatestClient: "1.2.0", DownloadURL: "/d#get"}); err != nil {
 		t.Fatal(err)
 	}
 	var v VersionInfo
 	a.call("GET", "/api/v1/version", "", nil, 200, &v)
 	if v.API != version.API || v.Server.Version != version.Version || v.Client.Min != "1.0.0" || v.Client.Latest != "1.2.0" ||
-		v.Client.DownloadURL != "https://example.com/d" || v.Schema["core"] == 0 || v.Schema["mail"] == 0 || v.Protocols.Ctrl == "" {
+		v.Client.DownloadURL != "/d#get" || v.Schema["core"] == 0 || v.Schema["mail"] == 0 || v.Protocols.Ctrl == "" {
 		t.Fatalf("%+v", v)
 	}
 	resp, err := http.Get(a.url + "/healthz")

@@ -441,7 +441,7 @@ func admin(p *portal.Server, cmd string, args []string) error {
 			fs.StringVar(&cur.MinClient, "min", cur.MinClient, "older clients are refused new business")
 			fs.StringVar(&cur.RecommendedClient, "recommended", cur.RecommendedClient, "older clients are told to upgrade")
 			fs.StringVar(&cur.LatestClient, "latest", cur.LatestClient, "the newest release")
-			fs.StringVar(&cur.DownloadURL, "download-url", cur.DownloadURL, "where to get it")
+			fs.StringVar(&cur.DownloadURL, "download-url", cur.DownloadURL, "where to get it: a path on this portal, like /#download")
 			fs.BoolVar(&cur.AllowDev, "allow-dev", cur.AllowDev, "serve builds that are not releases")
 			_ = fs.Parse(args[1:])
 			if err := accounts.SaveVersionPolicy(st.DB, cur); err != nil {
@@ -490,7 +490,7 @@ func admin(p *portal.Server, cmd string, args []string) error {
 			return err
 		}
 		p.AuditCLI("user.login_code", accounts.NormalizeEmail(args[0]), nil)
-		fmt.Printf("%s\nsigns in %s on the web pages or in a client, once, until %s (an earlier code of the address no longer works; two-factor authentication still applies)\n",
+		fmt.Printf("%s\nsigns in %s on the web pages or in a client, typed where the mailed code goes, once, until %s (an earlier code from this command no longer works; two-factor authentication still applies)\n",
 			code, accounts.NormalizeEmail(args[0]), exp.Local().Format("15:04:05"))
 		return nil
 	case "grant":

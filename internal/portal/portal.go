@@ -91,12 +91,16 @@ type Server struct {
 	mail  *mailer.Store
 	log   *slog.Logger
 
-	failMu sync.Mutex
-	fails  map[string][]time.Time // login failures per username and per IP
+	// Failure counters (limits.go): per client address, per account, and over
+	// everyone. Three tables, so that filling one cannot touch the others.
+	fails, acctFails, siteFails failTable
 	// codesPaused and linksPaused: until when codes, and the public preview
 	// of links, are refused for everyone because they are being guessed (invites.go).
+	pauseMu                  sync.Mutex
 	codesPaused, linksPaused time.Time
-	pushoverURL              string // tests point alerts elsewhere (default pushoverAPI)
+	redeemMu                 [64]sync.Mutex // one account redeems one code or link at a time (invites.go)
+	codeAlerts               hourWindow     // alerts about used-up sign-in code budgets, one an hour each (auth.go)
+	pushoverURL              string         // tests point alerts elsewhere (default pushoverAPI)
 
 	reportsByUser, reportsByIP hourWindow // crash reports accepted in the last hour (clientreports.go)
 
@@ -189,11 +193,12 @@ func New(cfg Config) (*Server, error) {
 		cfg: cfg, db: cfg.DB, log: cfg.Log, relayMetrics: rm, adminAllow: allow,
 		store:      &accounts.Store{DB: cfg.DB, Now: cfg.Now},
 		mail:       &mailer.Store{DB: cfg.DB, Now: cfg.Now},
-		fails:      make(map[string][]time.Time),
 		feedbackIP: make(map[string][]time.Time),
 		mfaKey:     key,
 		challenges: make(map[string]*mfaChallenge),
 	}
+	srv.fails.onFull = srv.failTableFull("client addresses")
+	srv.acctFails.onFull = srv.failTableFull("accounts")
 	if rm != nil {
 		rm.save = srv.saveRelaySample
 	}
@@ -219,15 +224,21 @@ func (s *Server) Store() *accounts.Store { return s.store }
 // ---- operations shared by the HTTP API and the admin CLI ----
 
 // CreateUser registers the account of an email address (people sign in with a
-// code mailed there) and grants the sign-up credit.
+// code mailed there) and grants the sign-up credit, once per mailbox: a
+// "+tag" or Gmail-dot form of an address that has an account gets an account
+// of its own, and no second credit.
 func (s *Server) CreateUser(email string, admin bool) (*accounts.User, error) {
 	email = accounts.NormalizeEmail(email)
 	if err := accounts.CheckEmail(email); err != nil {
 		return nil, err
 	}
-	u, err := s.store.CreateUser(email, admin)
+	u, first, err := s.store.CreateUserOnce(email, admin)
 	if err != nil {
 		return nil, err
+	}
+	if !first {
+		s.log.Info("no sign-up credit: the mailbox already has an account", "user", u.Username, "mailbox", accounts.MailboxKey(email))
+		return u, nil
 	}
 	if credit := s.settings().SignupCreditMicros; credit > 0 {
 		if err := s.AdjustCredit(u.ID, int64(min(credit, math.MaxInt64)), "sign-up credit"); err != nil {
@@ -596,39 +607,8 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, n)
 }
 
-const (
-	failWindow = 5 * time.Minute
-	maxFails   = 8
-)
-
-func (s *Server) throttled(key string) bool {
-	s.failMu.Lock()
-	defer s.failMu.Unlock()
-	cut := s.cfg.Now().Add(-failWindow)
-	fs := s.fails[key]
-	for len(fs) > 0 && fs[0].Before(cut) {
-		fs = fs[1:]
-	}
-	if len(fs) == 0 {
-		delete(s.fails, key)
-	} else {
-		s.fails[key] = fs
-	}
-	return len(fs) >= maxFails
-}
-
-func (s *Server) recordFailure(keys ...string) {
-	s.failMu.Lock()
-	defer s.failMu.Unlock()
-	if len(s.fails) > 100_000 {
-		clear(s.fails)
-	}
-	for _, k := range keys {
-		s.fails[k] = append(s.fails[k], s.cfg.Now())
-	}
-}
-
-// clientIP is the address failures and rate limits are keyed on. Behind a
+// clientIP is the address a request comes from; failures and rate limits are
+// keyed on its rateKey (limits.go). Behind a
 // local reverse proxy every connection comes from loopback, so there (and only
 // there) the proxy's X-Real-IP is believed; a remote peer cannot set it.
 func (s *Server) clientIP(r *http.Request) string { return clientIP(r, s.cfg.TrustedProxies) }

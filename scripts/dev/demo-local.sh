@@ -80,8 +80,8 @@ echo; echo "== 1. Users sign up with a code mailed to them, and configure sharin
 user() { # name
   export SHARETOKEN_HOME="$S/$1"
   SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" login -email "$1@example.test" -send > /dev/null
-  code=$("$ROOT/scripts/test/local-mysql.sh" sql st_demo "SELECT subject FROM mail_outbox WHERE to_addr = '$1@example.test' ORDER BY id DESC LIMIT 1")
-  SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" login -email "$1@example.test" -code "${code##* }" -device "$1-box" | tail -2 | head -1 | strip | sed "s/^/   $1: /"
+  code=$("$ROOT/scripts/test/local-mysql.sh" sql st_demo "SELECT REGEXP_SUBSTR(text_body, '[0-9]{6}') FROM mail_outbox WHERE to_addr = '$1@example.test' AND kind = 'verify' ORDER BY id DESC LIMIT 1")
+  SHARETOKEN_PORTAL=$PORTAL "$BIN/sharetoken" login -email "$1@example.test" -code "$code" -device "$1-box" | tail -2 | head -1 | strip | sed "s/^/   $1: /"
 }
 st() { SHARETOKEN_HOME="$S/$1" "$BIN/sharetoken" "${@:2}"; }
 stup() { SHARETOKEN_HOME="$S/$1" exec "$BIN/sharetoken" up "${@:2}"; } # exec: $! is then the client's PID

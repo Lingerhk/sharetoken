@@ -123,7 +123,7 @@ func (s *Server) handleClientReport(w http.ResponseWriter, r *http.Request, cu c
 		return
 	}
 	now := s.cfg.Now()
-	if !s.reportsByIP.take(s.clientIP(r), ClientReportsPerIPHour, now) || !s.reportsByUser.take(cu.user.Username, ClientReportsPerUserHour, now) {
+	if !s.reportsByIP.take(s.rateIP(r), ClientReportsPerIPHour, now) || !s.reportsByUser.take(cu.user.Username, ClientReportsPerUserHour, now) {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many crash reports; try again later")
 		return
 	}

@@ -3,6 +3,7 @@ package portal
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -74,69 +75,66 @@ func (s *Server) inviteRoutes(mux *http.ServeMux) {
 	}
 }
 
-// failCount counts key's failures in the last window, dropping older ones.
-func (s *Server) failCount(key string, window time.Duration) int {
-	s.failMu.Lock()
-	defer s.failMu.Unlock()
-	cut := s.cfg.Now().Add(-window)
-	fs := s.fails[key]
-	for len(fs) > 0 && fs[0].Before(cut) {
-		fs = fs[1:]
+// guessGuard counts one attempt at a code (link false) or link before it is
+// looked up, under the caller's account (cu nil: the public preview), its
+// address and everyone together, and returns the error code to refuse with
+// when one of those is used up: "throttled", "codes_paused", "links_paused",
+// or "" to go on. An attempt that turns out right is given back with release;
+// a wrong one stays counted, and the caller reports it with guessFailed.
+// Counting before the lookup is what makes the limits hold for requests sent
+// at the same moment: each of them takes its place before any is answered.
+func (s *Server) guessGuard(r *http.Request, cu *ctxUser, link bool) (release func(), refuse string) {
+	none := func() {}
+	switch {
+	case !link && s.paused(&s.codesPaused):
+		return none, "codes_paused"
+	case link && cu == nil && s.paused(&s.linksPaused):
+		return none, "links_paused"
 	}
-	if len(fs) == 0 {
-		delete(s.fails, key)
-	} else {
-		s.fails[key] = fs
+	var limits []failLimit
+	if cu != nil {
+		uid := strconv.FormatInt(cu.user.ID, 10)
+		dayMax := userDayMaxFails
+		if s.cfg.Now().Sub(time.Unix(0, cu.user.CreatedAt)) < newAccountAge {
+			dayMax = newAccountMaxFails
+		}
+		limits = append(limits, failLimit{"inv:u:" + uid, userMaxFails}, failLimit{"inv:ud:" + uid, dayMax})
 	}
-	return len(fs)
-}
-
-// codeGuard decides whether cu may try one more code (link false) or link
-// from r. It returns the keys a wrong one is counted under, and the error code
-// to refuse with: "throttled", "codes_paused", or "" to go on.
-func (s *Server) codeGuard(r *http.Request, cu ctxUser, link bool) (keys []string, refuse string) {
-	uid := strconv.FormatInt(cu.user.ID, 10)
-	userKey, userDayKey := "inv:u:"+uid, "inv:ud:"+uid
-	ipKeys, ipOK := s.ipGuard(r)
-	keys = append([]string{userKey, userDayKey}, ipKeys...)
+	ip := s.rateIP(r)
+	limits = append(limits, failLimit{"inv:ip:" + ip, ipMaxFails}, failLimit{"inv:ipd:" + ip, ipDayMaxFails})
+	// Everyone together, last. A signed-in user's links are counted and never
+	// refused here: a pause of links only stops the public preview.
+	site := failLimit{codeFailsKey, codeSurgeFails}
 	if link {
-		keys = append(keys, linkFailsKey)
-	} else {
-		keys = append(keys, codeFailsKey)
-		if s.paused(&s.codesPaused) {
-			return keys, "codes_paused"
+		site = failLimit{linkFailsKey, linkSurgeFails}
+		if cu != nil {
+			site.max = math.MaxInt
 		}
 	}
-	dayMax := userDayMaxFails
-	if s.cfg.Now().Sub(time.Unix(0, cu.user.CreatedAt)) < newAccountAge {
-		dayMax = newAccountMaxFails
+	limits = append(limits, site)
+	release, refused := s.reserve(limits...)
+	switch {
+	case refused < 0:
+		return release, ""
+	case refused == len(limits)-1 && link:
+		return none, "links_paused"
+	case refused == len(limits)-1:
+		return none, "codes_paused"
 	}
-	if !ipOK || s.failCount(userKey, guessWindow) >= userMaxFails || s.failCount(userDayKey, guessDay) >= dayMax {
-		return keys, "throttled"
-	}
-	return keys, ""
-}
-
-// ipGuard is codeGuard's part for r's address: its keys, and whether it may
-// try one more.
-func (s *Server) ipGuard(r *http.Request) (keys []string, ok bool) {
-	ip := s.clientIP(r)
-	ipKey, ipDayKey := "inv:ip:"+ip, "inv:ipd:"+ip
-	ok = s.failCount(ipKey, guessWindow) < ipMaxFails && s.failCount(ipDayKey, guessDay) < ipDayMaxFails
-	return []string{ipKey, ipDayKey}, ok
+	return none, "throttled"
 }
 
 // paused reports whether the pause *until stands now.
 func (s *Server) paused(until *time.Time) bool {
-	s.failMu.Lock()
-	defer s.failMu.Unlock()
+	s.pauseMu.Lock()
+	defer s.pauseMu.Unlock()
 	return s.cfg.Now().Before(*until)
 }
 
-// guessFailed counts a wrong code (link false) or link under keys and pauses
-// codes or link previews for everyone when too many came in from everyone.
-func (s *Server) guessFailed(link bool, keys ...string) {
-	s.recordFailure(keys...)
+// guessFailed is told of a wrong code (link false) or link, already counted
+// by guessGuard, and pauses codes or link previews for everyone when too many
+// came in from everyone.
+func (s *Server) guessFailed(link bool) {
 	key, limit, until, what := codeFailsKey, codeSurgeFails, &s.codesPaused, "codes"
 	if link {
 		key, limit, until, what = linkFailsKey, linkSurgeFails, &s.linksPaused, "link previews"
@@ -146,12 +144,12 @@ func (s *Server) guessFailed(link bool, keys ...string) {
 		return
 	}
 	now := s.cfg.Now()
-	s.failMu.Lock()
+	s.pauseMu.Lock()
 	start := !now.Before(*until)
 	if start {
 		*until = now.Add(surgePause)
 	}
-	s.failMu.Unlock()
+	s.pauseMu.Unlock()
 	if !start {
 		return
 	}
@@ -168,21 +166,22 @@ func (s *Server) guessFailed(link bool, keys ...string) {
 // handlePreviewInvite shows who a link is from, for its page. It needs no
 // account: a link token is too long to find by trying.
 func (s *Server) handlePreviewInvite(w http.ResponseWriter, r *http.Request) {
-	keys, ok := s.ipGuard(r)
-	if !ok {
-		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong links; try again later")
+	release, refuse := s.guessGuard(r, nil, true)
+	switch refuse {
+	case "throttled":
+		writeErr(w, http.StatusTooManyRequests, refuse, "too many wrong links; try again later")
 		return
-	}
-	if s.paused(&s.linksPaused) {
-		writeErr(w, http.StatusTooManyRequests, "links_paused", "too many wrong links from everyone: previews are paused for a while; sign in and accept the link instead")
+	case "links_paused":
+		writeErr(w, http.StatusTooManyRequests, refuse, "too many wrong links from everyone: previews are paused for a while; sign in and accept the link instead")
 		return
 	}
 	p, err := s.store.PreviewInvite(r.PathValue("kind"), r.PathValue("token"))
 	if errors.Is(err, accounts.ErrNotFound) {
-		s.guessFailed(true, append(keys, linkFailsKey)...)
+		s.guessFailed(true)
 		writeErr(w, http.StatusNotFound, "bad_code", "this link is wrong, expired, revoked or used up")
 		return
 	}
+	release()
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -224,16 +223,22 @@ func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request, cu c
 // the PairedUser or SharePartner they always returned.
 func (s *Server) serveInvite(w http.ResponseWriter, r *http.Request, cu ctxUser, kinds []string, ref accounts.InviteRef, legacy bool) {
 	link := ref.Token != ""
-	keys, refuse := s.codeGuard(r, cu, link)
+	// One at a time per account: its attempts are counted exactly, and two
+	// requests cannot use one code twice between them.
+	mu := &s.redeemMu[uint64(cu.user.ID)%uint64(len(s.redeemMu))]
+	mu.Lock()
+	defer mu.Unlock()
+	release, refuse := s.guessGuard(r, &cu, link)
 	switch refuse {
 	case "codes_paused":
 		writeErr(w, http.StatusTooManyRequests, refuse, "too many wrong codes from everyone: codes are paused for up to an hour; open the invite link instead")
 		return
-	case "throttled":
-		writeErr(w, http.StatusTooManyRequests, refuse, "too many wrong codes; try again later")
+	case "throttled", "links_paused":
+		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong codes; try again later")
 		return
 	}
 	if ref.Token == "" && ref.Code == "" {
+		release()
 		writeErr(w, http.StatusNotFound, "bad_code", "enter a code or a link")
 		return
 	}
@@ -270,9 +275,12 @@ func (s *Server) serveInvite(w http.ResponseWriter, r *http.Request, cu ctxUser,
 			break
 		}
 	}
+	if !errors.Is(err, accounts.ErrNotFound) {
+		release() // right, or refused for another reason than being wrong
+	}
 	if err != nil {
 		if errors.Is(err, accounts.ErrNotFound) {
-			s.guessFailed(link, keys...)
+			s.guessFailed(link)
 			msg := "this code is wrong, expired, revoked or used up"
 			if len(kinds) == 1 && kinds[0] == accounts.KindPair {
 				msg = "this pairing code is wrong, expired, revoked or used up"
@@ -314,7 +322,7 @@ func (s *Server) notifyRequest(cu ctxUser, acc *AcceptedInvite) {
 	if acc.Kind == accounts.KindShare {
 		what, where = "become your share partner", "Sharing"
 	}
-	s.notify(mailer.Message{Kind: mailer.KindNotice, To: owner.Username, Subject: "ShareToken: " + maskName(cu.user.Username) + " asks to " + what,
+	s.notifyFrom(cu.user.ID, mailer.Message{Kind: mailer.KindNotice, To: owner.Username, Subject: "ShareToken: " + maskName(cu.user.Username) + " asks to " + what,
 		Text: fmt.Sprintf("%s used a code or link of yours and asks to %s.\r\n\r\n"+
 			"Approve or reject the request on the %s page of the ShareToken app or the portal. It expires in %d days.\r\n"+
 			"If you do not know this account, reject it, and revoke the code if it reached someone it should not have.\r\n",
@@ -354,7 +362,7 @@ func (s *Server) handleApproveRequest(w http.ResponseWriter, r *http.Request, cu
 	if req.Kind == accounts.KindShare {
 		what = "you are now share partners and use each other's nodes for free"
 	}
-	s.notify(mailer.Message{Kind: mailer.KindNotice, To: req.Username, Subject: "ShareToken: " + maskName(cu.user.Username) + " approved your request",
+	s.notifyFrom(cu.user.ID, mailer.Message{Kind: mailer.KindNotice, To: req.Username, Subject: "ShareToken: " + maskName(cu.user.Username) + " approved your request",
 		Text: fmt.Sprintf("%s approved your request: %s.\r\n", maskName(cu.user.Username), what)})
 	req.Username = maskName(req.Username)
 	writeJSON(w, http.StatusOK, req)

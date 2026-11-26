@@ -3,8 +3,15 @@ package portal
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -111,7 +118,7 @@ func TestSignInCreatesOrOpensAccount(t *testing.T) {
 
 	var sent map[string]any
 	c.call("POST", "/api/v1/auth/code", map[string]string{"email": " Alice@Example.com "}, 200, &sent)
-	if sent["new_account"] != true || sent["cooldown_seconds"] == nil || sent["expires_in_seconds"] == nil {
+	if sent["new_account"] != true || sent["cooldown_seconds"] == nil || sent["expires_in_seconds"] == nil || sent["nonce"] == "" || sent["nonce"] == nil {
 		t.Fatalf("%+v", sent)
 	}
 	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "alice@example.com"}, 429, "code_cooldown")
@@ -120,7 +127,7 @@ func TestSignInCreatesOrOpensAccount(t *testing.T) {
 	if len(code) != 6 {
 		t.Fatalf("code %q", code)
 	}
-	if ms, _ := s.mail.Outbox(mailer.OutFilter{Q: "alice@example.com", Limit: 1}); len(ms) != 1 || !strings.Contains(ms[0].Subject, code) {
+	if ms, _ := s.mail.Outbox(mailer.OutFilter{Q: "alice@example.com", Limit: 1}); len(ms) != 1 || strings.Contains(ms[0].Subject, code) {
 		t.Fatalf("%+v", ms)
 	}
 	// A code is for one address, and there is no way around it.
@@ -301,19 +308,227 @@ func TestSignInEmailRules(t *testing.T) {
 	c := &web{t: t, url: a.url, noWeb: true}
 	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "bad@example.com"}, 403, "email_not_allowed")
 	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "x@other.org"}, 403, "email_not_allowed")
+	// A blocked mailbox does not come back under another spelling.
+	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "bad+1@example.com"}, 403, "email_not_allowed")
+	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "Bad+again@Example.com"}, 403, "email_not_allowed")
+	st.EmailDomainAllow, st.EmailBlock = nil, []string{"b.a.d+x@gmail.com"}
+	if err := s.saveSettings(st, "test"); err != nil {
+		t.Fatal(err)
+	}
+	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "ba.d@googlemail.com"}, 403, "email_not_allowed")
+	c.call("POST", "/api/v1/auth/code", map[string]string{"email": "ba.d@example.com"}, 200, nil)
+	st.EmailDomainAllow, st.EmailBlock = []string{"example.com", "*.edu.cn"}, nil
+	if err := s.saveSettings(st, "test"); err != nil {
+		t.Fatal(err)
+	}
 	c.call("POST", "/api/v1/auth/code", map[string]string{"email": "x@cs.pku.edu.cn"}, 200, nil)
 	// An existing account outside the rules still signs in.
 	clientSignIn(t, s, a.url, "old@other.org")
 }
 
+// The sign-up credit goes to the first account of a mailbox: a "+tag" or a
+// Gmail-dot spelling of it signs up as an account of its own, without credit.
+func TestSignupCreditOncePerMailbox(t *testing.T) {
+	clock := time.Now()
+	s, a := newPortal(t, Config{OpenRegistration: true, SignupCreditMicros: 1000, Now: func() time.Time { return clock }})
+	credit := func(email string) int64 {
+		t.Helper()
+		res := clientSignIn(t, s, a.url, email)
+		if res.User.Username != accounts.NormalizeEmail(email) {
+			t.Fatalf("%s signed in as %s", email, res.User.Username)
+		}
+		bal, err := s.Balance(res.User.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock = clock.Add(2 * time.Minute)
+		return int64(bal.AvailableMicros)
+	}
+	for email, want := range map[string]int64{"ann@example.com": 1000, "bob@gmail.com": 1000} {
+		if got := credit(email); got != want {
+			t.Fatalf("%s got %d, want %d", email, got, want)
+		}
+	}
+	for _, alias := range []string{"ann+1@example.com", "ann+2@example.com", "b.ob@gmail.com", "bob+x@googlemail.com"} {
+		if got := credit(alias); got != 0 {
+			t.Fatalf("%s, a second account of its mailbox, got %d", alias, got)
+		}
+	}
+	// Dots are part of the name anywhere but Gmail.
+	if got := credit("a.nn@example.com"); got != 1000 {
+		t.Fatalf("a.nn@example.com got %d, want 1000", got)
+	}
+	// Signing in again changes nothing.
+	if got := credit("ann@example.com"); got != 1000 {
+		t.Fatalf("ann@example.com has %d after signing in again", got)
+	}
+}
+
+// A disabled account is answered like a working one when a code is asked for
+// (nobody learns from the answer that it exists and is disabled); its mail
+// says so and carries no code, and nothing signs it in.
 func TestSignInDisabledAccount(t *testing.T) {
-	s, a := newPortal(t, Config{OpenRegistration: true})
+	clock := time.Now()
+	s, a := newPortal(t, Config{OpenRegistration: true, Now: func() time.Time { return clock }})
 	res := clientSignIn(t, s, a.url, "gone@example.com")
+	other := clientSignIn(t, s, a.url, "here@example.com")
 	if err := s.store.SetDisabled(res.User.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	(&web{t: t, url: a.url, noWeb: true}).wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "gone@example.com"}, 403, "account_disabled")
+	clock = clock.Add(2 * time.Minute)
+	c := &web{t: t, url: a.url, noWeb: true}
+	var gone, here map[string]any
+	c.call("POST", "/api/v1/auth/code", map[string]string{"email": "gone@example.com"}, 200, &gone)
+	c.call("POST", "/api/v1/auth/code", map[string]string{"email": other.User.Username}, 200, &here)
+	nonce, _ := gone["nonce"].(string)
+	delete(gone, "nonce")
+	delete(here, "nonce")
+	if nonce == "" || fmt.Sprint(gone) != fmt.Sprint(here) {
+		t.Fatalf("a disabled account answers %v, a working one %v", gone, here)
+	}
+	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "gone@example.com"}, 429, "code_cooldown")
+	ms, _ := s.mail.Outbox(mailer.OutFilter{Q: "gone@example.com", Limit: 1})
+	if len(ms) != 1 || ms[0].Kind != mailer.KindNotice || !strings.Contains(ms[0].Subject, "disabled") {
+		t.Fatalf("mail to a disabled account: %+v", ms)
+	}
+	if m, _ := s.mail.OutMessage(ms[0].ID); mailedCodeRE.MatchString(m.Text) {
+		t.Fatalf("a code went to a disabled account: %q", m.Text)
+	}
+	c.wantErr("POST", "/api/v1/auth/verify", map[string]string{"email": "gone@example.com", "code": "000000"}, 401, "bad_code")
 	a.call("GET", "/api/v1/me", res.Token, nil, 401, nil)
+	if _, _, err := s.IssueSignInCode("gone@example.com"); !errors.Is(err, accounts.ErrDisabled) {
+		t.Fatalf("an operator's code for a disabled account: %v", err)
+	}
+}
+
+// from is a client at ip, as the portal sees it behind its proxy.
+func from(t *testing.T, url, ip string) *web {
+	return &web{t: t, url: url, noWeb: true, hdr: map[string]string{"X-Real-IP": ip}}
+}
+
+// A code belongs to the request that asked for it. Someone else who knows
+// only the address can neither use up its tries, nor get its owner
+// throttled, nor replace it with a code of their own.
+func TestSignInCodeBoundToRequest(t *testing.T) {
+	clock := time.Now()
+	s, a := newPortal(t, Config{OpenRegistration: true, Now: func() time.Time { return clock }})
+	const email = "victim@example.com"
+	victim, attacker := from(t, a.url, "198.51.100.7"), from(t, a.url, "203.0.113.9")
+	var sent struct {
+		Nonce string `json:"nonce"`
+	}
+	victim.call("POST", "/api/v1/auth/code", map[string]string{"email": email}, 200, &sent)
+	code := mailedCode(t, s, email)
+	if sent.Nonce == "" {
+		t.Fatal("no nonce with the code")
+	}
+
+	// Guesses without the nonce, and with a made-up one: until the attacker's
+	// own address is throttled.
+	for i := range 3 * maxFails {
+		body := map[string]string{"email": email, "code": otherCode(code), "nonce": ""}
+		if i%2 == 1 {
+			body["nonce"] = "AAAAAAAAAAAAAAAAAAAAAA"
+		}
+		want, ecode := 401, "bad_code"
+		if i >= maxFails {
+			want, ecode = 429, "throttled"
+		}
+		attacker.wantErr("POST", "/api/v1/auth/verify", body, want, ecode)
+	}
+	// Even the right code is worth nothing without the nonce.
+	from(t, a.url, "203.0.113.10").wantErr("POST", "/api/v1/auth/verify", map[string]string{"email": email, "code": code, "nonce": ""}, 401, "bad_code")
+	// The attacker asks for a code for the address and burns it.
+	clock = clock.Add(mailer.CodeCooldown + time.Second)
+	third := from(t, a.url, "203.0.113.11")
+	var theirs struct {
+		Nonce string `json:"nonce"`
+	}
+	third.call("POST", "/api/v1/auth/code", map[string]string{"email": email}, 200, &theirs)
+	for range 6 {
+		third.wantErr("POST", "/api/v1/auth/verify", map[string]string{"email": email, "code": otherCode(mailedCode(t, s, email)), "nonce": theirs.Nonce}, 401, "bad_code")
+	}
+
+	// None of it reached the first code: it still signs its owner in.
+	var res AuthResponse
+	victim.call("POST", "/api/v1/auth/verify", map[string]string{"email": email, "code": code, "nonce": sent.Nonce}, 201, &res)
+	if res.Token == "" || res.User.Username != email {
+		t.Fatalf("%+v", res)
+	}
+}
+
+// Wrong codes sent together cannot all be tested: each takes its place under
+// the throttle before it is checked.
+func TestSignInGuessesHoldInParallel(t *testing.T) {
+	s, a := newPortal(t, Config{OpenRegistration: true})
+	const email = "a@example.com"
+	c := &web{t: t, url: a.url, noWeb: true}
+	code := sendCode(t, s, c, email)
+	var wg sync.WaitGroup
+	var tested atomic.Int64
+	for range 40 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, raw := c.do("POST", "/api/v1/auth/verify", map[string]string{"email": email, "code": otherCode(code)})
+			switch {
+			case resp.StatusCode == 401:
+				tested.Add(1)
+			case resp.StatusCode != 429:
+				t.Errorf("%d %s", resp.StatusCode, raw)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := tested.Load(); n != maxFails {
+		t.Fatalf("%d wrong codes were tested in parallel, want %d", n, maxFails)
+	}
+}
+
+// An IPv6 network counts as one address: its hosts share the hourly codes.
+func TestCodeQuotaCountsIPv6Networks(t *testing.T) {
+	_, a := newPortal(t, Config{OpenRegistration: true})
+	for i := range mailer.MaxCodesPerIP {
+		from(t, a.url, fmt.Sprintf("2001:db8:1:2::%x", i+1)).call("POST", "/api/v1/auth/code", map[string]string{"email": fmt.Sprintf("u%d@example.com", i)}, 200, nil)
+	}
+	from(t, a.url, "2001:db8:1:2:ffff::1").wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "more@example.com"}, 429, "throttled")
+	from(t, a.url, "2001:db8:1:3::1").call("POST", "/api/v1/auth/code", map[string]string{"email": "more@example.com"}, 200, nil)
+}
+
+// When the codes for addresses without an account are used up, people with an
+// account still get theirs, and the administrators are told once.
+func TestCodeBudgetForNewAddresses(t *testing.T) {
+	alerts := make(chan url.Values, 4)
+	push := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		alerts <- r.PostForm
+	}))
+	defer push.Close()
+	creds := filepath.Join(t.TempDir(), "pushover.env")
+	os.WriteFile(creds, []byte("PUSHOVER_TOKEN=tok\nPUSHOVER_USER=usr\n"), 0o600)
+	s, a := newPortal(t, Config{OpenRegistration: true, PushoverFile: creds})
+	s.pushoverURL = push.URL
+	if _, err := s.store.CreateUser("member@example.com", false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	for i := range mailer.MaxNewCodesPerHour {
+		if _, err := s.db.Exec(`INSERT INTO mail_codes (purpose, email, ip, salt, code_hash, known, expires_at, created_at) VALUES ('login', ?, ?, 'x', 'x', 0, ?, ?)`,
+			fmt.Sprintf("made-up-%d@example.com", i), fmt.Sprintf("198.51.%d.%d", i/250, i%250), now+600, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := &web{t: t, url: a.url, noWeb: true}
+	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "newcomer@example.com"}, 429, "throttled")
+	c.wantErr("POST", "/api/v1/auth/code", map[string]string{"email": "newcomer2@example.com"}, 429, "throttled")
+	c.call("POST", "/api/v1/auth/code", map[string]string{"email": "member@example.com"}, 200, nil)
+	s.background.Wait()
+	if len(alerts) != 1 {
+		t.Fatalf("%d alerts, want one", len(alerts))
+	}
+	if f := <-alerts; !strings.Contains(f.Get("message"), "without an account") {
+		t.Fatalf("alert %v", f)
+	}
 }
 
 func TestSignInWrongCodesThrottled(t *testing.T) {
@@ -381,7 +596,7 @@ func TestOperatorSignInCode(t *testing.T) {
 	}
 	u, _ := testUser(t, s, "ann@example.com")
 	code, exp, err := s.IssueSignInCode(" Ann@Example.com ")
-	if err != nil || len(code) != 6 || exp.Before(time.Now().Add(9*time.Minute)) {
+	if err != nil || len(code) != 12 || exp.Before(time.Now().Add(9*time.Minute)) {
 		t.Fatalf("code %q until %v: %v", code, exp, err)
 	}
 	if ms, _ := s.mail.Outbox(mailer.OutFilter{Q: "ann@example.com", Limit: 5}); len(ms) != 0 {
@@ -389,14 +604,15 @@ func TestOperatorSignInCode(t *testing.T) {
 	}
 	c := &web{t: t, url: a.url, noWeb: true}
 	var res AuthResponse
-	resp, raw := c.do("POST", "/api/v1/auth/verify", map[string]string{"email": "ann@example.com", "code": code})
+	// No nonce: nobody asked the portal for this code.
+	resp, raw := c.do("POST", "/api/v1/auth/verify", map[string]string{"email": "ann@example.com", "code": code, "nonce": ""})
 	if resp.StatusCode != 200 || json.Unmarshal(raw, &res) != nil || res.User.ID != u.ID || res.Created {
 		t.Fatalf("client sign-in: %d %s", resp.StatusCode, raw)
 	}
 	c.wantErr("POST", "/api/v1/auth/verify", map[string]string{"email": "ann@example.com", "code": code}, 401, "bad_code")
 	// The holder can still ask for a mailed code at once.
 	sendCode(t, s, c, "ann@example.com")
-	// The pages take one too; a newer code replaces the mailed one.
+	// The pages take one too, typed into the form that just asked for a mailed code.
 	code, _, err = s.IssueSignInCode("ann@example.com")
 	if err != nil {
 		t.Fatal(err)

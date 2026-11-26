@@ -32,9 +32,13 @@ var Migrations = []mysqldb.Migration{
 	{Version: 9, Name: "invite links", SQL: accounts.InviteLinkSchema},
 	// A share invite may admit several people.
 	{Version: 10, Name: "share invite uses", SQL: accounts.ShareInviteUsesSchema},
+	// A wait before asking again after a withdrawn or rejected request.
+	{Version: 11, Name: "invite request cooldowns", SQL: accounts.InviteCooldownSchema},
+	// The mailbox behind each account name, for what is given once per person.
+	{Version: 12, Name: "account mailboxes", SQL: accounts.MailboxSchema},
 	// What a buyer said it accepts to pay for a job that ended without a
 	// receipt it could check (-1: it said nothing).
-	{Version: 11, Name: "buyer accepts", SQL: `ALTER TABLE jobs ADD COLUMN buyer_accepts BIGINT NOT NULL DEFAULT -1;`},
+	{Version: 13, Name: "buyer accepts", SQL: `ALTER TABLE jobs ADD COLUMN buyer_accepts BIGINT NOT NULL DEFAULT -1;`},
 }
 
 const tokenAuditSchema = `ALTER TABLE audits ADD COLUMN method VARCHAR(16) NOT NULL DEFAULT '',

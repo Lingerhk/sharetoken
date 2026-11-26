@@ -36,7 +36,7 @@ import (
 const (
 	defaultMFAIssuer = "ShareToken"
 	challengeTTL     = 5 * time.Minute
-	challengeTries   = 5 // wrong codes before a challenge is discarded
+	challengeTries   = 5 // codes one challenge may test
 	mfaPurposeCode   = "code"
 	mfaPurposeEnroll = "enroll"      // an admin's first sign-in
 	mfaPurposeSelf   = "self-enroll" // a signed-in user turning it on
@@ -137,17 +137,28 @@ func (s *Server) challenge(id, purpose string) *mfaChallenge {
 	return c
 }
 
-// failChallenge counts a wrong code; the challenge is dropped after
-// challengeTries of them.
-func (s *Server) failChallenge(id string) {
+// tryChallenge takes one of a challenge's challengeTries attempts, before the
+// code is checked, and returns the challenge as it stands; nil when it is
+// gone, expired, of another purpose or used up. The last attempt removes the
+// challenge. Taking the attempt first, under the lock, is what bounds the
+// codes one challenge can test: requests sent together each take their own.
+func (s *Server) tryChallenge(id, purpose string) *mfaChallenge {
 	s.mfaMu.Lock()
 	defer s.mfaMu.Unlock()
-	if c := s.challenges[id]; c != nil {
-		c.tries++
-		if c.tries >= challengeTries {
-			delete(s.challenges, id)
-		}
+	c := s.challenges[id]
+	if c == nil || c.purpose != purpose {
+		return nil
 	}
+	if !c.expires.After(s.cfg.Now()) || c.tries >= challengeTries {
+		delete(s.challenges, id)
+		return nil
+	}
+	c.tries++
+	if c.tries >= challengeTries {
+		delete(s.challenges, id)
+	}
+	got := *c
+	return &got
 }
 
 func (s *Server) dropChallenge(id string) {
@@ -200,21 +211,25 @@ func (s *Server) secondFactor(w http.ResponseWriter, r *http.Request, u *account
 		writeChallenge(w, "mfa_required", "a two-factor code is required", id)
 		return false, false
 	}
-	if s.throttled("u:"+u.Username) || s.throttled("ip:"+s.clientIP(r)) {
+	// Counted before it is checked (and given back when right), so codes sent
+	// together cannot all get past the throttle.
+	release, free := s.reserveThrottle("u:"+u.Username, "ip:"+s.rateIP(r))
+	if !free {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong codes; try again in a few minutes")
 		return false, false
 	}
 	ok, err := s.verifyCode(u, code)
 	if err != nil {
+		release()
 		s.internal(w, err)
 		return false, false
 	}
 	if !ok {
-		s.recordFailure("u:"+u.Username, "ip:"+s.clientIP(r))
 		s.log.Warn("two-factor code rejected", "user", u.Username, "ip", s.clientIP(r))
 		writeErr(w, http.StatusUnauthorized, "bad_code", "wrong two-factor code")
 		return false, false
 	}
+	release()
 	return true, true
 }
 
@@ -269,22 +284,29 @@ func (s *Server) completeChallenge(w http.ResponseWriter, r *http.Request, req m
 		return nil
 	}
 	ip := s.clientIP(r)
-	if s.throttled("u:"+u.Username) || s.throttled("ip:"+ip) {
+	release, free := s.reserveThrottle("u:"+u.Username, "ip:"+rateKey(ip))
+	if !free {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many failed logins; try again in a few minutes")
+		return nil
+	}
+	// The attempt is taken before the code is checked: see tryChallenge.
+	if s.tryChallenge(req.Challenge, mfaPurposeCode) == nil {
+		release()
+		writeErr(w, http.StatusUnauthorized, "challenge_expired", "start the login again")
 		return nil
 	}
 	ok, err := s.verifyCode(u, req.Code)
 	if err != nil {
+		release()
 		s.internal(w, err)
 		return nil
 	}
 	if !ok {
-		s.failChallenge(req.Challenge)
-		s.recordFailure("u:"+u.Username, "ip:"+ip)
 		s.log.Warn("two-factor code rejected", "user", u.Username, "ip", ip)
 		writeErr(w, http.StatusUnauthorized, "bad_code", "wrong two-factor code")
 		return nil
 	}
+	release()
 	s.dropChallenge(req.Challenge)
 	return u
 }
@@ -390,17 +412,22 @@ func (s *Server) handleWebMFAConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := s.clientIP(r)
-	if s.throttled("u:"+u.Username) || s.throttled("ip:"+ip) {
+	release, free := s.reserveThrottle("u:"+u.Username, "ip:"+rateKey(ip))
+	if !free {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many failed logins; try again in a few minutes")
+		return
+	}
+	if c = s.tryChallenge(req.Challenge, mfaPurposeEnroll); c == nil {
+		release()
+		writeErr(w, http.StatusUnauthorized, "challenge_expired", "start the login again")
 		return
 	}
 	step, ok := totp.Verify(c.secret, req.Code, s.cfg.Now(), 0)
 	if !ok {
-		s.failChallenge(req.Challenge)
-		s.recordFailure("u:"+u.Username, "ip:"+ip)
 		writeErr(w, http.StatusUnauthorized, "bad_code", "wrong code; scan the QR code again and enter the current one")
 		return
 	}
+	release()
 	sealed, err := s.seal(c.secret)
 	if err != nil {
 		s.internal(w, err)
@@ -505,17 +532,22 @@ func (s *Server) handleMFASelfEnable(w http.ResponseWriter, r *http.Request, cu 
 		return
 	}
 	ip := s.clientIP(r)
-	if s.throttled("u:"+cu.user.Username) || s.throttled("ip:"+ip) {
+	release, free := s.reserveThrottle("u:"+cu.user.Username, "ip:"+rateKey(ip))
+	if !free {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong codes; try again in a few minutes")
+		return
+	}
+	if c = s.tryChallenge(req.Challenge, mfaPurposeSelf); c == nil {
+		release()
+		writeErr(w, http.StatusBadRequest, "challenge_expired", "start the setup again")
 		return
 	}
 	step, ok := totp.Verify(c.secret, req.Code, s.cfg.Now(), 0)
 	if !ok {
-		s.failChallenge(req.Challenge)
-		s.recordFailure("u:"+cu.user.Username, "ip:"+ip)
 		writeErr(w, http.StatusBadRequest, "bad_code", "wrong code; check the time on your phone and enter the current one")
 		return
 	}
+	release()
 	sealed, err := s.seal(c.secret)
 	if err != nil {
 		s.internal(w, err)
@@ -557,20 +589,22 @@ func (s *Server) handleMFASelfDisable(w http.ResponseWriter, r *http.Request, cu
 		return
 	}
 	ip := s.clientIP(r)
-	if s.throttled("u:"+cu.user.Username) || s.throttled("ip:"+ip) {
+	release, free := s.reserveThrottle("u:"+cu.user.Username, "ip:"+rateKey(ip))
+	if !free {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong codes; try again in a few minutes")
 		return
 	}
 	ok, err := s.verifyCode(cu.user, req.Code)
 	if err != nil {
+		release()
 		s.internal(w, err)
 		return
 	}
 	if !ok {
-		s.recordFailure("u:"+cu.user.Username, "ip:"+ip)
 		writeErr(w, http.StatusBadRequest, "bad_code", "wrong two-factor code")
 		return
 	}
+	release()
 	if err := s.store.ClearMFA(cu.user.ID); err != nil {
 		s.accountErr(w, err)
 		return

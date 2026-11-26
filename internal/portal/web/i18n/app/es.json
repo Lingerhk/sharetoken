@@ -343,5 +343,6 @@
   "邀请链接暂时无法预览：全站输错的次数太多。请一小时后再试": "No se pueden previsualizar los enlaces de invitación ahora: demasiados intentos erróneos en todo el sitio. Vuelve a intentarlo en una hora",
   "可加入的人数": "Personas que pueden unirse",
   "把邀请码或链接发给要共享的伙伴。最多 {n} 人可以用它加入，每人分别和你成为伙伴。": "Envía el código o el enlace a los socios con los que quieres compartir. Pueden unirse hasta {n} personas, y cada una será tu socio.",
-  "已加入": "Unidos"
+  "已加入": "Unidos",
+  "你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请": "Acabas de retirar una solicitud para esta invitación, o fue rechazada. Vuelve a solicitarlo más tarde"
 }

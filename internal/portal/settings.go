@@ -321,13 +321,20 @@ func domainAllowed(rules []string, domain string) bool {
 	return false
 }
 
+// mailboxBlocked reports whether email is on the blocklist, in any spelling
+// of its mailbox: a blocked address does not come back as a "+tag" of itself.
+func mailboxBlocked(block []string, email string) bool {
+	key := accounts.MailboxKey(email)
+	return slices.ContainsFunc(block, func(b string) bool { return accounts.MailboxKey(b) == key })
+}
+
 // checkSignupRules applies the registration rules to name and, writing the error
 // response itself, refuses a sign-up they exclude. The invite code is only
 // looked at here: it is used up when the account is created.
 func (s *Server) checkSignupRules(w http.ResponseWriter, ip, name, invite string, st Settings) bool {
 	email := accounts.NormalizeEmail(name)
 	if _, domain, ok := strings.Cut(email, "@"); ok {
-		if slices.Contains(st.EmailBlock, email) || !domainAllowed(st.EmailDomainAllow, domain) {
+		if mailboxBlocked(st.EmailBlock, email) || !domainAllowed(st.EmailDomainAllow, domain) {
 			writeErr(w, http.StatusForbidden, "email_not_allowed", "this email address may not sign up here")
 			return false
 		}
@@ -339,20 +346,24 @@ func (s *Server) checkSignupRules(w http.ResponseWriter, ip, name, invite string
 		writeErr(w, http.StatusForbidden, "invite_required", "a new account needs an invite code; if this app has no field for it, sign up on the web portal")
 		return false
 	}
-	if s.throttled("invite:" + ip) {
+	// Counted before the lookup and given back when the code is right, so
+	// guesses sent together cannot all get past the limit.
+	release, free := s.reserveThrottle("invite:" + ip)
+	if !free {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong invite codes from this address; try again in a few minutes")
 		return false
 	}
 	ok, err := s.inviteUsable(invite)
 	if err != nil {
+		release()
 		s.internal(w, err)
 		return false
 	}
 	if !ok {
-		s.recordFailure("invite:" + ip)
 		writeErr(w, http.StatusForbidden, "bad_invite", "this invite code is wrong, used up or expired")
 		return false
 	}
+	release()
 	return true
 }
 
@@ -393,7 +404,7 @@ func (s *Server) userAllowed(w http.ResponseWriter, u *accounts.User, st Setting
 // public applies the per-IP limit to an endpoint that needs no account.
 func (s *Server) public(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if rpm := s.settings().RatePublicRPM; rpm > 0 && !s.limiter.allow("ip:"+s.clientIP(r), rpm, s.cfg.Now()) {
+		if rpm := s.settings().RatePublicRPM; rpm > 0 && !s.limiter.allow("ip:"+s.rateIP(r), rpm, s.cfg.Now()) {
 			s.writeRateLimited(w)
 			return
 		}
@@ -536,19 +547,24 @@ func (s *Server) handleApplyBlocklist(w http.ResponseWriter, r *http.Request, cu
 	matched := []string{}
 	admins := []string{}
 	var ids []int64
+	seen := map[int64]bool{}
 	for _, e := range s.settings().EmailBlock {
-		u, err := s.store.UserByName(e)
-		switch {
-		case errors.Is(err, accounts.ErrNotFound):
-			continue
-		case err != nil:
+		// Every account of the mailbox, however its address is spelled.
+		us, err := s.store.UsersByMailbox(e)
+		if err != nil {
 			s.internal(w, err)
 			return
-		case u.Admin:
-			admins = append(admins, u.Username)
-		case !u.Disabled:
-			matched = append(matched, u.Username)
-			ids = append(ids, u.ID)
+		}
+		for _, u := range us {
+			switch {
+			case seen[u.ID]:
+			case u.Admin:
+				admins = append(admins, u.Username)
+			case !u.Disabled:
+				matched = append(matched, u.Username)
+				ids = append(ids, u.ID)
+			}
+			seen[u.ID] = true
 		}
 	}
 	if !req.DryRun {

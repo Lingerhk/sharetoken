@@ -119,6 +119,17 @@ func TestInviteLinks(t *testing.T) {
 	}
 	a.call("DELETE", fmt.Sprintf("/api/v1/sharing/waiting/%d", sv.Waiting[0].ID), buyer, nil, 404, nil)
 	a.call("DELETE", fmt.Sprintf("/api/v1/sharing/waiting/%d", sv.Waiting[0].ID), other, nil, 200, nil)
+	// Asking again right away would mail the owner again: it waits.
+	waits := func(path string, body map[string]string) {
+		t.Helper()
+		var e ErrorBody
+		if a.call("POST", path, other, body, 429, &e); e.Error.Code != "request_cooldown" {
+			t.Fatalf("%s: %+v", path, e)
+		}
+	}
+	waits("/api/v1/sharing/join", map[string]string{"code": ask2.Code})
+	waits("/api/v1/invite/accept", map[string]string{"link": ask2.LinkToken})
+	clock = clock.Add(accounts.WithdrawCooldown)
 	a.call("POST", "/api/v1/sharing/join", other, map[string]string{"code": ask2.Code}, 202, nil)
 	a.call("GET", "/api/v1/sharing", buyer, nil, 200, &sv)
 	if len(sv.Requests) != 1 || sv.Requests[0].Username != "ot***@example.com" {
@@ -129,6 +140,8 @@ func TestInviteLinks(t *testing.T) {
 	if len(sv.Waiting) != 0 || len(sv.Partners) != 0 {
 		t.Fatalf("after rejection: %+v", sv)
 	}
+	clock = clock.Add(accounts.WithdrawCooldown) // a rejection waits longer
+	waits("/api/v1/sharing/join", map[string]string{"code": ask2.Code})
 
 	// A wrong link in the preview counts against the address.
 	clock = clock.Add(guessDay + time.Second)
@@ -223,12 +236,13 @@ func TestSurgeAlertPushover(t *testing.T) {
 	creds := filepath.Join(t.TempDir(), "pushover.env")
 	os.WriteFile(creds, []byte("# alerts\nPUSHOVER_TOKEN=\"tok\"\nPUSHOVER_USER=usr\n"), 0o600)
 	clock := time.Unix(1_800_000_000, 0)
-	s := &Server{cfg: Config{Now: func() time.Time { return clock }, PushoverFile: creds}, log: slog.New(slog.DiscardHandler), fails: map[string][]time.Time{}, pushoverURL: api.URL}
-	for range codeSurgeFails - 1 {
+	s := &Server{cfg: Config{Now: func() time.Time { return clock }, PushoverFile: creds}, log: slog.New(slog.DiscardHandler), pushoverURL: api.URL}
+	for range codeSurgeFails {
 		s.recordFailure(codeFailsKey)
 	}
-	s.guessFailed(false, codeFailsKey)
-	s.guessFailed(false, codeFailsKey) // during the pause: no second alert
+	s.guessFailed(false)
+	s.recordFailure(codeFailsKey)
+	s.guessFailed(false) // during the pause: no second alert
 	s.background.Wait()
 	select {
 	case f := <-got:
@@ -243,7 +257,8 @@ func TestSurgeAlertPushover(t *testing.T) {
 	}
 	clock = clock.Add(surgePause)
 	s.cfg.PushoverFile = filepath.Join(t.TempDir(), "missing")
-	s.guessFailed(false, codeFailsKey) // a new pause, but no account: only logged
+	s.recordFailure(codeFailsKey)
+	s.guessFailed(false) // a new pause, but no account: only logged
 	s.background.Wait()
 	if len(got) != 0 || !s.paused(&s.codesPaused) {
 		t.Fatal("alert sent without an account, or no new pause")

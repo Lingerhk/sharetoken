@@ -67,7 +67,8 @@ type Daemon struct {
 	lastErr  string
 	portal   *PortalClient // nil: logged out
 	peer     string
-	mfa      *pendingMFA // a sign-in waiting for its second factor
+	mfa      *pendingMFA          // a sign-in waiting for its second factor
+	codes    map[string]codeNonce // sign-in codes asked for and not redeemed yet, by portal and address
 	agent    *Agent
 	agentAPI http.Handler
 	cancel   context.CancelFunc // ends the current run
@@ -576,13 +577,43 @@ func (d *Daemon) portalFor(ctx context.Context, req signInRequest) (pc *PortalCl
 	return NewPortalClient(base, "", pin), base, pin, nil
 }
 
-// requestCode asks the portal to mail a sign-in code.
+// codeNonce is what the portal returned with a code it mailed: the code only
+// redeems together with it.
+type codeNonce struct {
+	nonce   string
+	expires time.Time
+}
+
+func codeKey(base, email string) string {
+	return base + "\n" + strings.ToLower(strings.TrimSpace(email))
+}
+
+// requestCode asks the portal to mail a sign-in code, and keeps the nonce the
+// code goes with for signIn: the page never sees it.
 func (d *Daemon) requestCode(ctx context.Context, req signInRequest) (*CodeSent, error) {
-	pc, _, _, err := d.portalFor(ctx, req)
+	pc, base, _, err := d.portalFor(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return pc.RequestCode(ctx, strings.TrimSpace(req.Email), strings.TrimSpace(req.Invite))
+	sent, err := pc.RequestCode(ctx, strings.TrimSpace(req.Email), strings.TrimSpace(req.Invite))
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	d.mu.Lock()
+	if d.codes == nil {
+		d.codes = make(map[string]codeNonce)
+	}
+	for k, c := range d.codes {
+		if now.After(c.expires) {
+			delete(d.codes, k)
+		}
+	}
+	d.codes[codeKey(base, req.Email)] = codeNonce{sent.Nonce, now.Add(time.Duration(sent.ExpiresInSeconds) * time.Second)}
+	d.mu.Unlock()
+	out := *sent
+	out.Nonce = ""
+	return &out, nil
 }
 
 // errLoggedIn refuses a second sign-in.
@@ -614,11 +645,19 @@ func (d *Daemon) signIn(ctx context.Context, req signInRequest) error {
 	if err != nil {
 		return err
 	}
+	// The nonce of the code this daemon asked for; none for a code the
+	// portal's operator handed out, which needs none.
 	d.mu.Lock()
 	d.mfa = nil
+	nonce := d.codes[codeKey(base, req.Email)].nonce
 	d.mu.Unlock()
-	res, err := pc.SignIn(ctx, strings.TrimSpace(req.Email), strings.TrimSpace(req.Code), strings.TrimSpace(req.Invite), "", "desktop on "+device)
+	res, err := pc.SignIn(ctx, strings.TrimSpace(req.Email), strings.TrimSpace(req.Code), nonce, strings.TrimSpace(req.Invite), "", "desktop on "+device)
 	var pe *PortalError
+	if err == nil || errors.As(err, &pe) && (pe.Code == "mfa_required" || pe.Code == "mfa_setup_required") {
+		d.mu.Lock()
+		delete(d.codes, codeKey(base, req.Email)) // the code is used
+		d.mu.Unlock()
+	}
 	switch {
 	case errors.As(err, &pe) && pe.Code == "mfa_required" && pe.Challenge != "":
 		d.mu.Lock()

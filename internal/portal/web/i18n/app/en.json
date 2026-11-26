@@ -343,5 +343,6 @@
   "邀请链接暂时无法预览：全站输错的次数太多。请一小时后再试": "Invite links can't be previewed right now: too many wrong ones across the site. Try again in an hour",
   "可加入的人数": "Number of people who can join",
   "把邀请码或链接发给要共享的伙伴。最多 {n} 人可以用它加入，每人分别和你成为伙伴。": "Send the code or link to the partners you want to share with. Up to {n} people can join with it, and each becomes your partner.",
-  "已加入": "Joined"
+  "已加入": "Joined",
+  "你刚撤回过这个邀请的申请，或者申请被拒绝了，请过一段时间再申请": "You withdrew a request for this invite just now, or it was rejected. Ask again later"
 }

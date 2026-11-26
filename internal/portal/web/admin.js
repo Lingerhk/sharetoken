@@ -364,7 +364,7 @@
     const min = input({ type: 'text', value: r.policy.min_client || '', placeholder: '1.0.0', maxlength: 32 });
     const rec = input({ type: 'text', value: r.policy.recommended_client || '', placeholder: '1.0.0', maxlength: 32 });
     const latest = input({ type: 'text', value: r.policy.latest_client || '', placeholder: '1.0.0', maxlength: 32 });
-    const url = input({ type: 'text', value: r.policy.download_url || '', placeholder: 'https://sharetoken.app/#download', maxlength: 256 });
+    const url = input({ type: 'text', value: r.policy.download_url || '', placeholder: '/#download', maxlength: 256 });
     const dev = input({ type: 'checkbox' });
     dev.checked = !!r.policy.allow_dev;
     add(m, h('div', { class: 'card' }, section('cog', '客户端版本策略'),
@@ -1116,7 +1116,7 @@
         fieldHint('新用户赠送 credit', f.signup_credit)),
         h('div', { class: 'settings-grid' },
           fieldHint('邮箱域名白名单', f.email_domain_allow, '一行一个，如 example.com、*.edu.cn（后者匹配所有子域名，不含 edu.cn 本身）。留空不限制。只管新注册。'),
-          h('div', { class: 'field' }, h('label', null, '邮箱黑名单（精确匹配）'), f.email_block, h('p', { class: 'hint' }, '一行一个。只阻止新注册；已注册的用户用下面的按钮处理。'),
+          h('div', { class: 'field' }, h('label', null, '邮箱黑名单'), f.email_block, h('p', { class: 'hint' }, '一行一个。同一个邮箱的其他写法（+后缀、Gmail 的点）也算命中。只阻止新注册；已注册的用户用下面的按钮处理。'),
             h('button', { type: 'button', class: 'small', id: 'set-block-apply', onclick: applyBlocklist }, '禁用已注册的命中用户'))),
         h('h3', null, '邀请码'), h('div', { class: 'row' }, h('button', { type: 'button', id: 'invite-new', onclick: newInvite }, '新建邀请码')), inviteList),
       section('mail', '邮件'), h('div', { class: 'card' }, h('div', { class: 'settings-grid' }, fieldHint('发件地址', f.mail_from, '验证码和通知从这里发出，域名要和 DKIM 一致。'), fieldHint('客服地址', f.mail_support, '用户看到的联系邮箱，回复邮件也从这里发出。')),

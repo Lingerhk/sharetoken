@@ -2,6 +2,7 @@ package portal
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"sharetoken/internal/accounts"
@@ -61,7 +62,7 @@ func (s *Server) versionInfo() VersionInfo {
 		Server: version.Current(), API: version.API,
 		Protocols: Protocols{Ctrl: protocol.CtrlProtocol, Infer: protocol.InferProtocol, InferJob: protocol.SupportedInferVersions, RelayPass: relaypass.Protocol},
 		Schema:    map[string]int{"core": mysqldb.Latest(coordinator.Migrations), "mail": mysqldb.Latest(mailer.Migrations), "portal": mysqldb.Latest(Migrations)},
-		Client:    ClientVersions{Min: p.MinClient, Recommended: p.RecommendedClient, Latest: p.LatestClient, DownloadURL: p.DownloadURL},
+		Client:    ClientVersions{Min: p.MinClient, Recommended: p.RecommendedClient, Latest: p.LatestClient, DownloadURL: p.Download()},
 	}
 }
 
@@ -134,10 +135,20 @@ func (s *Server) handleSetVersionPolicy(w http.ResponseWriter, r *http.Request, 
 	if !readJSON(w, r, &p) {
 		return
 	}
+	// A full link to this portal is kept as its path; one to anywhere else is
+	// refused: whoever gets into an admin account must not get to choose
+	// where every client's "download" button leads.
+	if u, err := url.Parse(strings.TrimSpace(p.DownloadURL)); err == nil && (u.Scheme == "https" || u.Scheme == "http") && strings.EqualFold(u.Host, r.Host) {
+		u.Scheme, u.Host, u.User = "", "", nil
+		if p.DownloadURL = u.String(); !strings.HasPrefix(p.DownloadURL, "/") {
+			p.DownloadURL = "/" + p.DownloadURL
+		}
+	}
 	if err := accounts.SaveVersionPolicy(s.db, p); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	cu.note("download_url", p.DownloadURL)
 	cu.note("min_client", p.MinClient)
 	cu.note("recommended_client", p.RecommendedClient)
 	cu.note("latest_client", p.LatestClient)

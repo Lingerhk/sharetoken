@@ -25,7 +25,7 @@
 | 数据面（买家 ↔ 节点） | libp2p 协议 ID，加上每单协商的 `infer_version` | `/sharetoken/infer/1.0.2`，版本 1 |
 | 中继凭证 | libp2p 协议 ID，加上签名域 | `/sharetoken/relay-pass/1.0.2`，`sharetoken/relay-pass/v1`（签名覆盖整段 body，所以新增字段不需要新版本） |
 | 签名消息 | 签名域 | `sharetoken/offer/v1`、`sharetoken/ticket/v1`、`sharetoken/receipt/v1`、`sharetoken/ack/v1` |
-| 数据库 | `schema_migrations`，按组件编号 | `core` 3，`mail` 1，`portal` 2 |
+| 数据库 | `schema_migrations`，按组件编号 | `core` 12，`mail` 2，`portal` 4 |
 | 服务端配置 | YAML 文件里的 `version` | 1 |
 | 客户端配置 | `config.json` 里的 `version` | 1 |
 
@@ -43,7 +43,7 @@
 ```bash
 portal -config portal.yaml version-policy                      # 查看
 portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -latest 1.0.0 \
-  -download-url https://sharetoken.app/#download -allow-dev=false
+  -download-url '/#download' -allow-dev=false
 ```
 
 | 操作 | 客户端低于最低版本、是开发构建而 `allow_dev` 关闭，或没有带版本时 |
@@ -61,7 +61,7 @@ portal -config portal.yaml version-policy set -min 1.0.0 -recommended 1.0.0 -lat
 
 客户端（桌面应用的 daemon 和 `sharetoken up`）在启动时和之后每小时询问门户：`GET /api/v1/update?kind=desktop|cli&channel=prod|dev&os=…&arch=…`。门户返回：
 
-- 版本策略（`min`、`recommended`、`latest`、`download_url`）。`latest` 为空时用下载目录里的发布；`download_url` 为空时是 `/#download`。
+- 版本策略（`min`、`recommended`、`latest`、`download_url`）。`latest` 为空时用下载目录里的发布；`download_url` 为空时是 `/#download`。`download_url` 只能是门户上的路径；指向其他站点的链接会被拒绝，已经存着的也不会下发给客户端。
 - `release`：下载目录里的 `RELEASE-<版本>.json`（发布时由 [`scripts/release/release-files.sh`](../../scripts/release/release-files.sh) 写入：版本、提交、构建时间），加上更新日志链接 `/changelog/#v<版本>`。
 - `package`：这个发布里对应客户端种类、构建类型、系统和架构的安装包，带大小和 sha256。dev 客户端拿到的是 `sharetoken-cli-dev-*`。dev 桌面安装包不发布，所以 dev 桌面应用拿不到安装包。
 

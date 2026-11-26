@@ -27,7 +27,7 @@ type api struct {
 func (a *api) call(method, path, token string, body any, wantStatus int, out any) {
 	a.t.Helper()
 	var rd *bytes.Reader
-	if body != nil {
+	if body = withNonce(a.url, path, body); body != nil {
 		data, _ := json.Marshal(body)
 		rd = bytes.NewReader(data)
 	} else {
@@ -47,6 +47,7 @@ func (a *api) call(method, path, token string, body any, wantStatus int, out any
 	defer resp.Body.Close()
 	var raw json.RawMessage
 	_ = json.NewDecoder(resp.Body).Decode(&raw)
+	noteNonce(a.url, path, body, raw)
 	if resp.StatusCode != wantStatus {
 		a.t.Fatalf("%s %s: status %d, want %d: %s", method, path, resp.StatusCode, wantStatus, raw)
 	}
