@@ -77,11 +77,14 @@
 | `market.fee_bps` | `-fee-bps` | 500 | 平台手续费，按每笔结算的基点计（500 = 5%）；0–10000 |
 | `market.min_budget_micros` | — | 1 | 一张票的最小冻结额 |
 | `market.warm_up` | — | 30s | 重启后这段时间内，没有匹配 Offer 的请求返回 `capacity`，让买家排队而不是失败 |
+| `market.max_offers_per_account` | — | 16 | 一个账户同时在线的 Offer（节点）数上限；超出的节点的 Offer 以 `busy` 拒绝 |
 | `jobs.ticket_ttl` | — | 1m | 节点开始执行一单的时限；至少 10s |
 | `jobs.start_grace` | — | 30s | Ticket 过期后再等多久，释放始终没有开始的单 |
 | `jobs.reconnect_grace` | — | 2m | 节点重连后，释放推迟这么久 |
 | `jobs.max_stale_tickets` | — | 5 | 一个买家账户持有的闲置未开始的票达到这个数后，不再发新票 |
 | `jobs.stale_after` | — | 15s | 未开始的票签发多久后算闲置 |
+| `jobs.max_idle_tickets` | — | 32 | 一个买家账户可持有的未开始的票的总数，不看签发时间和连接状态。超出时 Ticket 请求返回 `capacity`，客户端等待后重试 |
+| `jobs.max_idle_per_node` | — | 8 | 其中发往同一个节点的上限；达到后该节点对这个买家视为已满，直到有票开始 |
 | `jobs.settle_grace` | — | 15m | 等待结算到达的额外时间 |
 | `jobs.dispute_window` | — | 24h | 未确认的结算过这么久后自动生效 |
 | `jobs.max_offer_ttl` | — | 5m | Offer 可声明的有效期上限 |
@@ -90,6 +93,8 @@
 | `references[]` | `-reference`（可重复） | 空 | 模型的参考副本：有了它才能抽检，争议时才能精确计 token。每项有 `id`（市场模型 ID）、`upstream`（上游服务里的模型名）、`url`（OpenAI 兼容的 base URL）、`api_key_env` 或 `api_key_file`、`verify`（抽检怎样核对回答：`vllm`、`deepseek-prefix`、`openai-div`，或只核对计费的 `none`；默认 `none`）、`verify_url`（抽检打分用的 base URL，默认同 `url`）和 `params`（抽检请求的附加字段，例如默认会思考的模型用 `{reasoning_effort: none}`） |
 | `audit.interval` | `-audit-interval` | 10m | 抽检的平均间隔；0 关闭抽检 |
 | `audit.budget_micros` | `-audit-budget` | 200000 | 每道题的冻结额，由平台手续费支付 |
+| `audit.price_multiple` | — | 3 | 抽检作业的价格上限：该模型各卖家账户价格中位数的这么多倍；价格高于上限的节点不抽检 |
+| `audit.daily_budget_micros` | — | 20000000 | 抽检作业每个 UTC 日最多从平台手续费中冻结的额度；用完后当天不再抽检 |
 | `audit.prompts_file` | `-audit-prompts` | 空 | 私有题库，每行一题：纯文本，或 `{"system": …, "messages": […]}`。为空：内置的开放题 |
 | `audit.max_tokens` | — | 96 | 每道题的输出上限 |
 | `audit.questions` | `-audit-questions` | 5 | 每次抽检的题数；按全部题目一起判定 |
