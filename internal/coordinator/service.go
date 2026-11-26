@@ -190,7 +190,7 @@ func (s *Service) handleCtrl(st network.Stream) {
 	defer st.Close()
 	_ = st.SetDeadline(time.Now().Add(ctrlTimeout))
 	remote := st.Conn().RemotePeer().String()
-	env, err := protocol.RecvStream(st, protocol.MaxFrameSize)
+	env, err := protocol.RecvStreamTyped(st, ctrlFrameLimit)
 	if err != nil {
 		_ = st.Reset()
 		return

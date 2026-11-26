@@ -191,6 +191,78 @@ func ReadStreamFrame(s network.Stream, max int) (*Frame, error) {
 	return recvFrame(s, n)
 }
 
+// RecvTyped reads one JSON frame whose size limit depends on its type: limit
+// is asked once the frame's beginning is there, before the rest is read. A
+// handler of several request types uses it so that a peer cannot send, as a
+// request that is a few fields, the megabytes another type may take.
+//
+// The type is read from the frame's first bytes, where every sender puts it
+// (Envelope's first field). A frame that begins otherwise is asked about as
+// type "", for which limit should return a small size.
+func RecvTyped(r io.Reader, limit func(typ string) int) (*Envelope, error) {
+	n, err := recvHeader(r, MaxFrameSize)
+	if err != nil {
+		return nil, err
+	}
+	f, err := recvFrameChecked(r, n, typeLimit(n, limit))
+	if err != nil {
+		return nil, err
+	}
+	return f.envelope()
+}
+
+// RecvStreamTyped is RecvTyped on a libp2p stream, with RecvStream's memory
+// reservation.
+func RecvStreamTyped(s network.Stream, limit func(typ string) int) (*Envelope, error) {
+	n, err := recvHeader(s, MaxFrameSize)
+	if err != nil {
+		return nil, err
+	}
+	if n > 0 {
+		if err := s.Scope().ReserveMemory(n, network.ReservationPriorityLow); err != nil {
+			return nil, fmt.Errorf("protocol: frame of %d bytes refused: %w", n, err)
+		}
+		defer s.Scope().ReleaseMemory(n)
+	}
+	f, err := recvFrameChecked(s, n, typeLimit(n, limit))
+	if err != nil {
+		return nil, err
+	}
+	return f.envelope()
+}
+
+// typeLimit checks a frame of n bytes against the limit of its type, given
+// the frame's first bytes.
+func typeLimit(n int, limit func(typ string) int) func(first []byte) error {
+	return func(first []byte) error {
+		typ := sniffType(first)
+		if max := limit(typ); n > max {
+			return fmt.Errorf("protocol: incoming %q frame of %d bytes exceeds limit of %d", typ, n, max)
+		}
+		return nil
+	}
+}
+
+// sniffType returns the type of a JSON frame that begins {"type":"<type>",
+// as json.Marshal writes an Envelope, and "" for any other beginning.
+func sniffType(first []byte) string {
+	const lead = `{"type":"`
+	if !bytes.HasPrefix(first, []byte(lead)) {
+		return ""
+	}
+	rest := first[len(lead):]
+	end := bytes.IndexByte(rest, '"')
+	if end <= 0 || end > 64 {
+		return ""
+	}
+	for _, c := range rest[:end] {
+		if !(c >= 'a' && c <= 'z' || c == '_') {
+			return ""
+		}
+	}
+	return string(rest[:end])
+}
+
 func recvHeader(r io.Reader, max int) (int, error) {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -206,16 +278,25 @@ func recvHeader(r io.Reader, max int) (int, error) {
 	return int(n), nil
 }
 
-func recvFrame(r io.Reader, n int) (*Frame, error) {
+func recvFrame(r io.Reader, n int) (*Frame, error) { return recvFrameChecked(r, n, nil) }
+
+// recvFrameChecked reads a frame of n bytes; check, if set, sees the first
+// chunk of it and may refuse the frame before the rest is read.
+func recvFrameChecked(r io.Reader, n int, check func(first []byte) error) (*Frame, error) {
 	var buf bytes.Buffer
 	buf.Grow(min(n, recvChunk))
-	for buf.Len() < n {
+	for first := true; buf.Len() < n || first; first = false {
 		step := min(n-buf.Len(), recvChunk)
 		if _, err := io.CopyN(&buf, r, int64(step)); err != nil {
 			if errors.Is(err, io.EOF) {
 				err = io.ErrUnexpectedEOF
 			}
 			return nil, err
+		}
+		if first && check != nil {
+			if err := check(buf.Bytes()); err != nil {
+				return nil, err
+			}
 		}
 	}
 	b := buf.Bytes()

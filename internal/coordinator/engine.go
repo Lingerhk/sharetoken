@@ -97,6 +97,9 @@ type Config struct {
 	// gets no new tickets until they are released (default 5).
 	MaxStaleTickets int
 	StaleAfter      time.Duration // default 15s
+	// MaxOffersPerAccount is how many nodes of one account may have a live
+	// offer (default 16); a further node's offer is refused.
+	MaxOffersPerAccount int
 	// MaxIdleTickets is how many held tickets a buyer account may have that
 	// never started, whatever their age and whoever is connected (default
 	// 32). Past it a ticket request is answered with CodeCapacity, so a
@@ -180,6 +183,11 @@ func (c *Config) setDefaults() {
 	}
 	if c.MaxIdlePerNode == 0 {
 		c.MaxIdlePerNode = 8
+	}
+	if c.MaxOffersPerAccount == 0 {
+		// A relay admits four devices of an account; nodes with an address
+		// of their own need no relay.
+		c.MaxOffersPerAccount = 16
 	}
 	if c.StaleAfter == 0 {
 		// Start reports normally arrive within 0.3-2.5 s; 15 s leaves room for
@@ -407,6 +415,11 @@ func (e *Engine) UpsertOffer(o *protocol.Offer) error {
 		}
 		if at, ok := e.withdrawn[o.Node]; ok && o.IssuedAt <= at {
 			return nil
+		}
+		// Offers are kept in memory, and every one adds to each model list
+		// and each match: an account gets a bounded number of them.
+		if n := e.offersOf(acct, o.Node, now.UnixNano()); n >= e.cfg.MaxOffersPerAccount {
+			return protocol.Errorf(protocol.CodeBusy, "%d nodes of this account are sharing already, the most one account may have", n)
 		}
 		e.offers[o.Node] = &offerEntry{offer: saneOffer(o), acct: acct, tee: tee}
 		if err := accounts.SetDeviceVersionTx(tx, o.Node, o.ClientVersion); err != nil {
