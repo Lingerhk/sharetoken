@@ -339,20 +339,24 @@ func (s *Server) checkSignupRules(w http.ResponseWriter, ip, name, invite string
 		writeErr(w, http.StatusForbidden, "invite_required", "a new account needs an invite code; if this app has no field for it, sign up on the web portal")
 		return false
 	}
-	if s.throttled("invite:" + ip) {
+	// Counted before the lookup and given back when the code is right, so
+	// guesses sent together cannot all get past the limit.
+	release, free := s.reserveThrottle("invite:" + ip)
+	if !free {
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many wrong invite codes from this address; try again in a few minutes")
 		return false
 	}
 	ok, err := s.inviteUsable(invite)
 	if err != nil {
+		release()
 		s.internal(w, err)
 		return false
 	}
 	if !ok {
-		s.recordFailure("invite:" + ip)
 		writeErr(w, http.StatusForbidden, "bad_invite", "this invite code is wrong, used up or expired")
 		return false
 	}
+	release()
 	return true
 }
 
@@ -393,7 +397,7 @@ func (s *Server) userAllowed(w http.ResponseWriter, u *accounts.User, st Setting
 // public applies the per-IP limit to an endpoint that needs no account.
 func (s *Server) public(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if rpm := s.settings().RatePublicRPM; rpm > 0 && !s.limiter.allow("ip:"+s.clientIP(r), rpm, s.cfg.Now()) {
+		if rpm := s.settings().RatePublicRPM; rpm > 0 && !s.limiter.allow("ip:"+s.rateIP(r), rpm, s.cfg.Now()) {
 			s.writeRateLimited(w)
 			return
 		}

@@ -223,12 +223,13 @@ func TestSurgeAlertPushover(t *testing.T) {
 	creds := filepath.Join(t.TempDir(), "pushover.env")
 	os.WriteFile(creds, []byte("# alerts\nPUSHOVER_TOKEN=\"tok\"\nPUSHOVER_USER=usr\n"), 0o600)
 	clock := time.Unix(1_800_000_000, 0)
-	s := &Server{cfg: Config{Now: func() time.Time { return clock }, PushoverFile: creds}, log: slog.New(slog.DiscardHandler), fails: map[string][]time.Time{}, pushoverURL: api.URL}
-	for range codeSurgeFails - 1 {
+	s := &Server{cfg: Config{Now: func() time.Time { return clock }, PushoverFile: creds}, log: slog.New(slog.DiscardHandler), pushoverURL: api.URL}
+	for range codeSurgeFails {
 		s.recordFailure(codeFailsKey)
 	}
-	s.guessFailed(false, codeFailsKey)
-	s.guessFailed(false, codeFailsKey) // during the pause: no second alert
+	s.guessFailed(false)
+	s.recordFailure(codeFailsKey)
+	s.guessFailed(false) // during the pause: no second alert
 	s.background.Wait()
 	select {
 	case f := <-got:
@@ -243,7 +244,8 @@ func TestSurgeAlertPushover(t *testing.T) {
 	}
 	clock = clock.Add(surgePause)
 	s.cfg.PushoverFile = filepath.Join(t.TempDir(), "missing")
-	s.guessFailed(false, codeFailsKey) // a new pause, but no account: only logged
+	s.recordFailure(codeFailsKey)
+	s.guessFailed(false) // a new pause, but no account: only logged
 	s.background.Wait()
 	if len(got) != 0 || !s.paused(&s.codesPaused) {
 		t.Fatal("alert sent without an account, or no new pause")
