@@ -21,6 +21,8 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
+	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
+	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	"github.com/libp2p/go-libp2p/x/rate"
 
 	"sharetoken/internal/protocol"
@@ -35,7 +37,7 @@ import (
 // runs end to end across the relay, so a relay sees only ciphertext; DCUtR
 // then tries to upgrade a relayed connection to a direct one by hole punching.
 type HostConfig struct {
-	Listen   []string // nil with DialOnly unset: libp2p's defaults
+	Listen   []string // nil with DialOnly unset: DefaultListen
 	DialOnly bool     // listen nowhere (short-lived outbound-only hosts, e.g. auditors)
 	NAT      bool     // UPnP/NAT-PMP port mapping and hole punching
 	// MaxConns raises the connection manager's watermarks and lifts the
@@ -51,7 +53,7 @@ type HostConfig struct {
 
 // NewHost starts a libp2p host for k.
 func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
-	opts := []libp2p.Option{libp2p.Identity(k.Libp2p)}
+	opts := []libp2p.Option{libp2p.Identity(k.Libp2p), Transports()}
 	if cfg.Program != "" {
 		opts = append(opts, libp2p.UserAgent(version.AgentVersion(cfg.Program)))
 	}
@@ -61,6 +63,9 @@ func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 		// then never reach a node behind NAT. Re-enable it for dialing.
 		opts = append(opts, libp2p.NoListenAddrs, libp2p.EnableRelay())
 	} else {
+		if len(cfg.Listen) == 0 {
+			cfg.Listen = DefaultListen()
+		}
 		opts = append(opts, libp2p.ListenAddrStrings(cfg.Listen...))
 	}
 	if cfg.NAT {
@@ -82,6 +87,23 @@ func NewHost(k *Keys, cfg HostConfig) (host.Host, error) {
 	opts = append(opts, libp2p.ResourceManager(relayedUncounted{rm}), tolerantQUIC())
 	opts = append(opts, cfg.Options...)
 	return libp2p.New(opts...)
+}
+
+// Transports names the transports of every host: TCP and QUIC (the circuit
+// relay transport comes with libp2p.EnableRelay, a tailnet tunnel with
+// package tailnet). Left to itself libp2p also runs WebSocket, WebTransport
+// and WebRTC, which nothing here listens on: code that parses what any peer
+// sends (a DTLS handshake, STUN), and that a host would dial an address of
+// when a seller's offer named one.
+func Transports() libp2p.Option {
+	return libp2p.ChainOptions(libp2p.Transport(tcp.NewTCPTransport), libp2p.Transport(libp2pquic.NewTransport))
+}
+
+// DefaultListen listens on every interface over TCP and QUIC, IPv4 and IPv6,
+// on ports the system picks. On a machine without IPv6 those listeners fail
+// and are skipped.
+func DefaultListen() []string {
+	return []string{"/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1", "/ip6/::/tcp/0", "/ip6/::/udp/0/quic-v1"}
 }
 
 // HubAddrConns is how many connections a hub (a relay, the coordinator)

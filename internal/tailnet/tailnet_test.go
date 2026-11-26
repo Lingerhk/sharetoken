@@ -59,7 +59,7 @@ func newHostWith(t *testing.T, cfg Config) (host.Host, *Transport) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := libp2p.New(libp2p.NoListenAddrs, opt)
+	h, err := libp2p.New(libp2p.NoListenAddrs, p2p.Transports(), opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +524,7 @@ func TestTunnelAmongUnreachableAddrs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	buyer, err := libp2p.New(libp2p.NoListenAddrs, libp2p.ResourceManager(rm), opt)
+	buyer, err := libp2p.New(libp2p.NoListenAddrs, libp2p.ResourceManager(rm), p2p.Transports(), opt)
 	if err != nil {
 		t.Fatal(err)
 	}
