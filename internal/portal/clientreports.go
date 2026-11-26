@@ -57,7 +57,11 @@ const (
 	ClientReportsPerUserHour = 20
 	ClientReportsPerIPHour   = 60
 	ClientReportRetention    = 90 * 24 * time.Hour
-	maxClientReportBody      = 160 << 10
+	// Whoever signs up may report, from as many addresses as they have, and
+	// a report is up to 85 kB in the database the ledger is in: the site
+	// takes this many an hour from everybody, and keeps maxClientReports.
+	ClientReportsPerHour = 600
+	maxClientReportBody  = 160 << 10
 )
 
 // Report states, set by an admin for a whole problem (fingerprint).
@@ -66,6 +70,12 @@ const (
 	ReportKnown = "known"
 	ReportFixed = "fixed"
 )
+
+// maxClientReports is how many reports are kept in all (a variable for tests).
+var maxClientReports = 20_000
+
+// allReports is the key of the site-wide count in reportsByIP; no address reads so.
+const allReports = "*"
 
 // hourWindow counts events per key over the last hour.
 type hourWindow struct {
@@ -114,6 +124,21 @@ func (s *Server) handleClientReport(w http.ResponseWriter, r *http.Request, cu c
 	}
 	now := s.cfg.Now()
 	if !s.reportsByIP.take(s.clientIP(r), ClientReportsPerIPHour, now) || !s.reportsByUser.take(cu.user.Username, ClientReportsPerUserHour, now) {
+		writeErr(w, http.StatusTooManyRequests, "throttled", "too many crash reports; try again later")
+		return
+	}
+	if !s.reportsByIP.take(allReports, ClientReportsPerHour, now) {
+		s.log.Warn("crash reports refused: the site-wide hourly limit is reached", "limit", ClientReportsPerHour)
+		writeErr(w, http.StatusTooManyRequests, "throttled", "too many crash reports; try again later")
+		return
+	}
+	var stored int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM client_reports`).Scan(&stored); err != nil {
+		s.internal(w, err)
+		return
+	}
+	if stored >= maxClientReports {
+		s.log.Warn("crash reports refused: the table is full", "rows", stored)
 		writeErr(w, http.StatusTooManyRequests, "throttled", "too many crash reports; try again later")
 		return
 	}

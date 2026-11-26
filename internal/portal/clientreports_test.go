@@ -159,4 +159,17 @@ func TestClientReportLimits(t *testing.T) {
 		big.Context = append(big.Context, strings.Repeat("c", diag.MaxContextLine))
 	}
 	a.call("POST", "/api/v1/client-reports", alice, big, 201, nil)
+
+	// Everybody together: an hourly count for the site, and a table that fills up.
+	clock = clock.Add(2 * time.Hour)
+	for range ClientReportsPerHour {
+		s.reportsByIP.take(allReports, ClientReportsPerHour, clock)
+	}
+	a.call("POST", "/api/v1/client-reports", alice, testReport("fffffffffffc", "0123456789abcdef", "1.0.5"), 429, nil)
+	clock = clock.Add(2 * time.Hour)
+	defer func(n int) { maxClientReports = n }(maxClientReports)
+	maxClientReports = 1 // what the table holds: one problem, reported many times
+	a.call("POST", "/api/v1/client-reports", alice, testReport("fffffffffffb", "0123456789abcdef", "1.0.5"), 429, nil)
+	maxClientReports++
+	a.call("POST", "/api/v1/client-reports", alice, testReport("fffffffffffb", "0123456789abcdef", "1.0.5"), 201, nil)
 }
