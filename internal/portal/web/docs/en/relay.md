@@ -145,6 +145,8 @@ The `relay.yaml` that `init` writes is sized for small use. Change it as you nee
 | `limits.max_reservations` | Devices that may hold a place at once, in all | `64` |
 | `limits.max_reservations_per_ip` | Places one IP address may hold | `16` |
 | `limits.max_circuits` | Connections open through the relay to one device at once | `256` |
+| `limits.max_circuits_per_peer` | Connections one device may open through the relay at once | Not written: `32` |
+| `limits.max_circuits_per_ip` | The same for all devices of one IP address together | Not written: `128` |
 | `network.max_conns` | Connections the relay keeps in all | `1024` |
 | `limits.memory` | Memory all connections together may take | Not written: three quarters of the machine's memory |
 

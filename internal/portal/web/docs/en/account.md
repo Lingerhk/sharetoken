@@ -10,7 +10,7 @@ There are no passwords. You sign in with a code sent to your email, and the same
 {{exe}} login -email you@example.com
 ```
 
-1. A six-digit code is sent to your email. It is valid for 10 minutes.
+1. A six-digit code is sent to your email. It is valid for 10 minutes, and works only where you asked for it: this command, or the browser tab or app window that sent it.
 2. Paste it at the prompt.
 3. When you see `signed in as you@example.com`, you are done and this machine is bound to the account.
 

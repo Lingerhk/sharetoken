@@ -1572,6 +1572,9 @@ func (c *cmdCtx) share(args []string) error {
 			v := uint64(*cacheWrite)
 			m.PriceCacheWrite = &v
 		}
+		if !m.Price().Prices().Fair() {
+			return fmt.Errorf("-cache-read may be -in at most and -cache-write %d times -in: the network refuses a node whose cache prices are higher", protocol.MaxCacheWriteFactor)
+		}
 		if *from != "" && *from != "local" {
 			var local []string
 			for _, lm := range sc.Models {

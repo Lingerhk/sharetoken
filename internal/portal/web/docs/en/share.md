@@ -169,7 +169,7 @@ For any other OpenAI-compatible API, use `custom`. To set up several accounts of
 
 ### Cache prices {#cache-prices}
 
-Model servers charge less for input they read from their prompt cache, and Anthropic charges more for input it writes to the cache. A buyer pays your cache prices for those tokens, as the provider reported them: set them with `-cache-read` and `-cache-write` in `share add`, or `price_cache_read` / `price_cache_write` in the configuration file. The defaults (a tenth of the input price for reads; 1.25 times it for writes where the model server speaks the Anthropic Messages API, the input price elsewhere) follow the providers' own ratios.
+Model servers charge less for input they read from their prompt cache, and Anthropic charges more for input it writes to the cache. A buyer pays your cache prices for those tokens, as the provider reported them: set them with `-cache-read` and `-cache-write` in `share add`, or `price_cache_read` / `price_cache_write` in the configuration file. The defaults (a tenth of the input price for reads; 1.25 times it for writes where the model server speaks the Anthropic Messages API, the input price elsewhere) follow the providers' own ratios. A cache read may cost the input price at most, and a cache write twice the input price at most: `share add` refuses higher ones, and the network refuses a node that offers them.
 
 ### Add one with a login {#provider-login}
 

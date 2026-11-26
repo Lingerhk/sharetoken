@@ -131,7 +131,7 @@ A Claude or ChatGPT (Codex) subscription's 5-hour window starts at the first req
 | Times of day | This computer's local time; several, separated by commas. At each, one tiny request is sent if the 5-hour window isn't running; a time missed by more than an hour (the computer asleep, say) is skipped |
 | Warm up on reset | The weekly window, or the 5-hour and weekly windows, start again as soon as they reset. Nothing is sent while a window is used up or extra usage is in use |
 | Model | Empty uses the cheapest model |
-| Program path | Only for the Claude Code and Codex on this computer: empty finds the `claude` or `codex` command automatically |
+| Program path | Only for the Claude Code and Codex on this computer: empty finds the `claude` or `codex` command automatically. Otherwise the full path of the program, whose file must be named `claude` or `codex` |
 
 "Warm up now" on a row sends one at once; "Pause every automatic warm-up" stops the scheduled ones. Warm-ups happen while the client runs, do not go through the ShareToken network, and cost no credit. For the command line, see [Warm-up](/docs/cli#warmup).
 

@@ -145,6 +145,8 @@ sudo systemctl enable --now sharetoken-relay
 | `limits.max_reservations` | 中继上同时占位置的设备总数 | `64` |
 | `limits.max_reservations_per_ip` | 同一个 IP 地址最多占的位置 | `16` |
 | `limits.max_circuits` | 每台设备同时经中继的连接数 | `256` |
+| `limits.max_circuits_per_peer` | 一台设备同时经中继发起的连接数 | 不写：`32` |
+| `limits.max_circuits_per_ip` | 同一个 IP 地址下所有设备合计的上限 | 不写：`128` |
 | `network.max_conns` | 中继的连接总数 | `1024` |
 | `limits.memory` | 所有连接一共可以占用的内存 | 不写：机器内存的四分之三 |
 

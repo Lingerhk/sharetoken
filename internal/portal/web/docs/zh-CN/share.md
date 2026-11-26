@@ -169,7 +169,7 @@ saved provider deepseek (DeepSeek, apikey) sk-…9b35
 
 ### 缓存价格 {#cache-prices}
 
-模型服务器对从 prompt 缓存读出的输入收费更低，Anthropic 对写入缓存的输入收费更高。买家按厂商上报的缓存用量、以你的缓存价格付这部分 token：用 `share add` 的 `-cache-read`、`-cache-write` 设置，或在配置文件里写 `price_cache_read`、`price_cache_write`。默认值（读为输入价格的 1/10；写在支持 Anthropic Messages 接口的模型服务上为输入价格的 1.25 倍，其他等于输入价格）和厂商自己的比例一致。
+模型服务器对从 prompt 缓存读出的输入收费更低，Anthropic 对写入缓存的输入收费更高。买家按厂商上报的缓存用量、以你的缓存价格付这部分 token：用 `share add` 的 `-cache-read`、`-cache-write` 设置，或在配置文件里写 `price_cache_read`、`price_cache_write`。默认值（读为输入价格的 1/10；写在支持 Anthropic Messages 接口的模型服务上为输入价格的 1.25 倍，其他等于输入价格）和厂商自己的比例一致。缓存读的价格不能高于输入价格，缓存写的价格不能高于输入价格的 2 倍：超出时 `share add` 会拒绝，网络也不接受这样报价的节点。
 
 ### 用账号登录添加 {#provider-login}
 

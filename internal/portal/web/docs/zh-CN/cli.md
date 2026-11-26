@@ -29,7 +29,7 @@
 | `-portal-pin FP` | 门户使用自签名证书时，运营者公布的证书指纹（`sha256:…`）。不给时显示指纹并请你确认 |
 | `-allow-http` | 允许用明文 HTTP 连接另一台机器上的门户，只用于测试网络 |
 
-`-email` 默认是上次登录用的邮箱。`-send` 和 `-code` 不能同时使用。
+`-email` 默认是上次登录用的邮箱。`-send` 和 `-code` 不能同时使用。邮件里的验证码只能在申请它的地方使用：`-code` 要在运行过 `-send` 的那台机器、同一个状态目录下运行。
 
 ### logout {#logout}
 
@@ -255,7 +255,7 @@ Claude 和 ChatGPT（Codex）订阅的 5 小时窗口从重置后的第一次请
 | 命令 | 作用 |
 |---|---|
 | `warmup` | 所有可以预热的账号、设定的时间、最近一次预热和用量窗口 |
-| `warmup set claude\|codex [-times 06:00,11:05] [-on-reset off\|week\|all] [-model M] [-binary PATH] [-off]` | 本机的 Claude Code 或 Codex。`-model`：用哪个模型发请求（`default` 表示最便宜的）；`-binary`：程序位置（`auto` 表示自动查找）；`-off`：关闭 |
+| `warmup set claude\|codex [-times 06:00,11:05] [-on-reset off\|week\|all] [-model M] [-binary PATH] [-off]` | 本机的 Claude Code 或 Codex。`-model`：用哪个模型发请求（`default` 表示最便宜的）；`-binary`：程序的完整路径，文件名必须是 `claude` 或 `codex`（`auto` 表示自动查找）；`-off`：关闭 |
 | `provider warmup <名字> [-times 06:00] [-on-reset off\|week\|all] [-model M] [-off]` | 你出售的 Claude 或 ChatGPT 登录 |
 | `warmup run [claude\|codex\|provider:<名字>]` | 立即预热（不指定就预热所有已设置的） |
 | `warmup pause`、`warmup resume` | 暂停所有自动预热，或恢复 |

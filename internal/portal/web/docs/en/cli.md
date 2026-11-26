@@ -29,7 +29,7 @@ Sign in with a code mailed to you, and bind this device. An address without an a
 | `-portal-pin FP` | The certificate fingerprint (`sha256:…`) the operator published, for a portal with a self-signed certificate. If omitted, the fingerprint is shown and you are asked to confirm it |
 | `-allow-http` | Allow plain HTTP to a portal on another machine. For test networks only |
 
-`-email` defaults to the address you last signed in with. `-send` and `-code` cannot be used together.
+`-email` defaults to the address you last signed in with. `-send` and `-code` cannot be used together. A mailed code works only where it was asked for: run `-code` on the machine, and with the state directory, that ran `-send`.
 
 ### logout {#logout}
 
@@ -255,7 +255,7 @@ A Claude or ChatGPT (Codex) subscription's 5-hour window starts at the first req
 | Command | What it does |
 |---|---|
 | `warmup` | Every account there is to warm up, its times, the last warm-up and its usage windows |
-| `warmup set claude\|codex [-times 06:00,11:05] [-on-reset off\|week\|all] [-model M] [-binary PATH] [-off]` | The Claude Code or Codex of this computer. `-model`: the model to ask (`default` for the cheapest); `-binary`: where the program is (`auto` to find it); `-off`: turn it off |
+| `warmup set claude\|codex [-times 06:00,11:05] [-on-reset off\|week\|all] [-model M] [-binary PATH] [-off]` | The Claude Code or Codex of this computer. `-model`: the model to ask (`default` for the cheapest); `-binary`: the full path of the program, whose file must be named `claude` or `codex` (`auto` to find it); `-off`: turn it off |
 | `provider warmup <name> [-times 06:00] [-on-reset off\|week\|all] [-model M] [-off]` | A Claude or ChatGPT login you sell |
 | `warmup run [claude\|codex\|provider:<name>]` | Warm up now (default: every one that is set) |
 | `warmup pause`, `warmup resume` | Stop every automatic warm-up, or go on |

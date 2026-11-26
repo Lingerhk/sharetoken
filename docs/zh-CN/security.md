@@ -133,6 +133,7 @@ prompt 只从买家到卖家，不去别处。它有两层保护：
 | 绕过中继直连协调器 | 协调器不监听任何地址。 | `cmd/coordinator` |
 | 陌生人占满中继的预约名额 | 预约需要门户签发、绑定到设备 peer ID 的短期凭证，每个用户的设备数有上限。中继离线验证凭证。 | `internal/relaypass`、`internal/relay` |
 | 用报价塞满协调器的内存或买家的拨号队列 | 一份报价最多列 128 个模型、64 个地址，地址只能是 TCP、QUIC、中继 circuit 或隧道；买家不拨其他类型的地址。承载报价的帧最多读 256 KiB。一个账户同时最多 16 个节点在共享，最多绑定 100 台设备。不属于任何用户的 peer 拿不到模型列表，也无法填充协调器的内存表。 | `internal/protocol/limits.go`、`internal/coordinator`、`internal/accounts` |
+| 卖家把输入、输出价标得很低，再把 prompt 按缓存流量以任意价格计费 | 撮合和买家的价格上限只比较输入、输出价，所以缓存价格被绑在输入价上：缓存读不高于输入价，缓存写不高于输入价的 2 倍。违反的报价被协调器拒绝，这样的 Ticket 被客户端拒绝（`protocol.Prices.Fair`）。 |
 | 卖家把价格标高，赚平台的审计费 | 审计作业的单价最多是该模型中位价的三倍（各账户最低报价的中位数）；标价更高的节点不被审计。一天内全部审计作业预留的金额不超过 `audit.daily_budget_micros`。 | `internal/coordinator/auditcap.go` |
 | 一个 peer 占住中继的 circuit | 一个 peer 同时最多持有 32 条 circuit，同一地址下的所有 peer 合计 128 条，所以通往协调器的名额不会被一处占满。 | `internal/relay/circuits.go` |
 | 用超大帧或海量流耗尽内存 | 帧按实际到达的数据增长，不按声明的长度预分配。流处理器先向 libp2p 的资源管理器预留内存，每条流、每个 peer 和全局都有上限。 | `internal/protocol`、`internal/p2p` |

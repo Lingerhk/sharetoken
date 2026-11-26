@@ -76,6 +76,10 @@ If your home directory is mounted `noexec`, install to `/usr/local/bin` instead.
 
 Check your spam folder first. The code can take a few minutes, and it is valid for 10 minutes. Do not resend again and again: wait at least a minute between two, an address gets at most 5 codes an hour, and a code allows 5 wrong tries before you need a new one. If it never arrives, write to this portal's support ({{support}}) from that address: once they have checked it is you, an administrator can give you a one-time sign-in code (valid for 10 minutes) to enter on the sign-in page as usual.
 
+### The verification code is refused {#code-refused}
+
+A mailed code works only where it was asked for. Enter it in the same browser tab, app window or terminal that sent it: a code asked for on your phone does not sign in your computer, and neither does one asked for in another tab. A new code replaces the one before it, so use the latest mail. With `{{exe}} login -send`, run `-code` on the same machine. If the client refuses a fresh code typed where it was asked for, the client is too old for this portal: [update](/docs/update) it first.
+
 ### The message is `not logged in` {#not-logged-in}
 
 This machine is not signed in yet, or the state directory is wrong. Run `{{exe}} version` to check the `home` line, then run `{{exe}} login`.
