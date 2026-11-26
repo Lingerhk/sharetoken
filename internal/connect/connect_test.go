@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -161,7 +162,7 @@ func TestCodexSubscriptionUnlockAndOff(t *testing.T) {
 	data, _ := os.ReadFile(p)
 	s := string(data)
 	top, _ := splitTop(s)
-	for _, want := range []string{`model_provider = "sharetoken"`, `chatgpt_base_url = "http://127.0.0.1:9787/backend-api/"`, `model = "gpt-6.2-astra"`} {
+	for _, want := range []string{`model_provider = "sharetoken"`, `chatgpt_base_url = "http://127.0.0.1:9787/k/sk-st-k1/backend-api/"`, `model = "gpt-6.2-astra"`} {
 		if !strings.Contains(top, want) {
 			t.Errorf("top lacks %s:\n%s", want, s)
 		}
@@ -213,5 +214,49 @@ func TestCodexKeyMode(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "config.toml")); !os.IsNotExist(err) {
 		t.Errorf("the file it made is left: %v", err)
+	}
+}
+
+// The tools' files hold the client's API key once connected: they are the
+// user's alone from then on, whatever their mode was.
+func TestFilesWithKeyAreUserOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no file modes")
+	}
+	home, claudeDir, codexDir := setup(t)
+	settings, config := filepath.Join(claudeDir, "settings.json"), filepath.Join(codexDir, "config.toml")
+	for p, data := range map[string]string{settings: userSettings, config: userToml} {
+		if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A temporary file left by an earlier run does not keep its mode either.
+	if err := os.WriteFile(config+".sharetoken-tmp", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := Options{BaseURL: "http://127.0.0.1:9787", Key: "sk-st-k1", Subscription: true}
+	if _, err := Claude(home, o); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Codex(home, o); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{settings, config} {
+		data, _ := os.ReadFile(p)
+		if !strings.Contains(string(data), "sk-st-k1") {
+			t.Fatalf("%s does not hold the key: the test checks nothing", p)
+		}
+		if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s: %v %v, want 0600", p, fi.Mode().Perm(), err)
+		}
+	}
+	// A refresh with another key keeps them so.
+	if err := Refresh(home, o.BaseURL, "sk-st-k2", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{settings, config} {
+		if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s after a refresh: %v", p, fi.Mode().Perm())
+		}
 	}
 }

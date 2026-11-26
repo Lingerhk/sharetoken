@@ -35,7 +35,8 @@ var tableHeader = regexp.MustCompile(`^\s*\[`)
 //     provider comes here (its earlier conversations stay listed), with the
 //     API key in the path (it sends no custom headers);
 //   - with Unlock, chatgpt_base_url: Codex Desktop's ChatGPT requests come
-//     here too (official.ServeBackend).
+//     here too (official.ServeBackend), with the API key in the path: its
+//     MCP requests are lent Codex's login only when they show the key.
 //
 // Codex reads the top-level keys only before the first table, so they go
 // at the top of the file.
@@ -64,7 +65,7 @@ func Codex(home string, o Options) (*Applied, error) {
 		text = strings.TrimRight(text, "\n") + "\n\n" + providerTable(o)
 	}
 	if o.Unlock {
-		text = setTop(text, a, "chatgpt_base_url", o.BaseURL+"/backend-api/")
+		text = setTop(text, a, "chatgpt_base_url", o.BaseURL+keyPath(o.Key)+"/backend-api/")
 	}
 	a.Options, a.At = o, time.Now()
 	a.Options.Models = nil
