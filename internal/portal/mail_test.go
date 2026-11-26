@@ -2,12 +2,16 @@ package portal
 
 import (
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
+	"sharetoken/internal/accounts"
 	"sharetoken/internal/mailer"
 )
 
@@ -26,6 +30,8 @@ func newMailPortal(t *testing.T) (*Server, *api, string) {
 	return s, a, tok
 }
 
+var mailedCodeRE = regexp.MustCompile(`(?m)^ {4}(\d{6})\r?$`)
+
 // mailedCode reads the code back from the outbox, as the recipient would.
 func mailedCode(t *testing.T, s *Server, to string) string {
 	t.Helper()
@@ -33,7 +39,58 @@ func mailedCode(t *testing.T, s *Server, to string) string {
 	if err != nil || len(ms) == 0 {
 		t.Fatalf("no code for %s: %v", to, err)
 	}
-	return strings.TrimPrefix(ms[0].Subject, "Your ShareToken verification code: ")
+	m, err := s.mail.OutMessage(ms[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := mailedCodeRE.FindStringSubmatch(m.Text)
+	if code == nil || strings.Contains(m.Subject, code[1]) {
+		t.Fatalf("code mail for %s: %q %q", to, m.Subject, m.Text)
+	}
+	return code[1]
+}
+
+// testNonces holds, per portal and address, the nonce of the code last asked
+// for through the test helpers (api.call, web.do). They send it along when a
+// test redeems a code without saying which nonce, as a client does that asked
+// for the code itself; a test about nonces names its own, "" included.
+var testNonces sync.Map
+
+func noteNonce(url, path string, body any, raw []byte) {
+	if !strings.HasSuffix(path, "/auth/code") {
+		return
+	}
+	var sent struct {
+		Nonce string `json:"nonce"`
+	}
+	if json.Unmarshal(raw, &sent) != nil || sent.Nonce == "" {
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+	}
+	data, _ := json.Marshal(body)
+	_ = json.Unmarshal(data, &req)
+	testNonces.Store(url+"\n"+accounts.NormalizeEmail(req.Email), sent.Nonce)
+}
+
+func withNonce(url, path string, body any) any {
+	if !strings.HasSuffix(path, "/auth/verify") || body == nil {
+		return body
+	}
+	data, _ := json.Marshal(body)
+	var req map[string]any
+	if json.Unmarshal(data, &req) != nil {
+		return body
+	}
+	if _, named := req["nonce"]; named {
+		return body
+	}
+	email, _ := req["email"].(string)
+	if n, ok := testNonces.Load(url + "\n" + accounts.NormalizeEmail(email)); ok {
+		req["nonce"] = n
+	}
+	return req
 }
 
 func mustDB(t *testing.T) *sql.DB {

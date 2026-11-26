@@ -447,6 +447,20 @@ const ST = (() => {
     };
     return m[ex.code] || ex.message;
   }
+  // The nonce the portal returned with the code it last mailed: the code only
+  // redeems together with it. Kept for the tab, so a reload does not lose it.
+  const codeNonce = {
+    last: null,
+    get(addr) {
+      let v = this.last;
+      try { v = v || JSON.parse(sessionStorage.getItem('st-code-nonce') || 'null'); } catch (_) { /* no storage: this page's memory */ }
+      return v && v.email === addr.toLowerCase() ? v.nonce : '';
+    },
+    set(addr, nonce) {
+      this.last = { email: addr.toLowerCase(), nonce: nonce || '' };
+      try { sessionStorage.setItem('st-code-nonce', JSON.stringify(this.last)); } catch (_) { /* as above */ }
+    },
+  };
   const codeInput = (id = 'mfa-code') => input({ type: 'text', id, inputmode: 'numeric', autocomplete: 'one-time-code', pattern: '[0-9 ]*', maxlength: 7, placeholder: tr('6 位验证码'), required: true });
 
   // renderLogin(root, {title, email}) → resolves when signed in. One form for new
@@ -457,7 +471,8 @@ const ST = (() => {
     return new Promise(resolve => {
       const err = h('div', { class: 'error', id: 'login-error', role: 'alert' });
       const email = input({ type: 'email', id: 'login-email', autocomplete: 'email', autocapitalize: 'off', spellcheck: 'false', placeholder: tr('请输入你的邮箱'), required: true, value: opts.email || '' });
-      const mailCode = input({ type: 'text', id: 'login-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 7, placeholder: tr('6 位验证码') });
+      // Room for the twelve digits of a code the portal's operator hands out.
+      const mailCode = input({ type: 'text', id: 'login-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 16, placeholder: tr('6 位验证码') });
       const sendCode = h('button', { type: 'button', id: 'send-code', class: 'small', onclick: requestCode }, tr('发送验证码'));
       const invite = input({ type: 'text', id: 'login-invite', autocomplete: 'off', maxlength: 64, placeholder: tr('管理员发给你的邀请码') });
       const inviteField = h('div', { class: 'field', id: 'invite-field', hidden: true }, h('label', null, tr('邀请码')), invite);
@@ -473,6 +488,7 @@ const ST = (() => {
         sendCode.disabled = true;
         try {
           const r = await api('POST', '/api/v1/auth/code', { email: addr, invite_code: invite.value.trim() });
+          codeNonce.set(addr, r.nonce);
           toast(tr('验证码已发送，请查收邮件（也看看垃圾邮件）'));
           const bonus = state.info && state.info.signup_credit_micros > 0 ? [h('br'), tr('新账户赠送 {n} credit。', { n: credit(state.info.signup_credit_micros) })] : null;
           add(clear(newNote), r.new_account ? [tr('这个邮箱还没有账户，验证后会自动创建。'), bonus] : null);
@@ -535,7 +551,7 @@ const ST = (() => {
           if (!mailCode.value.trim()) { err.textContent = tr('请填写邮箱收到的验证码'); mailCode.focus(); return; }
           submit.disabled = true;
           try {
-            await api('POST', '/api/v1/web/auth/verify', { email: addr, code: mailCode.value.trim(), invite_code: invite.value.trim() });
+            await api('POST', '/api/v1/web/auth/verify', { email: addr, code: mailCode.value.trim(), nonce: codeNonce.get(addr), invite_code: invite.value.trim() });
             resolve();
           } catch (ex) {
             if (ex.code === 'mfa_required' && ex.data.challenge) { showCode(ex.data.challenge); return; }

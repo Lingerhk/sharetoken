@@ -35,7 +35,7 @@ type web struct {
 func (c *web) do(method, path string, body any) (*http.Response, json.RawMessage) {
 	c.t.Helper()
 	var rd io.Reader = bytes.NewReader(nil)
-	if body != nil {
+	if body = withNonce(c.url, path, body); body != nil {
 		data, _ := json.Marshal(body)
 		rd = bytes.NewReader(data)
 	}
@@ -55,6 +55,7 @@ func (c *web) do(method, path string, body any) (*http.Response, json.RawMessage
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
+	noteNonce(c.url, path, body, raw)
 	return resp, raw
 }
 
@@ -186,13 +187,21 @@ func TestSecureCookieOverTLS(t *testing.T) {
 	srv := httptest.NewTLSServer(s.Handler())
 	t.Cleanup(srv.Close)
 	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/auth/code", strings.NewReader(`{"email":"alice@example.com"}`))
-	if resp, err := srv.Client().Do(req); err != nil || resp.StatusCode != 200 {
+	resp, err := srv.Client().Do(req)
+	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("code: %v %v", resp, err)
 	}
-	req, _ = http.NewRequest("POST", srv.URL+"/api/v1/web/auth/verify", strings.NewReader(`{"email":"alice@example.com","code":"`+mailedCode(t, s, "alice@example.com")+`"}`))
+	var sent struct {
+		Nonce string `json:"nonce"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sent); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	req, _ = http.NewRequest("POST", srv.URL+"/api/v1/web/auth/verify", strings.NewReader(`{"email":"alice@example.com","code":"`+mailedCode(t, s, "alice@example.com")+`","nonce":"`+sent.Nonce+`"}`))
 	req.Header.Set(WebHeader, "1")
 	req.Header.Set("Origin", srv.URL)
-	resp, err := srv.Client().Do(req)
+	resp, err = srv.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

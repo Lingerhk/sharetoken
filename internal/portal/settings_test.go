@@ -61,7 +61,7 @@ func newAdminFixture(t *testing.T, cfg Config) *adminFixture {
 func (f *adminFixture) call(method, path, token string, body any) (int, []byte) {
 	f.t.Helper()
 	var rd *strings.Reader = strings.NewReader("")
-	if body != nil {
+	if body = withNonce(f.url, path, body); body != nil {
 		raw, _ := json.Marshal(body)
 		rd = strings.NewReader(string(raw))
 	}
@@ -84,6 +84,7 @@ func (f *adminFixture) call(method, path, token string, body any) (int, []byte) 
 			break
 		}
 	}
+	noteNonce(f.url, path, body, []byte(raw.String()))
 	return resp.StatusCode, []byte(raw.String())
 }
 

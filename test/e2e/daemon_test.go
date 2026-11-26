@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"regexp"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,6 +27,8 @@ type daemonUser struct {
 	base string
 	home string
 }
+
+var mailedCodeRE = regexp.MustCompile(`(?m)^ {4}(\d{6})\r?$`)
 
 func (n *network) startDaemon(home string) *daemonUser {
 	n.t.Helper()
@@ -283,12 +285,16 @@ func newSwitchablePortal(t *testing.T, n *network) *switchablePortal {
 // its recipient would) and lifts the per-address cooldown for the next one.
 func (n *network) code(email string) string {
 	n.t.Helper()
-	var subject string
-	if err := n.db.QueryRow(`SELECT subject FROM mail_outbox WHERE to_addr = ? ORDER BY id DESC LIMIT 1`, email).Scan(&subject); err != nil {
+	var text string
+	if err := n.db.QueryRow(`SELECT text_body FROM mail_outbox WHERE to_addr = ? AND kind = 'verify' ORDER BY id DESC LIMIT 1`, email).Scan(&text); err != nil {
 		n.t.Fatalf("no code mailed to %s: %v", email, err)
 	}
 	if _, err := n.db.Exec(`UPDATE mail_codes SET created_at = created_at - 7200`); err != nil {
 		n.t.Fatal(err)
 	}
-	return subject[strings.LastIndex(subject, " ")+1:]
+	code := mailedCodeRE.FindStringSubmatch(text)
+	if code == nil {
+		n.t.Fatalf("no code in the mail to %s: %q", email, text)
+	}
+	return code[1]
 }

@@ -490,7 +490,7 @@ func admin(p *portal.Server, cmd string, args []string) error {
 			return err
 		}
 		p.AuditCLI("user.login_code", accounts.NormalizeEmail(args[0]), nil)
-		fmt.Printf("%s\nsigns in %s on the web pages or in a client, once, until %s (an earlier code of the address no longer works; two-factor authentication still applies)\n",
+		fmt.Printf("%s\nsigns in %s on the web pages or in a client, typed where the mailed code goes, once, until %s (an earlier code from this command no longer works; two-factor authentication still applies)\n",
 			code, accounts.NormalizeEmail(args[0]), exp.Local().Format("15:04:05"))
 		return nil
 	case "grant":

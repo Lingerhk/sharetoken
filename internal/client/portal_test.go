@@ -5,6 +5,9 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"sharetoken/internal/mysqldb"
@@ -57,4 +60,36 @@ func TestPortalPinning(t *testing.T) {
 		}
 	}
 	_ = http.StatusOK
+}
+
+// "login -send" keeps the nonce of its code for the "login -code" that
+// follows: for that portal and address only, and no longer than the code lasts.
+func TestPendingCode(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "state")
+	const portalURL = "https://portal.example.test"
+	if got := LoadPendingCode(home, portalURL, "a@example.test"); got != "" {
+		t.Fatalf("a nonce from nowhere: %q", got)
+	}
+	if err := SavePendingCode(home, portalURL, " A@Example.test ", &CodeSent{Nonce: "n1", ExpiresInSeconds: 600}); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(home, pendingCodeFile)); err != nil || fi.Mode().Perm()&0o077 != 0 && runtime.GOOS != "windows" {
+		t.Fatalf("the nonce must be readable by its user only: %v %v", fi, err)
+	}
+	if got := LoadPendingCode(home, portalURL, "a@example.test"); got != "n1" {
+		t.Fatalf("nonce %q", got)
+	}
+	if LoadPendingCode(home, portalURL, "b@example.test") != "" || LoadPendingCode(home, "https://other.example.test", "a@example.test") != "" {
+		t.Fatal("a nonce was handed to another address or portal")
+	}
+	if err := SavePendingCode(home, portalURL, "a@example.test", &CodeSent{Nonce: "n2", ExpiresInSeconds: -1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadPendingCode(home, portalURL, "a@example.test"); got != "" {
+		t.Fatalf("the nonce of an expired code: %q", got)
+	}
+	ClearPendingCode(home)
+	if _, err := os.Stat(filepath.Join(home, pendingCodeFile)); !os.IsNotExist(err) {
+		t.Fatalf("not cleared: %v", err)
+	}
 }

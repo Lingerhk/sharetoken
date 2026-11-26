@@ -90,8 +90,9 @@ portalCmd(['useradd', '-admin', 'verroot@example.test']);
 await go(env.PORTAL + '/admin/');
 const web = `{ 'Content-Type': 'application/json', 'X-Sharetoken-Web': '1' }`;
 const post = (path, body) => ev(`fetch(${q(path)}, { method: 'POST', headers: ${web}, body: ${q(JSON.stringify(body))} }).then(async r => ({ status: r.status, data: await r.json() }))`);
-ok((await post('/api/v1/auth/code', { email: 'verroot@example.test' })).status === 200, 'a sign-in code is mailed');
-const ch = (await post('/api/v1/web/auth/verify', { email: 'verroot@example.test', code: mailedCode('verroot@example.test') })).data;
+const sent = await post('/api/v1/auth/code', { email: 'verroot@example.test' });
+ok(sent.status === 200 && sent.data.nonce, 'a sign-in code is mailed, with the nonce it redeems with');
+const ch = (await post('/api/v1/web/auth/verify', { email: 'verroot@example.test', code: mailedCode('verroot@example.test'), nonce: sent.data.nonce })).data;
 const setup = (await post('/api/v1/web/mfa/setup', { challenge: ch.challenge })).data;
 ok((await post('/api/v1/web/mfa/confirm', { challenge: ch.challenge, code: totp(setup.secret) })).status === 200, 'an admin session');
 await go(env.PORTAL + '/app/'); // a full load, so that the page sees the new session

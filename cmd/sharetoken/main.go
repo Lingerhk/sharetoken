@@ -340,6 +340,10 @@ func (c *cmdCtx) login(args []string) error {
 		return err
 	}
 	pc := client.NewPortalClient(portalURL, "", *pin)
+	// A code only redeems with the nonce its request returned: "login -send"
+	// keeps it in the state directory for the "login -code" that follows. A
+	// code from the portal's operator needs none.
+	nonce := client.LoadPendingCode(c.home, portalURL, *email)
 	if *code == "" {
 		sent, err := pc.RequestCode(cx, *email, *invite)
 		var pe *client.PortalError
@@ -356,7 +360,12 @@ func (c *cmdCtx) login(args []string) error {
 			fmt.Printf("%s has no account yet: signing in creates one\n", *email)
 		}
 		fmt.Printf("a sign-in code was sent to %s (valid %d minutes)\n", *email, sent.ExpiresInSeconds/60)
+		nonce = sent.Nonce
 		if *send {
+			if err := client.SavePendingCode(c.home, portalURL, *email, sent); err != nil {
+				return fmt.Errorf("the code was sent, but it can only be redeemed by this command, which could not note that down: %w", err)
+			}
+			fmt.Println("redeem it on this machine: sharetoken login -email " + *email + " -code <code>")
 			return nil
 		}
 		if *code, err = cli.Prompt("Code from the email: "); err != nil {
@@ -371,8 +380,11 @@ func (c *cmdCtx) login(args []string) error {
 		*device, _ = os.Hostname()
 	}
 	tokenName := "client on " + *device
-	res, err := pc.SignIn(cx, *email, strings.TrimSpace(*code), strings.TrimSpace(*invite), strings.TrimSpace(*totpCode), tokenName)
+	res, err := pc.SignIn(cx, *email, strings.TrimSpace(*code), nonce, strings.TrimSpace(*invite), strings.TrimSpace(*totpCode), tokenName)
 	var pe *client.PortalError
+	if err == nil || errors.As(err, &pe) && pe.Code != "bad_code" && pe.Code != "throttled" {
+		client.ClearPendingCode(c.home) // the code is used, or will never be
+	}
 	switch {
 	case errors.As(err, &pe) && pe.Code == "mfa_required" && pe.Challenge != "":
 		second, perr := cli.Prompt("Code from your authenticator app: ")

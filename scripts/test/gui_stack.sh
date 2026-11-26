@@ -9,7 +9,7 @@
 #   scripts/test/gui_stack.sh code  DIR <email>   # the last sign-in code mailed to the address
 #
 # Nothing delivers mail: the portal's outbox keeps every message, and "code"
-# reads the sign-in code from its subject, as the recipient would.
+# reads the sign-in code from its text, as the recipient would.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 CMD=${1:?start, stop or code}; DIR=${2:?directory}
@@ -22,8 +22,8 @@ if [ "$CMD" = code ]; then
   EMAIL=${3:?email}
   DB=$(sed 's|.*/||' "$DIR/dsn")
   for _ in $(seq 1 50); do
-    SUBJECT=$("$ROOT/scripts/test/local-mysql.sh" sql "$DB" "SELECT subject FROM mail_outbox WHERE to_addr='$EMAIL' AND subject LIKE '%code:%' ORDER BY id DESC LIMIT 1")
-    [ -n "$SUBJECT" ] && { echo "${SUBJECT##*: }"; exit 0; }
+    CODE=$("$ROOT/scripts/test/local-mysql.sh" sql "$DB" "SELECT REGEXP_SUBSTR(text_body, '[0-9]{6}') FROM mail_outbox WHERE to_addr='$EMAIL' AND kind='verify' ORDER BY id DESC LIMIT 1")
+    [ -n "$CODE" ] && { echo "$CODE"; exit 0; }
     sleep 0.2
   done
   echo "no code mailed to $EMAIL" >&2; exit 1

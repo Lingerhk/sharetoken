@@ -117,7 +117,7 @@ async function sendCode(email) {
 // readCode returns the code just mailed to the address.
 async function readCode(email) {
   if (STACK) return runQuiet(ROOT + 'scripts/test/gui_stack.sh', 'code', STACK, email);
-  return (await mailTo(email, /code: (\d{6})/))[1];
+  return (await mailTo(email, /^\s{4}(\d{6})\s*$/m))[1];
 }
 // loginForm signs in with a mailed code, up to any two-factor step.
 async function loginForm(email) {

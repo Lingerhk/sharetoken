@@ -223,7 +223,8 @@ I18N.ready.then(() => {
 
     const lastEmail = (session.user || '').includes('@') ? session.user : '';
     const email = h('input', { type: 'email', id: 'email', autocomplete: 'email', value: lastEmail, autocapitalize: 'off', spellcheck: 'false' });
-    const mailCode = h('input', { type: 'text', id: 'mail-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '7' });
+    // Room for the twelve digits of a code the portal's operator hands out.
+    const mailCode = h('input', { type: 'text', id: 'mail-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '16' });
     const invite = h('input', { type: 'text', id: 'invite', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false' });
     const totp = h('input', { type: 'text', id: 'totp', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '7' });
     const sendCode = h('button', { type: 'button', id: 'send-code', onclick: requestCode }, tr('发送验证码'));

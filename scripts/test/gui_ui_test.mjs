@@ -84,11 +84,11 @@ const sql = query => execFileSync(new URL('./local-mysql.sh', import.meta.url).p
 let lastMail = 0;
 async function nextCode(email) {
   for (let i = 0; i < 100; i++) {
-    const [id, subject] = (sql(`SELECT id, subject FROM mail_outbox WHERE to_addr = '${email}' ORDER BY id DESC LIMIT 1`) || '0\t').split('\t');
+    const [id, code] = (sql(`SELECT id, REGEXP_SUBSTR(text_body, '[0-9]{6}') FROM mail_outbox WHERE to_addr = '${email}' AND kind = 'verify' ORDER BY id DESC LIMIT 1`) || '0\t').split('\t');
     if (Number(id) > lastMail) {
       lastMail = Number(id);
       sql('UPDATE mail_codes SET created_at = created_at - 7200');
-      return subject.slice(subject.lastIndexOf(' ') + 1);
+      return code;
     }
     await sleep(100);
   }

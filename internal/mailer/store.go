@@ -8,9 +8,10 @@
 // internet-facing SMTP process holds no secrets of the portal. Its database
 // account only needs the mail_outbox, mail_inbox and mail_status tables.
 //
-// Mail tables do not touch the ledger, so nothing here takes the database-wide
-// write lock (mysqldb.Begin): every write is a single statement, and claims are
-// compare-and-swap updates.
+// Mail tables do not touch the ledger, so almost nothing here takes the
+// database-wide write lock (mysqldb.Begin): a write is a single statement, and
+// claims are compare-and-swap updates. The exception is RequestCode, which
+// counts and stores in one transaction; only the portal calls it.
 package mailer
 
 import (
@@ -98,6 +99,11 @@ CREATE TABLE IF NOT EXISTS mail_status (
 // Migrations is the schema of the mail tables, as component "mail".
 var Migrations = []mysqldb.Migration{
 	{Version: 1, Name: "initial schema", SQL: Schema},
+	// nonce_hash: the request a code belongs to (codes.go). known: whether the
+	// address had an account, for the two budgets over everyone.
+	{Version: 2, Name: "sign-in codes bound to their request", SQL: `ALTER TABLE mail_codes
+		ADD COLUMN nonce_hash VARBINARY(32) NOT NULL DEFAULT '',
+		ADD COLUMN known BIGINT NOT NULL DEFAULT 0;`},
 }
 
 // Migrate creates the mail tables. The portal runs it; the mail server's
@@ -166,19 +172,23 @@ type Message struct {
 }
 
 // Enqueue stores a message for delivery and returns its id.
-func (s *Store) Enqueue(m Message) (int64, error) {
+func (s *Store) Enqueue(m Message) (int64, error) { return enqueue(s.DB, s.now(), m) }
+
+func enqueue(db interface {
+	Exec(string, ...any) (sql.Result, error)
+}, at time.Time, m Message) (int64, error) {
 	if m.From == "" || m.To == "" || m.Kind == "" {
 		return 0, errors.New("mailer: message needs a kind, a sender and a recipient")
 	}
 	if strings.ContainsAny(m.To+m.From+m.ReplyTo+m.InReplyTo, "\r\n") {
 		return 0, errors.New("mailer: line break in an address")
 	}
-	now := s.now().Unix()
+	now := at.Unix()
 	var exp int64
 	if !m.ExpiresAt.IsZero() {
 		exp = m.ExpiresAt.Unix()
 	}
-	res, err := s.DB.Exec(`INSERT INTO mail_outbox (kind, has_secret, from_addr, to_addr, reply_to, subject, text_body, html_body, in_reply_to,
+	res, err := db.Exec(`INSERT INTO mail_outbox (kind, has_secret, from_addr, to_addr, reply_to, subject, text_body, html_body, in_reply_to,
 		created_by, status, next_attempt_at, expires_at, last_error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)`,
 		m.Kind, boolInt(m.Sensitive), clean(m.From, 500), clean(m.To, 320), clean(m.ReplyTo, 320), clean(m.Subject, 900), clean(m.Text, 1<<20), clean(m.HTML, 1<<20),
 		clean(m.InReplyTo, 990), m.CreatedBy, StatusQueued, now, exp, now)
@@ -336,9 +346,13 @@ func (s *Store) Retry(id int64) error {
 	return mustAffect(res, err)
 }
 
-// Cancel stops a message that is still waiting to be sent.
+// Cancel stops a message that is still waiting to be sent. A sensitive one
+// loses its subject and body like one that was sent: cancelling is no way to
+// keep a code readable.
 func (s *Store) Cancel(id int64) error {
-	res, err := s.DB.Exec(`UPDATE mail_outbox SET status = ?, finished_at = ? WHERE id = ? AND status = ?`, StatusCancelled, s.now().Unix(), id, StatusQueued)
+	res, err := s.DB.Exec(`UPDATE mail_outbox SET status = ?, finished_at = ?,
+		subject = IF(has_secret = 1, ?, subject), text_body = IF(has_secret = 1, ?, text_body), html_body = IF(has_secret = 1, '', html_body)
+		WHERE id = ? AND status = ?`, StatusCancelled, s.now().Unix(), wipedBody, wipedBody, id, StatusQueued)
 	return mustAffect(res, err)
 }
 
@@ -356,11 +370,17 @@ func mustAffect(res sql.Result, err error) error {
 	return nil
 }
 
-// claimDue marks up to limit due messages as being sent and returns them. Two
-// servers on one database never take the same row.
-func (s *Store) claimDue(limit int) ([]OutMail, error) {
-	now := s.now().Unix()
-	rows, err := s.DB.Query(`SELECT id FROM mail_outbox WHERE status = ? AND next_attempt_at <= ? ORDER BY next_attempt_at, id LIMIT ?`, StatusQueued, now, limit)
+// dueIDs lists up to limit due messages, oldest first: the sign-in codes
+// (verify true) or everything else.
+func (s *Store) dueIDs(verify bool, now int64, limit int) ([]int64, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	kind := `kind <> ?`
+	if verify {
+		kind = `kind = ?`
+	}
+	rows, err := s.DB.Query(`SELECT id FROM mail_outbox WHERE status = ? AND `+kind+` AND next_attempt_at <= ? ORDER BY next_attempt_at, id LIMIT ?`, StatusQueued, KindVerify, now, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -373,9 +393,24 @@ func (s *Store) claimDue(limit int) ([]OutMail, error) {
 		}
 		ids = append(ids, id)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+	return ids, errors.Join(rows.Err(), rows.Close())
+}
+
+// claimDue marks up to limit due messages as being sent and returns them, of
+// which at most others are anything but sign-in codes. Codes come first: one
+// is worth ten minutes, and a pile of notices must not hold it up. Two servers
+// on one database never take the same row.
+func (s *Store) claimDue(limit, others int) ([]OutMail, error) {
+	now := s.now().Unix()
+	ids, err := s.dueIDs(true, now, limit)
+	if err != nil {
 		return nil, err
 	}
+	rest, err := s.dueIDs(false, now, min(limit-len(ids), others))
+	if err != nil {
+		return nil, err
+	}
+	ids = append(ids, rest...)
 	var out []OutMail
 	for _, id := range ids {
 		res, err := s.DB.Exec(`UPDATE mail_outbox SET status = ?, claimed_at = ?, attempts = attempts + 1 WHERE id = ? AND status = ?`, StatusSending, now, id, StatusQueued)
