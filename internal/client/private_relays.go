@@ -224,6 +224,10 @@ func (a *Agent) privateRelayRoutes(mux *http.ServeMux) {
 		Addr string `json:"addr"`
 	}
 	read := func(w http.ResponseWriter, r *http.Request) (string, bool) {
+		if !jsonContent(r) {
+			writeErrorCode(w, http.StatusUnsupportedMediaType, "bad_request", "send application/json")
+			return "", false
+		}
 		var b body
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&b); err != nil || b.Addr == "" {
 			writeError(w, http.StatusBadRequest, "want {\"addr\": \"<relay address or peer ID>\"}")

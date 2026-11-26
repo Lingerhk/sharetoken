@@ -62,6 +62,9 @@ func (a *Agent) providerRoutes(mux *http.ServeMux) {
 		if len(strings.TrimSpace(string(data))) == 0 {
 			return nil
 		}
+		if !jsonContent(r) {
+			return errors.New("send application/json")
+		}
 		if err := json.Unmarshal(data, v); err != nil {
 			return errors.New("malformed JSON: " + err.Error())
 		}

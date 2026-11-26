@@ -97,7 +97,7 @@ func (g *Gateway) passthrough(w http.ResponseWriter, r *http.Request, cred Cred,
 		return
 	}
 	defer resp.Body.Close()
-	g.observe(cred, r.Header, resp.Header)
+	g.observe(r, cred, resp.Header)
 	copyResponse(w, resp)
 	g.logDone(r, cred, "", resp.StatusCode, started)
 }

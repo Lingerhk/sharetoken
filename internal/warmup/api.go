@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 
@@ -91,6 +92,10 @@ func readJSON(r *http.Request, v any) error {
 	}
 	if strings.TrimSpace(string(data)) == "" {
 		return nil
+	}
+	// The content type keeps out what a web form could post.
+	if ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); ct != "application/json" {
+		return errors.New("send application/json")
 	}
 	if err := json.Unmarshal(data, v); err != nil {
 		return errors.New("malformed JSON: " + err.Error())

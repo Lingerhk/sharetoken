@@ -1055,13 +1055,13 @@ I18N.ready.then(() => {
         { title: tr('备注'), get: r => r.label || '—' },
         { title: tr('申请时间'), get: r => time(r.created_at) },
         { title: '', get: r => h('span', { class: 'row-actions' },
-          act(area + '-approve', tr('确认'), 'POST', r => '/api/v1/' + area + '/requests/' + r.id + '/approve')(r),
-          act(area + '-reject', tr('拒绝'), 'DELETE', r => '/api/v1/' + area + '/requests/' + r.id, true)(r)) },
+          act(area + '-approve', tr('确认'), 'POST', r => '/api/v1/' + area + '/requests/' + encodeURIComponent(r.id) + '/approve')(r),
+          act(area + '-reject', tr('拒绝'), 'DELETE', r => '/api/v1/' + area + '/requests/' + encodeURIComponent(r.id), true)(r)) },
       ], requests)] : null,
       waiting && waiting.length ? [h('h3', { class: 'sub-title', id: area + '-waiting-title' }, tr('等待对方确认')), table([
         { title: tr('账户'), get: r => r.username },
         { title: tr('申请时间'), get: r => time(r.created_at) },
-        { title: '', get: act(area + '-withdraw', tr('撤回'), 'DELETE', r => '/api/v1/' + area + '/waiting/' + r.id, true) },
+        { title: '', get: act(area + '-withdraw', tr('撤回'), 'DELETE', r => '/api/v1/' + area + '/waiting/' + encodeURIComponent(r.id), true) },
       ], waiting)] : null,
     ].flat().filter(Boolean);
   }
@@ -1201,15 +1201,15 @@ I18N.ready.then(() => {
 
     function leave(u) {
       confirmBox(tr('解除和卖家 {name} 的配对？之后这个账户不再向他购买，除非重新配对。', { name: u.username }), tr('解除'),
-        () => api('DELETE', '/api/v1/pairing/sellers/' + u.id), async () => { flash.sellers = null; await reload(); }, pairError);
+        () => api('DELETE', '/api/v1/pairing/sellers/' + encodeURIComponent(u.id)), async () => { flash.sellers = null; await reload(); }, pairError);
     }
     function remove(u) {
       confirmBox(tr('移除买家 {name}？如果这是他唯一配对的卖家，他会恢复为向整个网络购买。', { name: u.username }), tr('移除'),
-        () => api('DELETE', '/api/v1/pairing/buyers/' + u.id), async () => { flash.buyers = null; await reload(); }, pairError);
+        () => api('DELETE', '/api/v1/pairing/buyers/' + encodeURIComponent(u.id)), async () => { flash.buyers = null; await reload(); }, pairError);
     }
     function revoke(c) {
       confirmBox(tr('撤销配对码 {code}？它不能再用来配对，已经配对的买家不受影响。', { code: c.code }), tr('撤销'),
-        () => api('DELETE', '/api/v1/pairing/codes/' + c.id), async () => { flash.buyers = null; await reload(); }, pairError);
+        () => api('DELETE', '/api/v1/pairing/codes/' + encodeURIComponent(c.id)), async () => { flash.buyers = null; await reload(); }, pairError);
     }
 
     render();
@@ -1362,11 +1362,11 @@ I18N.ready.then(() => {
 
     function leave(u) {
       confirmBox(tr('解除和 {name} 的共享？之后双方不能再免费使用对方的节点，除非重新配对。', { name: u.username }), tr('解除'),
-        () => api('DELETE', '/api/v1/sharing/partners/' + u.id), async () => { flash = null; await reload(); }, partnerError);
+        () => api('DELETE', '/api/v1/sharing/partners/' + encodeURIComponent(u.id)), async () => { flash = null; await reload(); }, partnerError);
     }
     function revoke(c) {
       confirmBox(tr('撤销邀请码 {code}？', { code: c.code }), tr('撤销'),
-        () => api('DELETE', '/api/v1/sharing/invites/' + c.id), async () => { flash = null; await reload(); }, partnerError);
+        () => api('DELETE', '/api/v1/sharing/invites/' + encodeURIComponent(c.id)), async () => { flash = null; await reload(); }, partnerError);
     }
 
     render();

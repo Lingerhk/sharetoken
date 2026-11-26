@@ -158,16 +158,20 @@ func removeIfEmpty(path string, data []byte) bool {
 	return os.Remove(path) == nil
 }
 
-// writeAtomic replaces path with data, keeping its mode when it exists.
+// writeAtomic replaces path with data, in mode whatever the file's was: the
+// tools' files get the client's API key written into them, and a
+// settings.json that was 0644 would show it to the machine's other users.
 func writeAtomic(path string, data []byte, mode os.FileMode) error {
-	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm()
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp := path + ".sharetoken-tmp"
 	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	// WriteFile keeps the mode of a temporary file left by an earlier run.
+	if err := os.Chmod(tmp, mode); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

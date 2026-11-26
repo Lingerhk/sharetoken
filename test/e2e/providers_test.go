@@ -82,6 +82,9 @@ func localAPI(t *testing.T, a *client.Agent, method, path string, in, out any) (
 	}
 	req, _ := http.NewRequest(method, "http://"+a.Addr()+path, rd)
 	req.Header.Set("Authorization", "Bearer "+a.Key())
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

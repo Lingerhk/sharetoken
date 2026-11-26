@@ -41,7 +41,10 @@ import (
 //     server (UnlockPort, a certificate this user trusts for localhost
 //     only), so the Desktop's own requests come here as well;
 //   - the Desktop's MCP requests that carry no login get Codex's own
-//     (~/.codex/auth.json).
+//     (~/.codex/auth.json), when they show the client's API key:
+//     chatgpt_base_url carries it in its path (/k/<key>/backend-api/).
+//     Loopback is open to every program and user of the machine, and
+//     without the key any of them could act as the user at ChatGPT.
 //
 // While it is on, Codex Desktop needs the client running, and the Codex
 // guard is off (a held model is what the lock was).
@@ -99,10 +102,21 @@ func (g *Gateway) serveBackend(w http.ResponseWriter, r *http.Request, fromTLS b
 		h.Del(k)
 	}
 	if unlock && h.Get("Authorization") == "" && (sub == "ps/mcp" || strings.HasPrefix(sub, "ps/mcp/")) {
-		if tok, acct := codexCLIAuth(); tok != "" {
-			h.Set("Authorization", "Bearer "+tok)
-			if acct != "" && h.Get("chatgpt-account-id") == "" {
-				h.Set("chatgpt-account-id", acct)
+		if strings.Contains(sub, "%") || strings.Contains(sub, "..") {
+			// What the backend might read as another path (%2e%2e
+			// here was %252e%252e) is not passed on at all.
+			http.Error(w, "bad path", http.StatusBadRequest)
+			return
+		}
+		// Codex's login only for a caller that showed the API key, on
+		// this machine, and on a plain path; anyone else's request goes
+		// on as it came.
+		if HasKey(r.Context()) && fromLoopback(r) && plainSubPath(sub) {
+			if tok, acct := codexCLIAuth(); tok != "" {
+				h.Set("Authorization", "Bearer "+tok)
+				if acct != "" && h.Get("chatgpt-account-id") == "" {
+					h.Set("chatgpt-account-id", acct)
+				}
 			}
 		}
 	}
@@ -148,6 +162,32 @@ func (g *Gateway) serveBackend(w http.ResponseWriter, r *http.Request, fromTLS b
 		}
 	}
 	writeBuffered(w, resp, body)
+}
+
+// plainSubPath: letters, digits and - . _ ~ / only, and no "..": nothing
+// that makes another path or a query of it on the way.
+func plainSubPath(sub string) bool {
+	for _, c := range sub {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', strings.ContainsRune("-._~/", c):
+		default:
+			return false
+		}
+	}
+	return !strings.Contains(sub, "..")
+}
+
+// fromLoopback reports whether r came from this machine to a loopback
+// address of it: `sharetoken up -http` may listen elsewhere.
+func fromLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+		return false
+	}
+	if a, ok := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr); ok && !a.IP.IsLoopback() {
+		return false
+	}
+	return true
 }
 
 // unlockUsage makes a usage answer say the limit is not reached; false when

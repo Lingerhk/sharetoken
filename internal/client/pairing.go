@@ -1,11 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"sharetoken/internal/accounts"
 	"sharetoken/internal/portal"
@@ -83,14 +85,29 @@ func (a *Agent) pairingRoutes(mux *http.ServeMux) {
 // token, and answers with the portal's reply. Only for routes registered one
 // by one: the path is the caller's.
 func (a *Agent) portalForward(w http.ResponseWriter, r *http.Request) {
+	// The IDs are the portal's numbers; the app builds these paths from what
+	// the portal listed, and anything else in their place must not become
+	// another path at the portal.
+	if id := r.PathValue("id"); id != "" && strings.Trim(id, "0123456789") != "" {
+		writeErrorCode(w, http.StatusNotFound, "not_found", "no such ID")
+		return
+	}
 	var body any
 	if r.Method != http.MethodGet && r.Method != http.MethodDelete {
 		raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
-		if err != nil || !json.Valid(raw) {
+		switch {
+		case err == nil && len(bytes.TrimSpace(raw)) == 0:
+			// no body (approving a request): none goes on
+		case !jsonContent(r):
+			// what a web form could post
+			writeErrorCode(w, http.StatusUnsupportedMediaType, "bad_request", "send application/json")
+			return
+		case err != nil || !json.Valid(raw):
 			writeErrorCode(w, http.StatusBadRequest, "bad_request", "malformed JSON body")
 			return
+		default:
+			body = json.RawMessage(raw)
 		}
-		body = json.RawMessage(raw)
 	}
 	var out json.RawMessage
 	if err := a.portal.Do(r.Context(), r.Method, r.URL.Path, body, &out); err != nil {

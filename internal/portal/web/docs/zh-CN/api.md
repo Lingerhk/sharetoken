@@ -62,7 +62,7 @@
 | `DELETE /api/v1/pairing/waiting/{id}` | 撤回你自己发出、还在等审批的请求（`sharing` 同样） |
 | `POST /api/v1/invite/accept` | 接受一个[邀请链接](/docs/share#invite-links)或任意一种邀请码：`{"link": "…"}` |
 | `GET /api/v1/connect`、`POST /api/v1/connect` | Claude Code 和 Codex 的接入状态；接入或断开一个：`{"tool": "claude", "subscription": true, "openai_provider": false, "force": false, "off": false}` |
-| `GET /api/v1/official`、`PUT /api/v1/official` | 订阅用量和额度用完后的处理。`PUT` 整组替换：`{"claude_fallback_off": false, "claude_fallback_model": "", "codex_guard_percent": 95, "codex_unlock": false}` |
+| `GET /api/v1/official`、`PUT /api/v1/official` | 订阅用量和额度用完后的处理。`PUT` 整组替换：`{"claude_fallback_off": false, "claude_fallback_model": "", "codex_guard_percent": 95, "codex_unlock": false}`。`codex_unlock` 只有在解锁用的证书已被系统信任后才能在这里打开，下一行的接口会完成这一步 |
 | `POST /api/v1/official/unlock` | 打开或关闭 Codex Desktop 解锁：`{"on": true}` |
 | `GET /api/v1/autostart`、`PUT /api/v1/autostart` | 登录系统时自动启动客户端：`{"on": true}` |
 | `GET /api/v1/warmup`、`PUT /api/v1/warmup` | 预热的状态和设置：`paused`、`claude`、`codex`，没给的不变 |

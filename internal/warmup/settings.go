@@ -47,7 +47,7 @@ type Local struct {
 
 // Normalize checks s and writes its times of day as "15:04".
 func (s *Settings) Normalize() error {
-	for _, l := range []*Local{&s.Claude, &s.Codex} {
+	for agent, l := range map[string]*Local{AgentClaude: &s.Claude, AgentCodex: &s.Codex} {
 		ts, err := provider.NormalizeTimes(l.Times)
 		if err != nil {
 			return err
@@ -63,6 +63,11 @@ func (s *Settings) Normalize() error {
 		l.Model, l.Binary = strings.TrimSpace(l.Model), strings.TrimSpace(l.Binary)
 		if strings.ContainsAny(l.Model, " \t\n\"'") {
 			return fmt.Errorf("model %q is not a model name", l.Model)
+		}
+		if l.Binary != "" {
+			if err := checkBinaryPath(agent, l.Binary); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

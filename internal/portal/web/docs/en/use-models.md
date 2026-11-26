@@ -251,7 +251,7 @@ The tools reach even their official models through the client, so it has to be r
 
 When a plan runs out:
 
-- **Claude Code**: when Anthropic turns a request away because the plan is used up, the client answers that same request from the network, on the closest model (the same Claude model if it is offered), until the window resets. `{{exe}} official fallback off` turns this off; `{{exe}} official fallback-model <model>` picks the model (`auto` goes back to choosing one). Requests answered this way run on the network and spend credit.
+- **Claude Code**: when Anthropic turns a request away because the plan is used up, the client answers that same request from the network, on the closest Claude model (the same one if it is offered), until the window resets. A 429 that does not say the plan is used up is passed on as it is, and so is the plan's when the network offers no Claude model and you picked none. `{{exe}} official fallback off` turns this off; `{{exe}} official fallback-model <model>` picks the model (`auto` goes back to choosing one). Requests answered this way run on the network and spend credit.
 - **Codex**: Codex Desktop locks its input once the ChatGPT plan is spent, even for network models. The client holds the official models when a window reaches 95% (`{{exe}} official guard <percent>`; `100` never holds them) and tells you to switch to an `st-` model. On macOS and Windows, `{{exe}} codex-unlock on` keeps the input open instead: the system asks you to trust a certificate valid for localhost only, and Codex Desktop then needs the client running.
 
 `{{exe}} official` shows the usage of the plans the client has seen and what happens when they run out.

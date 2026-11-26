@@ -30,10 +30,24 @@ func (s *codexState) merge(l provider.UsageLimits) {
 	s.usage, s.have, s.checked = l, true, now()
 }
 
-// codexAccount is the state of a ChatGPT account (g.mu held).
+// maxCodexAccounts bounds Gateway.codex: the account is whatever a request's
+// header says, and with `apikey off` any program on the machine sends them.
+const maxCodexAccounts = 32
+
+// codexAccount is the state of a ChatGPT account (g.mu held); past
+// maxCodexAccounts the one asked about longest ago makes room.
 func (g *Gateway) codexAccount(id string) *codexState {
 	st := g.codex[id]
 	if st == nil {
+		if len(g.codex) >= maxCodexAccounts {
+			oldest, first := "", true
+			for k, s := range g.codex {
+				if first || s.checked.Before(g.codex[oldest].checked) {
+					oldest, first = k, false
+				}
+			}
+			delete(g.codex, oldest)
+		}
 		st = &codexState{}
 		g.codex[id] = st
 	}
@@ -63,7 +77,7 @@ func (g *Gateway) codexResponses(w http.ResponseWriter, r *http.Request, cred Cr
 			g.unreachable(w, r, cred, err)
 			return
 		}
-		g.observe(cred, r.Header, resp.Header)
+		g.observe(r, cred, resp.Header)
 		if resp.StatusCode == http.StatusBadRequest && try == 0 {
 			eb := readError(resp)
 			if fixed, ok := dropEncryptedReasoning(body, eb); ok {
@@ -82,8 +96,12 @@ func (g *Gateway) codexResponses(w http.ResponseWriter, r *http.Request, cred Cr
 }
 
 // codexGuard is the message that holds an official model while a window of
-// the account's plan is at the guard's level, or "".
+// the account's plan is at the guard's level, or "". A request without the
+// client's API key is not held: it neither reads nor writes any state.
 func (g *Gateway) codexGuard(r *http.Request) string {
+	if KeyMissing(r.Context()) {
+		return ""
+	}
 	g.mu.Lock()
 	limit := g.settings.codexGuard()
 	account := r.Header.Get("chatgpt-account-id")
@@ -391,6 +409,13 @@ type officialModels struct {
 
 const officialModelsFile = "official-models.json"
 
+// The lists kept are bounded: their keys come from requests (the account
+// header and the query), which any program on the machine can vary.
+const (
+	maxModelLists    = 32
+	maxModelListsKey = 256
+)
+
 func (o *officialModels) load(home string) {
 	if o.loaded {
 		return
@@ -414,8 +439,22 @@ func (o *officialModels) put(home, key string, list json.RawMessage) {
 	defer o.mu.Unlock()
 	o.load(home)
 	if list == nil {
+		if _, ok := o.lists[key]; !ok {
+			return
+		}
 		delete(o.lists, key)
 	} else {
+		if len(key) > maxModelListsKey {
+			return
+		}
+		if _, ok := o.lists[key]; !ok {
+			for k := range o.lists { // any other makes room: they are only for when the vendor is down
+				if len(o.lists) < maxModelLists {
+					break
+				}
+				delete(o.lists, k)
+			}
+		}
 		o.lists[key] = list
 	}
 	if data, err := json.Marshal(o.lists); err == nil {
@@ -477,8 +516,12 @@ func (g *Gateway) vendorModels(r *http.Request) []json.RawMessage {
 		return cached()
 	}
 	defer resp.Body.Close()
+	// A request without the client's API key gets its list and leaves none.
+	keep := !KeyMissing(r.Context())
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		g.official.put(g.home, key, nil)
+		if keep {
+			g.official.put(g.home, key, nil)
+		}
 		return nil
 	}
 	var body struct {
@@ -491,6 +534,8 @@ func (g *Gateway) vendorModels(r *http.Request) []json.RawMessage {
 	if json.Unmarshal(body.Models, &l) != nil {
 		return cached()
 	}
-	g.official.put(g.home, key, body.Models)
+	if keep {
+		g.official.put(g.home, key, body.Models)
+	}
 	return l
 }
