@@ -226,7 +226,10 @@ func (s *Service) handleCtrl(st network.Stream) {
 	case protocol.TypeWithdraw:
 		var req protocol.WithdrawRequest
 		if herr = decode(env, &req); herr == nil {
-			if herr = s.Engine.WithdrawOffer(remote, req.IssuedAt); herr == nil {
+			if herr = s.Engine.Authorize(remote); herr == nil {
+				herr = s.Engine.WithdrawOffer(remote, req.IssuedAt)
+			}
+			if herr == nil {
 				respType = protocol.TypeOK
 			}
 		}
@@ -265,7 +268,10 @@ func (s *Service) handleCtrl(st network.Stream) {
 		}
 	case protocol.TypeModels:
 		var ms []protocol.ModelSummary
-		if ms, herr = s.Engine.ModelsFor(remote); herr == nil {
+		if herr = s.Engine.Authorize(remote); herr == nil {
+			ms, herr = s.Engine.ModelsFor(remote)
+		}
+		if herr == nil {
 			resp, respType = protocol.ModelsResponse{Models: ms}, protocol.TypeModels
 		}
 	case protocol.TypeBalance:
@@ -285,6 +291,12 @@ func (s *Service) handleCtrl(st network.Stream) {
 		s.handleEvidence(st, remote, env)
 		return
 	case protocol.TypeErrandPoll:
+		// Only a device of a user carries anything; anyone else would just
+		// fill the board with names.
+		if err := s.Engine.Authorize(remote); err != nil {
+			s.sendError(st, env.Type, err)
+			return
+		}
 		e := s.Errands.poll(remote)
 		if err := protocol.Send(st, protocol.TypeErrand, e); err != nil && e.Job != nil {
 			// The job never left: free its ticket now and tell whoever waits.

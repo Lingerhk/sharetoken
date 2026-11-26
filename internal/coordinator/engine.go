@@ -384,7 +384,7 @@ func (e *Engine) updateLocked(fn func(tx *sql.Tx, led *ledger.Tx) error) error {
 // accountOf returns the ledger account that pays and earns for peer: its
 // user's account, an audit identity's own account, or (OpenAccounts) the
 // peer's own account. Unbound and disabled devices get CodeUnauthorized.
-func (e *Engine) accountOf(tx *sql.Tx, peer string) (string, error) {
+func (e *Engine) accountOf(tx accounts.Querier, peer string) (string, error) {
 	acct, _, err := accounts.DeviceAccount(tx, peer)
 	switch {
 	case err == nil:
@@ -461,7 +461,12 @@ func (e *Engine) WithdrawOffer(node string, issuedAt int64) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.offers, node)
-	e.withdrawn[node] = issuedAt
+	// Entries leave after MaxOfferTTL (Tick); the table is bounded all the
+	// same. A node not noted here is only one whose late announcement could
+	// bring its offer back for a moment.
+	if _, known := e.withdrawn[node]; known || len(e.withdrawn) < maxWithdrawn {
+		e.withdrawn[node] = issuedAt
+	}
 	return nil
 }
 

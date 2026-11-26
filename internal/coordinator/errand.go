@@ -3,6 +3,7 @@ package coordinator
 import (
 	"database/sql"
 	"errors"
+	mrand "math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -49,6 +50,12 @@ func (e *Engine) IssueErrandTicket(carrier string, req protocol.TicketRequest) (
 // returned: a node has more reason to take them for buyers.
 func (e *Engine) ErrandCarriers(node string, devices []string) ([]string, error) {
 	now := e.cfg.Now()
+	// One of them is drawn in the end, so a sample of many serves as well.
+	if len(devices) > maxCarrierCandidates {
+		devices = slices.Clone(devices)
+		mrand.Shuffle(len(devices), func(i, j int) { devices[i], devices[j] = devices[j], devices[i] })
+		devices = devices[:maxCarrierCandidates]
+	}
 	var out []string
 	err := e.update(func(tx *sql.Tx, _ *ledger.Tx) error {
 		oe, ok := e.offers[node]
@@ -213,7 +220,15 @@ func (b *Errands) Carriers() []string {
 func (b *Errands) Bench(device string, d time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.benched[device] = b.now().Add(d)
+	now := b.now()
+	if len(b.benched) >= maxErrandDevices {
+		for dev, until := range b.benched {
+			if !now.Before(until) {
+				delete(b.benched, dev)
+			}
+		}
+	}
+	b.benched[device] = now.Add(d)
 }
 
 func (b *Errands) carrying(device string) bool {
@@ -255,7 +270,7 @@ func newResult() chan ErrandResult { return make(chan ErrandResult, 1) }
 // poll answers a device's ErrandPoll.
 func (b *Errands) poll(device string) protocol.Errand {
 	b.mu.Lock()
-	b.seen[device] = b.now()
+	b.note(device)
 	resp := protocol.Errand{PollAfter: uint32(b.pollAfter / time.Second)}
 	t := b.waiting[device]
 	delete(b.waiting, device)
@@ -273,6 +288,25 @@ func (b *Errands) poll(device string) protocol.Errand {
 	b.mu.Unlock()
 	resp.Job = job
 	return resp
+}
+
+// note records that device asked. Carriers forgets the devices that stopped
+// asking, but runs only while someone posts errands: a full table is swept
+// here, and a device that still finds no room is not noted (it carries
+// nothing until there is).
+func (b *Errands) note(device string) {
+	now := b.now()
+	if _, known := b.seen[device]; !known && len(b.seen) >= maxErrandDevices {
+		for d, at := range b.seen {
+			if now.Sub(at) > b.window() {
+				delete(b.seen, d)
+			}
+		}
+		if len(b.seen) >= maxErrandDevices {
+			return
+		}
+	}
+	b.seen[device] = now
 }
 
 // unsent ends a job whose poll answer did not reach its device.
