@@ -549,12 +549,7 @@ func (c *Client) runJob(ctx context.Context, t *protocol.Ticket, encoded []byte,
 	if err != nil {
 		return nil, false, err
 	}
-	addrs := make([]ma.Multiaddr, 0, len(t.NodeAddrs))
-	for _, a := range t.NodeAddrs {
-		if m, err := ma.NewMultiaddr(a); err == nil {
-			addrs = append(addrs, m)
-		}
-	}
+	addrs := dialAddrs(t.NodeAddrs)
 	if c.NodeAddrs != nil {
 		if addrs = c.NodeAddrs(addrs); len(addrs) == 0 {
 			return nil, false, errors.New("no permitted address for the node")
