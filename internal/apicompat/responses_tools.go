@@ -386,7 +386,7 @@ func respObjectSchema(schema json.RawMessage) json.RawMessage {
 	if json.Unmarshal(schema, &m) != nil || m == nil {
 		return json.RawMessage(empty)
 	}
-	respFlattenRootUnions(m)
+	respFlattenRootUnions(m, 0)
 	if raw, ok := m["type"]; !ok || string(raw) == "null" {
 		m["type"] = json.RawMessage(`"object"`)
 	} else if respString(raw) != "object" {
@@ -407,7 +407,7 @@ func respObjectSchema(schema json.RawMessage) json.RawMessage {
 // differently by two branches becomes an anyOf of both), required fields all
 // branches of oneOf/anyOf share, and every required field of allOf. Branches
 // that are not objects add nothing.
-func respFlattenRootUnions(schema map[string]json.RawMessage) {
+func respFlattenRootUnions(schema map[string]json.RawMessage, depth int) {
 	props := map[string]json.RawMessage{}
 	_ = json.Unmarshal(schema["properties"], &props)
 	if props == nil {
@@ -429,10 +429,10 @@ func respFlattenRootUnions(schema map[string]json.RawMessage) {
 		var shared []string
 		for i, rb := range rawBranches {
 			var branch map[string]json.RawMessage
-			if json.Unmarshal(rb, &branch) != nil || branch == nil {
-				branch = nil
+			if depth >= maxUnionDepth || json.Unmarshal(rb, &branch) != nil || branch == nil {
+				branch = nil // see maxUnionDepth
 			} else {
-				respFlattenRootUnions(branch)
+				respFlattenRootUnions(branch, depth+1)
 			}
 			isObject := false
 			if branch != nil {
